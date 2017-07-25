@@ -231,11 +231,11 @@ enum class PropertyCellConstantType {
 class PropertyDetails BASE_EMBEDDED {
  public:
   // Property details for dictionary mode properties/elements.
-  PropertyDetails(PropertyKind kind, PropertyAttributes attributes, int index,
-                  PropertyCellType cell_type) {
+  PropertyDetails(PropertyKind kind, PropertyAttributes attributes,
+                  PropertyCellType cell_type, int dictionary_index = 0) {
     value_ = KindField::encode(kind) | LocationField::encode(kField) |
              AttributesField::encode(attributes) |
-             DictionaryStorageField::encode(index) |
+             DictionaryStorageField::encode(dictionary_index) |
              PropertyCellTypeField::encode(cell_type);
   }
 
@@ -252,7 +252,7 @@ class PropertyDetails BASE_EMBEDDED {
 
   static PropertyDetails Empty(
       PropertyCellType cell_type = PropertyCellType::kNoCell) {
-    return PropertyDetails(kData, NONE, 0, cell_type);
+    return PropertyDetails(kData, NONE, cell_type);
   }
 
   int pointer() const { return DescriptorPointer::decode(value_); }
@@ -340,6 +340,8 @@ class PropertyDetails BASE_EMBEDDED {
       : public BitField<PropertyAttributes, ConstnessField::kNext, 3> {};
   static const int kAttributesReadOnlyMask =
       (READ_ONLY << AttributesField::kShift);
+  static const int kAttributesDontDeleteMask =
+      (DONT_DELETE << AttributesField::kShift);
 
   // Bit fields for normalized objects.
   class PropertyCellTypeField

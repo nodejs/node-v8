@@ -356,6 +356,9 @@ constexpr DoubleRegister kLithiumScratchDouble = f30;
 constexpr DoubleRegister kDoubleRegZero = f28;
 // Used on mips32r6 for compare operations.
 constexpr DoubleRegister kDoubleCompareReg = f26;
+// MSA zero and scratch regs must have the same numbers as FPU zero and scratch
+constexpr Simd128Register kSimd128RegZero = w28;
+constexpr Simd128Register kSimd128ScratchReg = w30;
 
 // FPU (coprocessor 1) control registers.
 // Currently only FCSR (#31) is implemented.
@@ -420,8 +423,11 @@ class Operand BASE_EMBEDDED {
   INLINE(explicit Operand(const char* s));
   INLINE(explicit Operand(Object** opp));
   INLINE(explicit Operand(Context** cpp));
-  explicit Operand(Handle<Object> handle);
+  explicit Operand(Handle<HeapObject> handle);
   INLINE(explicit Operand(Smi* value));
+
+  static Operand EmbeddedNumber(double number);  // Smi or HeapNumber.
+  static Operand EmbeddedCode(CodeStub* stub);
 
   // Register.
   INLINE(explicit Operand(Register rm));
@@ -431,18 +437,41 @@ class Operand BASE_EMBEDDED {
 
   inline int32_t immediate() const {
     DCHECK(!is_reg());
-    return imm32_;
+    DCHECK(!IsHeapObjectRequest());
+    return value_.immediate;
+  }
+
+  bool IsImmediate() const { return !rm_.is_valid(); }
+
+  HeapObjectRequest heap_object_request() const {
+    DCHECK(IsHeapObjectRequest());
+    return value_.heap_object_request;
+  }
+
+  bool IsHeapObjectRequest() const {
+    DCHECK_IMPLIES(is_heap_object_request_, IsImmediate());
+    DCHECK_IMPLIES(is_heap_object_request_,
+                   rmode_ == RelocInfo::EMBEDDED_OBJECT ||
+                       rmode_ == RelocInfo::CODE_TARGET);
+    return is_heap_object_request_;
   }
 
   Register rm() const { return rm_; }
 
+  RelocInfo::Mode rmode() const { return rmode_; }
+
  private:
   Register rm_;
-  int32_t imm32_;  // Valid if rm_ == no_reg.
+  union Value {
+    Value() {}
+    HeapObjectRequest heap_object_request;  // if is_heap_object_request_
+    int32_t immediate;                      // otherwise
+  } value_;                                 // valid if rm_ == no_reg
+  bool is_heap_object_request_ = false;
   RelocInfo::Mode rmode_;
 
   friend class Assembler;
-  friend class MacroAssembler;
+  // friend class MacroAssembler;
 };
 
 
@@ -495,7 +524,7 @@ class Assembler : public AssemblerBase {
   // GetCode emits any pending (non-emitted) code and fills the descriptor
   // desc. GetCode() is idempotent; it returns the same result if no other
   // Assembler functions are invoked in between GetCode() calls.
-  void GetCode(CodeDesc* desc);
+  void GetCode(Isolate* isolate, CodeDesc* desc);
 
   // Label operations & relative jumps (PPUM Appendix D).
   //
@@ -562,9 +591,12 @@ class Assembler : public AssemblerBase {
   // Read/Modify the code target address in the branch/call instruction at pc.
   // The isolate argument is unused (and may be nullptr) when skipping flushing.
   static Address target_address_at(Address pc);
-  static void set_target_address_at(
-      Isolate* isolate, Address pc, Address target,
-      ICacheFlushMode icache_flush_mode = FLUSH_ICACHE_IF_NEEDED);
+  INLINE(static void set_target_address_at)
+  (Isolate* isolate, Address pc, Address target,
+   ICacheFlushMode icache_flush_mode = FLUSH_ICACHE_IF_NEEDED) {
+    set_target_value_at(isolate, pc, reinterpret_cast<uint32_t>(target),
+                        icache_flush_mode);
+  }
   // On MIPS there is no Constant Pool so we skip that parameter.
   INLINE(static Address target_address_at(Address pc, Address constant_pool)) {
     return target_address_at(pc);
@@ -579,6 +611,10 @@ class Assembler : public AssemblerBase {
       Isolate* isolate, Address pc, Code* code, Address target,
       ICacheFlushMode icache_flush_mode = FLUSH_ICACHE_IF_NEEDED));
 
+  static void set_target_value_at(
+      Isolate* isolate, Address pc, uint32_t target,
+      ICacheFlushMode icache_flush_mode = FLUSH_ICACHE_IF_NEEDED);
+
   // Return the code target address at a call site from the return address
   // of that call in the instruction stream.
   inline static Address target_address_from_return_address(Address pc);
@@ -591,10 +627,19 @@ class Assembler : public AssemblerBase {
   inline static void deserialization_set_special_target_at(
       Isolate* isolate, Address instruction_payload, Code* code,
       Address target) {
-    set_target_address_at(
-        isolate,
-        instruction_payload - kInstructionsFor32BitConstant * kInstrSize, code,
-        target);
+    if (IsMipsArchVariant(kMips32r6)) {
+      // On R6 the address location is shifted by one instruction
+      set_target_address_at(
+          isolate,
+          instruction_payload -
+              (kInstructionsFor32BitConstant - 1) * kInstrSize,
+          code, target);
+    } else {
+      set_target_address_at(
+          isolate,
+          instruction_payload - kInstructionsFor32BitConstant * kInstrSize,
+          code, target);
+    }
   }
 
   // This sets the internal reference at the pc.
@@ -625,7 +670,7 @@ class Assembler : public AssemblerBase {
   // Distance between the instruction referring to the address of the call
   // target and the return address.
 #ifdef _MIPS_ARCH_MIPS32R6
-  static constexpr int kCallTargetAddressOffset = 3 * kInstrSize;
+  static constexpr int kCallTargetAddressOffset = 2 * kInstrSize;
 #else
   static constexpr int kCallTargetAddressOffset = 4 * kInstrSize;
 #endif
@@ -1086,15 +1131,45 @@ class Assembler : public AssemblerBase {
 
   // MSA instructions
   void bz_v(MSARegister wt, int16_t offset);
+  inline void bz_v(MSARegister wt, Label* L) {
+    bz_v(wt, shifted_branch_offset(L));
+  }
   void bz_b(MSARegister wt, int16_t offset);
+  inline void bz_b(MSARegister wt, Label* L) {
+    bz_b(wt, shifted_branch_offset(L));
+  }
   void bz_h(MSARegister wt, int16_t offset);
+  inline void bz_h(MSARegister wt, Label* L) {
+    bz_h(wt, shifted_branch_offset(L));
+  }
   void bz_w(MSARegister wt, int16_t offset);
+  inline void bz_w(MSARegister wt, Label* L) {
+    bz_w(wt, shifted_branch_offset(L));
+  }
   void bz_d(MSARegister wt, int16_t offset);
+  inline void bz_d(MSARegister wt, Label* L) {
+    bz_d(wt, shifted_branch_offset(L));
+  }
   void bnz_v(MSARegister wt, int16_t offset);
+  inline void bnz_v(MSARegister wt, Label* L) {
+    bnz_v(wt, shifted_branch_offset(L));
+  }
   void bnz_b(MSARegister wt, int16_t offset);
+  inline void bnz_b(MSARegister wt, Label* L) {
+    bnz_b(wt, shifted_branch_offset(L));
+  }
   void bnz_h(MSARegister wt, int16_t offset);
+  inline void bnz_h(MSARegister wt, Label* L) {
+    bnz_h(wt, shifted_branch_offset(L));
+  }
   void bnz_w(MSARegister wt, int16_t offset);
+  inline void bnz_w(MSARegister wt, Label* L) {
+    bnz_w(wt, shifted_branch_offset(L));
+  }
   void bnz_d(MSARegister wt, int16_t offset);
+  inline void bnz_d(MSARegister wt, Label* L) {
+    bnz_d(wt, shifted_branch_offset(L));
+  }
 
   void ld_b(MSARegister wd, const MemOperand& rs);
   void ld_h(MSARegister wd, const MemOperand& rs);
@@ -1691,20 +1766,6 @@ class Assembler : public AssemblerBase {
   // Mark address of a debug break slot.
   void RecordDebugBreakSlot(RelocInfo::Mode mode);
 
-  // Record the AST id of the CallIC being compiled, so that it can be placed
-  // in the relocation information.
-  void SetRecordedAstId(TypeFeedbackId ast_id) {
-    DCHECK(recorded_ast_id_.IsNone());
-    recorded_ast_id_ = ast_id;
-  }
-
-  TypeFeedbackId RecordedAstId() {
-    DCHECK(!recorded_ast_id_.IsNone());
-    return recorded_ast_id_;
-  }
-
-  void ClearRecordedAstId() { recorded_ast_id_ = TypeFeedbackId::None(); }
-
   // Record a comment relocation entry that can be used by a disassembler.
   // Use --code-comments to enable.
   void RecordComment(const char* msg);
@@ -1749,6 +1810,7 @@ class Assembler : public AssemblerBase {
 
   // Check if an instruction is a branch of some kind.
   static bool IsBranch(Instr instr);
+  static bool IsMsaBranch(Instr instr);
   static bool IsBc(Instr instr);
   static bool IsBzc(Instr instr);
   static bool IsBeq(Instr instr);
@@ -1835,15 +1897,18 @@ class Assembler : public AssemblerBase {
   // Load Scaled Address instruction.
   void lsa(Register rd, Register rt, Register rs, uint8_t sa);
 
-  // Helpers.
-  void LoadRegPlusOffsetToAt(const MemOperand& src);
-  int32_t LoadRegPlusUpperOffsetPartToAt(const MemOperand& src);
-  int32_t LoadUpperOffsetForTwoMemoryAccesses(const MemOperand& src);
+  // Readable constants for base and offset adjustment helper, these indicate if
+  // aside from offset, another value like offset + 4 should fit into int16.
+  enum class OffsetAccessType : bool {
+    SINGLE_ACCESS = false,
+    TWO_ACCESSES = true
+  };
 
-  // Relocation for a type-recording IC has the AST id added to it.  This
-  // member variable is a way to pass the information from the call site to
-  // the relocation info.
-  TypeFeedbackId recorded_ast_id_;
+  // Helper function for memory load/store using base register and offset.
+  void AdjustBaseAndOffset(
+      MemOperand& src,
+      OffsetAccessType access_type = OffsetAccessType::SINGLE_ACCESS,
+      int second_access_add_to_offset = 4);
 
   int32_t buffer_space() const { return reloc_info_writer.pos() - pc_; }
 
@@ -1913,6 +1978,9 @@ class Assembler : public AssemblerBase {
   inline void CheckBuffer();
 
  private:
+  // Avoid overflows for displacements etc.
+  static const int kMaximalBufferSize = 512 * MB;
+
   inline static void set_target_internal_reference_encoded_at(Address pc,
                                                               Address target);
 
@@ -2186,6 +2254,23 @@ class Assembler : public AssemblerBase {
 
   Trampoline trampoline_;
   bool internal_trampoline_exception_;
+
+  // The following functions help with avoiding allocations of embedded heap
+  // objects during the code assembly phase. {RequestHeapObject} records the
+  // need for a future heap number allocation or code stub generation. After
+  // code assembly, {AllocateAndInstallRequestedHeapObjects} will allocate these
+  // objects and place them where they are expected (determined by the pc offset
+  // associated with each request). That is, for each request, it will patch the
+  // dummy heap object handle that we emitted during code assembly with the
+  // actual heap object handle.
+ protected:
+  // TODO(neis): Make private if its use can be moved out of TurboAssembler.
+  void RequestHeapObject(HeapObjectRequest request);
+
+ private:
+  void AllocateAndInstallRequestedHeapObjects(Isolate* isolate);
+
+  std::forward_list<HeapObjectRequest> heap_object_requests_;
 
   friend class RegExpMacroAssemblerMIPS;
   friend class RelocInfo;

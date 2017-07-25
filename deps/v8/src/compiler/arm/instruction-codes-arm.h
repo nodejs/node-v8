@@ -134,12 +134,11 @@ namespace compiler {
   V(ArmF32x4RecipApprox)           \
   V(ArmF32x4RecipSqrtApprox)       \
   V(ArmF32x4Add)                   \
+  V(ArmF32x4AddHoriz)              \
   V(ArmF32x4Sub)                   \
   V(ArmF32x4Mul)                   \
   V(ArmF32x4Min)                   \
   V(ArmF32x4Max)                   \
-  V(ArmF32x4RecipRefine)           \
-  V(ArmF32x4RecipSqrtRefine)       \
   V(ArmF32x4Eq)                    \
   V(ArmF32x4Ne)                    \
   V(ArmF32x4Lt)                    \
@@ -154,22 +153,23 @@ namespace compiler {
   V(ArmI32x4Shl)                   \
   V(ArmI32x4ShrS)                  \
   V(ArmI32x4Add)                   \
+  V(ArmI32x4AddHoriz)              \
   V(ArmI32x4Sub)                   \
   V(ArmI32x4Mul)                   \
   V(ArmI32x4MinS)                  \
   V(ArmI32x4MaxS)                  \
   V(ArmI32x4Eq)                    \
   V(ArmI32x4Ne)                    \
-  V(ArmI32x4LtS)                   \
-  V(ArmI32x4LeS)                   \
+  V(ArmI32x4GtS)                   \
+  V(ArmI32x4GeS)                   \
   V(ArmI32x4UConvertF32x4)         \
   V(ArmI32x4UConvertI16x8Low)      \
   V(ArmI32x4UConvertI16x8High)     \
   V(ArmI32x4ShrU)                  \
   V(ArmI32x4MinU)                  \
   V(ArmI32x4MaxU)                  \
-  V(ArmI32x4LtU)                   \
-  V(ArmI32x4LeU)                   \
+  V(ArmI32x4GtU)                   \
+  V(ArmI32x4GeU)                   \
   V(ArmI16x8Splat)                 \
   V(ArmI16x8ExtractLane)           \
   V(ArmI16x8ReplaceLane)           \
@@ -181,6 +181,7 @@ namespace compiler {
   V(ArmI16x8SConvertI32x4)         \
   V(ArmI16x8Add)                   \
   V(ArmI16x8AddSaturateS)          \
+  V(ArmI16x8AddHoriz)              \
   V(ArmI16x8Sub)                   \
   V(ArmI16x8SubSaturateS)          \
   V(ArmI16x8Mul)                   \
@@ -188,8 +189,8 @@ namespace compiler {
   V(ArmI16x8MaxS)                  \
   V(ArmI16x8Eq)                    \
   V(ArmI16x8Ne)                    \
-  V(ArmI16x8LtS)                   \
-  V(ArmI16x8LeS)                   \
+  V(ArmI16x8GtS)                   \
+  V(ArmI16x8GeS)                   \
   V(ArmI16x8UConvertI8x16Low)      \
   V(ArmI16x8UConvertI8x16High)     \
   V(ArmI16x8ShrU)                  \
@@ -198,8 +199,8 @@ namespace compiler {
   V(ArmI16x8SubSaturateU)          \
   V(ArmI16x8MinU)                  \
   V(ArmI16x8MaxU)                  \
-  V(ArmI16x8LtU)                   \
-  V(ArmI16x8LeU)                   \
+  V(ArmI16x8GtU)                   \
+  V(ArmI16x8GeU)                   \
   V(ArmI8x16Splat)                 \
   V(ArmI8x16ExtractLane)           \
   V(ArmI8x16ReplaceLane)           \
@@ -216,22 +217,50 @@ namespace compiler {
   V(ArmI8x16MaxS)                  \
   V(ArmI8x16Eq)                    \
   V(ArmI8x16Ne)                    \
-  V(ArmI8x16LtS)                   \
-  V(ArmI8x16LeS)                   \
+  V(ArmI8x16GtS)                   \
+  V(ArmI8x16GeS)                   \
   V(ArmI8x16ShrU)                  \
   V(ArmI8x16UConvertI16x8)         \
   V(ArmI8x16AddSaturateU)          \
   V(ArmI8x16SubSaturateU)          \
   V(ArmI8x16MinU)                  \
   V(ArmI8x16MaxU)                  \
-  V(ArmI8x16LtU)                   \
-  V(ArmI8x16LeU)                   \
+  V(ArmI8x16GtU)                   \
+  V(ArmI8x16GeU)                   \
   V(ArmS128Zero)                   \
+  V(ArmS128Dup)                    \
   V(ArmS128And)                    \
   V(ArmS128Or)                     \
   V(ArmS128Xor)                    \
   V(ArmS128Not)                    \
   V(ArmS128Select)                 \
+  V(ArmS32x4ZipLeft)               \
+  V(ArmS32x4ZipRight)              \
+  V(ArmS32x4UnzipLeft)             \
+  V(ArmS32x4UnzipRight)            \
+  V(ArmS32x4TransposeLeft)         \
+  V(ArmS32x4TransposeRight)        \
+  V(ArmS32x4Shuffle)               \
+  V(ArmS16x8ZipLeft)               \
+  V(ArmS16x8ZipRight)              \
+  V(ArmS16x8UnzipLeft)             \
+  V(ArmS16x8UnzipRight)            \
+  V(ArmS16x8TransposeLeft)         \
+  V(ArmS16x8TransposeRight)        \
+  V(ArmS8x16ZipLeft)               \
+  V(ArmS8x16ZipRight)              \
+  V(ArmS8x16UnzipLeft)             \
+  V(ArmS8x16UnzipRight)            \
+  V(ArmS8x16TransposeLeft)         \
+  V(ArmS8x16TransposeRight)        \
+  V(ArmS8x16Concat)                \
+  V(ArmS8x16Shuffle)               \
+  V(ArmS32x2Reverse)               \
+  V(ArmS16x4Reverse)               \
+  V(ArmS16x2Reverse)               \
+  V(ArmS8x8Reverse)                \
+  V(ArmS8x4Reverse)                \
+  V(ArmS8x2Reverse)                \
   V(ArmS1x4AnyTrue)                \
   V(ArmS1x4AllTrue)                \
   V(ArmS1x8AnyTrue)                \

@@ -37,16 +37,18 @@ class V8_EXPORT_PRIVATE JSIntrinsicLowering final
                       DeoptimizationMode mode);
   ~JSIntrinsicLowering() final {}
 
+  const char* reducer_name() const override { return "JSIntrinsicLowering"; }
+
   Reduction Reduce(Node* node) final;
 
  private:
   Reduction ReduceCreateIterResultObject(Node* node);
   Reduction ReduceDebugIsActive(Node* node);
   Reduction ReduceDeoptimizeNow(Node* node);
+  Reduction ReduceCreateJSGeneratorObject(Node* node);
   Reduction ReduceGeneratorClose(Node* node);
   Reduction ReduceGeneratorGetContext(Node* node);
   Reduction ReduceGeneratorGetInputOrDebugPos(Node* node);
-  Reduction ReduceAsyncGeneratorGetAwaitInputOrDebugPos(Node* node);
   Reduction ReduceAsyncGeneratorReject(Node* node);
   Reduction ReduceAsyncGeneratorResolve(Node* node);
   Reduction ReduceGeneratorSaveInputForAwait(Node* node);
@@ -68,6 +70,7 @@ class V8_EXPORT_PRIVATE JSIntrinsicLowering final
   // TODO(turbofan): typedarray.js support; drop once TypedArrays are
   // converted to proper CodeStubAssembler based builtins.
   Reduction ReduceArrayBufferViewField(Node* node, FieldAccess const& access);
+  Reduction ReduceArrayBufferViewWasNeutered(Node* node);
   Reduction ReduceMaxSmi(Node* node);
   Reduction ReduceTypedArrayMaxSizeInHeap(Node* node);
 

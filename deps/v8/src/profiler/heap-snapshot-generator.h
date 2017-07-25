@@ -12,6 +12,8 @@
 #include "src/base/platform/time.h"
 #include "src/objects.h"
 #include "src/profiler/strings-storage.h"
+#include "src/string-hasher.h"
+#include "src/visitors.h"
 
 namespace v8 {
 namespace internal {
@@ -295,8 +297,7 @@ class HeapEntriesMap {
  private:
   static uint32_t Hash(HeapThing thing) {
     return ComputeIntegerHash(
-        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(thing)),
-        v8::internal::kZeroHashSeed);
+        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(thing)));
   }
 
   base::HashMap entries_;
@@ -390,6 +391,7 @@ class V8HeapExplorer : public HeapEntriesAllocator {
   void ExtractPropertyCellReferences(int entry, PropertyCell* cell);
   void ExtractAllocationSiteReferences(int entry, AllocationSite* site);
   void ExtractJSArrayBufferReferences(int entry, JSArrayBuffer* buffer);
+  void ExtractJSPromiseReferences(int entry, JSPromise* promise);
   void ExtractFixedArrayReferences(int entry, FixedArray* array);
   void ExtractPropertyReferences(JSObject* js_obj, int entry);
   void ExtractAccessorPairProperty(JSObject* js_obj, int entry, Name* key,
@@ -503,8 +505,7 @@ class NativeObjectsExplorer {
   void VisitSubtreeWrapper(Object** p, uint16_t class_id);
 
   static uint32_t InfoHash(v8::RetainedObjectInfo* info) {
-    return ComputeIntegerHash(static_cast<uint32_t>(info->GetHash()),
-                              v8::internal::kZeroHashSeed);
+    return ComputeIntegerHash(static_cast<uint32_t>(info->GetHash()));
   }
   static bool RetainedInfosMatch(void* key1, void* key2) {
     return key1 == key2 ||

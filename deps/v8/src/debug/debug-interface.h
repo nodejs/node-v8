@@ -17,6 +17,7 @@
 namespace v8 {
 
 namespace internal {
+struct CoverageBlock;
 struct CoverageFunction;
 struct CoverageScript;
 class Coverage;
@@ -24,6 +25,9 @@ class Script;
 }
 
 namespace debug {
+
+void SetContextId(Local<Context> context, int id);
+int GetContextId(Local<Context> context);
 
 /**
  * Debugger is running in its own context which is entered while debugger
@@ -126,6 +130,7 @@ class V8_EXPORT_PRIVATE Script {
 
   ScriptOriginOptions OriginOptions() const;
   bool WasCompiled() const;
+  bool IsEmbedded() const;
   int Id() const;
   int LineOffset() const;
   int ColumnOffset() const;
@@ -133,7 +138,7 @@ class V8_EXPORT_PRIVATE Script {
   MaybeLocal<String> Name() const;
   MaybeLocal<String> SourceURL() const;
   MaybeLocal<String> SourceMappingURL() const;
-  MaybeLocal<Value> ContextData() const;
+  Maybe<int> ContextId() const;
   MaybeLocal<String> Source() const;
   bool IsWasm() const;
   bool IsModule() const;
@@ -166,8 +171,7 @@ MaybeLocal<UnboundScript> CompileInspectorScript(Isolate* isolate,
 class DebugDelegate {
  public:
   virtual ~DebugDelegate() {}
-  virtual void PromiseEventOccurred(v8::Local<v8::Context> context,
-                                    debug::PromiseDebugActionType type, int id,
+  virtual void PromiseEventOccurred(debug::PromiseDebugActionType type, int id,
                                     int parent_id, bool created_by_user) {}
   virtual void ScriptCompiled(v8::Local<Script> script,
                               bool has_compile_error) {}
@@ -207,6 +211,14 @@ enum Builtin {
 
 Local<Function> GetBuiltin(Isolate* isolate, Builtin builtin);
 
+V8_EXPORT_PRIVATE void SetConsoleDelegate(Isolate* isolate,
+                                          ConsoleDelegate* delegate);
+
+int GetStackFrameId(v8::Local<v8::StackFrame> frame);
+
+v8::Local<v8::StackTrace> GetDetailedStackTrace(Isolate* isolate,
+                                                v8::Local<v8::Object> error);
+
 /**
  * Native wrapper around v8::internal::JSGeneratorObject object.
  */
@@ -237,10 +249,29 @@ class V8_EXPORT_PRIVATE Coverage {
     // We are only interested in a yes/no result for the function. Optimization
     // and GC can be allowed once a function has been invoked. Collecting
     // precise binary coverage resets counters for incremental updates.
-    kPreciseBinary
+    kPreciseBinary,
+    // Similar to the precise coverage modes but provides coverage at a
+    // lower granularity. Design doc: goo.gl/lA2swZ.
+    kBlockCount,
+    kBlockBinary,
   };
 
-  class ScriptData;  // Forward declaration.
+  // Forward declarations.
+  class ScriptData;
+  class FunctionData;
+
+  class V8_EXPORT_PRIVATE BlockData {
+   public:
+    int StartOffset() const;
+    int EndOffset() const;
+    uint32_t Count() const;
+
+   private:
+    explicit BlockData(i::CoverageBlock* block) : block_(block) {}
+    i::CoverageBlock* block_;
+
+    friend class v8::debug::Coverage::FunctionData;
+  };
 
   class V8_EXPORT_PRIVATE FunctionData {
    public:
@@ -248,6 +279,9 @@ class V8_EXPORT_PRIVATE Coverage {
     int EndOffset() const;
     uint32_t Count() const;
     MaybeLocal<String> Name() const;
+    size_t BlockCount() const;
+    bool HasBlockCoverage() const;
+    BlockData GetBlockData(size_t i) const;
 
    private:
     explicit FunctionData(i::CoverageFunction* function)

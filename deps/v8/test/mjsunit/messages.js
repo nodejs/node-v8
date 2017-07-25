@@ -28,7 +28,7 @@ test(function() {
 
 // kApplyNonFunction
 test(function() {
-  Function.prototype.apply.call(1, []);
+  Reflect.apply(1, []);
 }, "Function.prototype.apply was called on 1, which is a number " +
    "and not a function", TypeError);
 
@@ -192,33 +192,33 @@ test(function() {
 }, "this is not a Date object.", TypeError);
 
 // kNotGeneric
-test(function() {
-  String.prototype.toString.call(1);
-}, "String.prototype.toString is not generic", TypeError);
+test(() => String.prototype.toString.call(1),
+    "String.prototype.toString requires that 'this' be a String",
+    TypeError);
 
-test(function() {
-  String.prototype.valueOf.call(1);
-}, "String.prototype.valueOf is not generic", TypeError);
+test(() => String.prototype.valueOf.call(1),
+    "String.prototype.valueOf requires that 'this' be a String",
+    TypeError);
 
-test(function() {
-  Boolean.prototype.toString.call(1);
-}, "Boolean.prototype.toString is not generic", TypeError);
+test(() => Boolean.prototype.toString.call(1),
+    "Boolean.prototype.toString requires that 'this' be a Boolean",
+    TypeError);
 
-test(function() {
-  Boolean.prototype.valueOf.call(1);
-}, "Boolean.prototype.valueOf is not generic", TypeError);
+test(() => Boolean.prototype.valueOf.call(1),
+    "Boolean.prototype.valueOf requires that 'this' be a Boolean",
+    TypeError);
 
-test(function() {
-  Number.prototype.toString.call({});
-}, "Number.prototype.toString is not generic", TypeError);
+test(() => Number.prototype.toString.call({}),
+    "Number.prototype.toString requires that 'this' be a Number",
+    TypeError);
 
-test(function() {
-  Number.prototype.valueOf.call({});
-}, "Number.prototype.valueOf is not generic", TypeError);
+test(() => Number.prototype.valueOf.call({}),
+    "Number.prototype.valueOf requires that 'this' be a Number",
+    TypeError);
 
-test(function() {
-  Function.prototype.toString.call(1);
-}, "Function.prototype.toString is not generic", TypeError);
+test(() => Function.prototype.toString.call(1),
+    "Function.prototype.toString requires that 'this' be a Function",
+    TypeError);
 
 // kNotTypedArray
 test(function() {
@@ -426,12 +426,12 @@ test(function() {
 
 // kNumberFormatRange
 test(function() {
-  Number(1).toFixed(100);
-}, "toFixed() digits argument must be between 0 and 20", RangeError);
+  Number(1).toFixed(101);
+}, "toFixed() digits argument must be between 0 and 100", RangeError);
 
 test(function() {
-  Number(1).toExponential(100);
-}, "toExponential() argument must be between 0 and 20", RangeError);
+  Number(1).toExponential(101);
+}, "toExponential() argument must be between 0 and 100", RangeError);
 
 // kStackOverflow
 test(function() {
@@ -441,8 +441,8 @@ test(function() {
 
 // kToPrecisionFormatRange
 test(function() {
-  Number(1).toPrecision(100);
-}, "toPrecision() argument must be between 1 and 21", RangeError);
+  Number(1).toPrecision(101);
+}, "toPrecision() argument must be between 1 and 100", RangeError);
 
 // kToPrecisionFormatRange
 test(function() {

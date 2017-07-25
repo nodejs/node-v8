@@ -12,7 +12,7 @@
 #include "src/isolate.h"
 #include "src/objects-inl.h"
 #include "src/parsing/parse-info.h"
-#include "test/unittests/compiler-dispatcher/compiler-dispatcher-helper.h"
+#include "test/unittests/test-helpers.h"
 #include "test/unittests/test-utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -28,8 +28,9 @@ class BlockingCompilationJob : public CompilationJob {
   BlockingCompilationJob(Isolate* isolate, Handle<JSFunction> function)
       : CompilationJob(isolate, &info_, "BlockingCompilationJob",
                        State::kReadyToExecute),
-        parse_info_(handle(function->shared())),
-        info_(parse_info_.zone(), &parse_info_, function->GetIsolate(),
+        shared_(function->shared()),
+        parse_info_(shared_),
+        info_(parse_info_.zone(), &parse_info_, function->GetIsolate(), shared_,
               function),
         blocking_(false),
         semaphore_(0) {}
@@ -41,7 +42,6 @@ class BlockingCompilationJob : public CompilationJob {
   // CompilationJob implementation.
   Status PrepareJobImpl() override {
     UNREACHABLE();
-    return FAILED;
   }
 
   Status ExecuteJobImpl() override {
@@ -54,6 +54,7 @@ class BlockingCompilationJob : public CompilationJob {
   Status FinalizeJobImpl() override { return SUCCEEDED; }
 
  private:
+  Handle<SharedFunctionInfo> shared_;
   ParseInfo parse_info_;
   CompilationInfo info_;
   base::AtomicValue<bool> blocking_;

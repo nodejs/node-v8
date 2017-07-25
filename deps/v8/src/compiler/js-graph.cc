@@ -26,6 +26,11 @@ Node* JSGraph::AllocateInOldSpaceStubConstant() {
                 HeapConstant(isolate()->builtins()->AllocateInOldSpace()));
 }
 
+Node* JSGraph::ArrayConstructorStubConstant() {
+  return CACHED(kArrayConstructorStubConstant,
+                HeapConstant(ArrayConstructorStub(isolate()).GetCode()));
+}
+
 Node* JSGraph::ToNumberBuiltinConstant() {
   return CACHED(kToNumberBuiltinConstant,
                 HeapConstant(isolate()->builtins()->ToNumber()));
@@ -75,6 +80,11 @@ Node* JSGraph::EmptyStringConstant() {
 Node* JSGraph::FixedArrayMapConstant() {
   return CACHED(kFixedArrayMapConstant,
                 HeapConstant(factory()->fixed_array_map()));
+}
+
+Node* JSGraph::PropertyArrayMapConstant() {
+  return CACHED(kPropertyArrayMapConstant,
+                HeapConstant(factory()->property_array_map()));
 }
 
 Node* JSGraph::FixedDoubleArrayMapConstant() {
@@ -130,6 +140,9 @@ Node* JSGraph::OneConstant() {
   return CACHED(kOneConstant, NumberConstant(1.0));
 }
 
+Node* JSGraph::MinusOneConstant() {
+  return CACHED(kMinusOneConstant, NumberConstant(-1.0));
+}
 
 Node* JSGraph::NaNConstant() {
   return CACHED(kNaNConstant,
@@ -278,6 +291,14 @@ Node* JSGraph::ExternalConstant(Runtime::FunctionId function_id) {
 Node* JSGraph::EmptyStateValues() {
   return CACHED(kEmptyStateValues, graph()->NewNode(common()->StateValues(
                                        0, SparseInputMask::Dense())));
+}
+
+Node* JSGraph::SingleDeadTypedStateValues() {
+  return CACHED(kSingleDeadTypedStateValues,
+                graph()->NewNode(common()->TypedStateValues(
+                    new (graph()->zone()->New(sizeof(ZoneVector<MachineType>)))
+                        ZoneVector<MachineType>(0, graph()->zone()),
+                    SparseInputMask(SparseInputMask::kEndMarker << 1))));
 }
 
 Node* JSGraph::Dead() {

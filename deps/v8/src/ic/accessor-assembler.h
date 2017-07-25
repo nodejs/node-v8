@@ -182,8 +182,8 @@ class AccessorAssembler : public CodeStubAssembler {
 
   enum UseStubCache { kUseStubCache, kDontUseStubCache };
   void GenericPropertyLoad(Node* receiver, Node* receiver_map,
-                           Node* instance_type, Node* key,
-                           const LoadICParameters* p, Label* slow,
+                           Node* instance_type, const LoadICParameters* p,
+                           Label* slow,
                            UseStubCache use_stub_cache = kUseStubCache);
 
   // Low-level helpers.
@@ -193,7 +193,7 @@ class AccessorAssembler : public CodeStubAssembler {
                              Node* value, Label* bailout);
 
   // Extends properties backing store by JSObject::kFieldsAdded elements.
-  void ExtendPropertiesBackingStore(Node* object);
+  void ExtendPropertiesBackingStore(Node* object, Node* handler_word);
 
   void StoreNamedField(Node* handler_word, Node* object, bool is_inobject,
                        Representation representation, Node* value,

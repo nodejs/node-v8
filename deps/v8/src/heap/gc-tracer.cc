@@ -464,7 +464,6 @@ void GCTracer::PrintNVP() const {
           "old_new=%.2f "
           "weak=%.2f "
           "roots=%.2f "
-          "code=%.2f "
           "semispace=%.2f "
           "steps_count=%d "
           "steps_took=%.1f "
@@ -504,7 +503,6 @@ void GCTracer::PrintNVP() const {
           current_.scopes[Scope::SCAVENGER_OLD_TO_NEW_POINTERS],
           current_.scopes[Scope::SCAVENGER_WEAK],
           current_.scopes[Scope::SCAVENGER_ROOTS],
-          current_.scopes[Scope::SCAVENGER_CODE_FLUSH_CANDIDATES],
           current_.scopes[Scope::SCAVENGER_SEMISPACE],
           current_.incremental_marking_scopes[GCTracer::Scope::MC_INCREMENTAL]
               .steps,
@@ -527,13 +525,42 @@ void GCTracer::PrintNVP() const {
           "mutator=%.1f "
           "gc=%s "
           "reduce_memory=%d "
+          "minor_mc=%.2f "
+          "finish_sweeping=%.2f "
           "mark=%.2f "
+          "mark.seed=%.2f "
           "mark.roots=%.2f "
-          "mark.old_to_new=%.2f\n",
+          "mark.weak=%.2f "
+          "mark.global_handles=%.2f "
+          "clear=%.2f "
+          "clear.string_table=%.2f "
+          "clear.weak_lists=%.2f "
+          "evacuate=%.2f "
+          "evacuate.copy=%.2f "
+          "evacuate.update_pointers=%.2f "
+          "evacuate.update_pointers.to_new_roots=%.2f "
+          "evacuate.update_pointers.slots=%.2f "
+          "update_marking_deque=%.2f "
+          "reset_liveness=%.2f\n",
           duration, spent_in_mutator, "mmc", current_.reduce_memory,
+          current_.scopes[Scope::MINOR_MC],
+          current_.scopes[Scope::MINOR_MC_SWEEPING],
           current_.scopes[Scope::MINOR_MC_MARK],
+          current_.scopes[Scope::MINOR_MC_MARK_SEED],
           current_.scopes[Scope::MINOR_MC_MARK_ROOTS],
-          current_.scopes[Scope::MINOR_MC_MARK_OLD_TO_NEW_POINTERS]);
+          current_.scopes[Scope::MINOR_MC_MARK_WEAK],
+          current_.scopes[Scope::MINOR_MC_MARK_GLOBAL_HANDLES],
+          current_.scopes[Scope::MINOR_MC_CLEAR],
+          current_.scopes[Scope::MINOR_MC_CLEAR_STRING_TABLE],
+          current_.scopes[Scope::MINOR_MC_CLEAR_WEAK_LISTS],
+          current_.scopes[Scope::MINOR_MC_EVACUATE],
+          current_.scopes[Scope::MINOR_MC_EVACUATE_COPY],
+          current_.scopes[Scope::MINOR_MC_EVACUATE_UPDATE_POINTERS],
+          current_
+              .scopes[Scope::MINOR_MC_EVACUATE_UPDATE_POINTERS_TO_NEW_ROOTS],
+          current_.scopes[Scope::MINOR_MC_EVACUATE_UPDATE_POINTERS_SLOTS],
+          current_.scopes[Scope::MINOR_MC_MARKING_DEQUE],
+          current_.scopes[Scope::MINOR_MC_RESET_LIVENESS]);
       break;
     case Event::MARK_COMPACTOR:
     case Event::INCREMENTAL_MARK_COMPACTOR:
@@ -549,7 +576,6 @@ void GCTracer::PrintNVP() const {
           "heap.external.epilogue=%.1f "
           "heap.external.weak_global_handles=%.1f "
           "clear=%1.f "
-          "clear.code_flush=%.1f "
           "clear.dependent_code=%.1f "
           "clear.maps=%.1f "
           "clear.slots_buffer=%.1f "
@@ -567,13 +593,12 @@ void GCTracer::PrintNVP() const {
           "evacuate.epilogue=%.1f "
           "evacuate.rebalance=%.1f "
           "evacuate.update_pointers=%.1f "
-          "evacuate.update_pointers.to_evacuated=%.1f "
-          "evacuate.update_pointers.to_new=%.1f "
+          "evacuate.update_pointers.to_new_roots=%.1f "
+          "evacuate.update_pointers.slots=%.1f "
           "evacuate.update_pointers.weak=%.1f "
           "finish=%.1f "
           "mark=%.1f "
           "mark.finish_incremental=%.1f "
-          "mark.prepare_code_flush=%.1f "
           "mark.roots=%.1f "
           "mark.weak_closure=%.1f "
           "mark.weak_closure.ephemeral=%.1f "
@@ -635,7 +660,6 @@ void GCTracer::PrintNVP() const {
           current_.scopes[Scope::HEAP_EXTERNAL_EPILOGUE],
           current_.scopes[Scope::HEAP_EXTERNAL_WEAK_GLOBAL_HANDLES],
           current_.scopes[Scope::MC_CLEAR],
-          current_.scopes[Scope::MC_CLEAR_CODE_FLUSH],
           current_.scopes[Scope::MC_CLEAR_DEPENDENT_CODE],
           current_.scopes[Scope::MC_CLEAR_MAPS],
           current_.scopes[Scope::MC_CLEAR_SLOTS_BUFFER],
@@ -653,12 +677,11 @@ void GCTracer::PrintNVP() const {
           current_.scopes[Scope::MC_EVACUATE_EPILOGUE],
           current_.scopes[Scope::MC_EVACUATE_REBALANCE],
           current_.scopes[Scope::MC_EVACUATE_UPDATE_POINTERS],
-          current_.scopes[Scope::MC_EVACUATE_UPDATE_POINTERS_TO_EVACUATED],
-          current_.scopes[Scope::MC_EVACUATE_UPDATE_POINTERS_TO_NEW],
+          current_.scopes[Scope::MC_EVACUATE_UPDATE_POINTERS_TO_NEW_ROOTS],
+          current_.scopes[Scope::MC_EVACUATE_UPDATE_POINTERS_SLOTS],
           current_.scopes[Scope::MC_EVACUATE_UPDATE_POINTERS_WEAK],
           current_.scopes[Scope::MC_FINISH], current_.scopes[Scope::MC_MARK],
           current_.scopes[Scope::MC_MARK_FINISH_INCREMENTAL],
-          current_.scopes[Scope::MC_MARK_PREPARE_CODE_FLUSH],
           current_.scopes[Scope::MC_MARK_ROOTS],
           current_.scopes[Scope::MC_MARK_WEAK_CLOSURE],
           current_.scopes[Scope::MC_MARK_WEAK_CLOSURE_EPHEMERAL],

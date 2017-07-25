@@ -401,23 +401,6 @@ void Verifier::Visitor::Check(Node* node) {
       // Type is merged from other values in the graph and could be any.
       CheckTypeIs(node, Type::Any());
       break;
-    case IrOpcode::kOsrGuard:
-      // OSR values have a value and a control input.
-      CHECK_EQ(1, value_count);
-      CHECK_EQ(1, effect_count);
-      CHECK_EQ(1, control_count);
-      switch (OsrGuardTypeOf(node->op())) {
-        case OsrGuardType::kUninitialized:
-          CheckTypeIs(node, Type::None());
-          break;
-        case OsrGuardType::kSignedSmall:
-          CheckTypeIs(node, Type::SignedSmall());
-          break;
-        case OsrGuardType::kAny:
-          CheckTypeIs(node, Type::Any());
-          break;
-      }
-      break;
     case IrOpcode::kProjection: {
       // Projection has an input that produces enough values.
       int index = static_cast<int>(ProjectionIndexOf(node->op()));
@@ -509,12 +492,19 @@ void Verifier::Visitor::Check(Node* node) {
       CHECK_EQ(0, control_count);
       CHECK_EQ(0, effect_count);
       CHECK_EQ(6, input_count);
-      for (int i = 0; i < 3; ++i) {
+      // Check that the parameters and registers are kStateValues or
+      // kTypedStateValues.
+      for (int i = 0; i < 2; ++i) {
         CHECK(NodeProperties::GetValueInput(node, i)->opcode() ==
                   IrOpcode::kStateValues ||
               NodeProperties::GetValueInput(node, i)->opcode() ==
                   IrOpcode::kTypedStateValues);
       }
+      // The accumulator (InputAt(2)) cannot be kStateValues, but it can be
+      // kTypedStateValues (to signal the type). Once AST graph builder
+      // is removed, we should check this here. Until then, AST graph
+      // builder can generate expression stack as InputAt(2), which can
+      // still be kStateValues.
       break;
     }
     case IrOpcode::kStateValues:
@@ -598,12 +588,12 @@ void Verifier::Visitor::Check(Node* node) {
       CheckTypeIs(node, Type::Object());
       break;
     case IrOpcode::kJSCreateArguments:
-      // Type is OtherObject.
-      CheckTypeIs(node, Type::OtherObject());
+      // Type is Array \/ OtherObject.
+      CheckTypeIs(node, Type::ArrayOrOtherObject());
       break;
     case IrOpcode::kJSCreateArray:
-      // Type is OtherObject.
-      CheckTypeIs(node, Type::OtherObject());
+      // Type is Array.
+      CheckTypeIs(node, Type::Array());
       break;
     case IrOpcode::kJSCreateClosure:
       // Type is Function.
@@ -618,6 +608,9 @@ void Verifier::Visitor::Check(Node* node) {
       CheckTypeIs(node, Type::OtherObject());
       break;
     case IrOpcode::kJSCreateLiteralArray:
+      // Type is Array.
+      CheckTypeIs(node, Type::Array());
+      break;
     case IrOpcode::kJSCreateLiteralObject:
     case IrOpcode::kJSCreateLiteralRegExp:
       // Type is OtherObject.
@@ -664,6 +657,7 @@ void Verifier::Visitor::Check(Node* node) {
       break;
     case IrOpcode::kJSDeleteProperty:
     case IrOpcode::kJSHasProperty:
+    case IrOpcode::kJSHasInPrototypeChain:
     case IrOpcode::kJSInstanceOf:
     case IrOpcode::kJSOrdinaryHasInstance:
       // Type is Boolean.
@@ -707,7 +701,9 @@ void Verifier::Visitor::Check(Node* node) {
       break;
     }
 
+    case IrOpcode::kJSConstructForwardVarargs:
     case IrOpcode::kJSConstruct:
+    case IrOpcode::kJSConstructWithArrayLike:
     case IrOpcode::kJSConstructWithSpread:
     case IrOpcode::kJSConvertReceiver:
       // Type is Receiver.
@@ -715,6 +711,7 @@ void Verifier::Visitor::Check(Node* node) {
       break;
     case IrOpcode::kJSCallForwardVarargs:
     case IrOpcode::kJSCall:
+    case IrOpcode::kJSCallWithArrayLike:
     case IrOpcode::kJSCallWithSpread:
     case IrOpcode::kJSCallRuntime:
       // Type can be anything.
@@ -744,6 +741,10 @@ void Verifier::Visitor::Check(Node* node) {
 
     case IrOpcode::kJSGeneratorStore:
       CheckNotTyped(node);
+      break;
+
+    case IrOpcode::kJSCreateGeneratorObject:
+      CheckTypeIs(node, Type::OtherObject());
       break;
 
     case IrOpcode::kJSGeneratorRestoreContinuation:
@@ -954,6 +955,12 @@ void Verifier::Visitor::Check(Node* node) {
       CheckValueInputIs(node, 1, Type::Unsigned32());
       CheckTypeIs(node, Type::UnsignedSmall());
       break;
+    case IrOpcode::kSeqStringCharCodeAt:
+      // (SeqString, Unsigned32) -> UnsignedSmall
+      CheckValueInputIs(node, 0, Type::SeqString());
+      CheckValueInputIs(node, 1, Type::Unsigned32());
+      CheckTypeIs(node, Type::UnsignedSmall());
+      break;
     case IrOpcode::kStringFromCharCode:
       // Number -> String
       CheckValueInputIs(node, 0, Type::Number());
@@ -970,6 +977,11 @@ void Verifier::Visitor::Check(Node* node) {
       CheckValueInputIs(node, 1, Type::String());
       CheckValueInputIs(node, 2, Type::SignedSmall());
       CheckTypeIs(node, Type::SignedSmall());
+      break;
+    case IrOpcode::kStringToLowerCaseIntl:
+    case IrOpcode::kStringToUpperCaseIntl:
+      CheckValueInputIs(node, 0, Type::String());
+      CheckTypeIs(node, Type::String());
       break;
 
     case IrOpcode::kReferenceEqual:
@@ -990,6 +1002,13 @@ void Verifier::Visitor::Check(Node* node) {
     case IrOpcode::kArrayBufferWasNeutered:
       CheckValueInputIs(node, 0, Type::Any());
       CheckTypeIs(node, Type::Boolean());
+      break;
+    case IrOpcode::kLookupHashStorageIndex:
+      CheckTypeIs(node, Type::SignedSmall());
+      break;
+    case IrOpcode::kLoadHashMapValue:
+      CheckValueInputIs(node, 2, Type::SignedSmall());
+      CheckTypeIs(node, Type::SignedSmall());
       break;
     case IrOpcode::kArgumentsLength:
       CheckValueInputIs(node, 0, Type::ExternalPointer());
@@ -1180,6 +1199,13 @@ void Verifier::Visitor::Check(Node* node) {
       CheckValueInputIs(node, 0, Type::Any());
       CheckTypeIs(node, Type::String());
       break;
+    case IrOpcode::kCheckSeqString:
+      CheckValueInputIs(node, 0, Type::Any());
+      CheckTypeIs(node, Type::SeqString());
+      break;
+    case IrOpcode::kCheckSymbol:
+      CheckValueInputIs(node, 0, Type::Any());
+      CheckTypeIs(node, Type::Symbol());
 
     case IrOpcode::kCheckedInt32Add:
     case IrOpcode::kCheckedInt32Sub:
@@ -1204,7 +1230,7 @@ void Verifier::Visitor::Check(Node* node) {
       CheckValueInputIs(node, 0, Type::NumberOrHole());
       CheckTypeIs(node, Type::NumberOrUndefined());
       break;
-    case IrOpcode::kCheckTaggedHole:
+    case IrOpcode::kCheckNotTaggedHole:
       CheckValueInputIs(node, 0, Type::Any());
       CheckTypeIs(node, Type::NonInternal());
       break;
@@ -1243,6 +1269,9 @@ void Verifier::Visitor::Check(Node* node) {
       // TODO(rossberg): activate once machine ops are typed.
       // CheckValueInputIs(node, 0, Type::Object());
       // CheckValueInputIs(node, 1, ElementAccessOf(node->op()).type));
+      CheckNotTyped(node);
+      break;
+    case IrOpcode::kTransitionAndStoreElement:
       CheckNotTyped(node);
       break;
     case IrOpcode::kStoreTypedElement:
@@ -1459,6 +1488,7 @@ void Verifier::Run(Graph* graph, Typing typing, CheckInputs check_inputs) {
     for (Node* other : node->uses()) {
       if (all.IsLive(other) && other != proj &&
           other->opcode() == IrOpcode::kProjection &&
+          other->InputAt(0) == node &&
           ProjectionIndexOf(other->op()) == ProjectionIndexOf(proj->op())) {
         V8_Fatal(__FILE__, __LINE__,
                  "Node #%d:%s has duplicate projections #%d and #%d",
@@ -1712,10 +1742,11 @@ void Verifier::VerifyNode(Node* node) {
   CHECK_EQ(OperatorProperties::GetTotalInputCount(node->op()),
            node->InputCount());
   // If this node has no effect or no control outputs,
-  // we check that no its uses are effect or control inputs.
+  // we check that none of its uses are effect or control inputs.
   bool check_no_control = node->op()->ControlOutputCount() == 0;
   bool check_no_effect = node->op()->EffectOutputCount() == 0;
   bool check_no_frame_state = node->opcode() != IrOpcode::kFrameState;
+  int effect_edges = 0;
   if (check_no_effect || check_no_control) {
     for (Edge edge : node->use_edges()) {
       Node* const user = edge.from();
@@ -1724,6 +1755,7 @@ void Verifier::VerifyNode(Node* node) {
         CHECK(!check_no_control);
       } else if (NodeProperties::IsEffectEdge(edge)) {
         CHECK(!check_no_effect);
+        effect_edges++;
       } else if (NodeProperties::IsFrameStateEdge(edge)) {
         CHECK(!check_no_frame_state);
       }

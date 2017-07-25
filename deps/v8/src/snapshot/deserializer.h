@@ -39,7 +39,8 @@ class Deserializer : public SerializerDeserializer {
         external_reference_table_(NULL),
         deserialized_large_objects_(0),
         deserializing_user_code_(deserializing_user_code),
-        next_alignment_(kWordAligned) {
+        next_alignment_(kWordAligned),
+        can_rehash_(false) {
     DecodeReservation(data->Reservations());
   }
 
@@ -62,12 +63,12 @@ class Deserializer : public SerializerDeserializer {
     attached_objects_.Add(attached_object);
   }
 
+  void SetRehashability(bool v) { can_rehash_ = v; }
+
  private:
-  void VisitPointers(Object** start, Object** end) override;
+  void VisitRootPointers(Root root, Object** start, Object** end) override;
 
   void Synchronize(VisitorSynchronization::SyncTag tag) override;
-
-  void VisitRuntimeEntry(RelocInfo* rinfo) override { UNREACHABLE(); }
 
   void Initialize(Isolate* isolate);
 
@@ -117,6 +118,15 @@ class Deserializer : public SerializerDeserializer {
   // snapshot by chunk index and offset.
   HeapObject* GetBackReferencedObject(int space);
 
+  // Rehash after deserializing an isolate.
+  void Rehash();
+
+  // Rehash after deserializing a context.
+  void RehashContext(Context* context);
+
+  // Sort descriptors of deserialized maps using new string hashes.
+  void SortMapDescriptors();
+
   // Cached current isolate.
   Isolate* isolate_;
 
@@ -144,10 +154,14 @@ class Deserializer : public SerializerDeserializer {
   List<AccessorInfo*> accessor_infos_;
   List<Handle<String> > new_internalized_strings_;
   List<Handle<Script> > new_scripts_;
+  List<TransitionArray*> transition_arrays_;
 
   bool deserializing_user_code_;
 
   AllocationAlignment next_alignment_;
+
+  // TODO(6593): generalize rehashing, and remove this flag.
+  bool can_rehash_;
 
   DISALLOW_COPY_AND_ASSIGN(Deserializer);
 };

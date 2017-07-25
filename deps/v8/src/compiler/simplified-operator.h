@@ -141,7 +141,8 @@ enum class CheckForMinusZeroMode : uint8_t {
 
 size_t hash_value(CheckForMinusZeroMode);
 
-std::ostream& operator<<(std::ostream&, CheckForMinusZeroMode);
+V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream&,
+                                           CheckForMinusZeroMode);
 
 CheckForMinusZeroMode CheckMinusZeroModeOf(const Operator*) WARN_UNUSED_RESULT;
 
@@ -226,6 +227,10 @@ std::ostream& operator<<(std::ostream&, ElementsTransition);
 
 ElementsTransition const& ElementsTransitionOf(const Operator* op)
     WARN_UNUSED_RESULT;
+
+// Parameters for TransitionAndStoreElement.
+Handle<Map> DoubleMapParameterOf(const Operator* op);
+Handle<Map> FastMapParameterOf(const Operator* op);
 
 // A hint for speculative number operations.
 enum class NumberOperationHint : uint8_t {
@@ -377,9 +382,15 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* StringLessThanOrEqual();
   const Operator* StringCharAt();
   const Operator* StringCharCodeAt();
+  const Operator* SeqStringCharCodeAt();
   const Operator* StringFromCharCode();
   const Operator* StringFromCodePoint(UnicodeEncoding encoding);
   const Operator* StringIndexOf();
+  const Operator* StringToLowerCaseIntl();
+  const Operator* StringToUpperCaseIntl();
+
+  const Operator* LookupHashStorageIndex();
+  const Operator* LoadHashMapValue();
 
   const Operator* SpeculativeToNumber(NumberOperationHint hint);
 
@@ -413,6 +424,8 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* CheckNumber();
   const Operator* CheckSmi();
   const Operator* CheckString();
+  const Operator* CheckSeqString();
+  const Operator* CheckSymbol();
   const Operator* CheckReceiver();
 
   const Operator* CheckedInt32Add();
@@ -431,10 +444,10 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* CheckedTaggedToFloat64(CheckTaggedInputMode);
   const Operator* CheckedTaggedToTaggedSigned();
   const Operator* CheckedTaggedToTaggedPointer();
-  const Operator* CheckedTruncateTaggedToWord32();
+  const Operator* CheckedTruncateTaggedToWord32(CheckTaggedInputMode);
 
   const Operator* CheckFloat64Hole(CheckFloat64HoleMode);
-  const Operator* CheckTaggedHole();
+  const Operator* CheckNotTaggedHole();
   const Operator* ConvertTaggedHoleToUndefined();
 
   const Operator* ObjectIsDetectableCallable();
@@ -482,6 +495,10 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
 
   // store-element [base + index], value
   const Operator* StoreElement(ElementAccess const&);
+
+  // store-element [base + index], value, only with fast arrays.
+  const Operator* TransitionAndStoreElement(Handle<Map> double_map,
+                                            Handle<Map> fast_map);
 
   // load-typed-element buffer, [base + external + index]
   const Operator* LoadTypedElement(ExternalArrayType const&);

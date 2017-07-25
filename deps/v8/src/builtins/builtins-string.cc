@@ -217,7 +217,7 @@ BUILTIN(StringPrototypeLastIndexOf) {
 //
 // This function is implementation specific.  For now, we do not
 // do anything locale specific.
-// If internationalization is enabled, then i18n.js will override this function
+// If internationalization is enabled, then intl.js will override this function
 // and provide the proper functionality, so this is just a fallback.
 BUILTIN(StringPrototypeLocaleCompare) {
   HandleScope handle_scope(isolate);
@@ -264,11 +264,11 @@ BUILTIN(StringPrototypeLocaleCompare) {
   return Smi::FromInt(str1_length - str2_length);
 }
 
-#ifndef V8_I18N_SUPPORT
+#ifndef V8_INTL_SUPPORT
 // ES6 section 21.1.3.12 String.prototype.normalize ( [form] )
 //
 // Simply checks the argument is valid and returns the string itself.
-// If internationalization is enabled, then i18n.js will override this function
+// If internationalization is enabled, then intl.js will override this function
 // and provide the proper functionality, so this is just a fallback.
 BUILTIN(StringPrototypeNormalize) {
   HandleScope handle_scope(isolate);
@@ -298,7 +298,7 @@ BUILTIN(StringPrototypeNormalize) {
 
   return *string;
 }
-#endif  // !V8_I18N_SUPPORT
+#endif  // !V8_INTL_SUPPORT
 
 BUILTIN(StringPrototypeStartsWith) {
   HandleScope handle_scope(isolate);
@@ -368,6 +368,7 @@ BUILTIN(StringPrototypeTrimRight) {
   return *String::Trim(string, String::kTrimRight);
 }
 
+#ifndef V8_INTL_SUPPORT
 namespace {
 
 inline bool ToUpperOverflows(uc32 character) {
@@ -518,7 +519,7 @@ MUST_USE_RESULT static Object* ConvertCase(
   if (answer->IsException(isolate) || answer->IsString()) return answer;
 
   DCHECK(answer->IsSmi());
-  length = Smi::cast(answer)->value();
+  length = Smi::ToInt(answer);
   if (s->IsOneByteRepresentation() && length > 0) {
     ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
         isolate, result, isolate->factory()->NewRawOneByteString(length));
@@ -559,6 +560,7 @@ BUILTIN(StringPrototypeToUpperCase) {
   return ConvertCase(string, isolate,
                      isolate->runtime_state()->to_upper_mapping());
 }
+#endif  // !V8_INTL_SUPPORT
 
 }  // namespace internal
 }  // namespace v8

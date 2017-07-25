@@ -34,6 +34,10 @@ bool OperatorProperties::HasFrameStateInput(const Operator* op) {
     case IrOpcode::kJSStrictEqual:
       return false;
 
+    // Generator creation cannot call back into arbitrary JavaScript.
+    case IrOpcode::kJSCreateGeneratorObject:
+      return false;
+
     // Binary operations
     case IrOpcode::kJSAdd:
     case IrOpcode::kJSSubtract:
@@ -58,6 +62,7 @@ bool OperatorProperties::HasFrameStateInput(const Operator* op) {
     case IrOpcode::kJSLessThan:
     case IrOpcode::kJSLessThanOrEqual:
     case IrOpcode::kJSHasProperty:
+    case IrOpcode::kJSHasInPrototypeChain:
     case IrOpcode::kJSInstanceOf:
     case IrOpcode::kJSOrdinaryHasInstance:
 
@@ -92,10 +97,13 @@ bool OperatorProperties::HasFrameStateInput(const Operator* op) {
     case IrOpcode::kJSToString:
 
     // Call operations
+    case IrOpcode::kJSConstructForwardVarargs:
     case IrOpcode::kJSConstruct:
+    case IrOpcode::kJSConstructWithArrayLike:
     case IrOpcode::kJSConstructWithSpread:
     case IrOpcode::kJSCallForwardVarargs:
     case IrOpcode::kJSCall:
+    case IrOpcode::kJSCallWithArrayLike:
     case IrOpcode::kJSCallWithSpread:
 
     // Misc operations

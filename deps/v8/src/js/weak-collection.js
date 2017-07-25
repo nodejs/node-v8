@@ -11,17 +11,34 @@
 // -------------------------------------------------------------------
 // Imports
 
-var GetExistingHash;
-var GetHash;
-var GlobalObject = global.Object;
+var hashCodeSymbol = utils.ImportNow("hash_code_symbol");
 var GlobalWeakMap = global.WeakMap;
 var GlobalWeakSet = global.WeakSet;
-var toStringTagSymbol = utils.ImportNow("to_string_tag_symbol");
+var MathRandom = global.Math.random;
 
-utils.Import(function(from) {
-  GetExistingHash = from.GetExistingHash;
-  GetHash = from.GetHash;
-});
+// -------------------------------------------------------------------
+
+function GetExistingHash(key) {
+  if (IS_RECEIVER(key) && !IS_PROXY(key) && !IS_GLOBAL(key)) {
+    var hash = GET_PRIVATE(key, hashCodeSymbol);
+    return hash;
+  }
+  return %GenericHash(key);
+}
+%SetForceInlineFlag(GetExistingHash);
+
+
+function GetHash(key) {
+  var hash = GetExistingHash(key);
+  if (IS_UNDEFINED(hash)) {
+    hash = (MathRandom() * 0x40000000) | 0;
+    if (hash === 0) hash = 1;
+    SET_PRIVATE(key, hashCodeSymbol, hash);
+  }
+  return hash;
+}
+%SetForceInlineFlag(GetHash);
+
 
 // -------------------------------------------------------------------
 // Harmony WeakMap
@@ -48,69 +65,36 @@ function WeakMapConstructor(iterable) {
 }
 
 
-function WeakMapGet(key) {
-  if (!IS_WEAKMAP(this)) {
-    throw %make_type_error(kIncompatibleMethodReceiver,
-                        'WeakMap.prototype.get', this);
+// Set up the non-enumerable functions on the WeakMap prototype object.
+DEFINE_METHODS(
+  GlobalWeakMap.prototype,
+  {
+    set(key, value) {
+      if (!IS_WEAKMAP(this)) {
+        throw %make_type_error(kIncompatibleMethodReceiver,
+                            'WeakMap.prototype.set', this);
+      }
+      if (!IS_RECEIVER(key)) throw %make_type_error(kInvalidWeakMapKey);
+      return %WeakCollectionSet(this, key, value, GetHash(key));
+    }
+
+    delete(key) {
+      if (!IS_WEAKMAP(this)) {
+        throw %make_type_error(kIncompatibleMethodReceiver,
+                            'WeakMap.prototype.delete', this);
+      }
+      if (!IS_RECEIVER(key)) return false;
+      var hash = GetExistingHash(key);
+      if (IS_UNDEFINED(hash)) return false;
+      return %WeakCollectionDelete(this, key, hash);
+    }
   }
-  if (!IS_RECEIVER(key)) return UNDEFINED;
-  var hash = GetExistingHash(key);
-  if (IS_UNDEFINED(hash)) return UNDEFINED;
-  return %WeakCollectionGet(this, key, hash);
-}
-
-
-function WeakMapSet(key, value) {
-  if (!IS_WEAKMAP(this)) {
-    throw %make_type_error(kIncompatibleMethodReceiver,
-                        'WeakMap.prototype.set', this);
-  }
-  if (!IS_RECEIVER(key)) throw %make_type_error(kInvalidWeakMapKey);
-  return %WeakCollectionSet(this, key, value, GetHash(key));
-}
-
-
-function WeakMapHas(key) {
-  if (!IS_WEAKMAP(this)) {
-    throw %make_type_error(kIncompatibleMethodReceiver,
-                        'WeakMap.prototype.has', this);
-  }
-  if (!IS_RECEIVER(key)) return false;
-  var hash = GetExistingHash(key);
-  if (IS_UNDEFINED(hash)) return false;
-  return %WeakCollectionHas(this, key, hash);
-}
-
-
-function WeakMapDelete(key) {
-  if (!IS_WEAKMAP(this)) {
-    throw %make_type_error(kIncompatibleMethodReceiver,
-                        'WeakMap.prototype.delete', this);
-  }
-  if (!IS_RECEIVER(key)) return false;
-  var hash = GetExistingHash(key);
-  if (IS_UNDEFINED(hash)) return false;
-  return %WeakCollectionDelete(this, key, hash);
-}
-
+);
 
 // -------------------------------------------------------------------
 
 %SetCode(GlobalWeakMap, WeakMapConstructor);
 %FunctionSetLength(GlobalWeakMap, 0);
-%FunctionSetPrototype(GlobalWeakMap, new GlobalObject());
-%AddNamedProperty(GlobalWeakMap.prototype, "constructor", GlobalWeakMap,
-                  DONT_ENUM);
-%AddNamedProperty(GlobalWeakMap.prototype, toStringTagSymbol, "WeakMap",
-                  DONT_ENUM | READ_ONLY);
-
-// Set up the non-enumerable functions on the WeakMap prototype object.
-utils.InstallFunctions(GlobalWeakMap.prototype, DONT_ENUM, [
-  "get", WeakMapGet,
-  "set", WeakMapSet,
-  "has", WeakMapHas,
-  "delete", WeakMapDelete
-]);
 
 // -------------------------------------------------------------------
 // Harmony WeakSet
@@ -134,55 +118,35 @@ function WeakSetConstructor(iterable) {
 }
 
 
-function WeakSetAdd(value) {
-  if (!IS_WEAKSET(this)) {
-    throw %make_type_error(kIncompatibleMethodReceiver,
-                        'WeakSet.prototype.add', this);
+// Set up the non-enumerable functions on the WeakSet prototype object.
+DEFINE_METHODS(
+  GlobalWeakSet.prototype,
+  {
+    add(value) {
+      if (!IS_WEAKSET(this)) {
+        throw %make_type_error(kIncompatibleMethodReceiver,
+                            'WeakSet.prototype.add', this);
+      }
+      if (!IS_RECEIVER(value)) throw %make_type_error(kInvalidWeakSetValue);
+      return %WeakCollectionSet(this, value, true, GetHash(value));
+    }
+
+    delete(value) {
+      if (!IS_WEAKSET(this)) {
+        throw %make_type_error(kIncompatibleMethodReceiver,
+                            'WeakSet.prototype.delete', this);
+      }
+      if (!IS_RECEIVER(value)) return false;
+      var hash = GetExistingHash(value);
+      if (IS_UNDEFINED(hash)) return false;
+      return %WeakCollectionDelete(this, value, hash);
+    }
   }
-  if (!IS_RECEIVER(value)) throw %make_type_error(kInvalidWeakSetValue);
-  return %WeakCollectionSet(this, value, true, GetHash(value));
-}
-
-
-function WeakSetHas(value) {
-  if (!IS_WEAKSET(this)) {
-    throw %make_type_error(kIncompatibleMethodReceiver,
-                        'WeakSet.prototype.has', this);
-  }
-  if (!IS_RECEIVER(value)) return false;
-  var hash = GetExistingHash(value);
-  if (IS_UNDEFINED(hash)) return false;
-  return %WeakCollectionHas(this, value, hash);
-}
-
-
-function WeakSetDelete(value) {
-  if (!IS_WEAKSET(this)) {
-    throw %make_type_error(kIncompatibleMethodReceiver,
-                        'WeakSet.prototype.delete', this);
-  }
-  if (!IS_RECEIVER(value)) return false;
-  var hash = GetExistingHash(value);
-  if (IS_UNDEFINED(hash)) return false;
-  return %WeakCollectionDelete(this, value, hash);
-}
-
+);
 
 // -------------------------------------------------------------------
 
 %SetCode(GlobalWeakSet, WeakSetConstructor);
 %FunctionSetLength(GlobalWeakSet, 0);
-%FunctionSetPrototype(GlobalWeakSet, new GlobalObject());
-%AddNamedProperty(GlobalWeakSet.prototype, "constructor", GlobalWeakSet,
-                 DONT_ENUM);
-%AddNamedProperty(GlobalWeakSet.prototype, toStringTagSymbol, "WeakSet",
-                  DONT_ENUM | READ_ONLY);
-
-// Set up the non-enumerable functions on the WeakSet prototype object.
-utils.InstallFunctions(GlobalWeakSet.prototype, DONT_ENUM, [
-  "add", WeakSetAdd,
-  "has", WeakSetHas,
-  "delete", WeakSetDelete
-]);
 
 })

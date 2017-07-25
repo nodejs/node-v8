@@ -26,7 +26,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // Flags: --allow-natives-syntax --expose-gc
-// Flags: --no-always-opt --crankshaft
+// Flags: --no-always-opt --opt --no-stress-fullcodegen
 
 // Test element kind of objects.
 
@@ -47,14 +47,14 @@ var elements_kind = {
 }
 
 function getKind(obj) {
-  if (%HasFastSmiElements(obj)) return elements_kind.fast_smi_only;
-  if (%HasFastObjectElements(obj)) return elements_kind.fast;
-  if (%HasFastDoubleElements(obj)) return elements_kind.fast_double;
+  if (%HasSmiElements(obj)) return elements_kind.fast_smi_only;
+  if (%HasObjectElements(obj)) return elements_kind.fast;
+  if (%HasDoubleElements(obj)) return elements_kind.fast_double;
   if (%HasDictionaryElements(obj)) return elements_kind.dictionary;
 }
 
 function isHoley(obj) {
-  if (%HasFastHoleyElements(obj)) return true;
+  if (%HasHoleyElements(obj)) return true;
   return false;
 }
 
@@ -119,10 +119,13 @@ function assertKind(expected, obj, name_opt) {
     return new Array(one, two, three);
   }
 
-  barn(1, 2, 3);
-  barn(1, 2, 3);
+  a = barn(1, 2, 3);
+  a[1] = "a string";
+  a = barn(1, 2, 3);
+  assertKind(elements_kind.fast, a);
   %OptimizeFunctionOnNextCall(barn);
-  barn(1, 2, 3);
+  a = barn(1, 2, 3);
+  assertKind(elements_kind.fast, a);
   assertOptimized(barn);
   a = barn(1, "oops", 3);
   assertOptimized(barn);
@@ -177,7 +180,7 @@ function assertKind(expected, obj, name_opt) {
   %OptimizeFunctionOnNextCall(bar);
   a = bar(0);
   assertOptimized(bar);
-  assertFalse(isHoley(a));
+  assertTrue(isHoley(a));
   a = bar(1);  // ouch!
   assertOptimized(bar);
   assertTrue(isHoley(a));
@@ -185,9 +188,7 @@ function assertKind(expected, obj, name_opt) {
   assertTrue(isHoley(a));
   a = bar(0);
   assertOptimized(bar);
-  // Crankshafted functions don't use mementos, so feedback still
-  // indicates a packed array is desired.
-  assertFalse(isHoley(a));
+  assertTrue(isHoley(a));
 })();
 
 // Test: Make sure that crankshaft continues with feedback for large arrays.

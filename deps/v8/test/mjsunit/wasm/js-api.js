@@ -8,11 +8,11 @@ load('test/mjsunit/wasm/wasm-constants.js');
 load('test/mjsunit/wasm/wasm-module-builder.js');
 
 function unexpectedSuccess() {
-  % AbortJS('unexpected success');
+  %AbortJS('unexpected success');
 }
 
 function unexpectedFail(error) {
-  % AbortJS('unexpected fail: ' + error);
+  %AbortJS('unexpected fail: ' + error);
 }
 
 function assertEq(val, expected) {
@@ -713,7 +713,6 @@ function assertCompileError(args, err, msg) {
   var error = null;
   assertPromiseResult(compile(...args), unexpectedSuccess, error => {
     assertTrue(error instanceof err);
-    assertTrue(Boolean(error.stack.match('js-api.js')));
     // TODO  assertTrue(Boolean(error.message.match(msg)));
   });
 }
@@ -760,7 +759,6 @@ function assertInstantiateError(args, err, msg) {
   var error = null;
   assertPromiseResult(instantiate(...args), unexpectedSuccess, error => {
     assertTrue(error instanceof err);
-    assertTrue(Boolean(error.stack.match('js-api.js')));
     // TODO assertTrue(Boolean(error.message.match(msg)));
   });
 }

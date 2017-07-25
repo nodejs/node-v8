@@ -30,7 +30,6 @@ namespace internal {
 PARSE_INFO_GETTER(Handle<Script>, script)
 PARSE_INFO_GETTER(FunctionLiteral*, literal)
 PARSE_INFO_GETTER_WITH_DEFAULT(DeclarationScope*, scope, nullptr)
-PARSE_INFO_GETTER(Handle<SharedFunctionInfo>, shared_info)
 
 #undef PARSE_INFO_GETTER
 #undef PARSE_INFO_GETTER_WITH_DEFAULT
@@ -49,23 +48,14 @@ void CompilationInfo::PrepareForSerializing() {
   SetFlag(kSerializing);
 }
 
-bool CompilationInfo::has_shared_info() const {
-  return parse_info_ && !parse_info_->shared_info().is_null();
-}
-
 CompilationInfo::CompilationInfo(Zone* zone, ParseInfo* parse_info,
-                                 Isolate* isolate, Handle<JSFunction> closure)
+                                 Isolate* isolate,
+                                 Handle<SharedFunctionInfo> shared,
+                                 Handle<JSFunction> closure)
     : CompilationInfo(parse_info, {}, Code::ComputeFlags(Code::FUNCTION), BASE,
                       isolate, zone) {
+  shared_info_ = shared;
   closure_ = closure;
-
-  // Compiling for the snapshot typically results in different code than
-  // compiling later on. This means that code recompiled with deoptimization
-  // support won't be "equivalent" (as defined by SharedFunctionInfo::
-  // EnableDeoptimizationSupport), so it will replace the old code and all
-  // its type feedback. To avoid this, always compile functions in the snapshot
-  // with deoptimization support.
-  if (isolate_->serializer_enabled()) EnableDeoptimizationSupport();
 
   if (FLAG_function_context_specialization) MarkAsFunctionContextSpecializing();
   if (FLAG_turbo_splitting) MarkAsSplittingEnabled();
@@ -75,6 +65,11 @@ CompilationInfo::CompilationInfo(Zone* zone, ParseInfo* parse_info,
   // more memory consumption.
   if (isolate_->NeedsSourcePositionsForProfiling()) {
     MarkAsSourcePositionsEnabled();
+  }
+
+  if (FLAG_block_coverage && isolate->is_block_code_coverage() &&
+      parse_info->script()->IsUserJavaScript()) {
+    MarkAsBlockCoverageEnabled();
   }
 }
 
@@ -123,12 +118,11 @@ bool CompilationInfo::is_this_defined() const { return !IsStub(); }
 // Primitive functions are unlikely to be picked up by the stack-walking
 // profiler, so they trigger their own optimization when they're called
 // for the SharedFunctionInfo::kCallsUntilPrimitiveOptimization-th time.
+// TODO(6409) Remove when Full-Codegen dies.
 bool CompilationInfo::ShouldSelfOptimize() {
-  return FLAG_opt && FLAG_crankshaft &&
-         !(literal()->flags() & AstProperties::kDontSelfOptimize) &&
+  return FLAG_opt && !literal()->dont_self_optimize() &&
          !literal()->dont_optimize() &&
-         literal()->scope()->AllowsLazyCompilation() &&
-         !shared_info()->optimization_disabled();
+         literal()->scope()->AllowsLazyCompilation();
 }
 
 void CompilationInfo::set_deferred_handles(
@@ -143,6 +137,9 @@ void CompilationInfo::set_deferred_handles(DeferredHandles* deferred_handles) {
 }
 
 void CompilationInfo::ReopenHandlesInNewHandleScope() {
+  if (!shared_info_.is_null()) {
+    shared_info_ = Handle<SharedFunctionInfo>(*shared_info_);
+  }
   if (!closure_.is_null()) {
     closure_ = Handle<JSFunction>(*closure_);
   }
@@ -157,8 +154,8 @@ std::unique_ptr<char[]> CompilationInfo::GetDebugName() const {
     AllowHandleDereference allow_deref;
     return parse_info()->literal()->debug_name()->ToCString();
   }
-  if (parse_info() && !parse_info()->shared_info().is_null()) {
-    return parse_info()->shared_info()->DebugName()->ToCString();
+  if (!shared_info().is_null()) {
+    return shared_info()->DebugName()->ToCString();
   }
   Vector<const char> name_vec = debug_name_;
   if (name_vec.is_empty()) name_vec = ArrayVector("unknown");
@@ -240,8 +237,7 @@ void CompilationInfo::SetOptimizing() {
 int CompilationInfo::AddInlinedFunction(
     Handle<SharedFunctionInfo> inlined_function, SourcePosition pos) {
   int id = static_cast<int>(inlined_functions_.size());
-  inlined_functions_.push_back(InlinedFunctionHolder(
-      inlined_function, handle(inlined_function->code()), pos));
+  inlined_functions_.push_back(InlinedFunctionHolder(inlined_function, pos));
   return id;
 }
 

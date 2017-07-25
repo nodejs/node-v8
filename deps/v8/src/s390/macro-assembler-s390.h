@@ -188,10 +188,8 @@ class MacroAssembler : public Assembler {
   void Call(Address target, RelocInfo::Mode rmode, Condition cond = al);
   int CallSize(Handle<Code> code,
                RelocInfo::Mode rmode = RelocInfo::CODE_TARGET,
-               TypeFeedbackId ast_id = TypeFeedbackId::None(),
                Condition cond = al);
   void Call(Handle<Code> code, RelocInfo::Mode rmode = RelocInfo::CODE_TARGET,
-            TypeFeedbackId ast_id = TypeFeedbackId::None(),
             Condition cond = al);
   void Ret() { b(r14); }
   void Ret(Condition cond) { b(cond, r14); }
@@ -222,7 +220,7 @@ class MacroAssembler : public Assembler {
 
   // Register move. May do nothing if the registers are identical.
   void Move(Register dst, Smi* smi) { LoadSmiLiteral(dst, smi); }
-  void Move(Register dst, Handle<Object> value);
+  void Move(Register dst, Handle<HeapObject> value);
   void Move(Register dst, Register src, Condition cond = al);
   void Move(DoubleRegister dst, DoubleRegister src);
 
@@ -612,8 +610,9 @@ class MacroAssembler : public Assembler {
   void Push(Register src) { push(src); }
 
   // Push a handle.
-  void Push(Handle<Object> handle);
-  void Push(Smi* smi) { Push(Handle<Smi>(smi, isolate())); }
+  void Push(Handle<HeapObject> handle);
+  void Push(Smi* smi);
+  void PushObject(Handle<Object> handle);
 
   // Push two registers.  Pushes leftmost register first (to highest address).
   void Push(Register src1, Register src2) {
@@ -936,8 +935,7 @@ class MacroAssembler : public Assembler {
   // Invoke the JavaScript function code by either calling or jumping.
   void InvokeFunctionCode(Register function, Register new_target,
                           const ParameterCount& expected,
-                          const ParameterCount& actual, InvokeFlag flag,
-                          const CallWrapper& call_wrapper);
+                          const ParameterCount& actual, InvokeFlag flag);
 
   // On function call, call into the debugger if necessary.
   void CheckDebugHook(Register fun, Register new_target,
@@ -947,17 +945,14 @@ class MacroAssembler : public Assembler {
   // Invoke the JavaScript function in the given register. Changes the
   // current context to the context in the function before invoking.
   void InvokeFunction(Register function, Register new_target,
-                      const ParameterCount& actual, InvokeFlag flag,
-                      const CallWrapper& call_wrapper);
+                      const ParameterCount& actual, InvokeFlag flag);
 
   void InvokeFunction(Register function, const ParameterCount& expected,
-                      const ParameterCount& actual, InvokeFlag flag,
-                      const CallWrapper& call_wrapper);
+                      const ParameterCount& actual, InvokeFlag flag);
 
   void InvokeFunction(Handle<JSFunction> function,
                       const ParameterCount& expected,
-                      const ParameterCount& actual, InvokeFlag flag,
-                      const CallWrapper& call_wrapper);
+                      const ParameterCount& actual, InvokeFlag flag);
 
   void IsObjectJSStringType(Register object, Register scratch, Label* fail);
 
@@ -1024,15 +1019,6 @@ class MacroAssembler : public Assembler {
 
   void Allocate(Register object_size, Register result, Register result_end,
                 Register scratch, Label* gc_required, AllocationFlags flags);
-
-  // FastAllocate is right now only used for folded allocations. It just
-  // increments the top pointer without checking against limit. This can only
-  // be done if it was proved earlier that the allocation will succeed.
-  void FastAllocate(int object_size, Register result, Register scratch1,
-                    Register scratch2, AllocationFlags flags);
-
-  void FastAllocate(Register object_size, Register result, Register result_end,
-                    Register scratch, AllocationFlags flags);
 
   // Allocates a heap number or jumps to the gc_required label if the young
   // space is full and a scavenge is needed. All registers are clobbered also
@@ -1157,16 +1143,6 @@ class MacroAssembler : public Assembler {
   // untagged value afterwards.
   void SmiToDouble(DoubleRegister value, Register smi);
 
-  // Check if a double can be exactly represented as a signed 32-bit integer.
-  // CR_EQ in cr7 is set if true.
-  void TestDoubleIsInt32(DoubleRegister double_input, Register scratch1,
-                         Register scratch2, DoubleRegister double_scratch);
-
-  // Check if a double is equal to -0.0.
-  // CR_EQ in cr7 holds the result.
-  void TestDoubleIsMinusZero(DoubleRegister input, Register scratch1,
-                             Register scratch2);
-
   // Check the sign of a double.
   // CR_LT in cr7 holds the result.
   void TestDoubleSign(DoubleRegister input, Register scratch);
@@ -1177,52 +1153,20 @@ class MacroAssembler : public Assembler {
   void TryDoubleToInt32Exact(Register result, DoubleRegister double_input,
                              Register scratch, DoubleRegister double_scratch);
 
-  // Floor a double and writes the value to the result register.
-  // Go to exact if the conversion is exact (to be able to test -0),
-  // fall through calling code if an overflow occurred, else go to done.
-  // In return, input_high is loaded with high bits of input.
-  void TryInt32Floor(Register result, DoubleRegister double_input,
-                     Register input_high, Register scratch,
-                     DoubleRegister double_scratch, Label* done, Label* exact);
-
-  // Performs a truncating conversion of a floating point number as used by
-  // the JS bitwise operations. See ECMA-262 9.5: ToInt32. Goes to 'done' if it
-  // succeeds, otherwise falls through if result is saturated. On return
-  // 'result' either holds answer, or is clobbered on fall through.
-  //
-  // Only public for the test code in test-code-stubs-arm.cc.
-  void TryInlineTruncateDoubleToI(Register result, DoubleRegister input,
-                                  Label* done);
-
-  // Performs a truncating conversion of a floating point number as used by
-  // the JS bitwise operations. See ECMA-262 9.5: ToInt32.
-  // Exits with 'result' holding the answer.
-  void TruncateDoubleToI(Register result, DoubleRegister double_input);
-
-  // Performs a truncating conversion of a heap number as used by
-  // the JS bitwise operations. See ECMA-262 9.5: ToInt32. 'result' and 'input'
-  // must be different registers.  Exits with 'result' holding the answer.
-  void TruncateHeapNumberToI(Register result, Register object);
-
-  // Converts the smi or heap number in object to an int32 using the rules
-  // for ToInt32 as described in ECMAScript 9.5.: the value is truncated
-  // and brought into the range -2^31 .. +2^31 - 1. 'result' and 'input' must be
-  // different registers.
-  void TruncateNumberToI(Register object, Register result,
-                         Register heap_number_map, Register scratch1,
-                         Label* not_int32);
-
   // ---------------------------------------------------------------------------
   // Runtime calls
 
   // Call a code stub.
-  void CallStub(CodeStub* stub, TypeFeedbackId ast_id = TypeFeedbackId::None(),
+  void CallStub(CodeStub* stub,
                 Condition cond = al);
+  void CallStubDelayed(CodeStub* stub);
 
   // Call a code stub.
   void TailCallStub(CodeStub* stub, Condition cond = al);
 
   // Call a runtime routine.
+  void CallRuntimeDelayed(Zone* zone, Runtime::FunctionId fid,
+                          SaveFPRegsMode save_doubles = kDontSaveFPRegs);
   void CallRuntime(const Runtime::Function* f, int num_arguments,
                    SaveFPRegsMode save_doubles = kDontSaveFPRegs);
   void CallRuntimeSaveDoubles(Runtime::FunctionId fid) {
@@ -1293,7 +1237,7 @@ class MacroAssembler : public Assembler {
   void JumpToExternalReference(const ExternalReference& builtin,
                                bool builtin_exit_frame = false);
 
-  Handle<Object> CodeObject() {
+  Handle<HeapObject> CodeObject() {
     DCHECK(!code_object_.is_null());
     return code_object_;
   }
@@ -1325,9 +1269,6 @@ class MacroAssembler : public Assembler {
   // Print a message to stdout and abort execution.
   void Abort(BailoutReason reason);
 
-  // Verify restrictions about code generated in stubs.
-  void set_generating_stub(bool value) { generating_stub_ = value; }
-  bool generating_stub() { return generating_stub_; }
   void set_has_frame(bool value) { has_frame_ = value; }
   bool has_frame() { return has_frame_; }
   inline bool AllowThisStubCall(CodeStub* stub);
@@ -1621,6 +1562,9 @@ class MacroAssembler : public Assembler {
 #define SmiWordOffset(offset) offset
 #endif
 
+  // Abort execution if argument is not a FixedArray, enabled via --debug-code.
+  void AssertFixedArray(Register object);
+
   void AssertFunction(Register object);
 
   // Abort execution if argument is not a JSBoundFunction,
@@ -1753,8 +1697,7 @@ class MacroAssembler : public Assembler {
   // Helper functions for generating invokes.
   void InvokePrologue(const ParameterCount& expected,
                       const ParameterCount& actual, Label* done,
-                      bool* definitely_mismatches, InvokeFlag flag,
-                      const CallWrapper& call_wrapper);
+                      bool* definitely_mismatches, InvokeFlag flag);
 
   // Helper for implementing JumpIfNotInNewSpace and JumpIfInNewSpace.
   void InNewSpace(Register object, Register scratch,
@@ -1775,11 +1718,10 @@ class MacroAssembler : public Assembler {
   MemOperand SafepointRegisterSlot(Register reg);
   MemOperand SafepointRegistersAndDoublesSlot(Register reg);
 
-  bool generating_stub_;
   bool has_frame_;
   Isolate* isolate_;
   // This handle will be patched with the code object on installation.
-  Handle<Object> code_object_;
+  Handle<HeapObject> code_object_;
 
   // Needs access to SafepointRegisterStackIndex for compiled frame
   // traversal.

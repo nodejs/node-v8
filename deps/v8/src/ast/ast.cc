@@ -19,10 +19,10 @@
 #include "src/elements.h"
 #include "src/objects-inl.h"
 #include "src/objects/literal-objects.h"
+#include "src/objects/map.h"
 #include "src/property-details.h"
 #include "src/property.h"
 #include "src/string-stream.h"
-#include "src/type-info.h"
 
 namespace v8 {
 namespace internal {
@@ -147,24 +147,16 @@ bool Expression::IsValidReferenceExpressionOrThis() const {
 bool Expression::IsAnonymousFunctionDefinition() const {
   return (IsFunctionLiteral() &&
           AsFunctionLiteral()->IsAnonymousFunctionDefinition()) ||
-         (IsDoExpression() &&
-          AsDoExpression()->IsAnonymousFunctionDefinition());
+         (IsClassLiteral() &&
+          AsClassLiteral()->IsAnonymousFunctionDefinition());
 }
 
-void Expression::MarkTail() {
-  if (IsConditional()) {
-    AsConditional()->MarkTail();
-  } else if (IsCall()) {
-    AsCall()->MarkTail();
-  } else if (IsBinaryOperation()) {
-    AsBinaryOperation()->MarkTail();
-  }
+bool Expression::IsConciseMethodDefinition() const {
+  return IsFunctionLiteral() && IsConciseMethod(AsFunctionLiteral()->kind());
 }
 
-bool DoExpression::IsAnonymousFunctionDefinition() const {
-  // This is specifically to allow DoExpressions to represent ClassLiterals.
-  return represented_function_ != nullptr &&
-         represented_function_->raw_name()->IsEmpty();
+bool Expression::IsAccessorFunctionDefinition() const {
+  return IsFunctionLiteral() && IsAccessorFunction(AsFunctionLiteral()->kind());
 }
 
 bool Statement::IsJump() const {
@@ -196,17 +188,6 @@ VariableProxy::VariableProxy(Variable* var, int start_position)
                 IsResolvedField::encode(false) |
                 HoleCheckModeField::encode(HoleCheckMode::kElided);
   BindTo(var);
-}
-
-VariableProxy::VariableProxy(const AstRawString* name,
-                             VariableKind variable_kind, int start_position)
-    : Expression(start_position, kVariableProxy),
-      raw_name_(name),
-      next_unresolved_(nullptr) {
-  bit_field_ |= IsThisField::encode(variable_kind == THIS_VARIABLE) |
-                IsAssignedField::encode(false) |
-                IsResolvedField::encode(false) |
-                HoleCheckModeField::encode(HoleCheckMode::kElided);
 }
 
 VariableProxy::VariableProxy(const VariableProxy* copy_from)
@@ -350,6 +331,23 @@ bool FunctionLiteral::NeedsHomeObject(Expression* expr) {
   return expr->AsFunctionLiteral()->scope()->NeedsHomeObject();
 }
 
+void FunctionLiteral::ReplaceBodyAndScope(FunctionLiteral* other) {
+  DCHECK_NULL(body_);
+  DCHECK_NOT_NULL(scope_);
+  DCHECK_NOT_NULL(other->scope());
+
+  Scope* outer_scope = scope_->outer_scope();
+
+  body_ = other->body();
+  scope_ = other->scope();
+  scope_->ReplaceOuterScope(outer_scope);
+#ifdef DEBUG
+  scope_->set_replaced_from_parse_task(true);
+#endif
+
+  function_length_ = other->function_length_;
+}
+
 ObjectLiteralProperty::ObjectLiteralProperty(Expression* key, Expression* value,
                                              Kind kind, bool is_computed_name)
     : LiteralProperty(key, value, is_computed_name),
@@ -384,10 +382,9 @@ void LiteralProperty::SetStoreDataPropertySlot(FeedbackSlot slot) {
 }
 
 bool LiteralProperty::NeedsSetFunctionName() const {
-  return is_computed_name_ &&
-         (value_->IsAnonymousFunctionDefinition() ||
-          (value_->IsFunctionLiteral() &&
-           IsConciseMethod(value_->AsFunctionLiteral()->kind())));
+  return is_computed_name_ && (value_->IsAnonymousFunctionDefinition() ||
+                               value_->IsConciseMethodDefinition() ||
+                               value_->IsAccessorFunctionDefinition());
 }
 
 ClassLiteralProperty::ClassLiteralProperty(Expression* key, Expression* value,
@@ -490,7 +487,7 @@ void ObjectLiteral::AssignFeedbackSlots(FeedbackVectorSpec* spec,
     ObjectLiteral::Property* property = properties()->at(property_index);
 
     Expression* value = property->value();
-    if (property->kind() != ObjectLiteral::Property::PROTOTYPE) {
+    if (!property->IsPrototype()) {
       if (FunctionLiteral::NeedsHomeObject(value)) {
         property->SetSlot(spec->AddStoreICSlot(language_mode));
       }
@@ -512,7 +509,7 @@ void ObjectLiteral::CalculateEmitStore(Zone* zone) {
   for (int i = properties()->length() - 1; i >= 0; i--) {
     ObjectLiteral::Property* property = properties()->at(i);
     if (property->is_computed_name()) continue;
-    if (property->kind() == ObjectLiteral::Property::PROTOTYPE) continue;
+    if (property->IsPrototype()) continue;
     Literal* literal = property->key()->AsLiteral();
     DCHECK(!literal->IsNullLiteral());
 
@@ -532,55 +529,58 @@ void ObjectLiteral::CalculateEmitStore(Zone* zone) {
   }
 }
 
-
-bool ObjectLiteral::IsBoilerplateProperty(ObjectLiteral::Property* property) {
-  return property != NULL &&
-         property->kind() != ObjectLiteral::Property::PROTOTYPE;
+void ObjectLiteral::InitFlagsForPendingNullPrototype(int i) {
+  // We still check for __proto__:null after computed property names.
+  for (; i < properties()->length(); i++) {
+    if (properties()->at(i)->IsNullPrototype()) {
+      set_has_null_protoype(true);
+      break;
+    }
+  }
 }
 
-void ObjectLiteral::InitDepthAndFlags() {
-  if (depth_ > 0) return;
-
-  int position = 0;
-  // Accumulate the value in local variables and store it at the end.
+int ObjectLiteral::InitDepthAndFlags() {
+  if (is_initialized()) return depth();
   bool is_simple = true;
+  bool has_seen_prototype = false;
+  bool needs_initial_allocation_site = false;
   int depth_acc = 1;
-  uint32_t max_element_index = 0;
+  uint32_t nof_properties = 0;
   uint32_t elements = 0;
+  uint32_t max_element_index = 0;
   for (int i = 0; i < properties()->length(); i++) {
     ObjectLiteral::Property* property = properties()->at(i);
-    if (!IsBoilerplateProperty(property)) {
+    if (property->IsPrototype()) {
+      has_seen_prototype = true;
+      // __proto__:null has no side-effects and is set directly on the
+      // boilerplate.
+      if (property->IsNullPrototype()) {
+        set_has_null_protoype(true);
+        continue;
+      }
+      DCHECK(!has_null_prototype());
       is_simple = false;
       continue;
     }
-
-    if (static_cast<uint32_t>(position) == boilerplate_properties_ * 2) {
+    if (nof_properties == boilerplate_properties_) {
       DCHECK(property->is_computed_name());
       is_simple = false;
+      if (!has_seen_prototype) InitFlagsForPendingNullPrototype(i);
       break;
     }
     DCHECK(!property->is_computed_name());
 
-    MaterializedLiteral* m_literal = property->value()->AsMaterializedLiteral();
-    if (m_literal != NULL) {
-      m_literal->InitDepthAndFlags();
-      if (m_literal->depth() >= depth_acc) depth_acc = m_literal->depth() + 1;
+    MaterializedLiteral* literal = property->value()->AsMaterializedLiteral();
+    if (literal != nullptr) {
+      int subliteral_depth = literal->InitDepthAndFlags() + 1;
+      if (subliteral_depth > depth_acc) depth_acc = subliteral_depth;
+      needs_initial_allocation_site |= literal->NeedsInitialAllocationSite();
     }
 
     const AstValue* key = property->key()->AsLiteral()->raw_value();
     Expression* value = property->value();
 
     bool is_compile_time_value = CompileTimeValue::IsCompileTimeValue(value);
-
-    // Ensure objects that may, at any point in time, contain fields with double
-    // representation are always treated as nested objects. This is true for
-    // computed fields, and smi and double literals.
-    // TODO(verwaest): Remove once we can store them inline.
-    if (FLAG_track_double_fields &&
-        (value->IsNumberLiteral() || !is_compile_time_value)) {
-      bit_field_ = MayStoreDoublesField::update(bit_field_, true);
-    }
-
     is_simple = is_simple && is_compile_time_value;
 
     // Keep track of the number of elements in the object literal and
@@ -596,17 +596,16 @@ void ObjectLiteral::InitDepthAndFlags() {
       elements++;
     }
 
-    // Increment the position for the key and the value.
-    position += 2;
+    nof_properties++;
   }
 
-  bit_field_ = FastElementsField::update(
-      bit_field_,
-      (max_element_index <= 32) || ((2 * elements) >= max_element_index));
-  bit_field_ = HasElementsField::update(bit_field_, elements > 0);
-
-  set_is_simple(is_simple);
   set_depth(depth_acc);
+  set_is_simple(is_simple);
+  set_needs_initial_allocation_site(needs_initial_allocation_site);
+  set_has_elements(elements > 0);
+  set_fast_elements((max_element_index <= 32) ||
+                    ((2 * elements) >= max_element_index));
+  return depth_acc;
 }
 
 void ObjectLiteral::BuildConstantProperties(Isolate* isolate) {
@@ -616,7 +615,7 @@ void ObjectLiteral::BuildConstantProperties(Isolate* isolate) {
   bool has_seen_proto = false;
   for (int i = 0; i < properties()->length(); i++) {
     ObjectLiteral::Property* property = properties()->at(i);
-    if (!IsBoilerplateProperty(property)) {
+    if (property->IsPrototype()) {
       has_seen_proto = true;
       continue;
     }
@@ -641,9 +640,7 @@ void ObjectLiteral::BuildConstantProperties(Isolate* isolate) {
   int position = 0;
   for (int i = 0; i < properties()->length(); i++) {
     ObjectLiteral::Property* property = properties()->at(i);
-    if (!IsBoilerplateProperty(property)) {
-      continue;
-    }
+    if (property->IsPrototype()) continue;
 
     if (static_cast<uint32_t>(position) == boilerplate_properties_ * 2) {
       DCHECK(property->is_computed_name());
@@ -681,19 +678,14 @@ bool ObjectLiteral::IsFastCloningSupported() const {
   // The FastCloneShallowObject builtin doesn't copy elements, and object
   // literals don't support copy-on-write (COW) elements for now.
   // TODO(mvstanton): make object literals support COW elements.
-  return fast_elements() && has_shallow_properties() &&
+  return fast_elements() && is_shallow() &&
          properties_count() <=
              ConstructorBuiltins::kMaximumClonedShallowObjectProperties;
 }
 
-ElementsKind ArrayLiteral::constant_elements_kind() const {
-  return static_cast<ElementsKind>(constant_elements()->elements_kind());
-}
-
-void ArrayLiteral::InitDepthAndFlags() {
+int ArrayLiteral::InitDepthAndFlags() {
   DCHECK_LT(first_spread_index_, 0);
-
-  if (depth_ > 0) return;
+  if (is_initialized()) return depth();
 
   int constants_length = values()->length();
 
@@ -704,12 +696,10 @@ void ArrayLiteral::InitDepthAndFlags() {
   for (; array_index < constants_length; array_index++) {
     Expression* element = values()->at(array_index);
     DCHECK(!element->IsSpread());
-    MaterializedLiteral* m_literal = element->AsMaterializedLiteral();
-    if (m_literal != NULL) {
-      m_literal->InitDepthAndFlags();
-      if (m_literal->depth() + 1 > depth_acc) {
-        depth_acc = m_literal->depth() + 1;
-      }
+    MaterializedLiteral* literal = element->AsMaterializedLiteral();
+    if (literal != NULL) {
+      int subliteral_depth = literal->InitDepthAndFlags() + 1;
+      if (subliteral_depth > depth_acc) depth_acc = subliteral_depth;
     }
 
     if (!CompileTimeValue::IsCompileTimeValue(element)) {
@@ -717,8 +707,12 @@ void ArrayLiteral::InitDepthAndFlags() {
     }
   }
 
-  set_is_simple(is_simple);
   set_depth(depth_acc);
+  set_is_simple(is_simple);
+  // Array literals always need an initial allocation site to properly track
+  // elements transitions.
+  set_needs_initial_allocation_site(true);
+  return depth_acc;
 }
 
 void ArrayLiteral::BuildConstantElements(Isolate* isolate) {
@@ -764,12 +758,12 @@ void ArrayLiteral::BuildConstantElements(Isolate* isolate) {
   // Simple and shallow arrays can be lazily copied, we transform the
   // elements array to a copy-on-write array.
   if (is_simple() && depth() == 1 && array_index > 0 &&
-      IsFastSmiOrObjectElementsKind(kind)) {
+      IsSmiOrObjectElementsKind(kind)) {
     fixed_array->set_map(isolate->heap()->fixed_cow_array_map());
   }
 
   Handle<FixedArrayBase> elements = fixed_array;
-  if (IsFastDoubleElementsKind(kind)) {
+  if (IsDoubleElementsKind(kind)) {
     ElementsAccessor* accessor = ElementsAccessor::ForKind(kind);
     elements = isolate->factory()->NewFixedDoubleArray(constants_length);
     // We are copying from non-fast-double to fast-double.
@@ -814,6 +808,12 @@ void ArrayLiteral::AssignFeedbackSlots(FeedbackVectorSpec* spec,
   }
 }
 
+bool MaterializedLiteral::IsSimple() const {
+  if (IsArrayLiteral()) return AsArrayLiteral()->is_simple();
+  if (IsObjectLiteral()) return AsObjectLiteral()->is_simple();
+  DCHECK(IsRegExpLiteral());
+  return false;
+}
 
 Handle<Object> MaterializedLiteral::GetBoilerplateValue(Expression* expression,
                                                         Isolate* isolate) {
@@ -826,15 +826,22 @@ Handle<Object> MaterializedLiteral::GetBoilerplateValue(Expression* expression,
   return isolate->factory()->uninitialized_value();
 }
 
-void MaterializedLiteral::InitDepthAndFlags() {
+int MaterializedLiteral::InitDepthAndFlags() {
+  if (IsArrayLiteral()) return AsArrayLiteral()->InitDepthAndFlags();
+  if (IsObjectLiteral()) return AsObjectLiteral()->InitDepthAndFlags();
+  DCHECK(IsRegExpLiteral());
+  return 1;
+}
+
+bool MaterializedLiteral::NeedsInitialAllocationSite() {
   if (IsArrayLiteral()) {
-    return AsArrayLiteral()->InitDepthAndFlags();
+    return AsArrayLiteral()->needs_initial_allocation_site();
   }
   if (IsObjectLiteral()) {
-    return AsObjectLiteral()->InitDepthAndFlags();
+    return AsObjectLiteral()->needs_initial_allocation_site();
   }
   DCHECK(IsRegExpLiteral());
-  DCHECK_LE(1, depth());  // Depth should be initialized.
+  return false;
 }
 
 void MaterializedLiteral::BuildConstants(Isolate* isolate) {
@@ -845,26 +852,6 @@ void MaterializedLiteral::BuildConstants(Isolate* isolate) {
     return AsObjectLiteral()->BuildConstantProperties(isolate);
   }
   DCHECK(IsRegExpLiteral());
-}
-
-
-void UnaryOperation::RecordToBooleanTypeFeedback(TypeFeedbackOracle* oracle) {
-  // TODO(olivf) If this Operation is used in a test context, then the
-  // expression has a ToBoolean stub and we want to collect the type
-  // information. However the GraphBuilder expects it to be on the instruction
-  // corresponding to the TestContext, therefore we have to store it here and
-  // not on the operand.
-  set_to_boolean_types(oracle->ToBooleanTypes(expression()->test_id()));
-}
-
-
-void BinaryOperation::RecordToBooleanTypeFeedback(TypeFeedbackOracle* oracle) {
-  // TODO(olivf) If this Operation is used in a test context, then the right
-  // hand side has a ToBoolean stub and we want to collect the type information.
-  // However the GraphBuilder expects it to be on the instruction corresponding
-  // to the TestContext, therefore we have to store it here and not on the
-  // right hand operand.
-  set_to_boolean_types(oracle->ToBooleanTypes(right()->test_id()));
 }
 
 void BinaryOperation::AssignFeedbackSlots(FeedbackVectorSpec* spec,
@@ -1000,18 +987,7 @@ bool CompareOperation::IsLiteralCompareNull(Expression** expr) {
 // ----------------------------------------------------------------------------
 // Recording of type feedback
 
-// TODO(rossberg): all RecordTypeFeedback functions should disappear
-// once we use the common type field in the AST consistently.
-
-void Expression::RecordToBooleanTypeFeedback(TypeFeedbackOracle* oracle) {
-  if (IsUnaryOperation()) {
-    AsUnaryOperation()->RecordToBooleanTypeFeedback(oracle);
-  } else if (IsBinaryOperation()) {
-    AsBinaryOperation()->RecordToBooleanTypeFeedback(oracle);
-  } else {
-    set_to_boolean_types(oracle->ToBooleanTypes(test_id()));
-  }
-}
+Handle<Map> SmallMapList::at(int i) const { return Handle<Map>(list_.at(i)); }
 
 SmallMapList* Expression::GetReceiverTypes() {
   switch (node_type()) {
@@ -1026,7 +1002,6 @@ SmallMapList* Expression::GetReceiverTypes() {
 #undef GENERATE_CASE
     default:
       UNREACHABLE();
-      return nullptr;
   }
 }
 
@@ -1039,7 +1014,6 @@ KeyedAccessStoreMode Expression::GetStoreMode() const {
 #undef GENERATE_CASE
     default:
       UNREACHABLE();
-      return STANDARD_STORE;
   }
 }
 
@@ -1052,7 +1026,6 @@ IcCheckType Expression::GetKeyType() const {
 #undef GENERATE_CASE
     default:
       UNREACHABLE();
-      return PROPERTY;
   }
 }
 
@@ -1066,7 +1039,6 @@ bool Expression::IsMonomorphic() const {
 #undef GENERATE_CASE
     default:
       UNREACHABLE();
-      return false;
   }
 }
 
@@ -1105,10 +1077,7 @@ Call::CallType Call::GetCallType() const {
 
 CaseClause::CaseClause(Expression* label, ZoneList<Statement*>* statements,
                        int pos)
-    : Expression(pos, kCaseClause),
-      label_(label),
-      statements_(statements),
-      compare_type_(AstType::None()) {}
+    : Expression(pos, kCaseClause), label_(label), statements_(statements) {}
 
 void CaseClause::AssignFeedbackSlots(FeedbackVectorSpec* spec,
                                      LanguageMode language_mode,
@@ -1118,7 +1087,7 @@ void CaseClause::AssignFeedbackSlots(FeedbackVectorSpec* spec,
 
 uint32_t Literal::Hash() {
   return raw_value()->IsString()
-             ? raw_value()->AsString()->hash()
+             ? raw_value()->AsString()->Hash()
              : ComputeLongHash(double_to_uint64(raw_value()->AsNumber()));
 }
 

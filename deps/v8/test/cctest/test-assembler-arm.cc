@@ -31,6 +31,7 @@
 #include "src/assembler-inl.h"
 #include "src/base/utils/random-number-generator.h"
 #include "src/disassembler.h"
+#include "src/double.h"
 #include "src/factory.h"
 #include "src/macro-assembler.h"
 #include "src/ostreams.h"
@@ -61,7 +62,7 @@ TEST(0) {
   __ mov(pc, Operand(lr));
 
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -98,7 +99,7 @@ TEST(1) {
   __ mov(pc, Operand(lr));
 
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -144,7 +145,7 @@ TEST(2) {
   __ mov(r0, Operand(0xFFF0FFFF));
 
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -192,7 +193,7 @@ TEST(3) {
   __ ldm(ia_w, sp, r4.bit() | fp.bit() | pc.bit());
 
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -274,16 +275,16 @@ TEST(4) {
     __ vstr(s1, r4, offsetof(T, y));
 
     // Move a literal into a register that can be encoded in the instruction.
-    __ vmov(d4, 1.0);
+    __ vmov(d4, Double(1.0));
     __ vstr(d4, r4, offsetof(T, e));
 
     // Move a literal into a register that requires 64 bits to encode.
     // 0x3ff0000010000000 = 1.000000059604644775390625
-    __ vmov(d4, 1.000000059604644775390625);
+    __ vmov(d4, Double(1.000000059604644775390625));
     __ vstr(d4, r4, offsetof(T, d));
 
     // Convert from floating point to integer.
-    __ vmov(d4, 2.0);
+    __ vmov(d4, Double(2.0));
     __ vcvt_s32_f64(s1, d4);
     __ vstr(s1, r4, offsetof(T, i));
 
@@ -316,15 +317,15 @@ TEST(4) {
     __ vstr(d0, r4, offsetof(T, n));
 
     // Test vmov for single-precision immediates.
-    __ vmov(s0, 0.25f);
+    __ vmov(s0, Float32(0.25f));
     __ vstr(s0, r4, offsetof(T, o));
-    __ vmov(s0, -16.0f);
+    __ vmov(s0, Float32(-16.0f));
     __ vstr(s0, r4, offsetof(T, p));
 
     __ ldm(ia_w, sp, r4.bit() | fp.bit() | pc.bit());
 
     CodeDesc desc;
-    assm.GetCode(&desc);
+    assm.GetCode(isolate, &desc);
     Handle<Code> code = isolate->factory()->NewCode(
         desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -387,7 +388,7 @@ TEST(5) {
     __ mov(pc, Operand(lr));
 
     CodeDesc desc;
-    assm.GetCode(&desc);
+    assm.GetCode(isolate, &desc);
     Handle<Code> code = isolate->factory()->NewCode(
         desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -419,7 +420,7 @@ TEST(6) {
   __ mov(pc, Operand(lr));
 
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -458,7 +459,7 @@ static void TestRoundingMode(VCVTTypes types,
   __ vmsr(r2);
 
   // Load value, convert, and move back result to r0 if everything went well.
-  __ vmov(d1, value);
+  __ vmov(d1, Double(value));
   switch (types) {
     case s32_f64:
       __ vcvt_s32_f64(s0, d1, kFPSCRRounding);
@@ -488,7 +489,7 @@ static void TestRoundingMode(VCVTTypes types,
   __ mov(pc, Operand(lr));
 
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -671,7 +672,7 @@ TEST(8) {
   __ ldm(ia_w, sp, r4.bit() | fp.bit() | pc.bit());
 
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -781,7 +782,7 @@ TEST(9) {
   __ ldm(ia_w, sp, r4.bit() | fp.bit() | pc.bit());
 
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -887,7 +888,7 @@ TEST(10) {
   __ ldm(ia_w, sp, r4.bit() | fp.bit() | pc.bit());
 
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -982,7 +983,7 @@ TEST(11) {
   __ mov(pc, Operand(lr));
 
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -1092,8 +1093,8 @@ TEST(13) {
     __ vstm(ia_w, r4, d29, d31);
 
     // Move constants into d20, d21, d22 and store into i, j, k.
-    __ vmov(d20, 14.7610017472335499);
-    __ vmov(d21, 16.0);
+    __ vmov(d20, Double(14.7610017472335499));
+    __ vmov(d21, Double(16.0));
     __ mov(r1, Operand(372106121));
     __ mov(r2, Operand(1079146608));
     __ vmov(d22, VmovIndexLo, r1);
@@ -1109,7 +1110,7 @@ TEST(13) {
     __ ldm(ia_w, sp, r4.bit() | pc.bit());
 
     CodeDesc desc;
-    assm.GetCode(&desc);
+    assm.GetCode(isolate, &desc);
     Handle<Code> code = isolate->factory()->NewCode(
         desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -1182,7 +1183,7 @@ TEST(14) {
   __ mov(pc, Operand(lr));
 
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -1297,9 +1298,11 @@ TEST(15) {
     uint32_t vabs_s8[4], vabs_s16[4], vabs_s32[4];
     uint32_t vneg_s8[4], vneg_s16[4], vneg_s32[4];
     uint32_t veor[4], vand[4], vorr[4];
-    float vdupf[4], vaddf[4], vsubf[4], vmulf[4];
+    float vdupf[4], vaddf[4], vpaddf[2], vsubf[4], vmulf[4];
+    uint32_t vdupf_16[2], vdupf_8[4];
     uint32_t vmin_s8[4], vmin_u16[4], vmin_s32[4];
     uint32_t vmax_s8[4], vmax_u16[4], vmax_s32[4];
+    uint32_t vpadd_i8[2], vpadd_i16[2], vpadd_i32[2];
     uint32_t vpmin_s8[2], vpmin_u16[2], vpmin_s32[2];
     uint32_t vpmax_s8[2], vpmax_u16[2], vpmax_s32[2];
     uint32_t vadd8[4], vadd16[4], vadd32[4];
@@ -1309,6 +1312,7 @@ TEST(15) {
     uint32_t vmul8[4], vmul16[4], vmul32[4];
     uint32_t vshl8[4], vshl16[4], vshl32[5];
     uint32_t vshr_s8[4], vshr_u16[4], vshr_s32[5];
+    uint32_t vsli_64[2], vsri_64[2], vsli_32[2], vsri_32[2];
     uint32_t vceq[4], vceqf[4], vcgef[4], vcgtf[4];
     uint32_t vcge_s8[4], vcge_u16[4], vcge_s32[4];
     uint32_t vcgt_s8[4], vcgt_u16[4], vcgt_s32[4];
@@ -1376,12 +1380,12 @@ TEST(15) {
 
     // ARM core register to scalar.
     __ mov(r4, Operand(0xfffffff8));
-    __ vmov(d0, 0);
+    __ vmov(d0, Double(0.0));
     __ vmov(NeonS8, d0, 1, r4);
     __ vmov(NeonS16, d0, 1, r4);
     __ vmov(NeonS32, d0, 1, r4);
     __ vstr(d0, r0, offsetof(T, vmov_to_scalar1));
-    __ vmov(d0, 0);
+    __ vmov(d0, Double(0.0));
     __ vmov(NeonS8, d0, 3, r4);
     __ vmov(NeonS16, d0, 3, r4);
     __ vstr(d0, r0, offsetof(T, vmov_to_scalar2));
@@ -1416,10 +1420,10 @@ TEST(15) {
     __ vst1(Neon8, NeonListOperand(q1), NeonMemOperand(r4));
 
     // vcvt for q-registers.
-    __ vmov(s0, -1.5);
-    __ vmov(s1, -1);
-    __ vmov(s2, 1);
-    __ vmov(s3, 1.5);
+    __ vmov(s0, Float32(-1.5f));
+    __ vmov(s1, Float32(-1.0f));
+    __ vmov(s2, Float32(1.0f));
+    __ vmov(s3, Float32(1.5f));
     __ vcvt_s32_f32(q1, q0);
     __ add(r4, r0, Operand(static_cast<int32_t>(offsetof(T, vcvt_s32_f32))));
     __ vst1(Neon8, NeonListOperand(q1), NeonMemOperand(r4));
@@ -1439,7 +1443,7 @@ TEST(15) {
     __ add(r4, r0, Operand(static_cast<int32_t>(offsetof(T, vcvt_f32_u32))));
     __ vst1(Neon8, NeonListOperand(q1), NeonMemOperand(r4));
 
-    // vdup (integer).
+    // vdup (from register).
     __ mov(r4, Operand(0xa));
     __ vdup(Neon8, q0, r4);
     __ vdup(Neon16, q1, r4);
@@ -1451,17 +1455,22 @@ TEST(15) {
     __ add(r4, r0, Operand(static_cast<int32_t>(offsetof(T, vdup32))));
     __ vst1(Neon8, NeonListOperand(q2), NeonMemOperand(r4));
 
-    // vdup (float).
-    __ vmov(s0, -1.0);
-    __ vdup(q0, s0);
+    // vdup (from scalar).
+    __ vmov(s0, Float32(-1.0f));
+    __ vdup(Neon32, q1, d0, 0);
     __ add(r4, r0, Operand(static_cast<int32_t>(offsetof(T, vdupf))));
-    __ vst1(Neon8, NeonListOperand(q0), NeonMemOperand(r4));
+    __ vst1(Neon8, NeonListOperand(q1), NeonMemOperand(r4));
+    __ vdup(Neon16, d2, d0, 1);
+    __ vstr(d2, r0, offsetof(T, vdupf_16));
+    __ vdup(Neon8, q1, d0, 3);
+    __ add(r4, r0, Operand(static_cast<int32_t>(offsetof(T, vdupf_8))));
+    __ vst1(Neon8, NeonListOperand(q1), NeonMemOperand(r4));
 
     // vabs (float).
-    __ vmov(s0, -1.0);
-    __ vmov(s1, -0.0);
-    __ vmov(s2, 0.0);
-    __ vmov(s3, 1.0);
+    __ vmov(s0, Float32(-1.0f));
+    __ vmov(s1, Float32(-0.0f));
+    __ vmov(s2, Float32(0.0f));
+    __ vmov(s3, Float32(1.0f));
     __ vabs(q1, q0);
     __ add(r4, r0, Operand(static_cast<int32_t>(offsetof(T, vabsf))));
     __ vst1(Neon8, NeonListOperand(q1), NeonMemOperand(r4));
@@ -1523,84 +1532,91 @@ TEST(15) {
     __ vst1(Neon8, NeonListOperand(q1), NeonMemOperand(r4));
 
     // vmin (float).
-    __ vmov(s4, 2.0);
-    __ vdup(q0, s4);
-    __ vmov(s4, 1.0);
-    __ vdup(q1, s4);
+    __ vmov(s4, Float32(2.0f));
+    __ vdup(Neon32, q0, d2, 0);
+    __ vmov(s4, Float32(1.0f));
+    __ vdup(Neon32, q1, d2, 0);
     __ vmin(q1, q1, q0);
     __ add(r4, r0, Operand(static_cast<int32_t>(offsetof(T, vminf))));
     __ vst1(Neon8, NeonListOperand(q1), NeonMemOperand(r4));
     // vmax (float).
-    __ vmov(s4, 2.0);
-    __ vdup(q0, s4);
-    __ vmov(s4, 1.0);
-    __ vdup(q1, s4);
+    __ vmov(s4, Float32(2.0f));
+    __ vdup(Neon32, q0, d2, 0);
+    __ vmov(s4, Float32(1.0f));
+    __ vdup(Neon32, q1, d2, 0);
     __ vmax(q1, q1, q0);
     __ add(r4, r0, Operand(static_cast<int32_t>(offsetof(T, vmaxf))));
     __ vst1(Neon8, NeonListOperand(q1), NeonMemOperand(r4));
     // vadd (float).
-    __ vmov(s4, 1.0);
-    __ vdup(q0, s4);
-    __ vdup(q1, s4);
+    __ vmov(s4, Float32(1.0f));
+    __ vdup(Neon32, q0, d2, 0);
+    __ vdup(Neon32, q1, d2, 0);
     __ vadd(q1, q1, q0);
     __ add(r4, r0, Operand(static_cast<int32_t>(offsetof(T, vaddf))));
     __ vst1(Neon8, NeonListOperand(q1), NeonMemOperand(r4));
+    // vpadd (float).
+    __ vmov(s0, Float32(1.0f));
+    __ vmov(s1, Float32(2.0f));
+    __ vmov(s2, Float32(3.0f));
+    __ vmov(s3, Float32(4.0f));
+    __ vpadd(d2, d0, d1);
+    __ vstr(d2, r0, offsetof(T, vpaddf));
     // vsub (float).
-    __ vmov(s4, 2.0);
-    __ vdup(q0, s4);
-    __ vmov(s4, 1.0);
-    __ vdup(q1, s4);
+    __ vmov(s4, Float32(2.0f));
+    __ vdup(Neon32, q0, d2, 0);
+    __ vmov(s4, Float32(1.0f));
+    __ vdup(Neon32, q1, d2, 0);
     __ vsub(q1, q1, q0);
     __ add(r4, r0, Operand(static_cast<int32_t>(offsetof(T, vsubf))));
     __ vst1(Neon8, NeonListOperand(q1), NeonMemOperand(r4));
     // vmul (float).
-    __ vmov(s4, 2.0);
-    __ vdup(q0, s4);
-    __ vdup(q1, s4);
+    __ vmov(s4, Float32(2.0f));
+    __ vdup(Neon32, q0, d2, 0);
+    __ vdup(Neon32, q1, d2, 0);
     __ vmul(q1, q1, q0);
     __ add(r4, r0, Operand(static_cast<int32_t>(offsetof(T, vmulf))));
     __ vst1(Neon8, NeonListOperand(q1), NeonMemOperand(r4));
     // vrecpe.
-    __ vmov(s4, 2.0);
-    __ vdup(q0, s4);
+    __ vmov(s4, Float32(2.0f));
+    __ vdup(Neon32, q0, d2, 0);
     __ vrecpe(q1, q0);
     __ add(r4, r0, Operand(static_cast<int32_t>(offsetof(T, vrecpe))));
     __ vst1(Neon8, NeonListOperand(q1), NeonMemOperand(r4));
     // vrecps.
-    __ vmov(s4, 2.0);
-    __ vdup(q0, s4);
-    __ vmov(s4, 1.5);
-    __ vdup(q1, s4);
+    __ vmov(s4, Float32(2.0f));
+    __ vdup(Neon32, q0, d2, 0);
+    __ vmov(s4, Float32(1.5f));
+    __ vdup(Neon32, q1, d2, 0);
     __ vrecps(q1, q0, q1);
     __ add(r4, r0, Operand(static_cast<int32_t>(offsetof(T, vrecps))));
     __ vst1(Neon8, NeonListOperand(q1), NeonMemOperand(r4));
     // vrsqrte.
-    __ vmov(s4, 4.0);
-    __ vdup(q0, s4);
+    __ vmov(s4, Float32(4.0f));
+    __ vdup(Neon32, q0, d2, 0);
     __ vrsqrte(q1, q0);
     __ add(r4, r0, Operand(static_cast<int32_t>(offsetof(T, vrsqrte))));
     __ vst1(Neon8, NeonListOperand(q1), NeonMemOperand(r4));
     // vrsqrts.
-    __ vmov(s4, 2.0);
-    __ vdup(q0, s4);
-    __ vmov(s4, 2.5);
-    __ vdup(q1, s4);
+    __ vmov(s4, Float32(2.0f));
+    __ vdup(Neon32, q0, d2, 0);
+    __ vmov(s4, Float32(2.5f));
+    __ vdup(Neon32, q1, d2, 0);
     __ vrsqrts(q1, q0, q1);
     __ add(r4, r0, Operand(static_cast<int32_t>(offsetof(T, vrsqrts))));
     __ vst1(Neon8, NeonListOperand(q1), NeonMemOperand(r4));
     // vceq (float).
-    __ vmov(s4, 1.0);
-    __ vdup(q0, s4);
-    __ vdup(q1, s4);
+    __ vmov(s4, Float32(1.0f));
+    __ vdup(Neon32, q0, d2, 0);
+    __ vdup(Neon32, q1, d2, 0);
     __ vceq(q1, q1, q0);
     __ add(r4, r0, Operand(static_cast<int32_t>(offsetof(T, vceqf))));
     __ vst1(Neon8, NeonListOperand(q1), NeonMemOperand(r4));
     // vcge (float).
-    __ vmov(s0, 1.0);
-    __ vmov(s1, -1.0);
-    __ vmov(s2, -0.0);
-    __ vmov(s3, 0.0);
-    __ vdup(q1, s3);
+    __ vmov(s0, Float32(1.0f));
+    __ vmov(s1, Float32(-1.0f));
+    __ vmov(s2, Float32(-0.0f));
+    __ vmov(s3, Float32(0.0f));
+    __ vdup(Neon32, q1, d1, 1);
     __ vcge(q2, q1, q0);
     __ add(r4, r0, Operand(static_cast<int32_t>(offsetof(T, vcgef))));
     __ vst1(Neon8, NeonListOperand(q2), NeonMemOperand(r4));
@@ -1636,6 +1652,17 @@ TEST(15) {
     __ vmax(NeonS32, q2, q0, q1);
     __ add(r4, r0, Operand(static_cast<int32_t>(offsetof(T, vmax_s32))));
     __ vst1(Neon8, NeonListOperand(q2), NeonMemOperand(r4));
+
+    // vpadd integer.
+    __ mov(r4, Operand(0x03));
+    __ vdup(Neon16, q0, r4);
+    __ vdup(Neon8, q1, r4);
+    __ vpadd(Neon8, d0, d0, d2);
+    __ vstr(d0, r0, offsetof(T, vpadd_i8));
+    __ vpadd(Neon16, d0, d0, d2);
+    __ vstr(d0, r0, offsetof(T, vpadd_i16));
+    __ vpadd(Neon32, d0, d0, d2);
+    __ vstr(d0, r0, offsetof(T, vpadd_i32));
 
     // vpmin/vpmax integer.
     __ mov(r4, Operand(0x03));
@@ -1794,6 +1821,26 @@ TEST(15) {
     __ vshr(NeonS32, q1, q0, 17);
     __ add(r4, r0, Operand(static_cast<int32_t>(offsetof(T, vshr_s32))));
     __ vst1(Neon8, NeonListOperand(q1), NeonMemOperand(r4));
+
+    // vsli, vsri.
+    __ mov(r4, Operand(0xffffffff));
+    __ mov(r5, Operand(0x1));
+    __ vmov(d0, r4, r5);
+    __ vmov(d1, r5, r5);
+    __ vsli(Neon64, d1, d0, 32);
+    __ vstr(d1, r0, offsetof(T, vsli_64));
+    __ vmov(d0, r5, r4);
+    __ vmov(d1, r5, r5);
+    __ vsri(Neon64, d1, d0, 32);
+    __ vstr(d1, r0, offsetof(T, vsri_64));
+    __ vmov(d0, r4, r5);
+    __ vmov(d1, r5, r5);
+    __ vsli(Neon32, d1, d0, 16);
+    __ vstr(d1, r0, offsetof(T, vsli_32));
+    __ vmov(d0, r5, r4);
+    __ vmov(d1, r5, r5);
+    __ vsri(Neon32, d1, d0, 16);
+    __ vstr(d1, r0, offsetof(T, vsri_32));
 
     // vceq.
     __ mov(r4, Operand(0x03));
@@ -2017,7 +2064,7 @@ TEST(15) {
     __ ldm(ia_w, sp, r4.bit() | r5.bit() | pc.bit());
 
     CodeDesc desc;
-    assm.GetCode(&desc);
+    assm.GetCode(isolate, &desc);
     Handle<Code> code = isolate->factory()->NewCode(
         desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -2088,7 +2135,9 @@ TEST(15) {
     CHECK_EQ_SPLAT(vdup8, 0x0a0a0a0au);
     CHECK_EQ_SPLAT(vdup16, 0x000a000au);
     CHECK_EQ_SPLAT(vdup32, 0x0000000au);
-    CHECK_EQ_SPLAT(vdupf, -1.0);
+    CHECK_EQ_SPLAT(vdupf, -1.0);  // bit pattern is 0xbf800000.
+    CHECK_EQ_32X2(vdupf_16, 0xbf80bf80u, 0xbf80bf80u);
+    CHECK_EQ_SPLAT(vdupf_8, 0xbfbfbfbfu);
 
     // src: [-1, -1, 1, 1]
     CHECK_EQ_32X4(vcvt_s32_f32, -1, -1, 1, 1);
@@ -2115,6 +2164,7 @@ TEST(15) {
     CHECK_EQ_SPLAT(vand, 0x00fe00feu);
     CHECK_EQ_SPLAT(vorr, 0x00ff00ffu);
     CHECK_EQ_SPLAT(vaddf, 2.0);
+    CHECK_EQ_32X2(vpaddf, 3.0, 7.0);
     CHECK_EQ_SPLAT(vminf, 1.0);
     CHECK_EQ_SPLAT(vmaxf, 2.0);
     CHECK_EQ_SPLAT(vsubf, -1.0);
@@ -2137,6 +2187,9 @@ TEST(15) {
     CHECK_EQ_SPLAT(vmin_s32, 0xffffffffu);
     CHECK_EQ_SPLAT(vmax_s32, 0xffu);
     // [0, 3, 0, 3, ...] and [3, 3, 3, 3, ...]
+    CHECK_EQ_32X2(vpadd_i8, 0x03030303u, 0x06060606u);
+    CHECK_EQ_32X2(vpadd_i16, 0x0c0c0606u, 0x06060606u);
+    CHECK_EQ_32X2(vpadd_i32, 0x12120c0cu, 0x06060606u);
     CHECK_EQ_32X2(vpmin_s8, 0x00000000u, 0x03030303u);
     CHECK_EQ_32X2(vpmax_s8, 0x03030303u, 0x03030303u);
     // [0, ffff, 0, ffff] and [ffff, ffff]
@@ -2166,6 +2219,10 @@ TEST(15) {
     CHECK_EQ_SPLAT(vshr_s8, 0xc0c0c0c0u);
     CHECK_EQ_SPLAT(vshr_u16, 0x00400040u);
     CHECK_EQ_SPLAT(vshr_s32, 0xffffc040u);
+    CHECK_EQ_32X2(vsli_64, 0x01u, 0xffffffffu);
+    CHECK_EQ_32X2(vsri_64, 0xffffffffu, 0x01u);
+    CHECK_EQ_32X2(vsli_32, 0xffff0001u, 0x00010001u);
+    CHECK_EQ_32X2(vsri_32, 0x00000000u, 0x0000ffffu);
     CHECK_EQ_SPLAT(vceq, 0x00ff00ffu);
     // [0, 3, 0, 3, ...] >= [3, 3, 3, 3, ...]
     CHECK_EQ_SPLAT(vcge_s8, 0x00ff00ffu);
@@ -2284,7 +2341,7 @@ TEST(16) {
   __ ldm(ia_w, sp, r4.bit() | pc.bit());
 
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -2365,7 +2422,7 @@ TEST(sdiv) {
   __ bx(lr);
 
     CodeDesc desc;
-    assm.GetCode(&desc);
+    assm.GetCode(isolate, &desc);
     Handle<Code> code = isolate->factory()->NewCode(
         desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -2429,7 +2486,7 @@ TEST(udiv) {
     __ bx(lr);
 
     CodeDesc desc;
-    assm.GetCode(&desc);
+    assm.GetCode(isolate, &desc);
     Handle<Code> code = isolate->factory()->NewCode(
         desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -2460,7 +2517,7 @@ TEST(smmla) {
   __ str(r1, MemOperand(r0));
   __ bx(lr);
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef OBJECT_PRINT
@@ -2486,7 +2543,7 @@ TEST(smmul) {
   __ str(r1, MemOperand(r0));
   __ bx(lr);
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef OBJECT_PRINT
@@ -2512,7 +2569,7 @@ TEST(sxtb) {
   __ str(r1, MemOperand(r0));
   __ bx(lr);
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef OBJECT_PRINT
@@ -2538,7 +2595,7 @@ TEST(sxtab) {
   __ str(r1, MemOperand(r0));
   __ bx(lr);
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef OBJECT_PRINT
@@ -2564,7 +2621,7 @@ TEST(sxth) {
   __ str(r1, MemOperand(r0));
   __ bx(lr);
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef OBJECT_PRINT
@@ -2590,7 +2647,7 @@ TEST(sxtah) {
   __ str(r1, MemOperand(r0));
   __ bx(lr);
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef OBJECT_PRINT
@@ -2616,7 +2673,7 @@ TEST(uxtb) {
   __ str(r1, MemOperand(r0));
   __ bx(lr);
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef OBJECT_PRINT
@@ -2642,7 +2699,7 @@ TEST(uxtab) {
   __ str(r1, MemOperand(r0));
   __ bx(lr);
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef OBJECT_PRINT
@@ -2668,7 +2725,7 @@ TEST(uxth) {
   __ str(r1, MemOperand(r0));
   __ bx(lr);
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef OBJECT_PRINT
@@ -2694,7 +2751,7 @@ TEST(uxtah) {
   __ str(r1, MemOperand(r0));
   __ bx(lr);
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef OBJECT_PRINT
@@ -2736,7 +2793,7 @@ TEST(rbit) {
     __ bx(lr);
 
     CodeDesc desc;
-    assm.GetCode(&desc);
+    assm.GetCode(isolate, &desc);
     Handle<Code> code = isolate->factory()->NewCode(
         desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 
@@ -2764,7 +2821,7 @@ TEST(code_relative_offset) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
   // Initialize a code object that will contain the code.
-  Handle<Object> code_object(isolate->heap()->undefined_value(), isolate);
+  Handle<HeapObject> code_object(isolate->heap()->undefined_value(), isolate);
 
   Assembler assm(isolate, NULL, 0);
 
@@ -2818,7 +2875,7 @@ TEST(code_relative_offset) {
   __ ldm(ia_w, sp, r4.bit() | r5.bit() | pc.bit());
 
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), code_object);
   F1 f = FUNCTION_CAST<F1>(code->entry());
@@ -2858,7 +2915,7 @@ TEST(msr_mrs) {
   __ bx(lr);
 
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -2959,7 +3016,7 @@ TEST(ARMv8_float32_vrintX) {
     __ ldm(ia_w, sp, r4.bit() | fp.bit() | pc.bit());
 
     CodeDesc desc;
-    assm.GetCode(&desc);
+    assm.GetCode(isolate, &desc);
     Handle<Code> code = isolate->factory()->NewCode(
         desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -3064,7 +3121,7 @@ TEST(ARMv8_vrintX) {
     __ ldm(ia_w, sp, r4.bit() | fp.bit() | pc.bit());
 
     CodeDesc desc;
-    assm.GetCode(&desc);
+    assm.GetCode(isolate, &desc);
     Handle<Code> code = isolate->factory()->NewCode(
         desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -3159,8 +3216,8 @@ TEST(ARMv8_vsel) {
     //                ResultsF64* results_f64);
     __ msr(CPSR_f, Operand(r0));
 
-    __ vmov(s1, kResultPass);
-    __ vmov(s2, kResultFail);
+    __ vmov(s1, Float32(kResultPass));
+    __ vmov(s2, Float32(kResultFail));
 
     __ vsel(eq, s0, s1, s2);
     __ vstr(s0, r1, offsetof(ResultsF32, vseleq_));
@@ -3180,8 +3237,8 @@ TEST(ARMv8_vsel) {
     __ vsel(vc, s0, s1, s2);
     __ vstr(s0, r1, offsetof(ResultsF32, vselvc_));
 
-    __ vmov(d1, kResultPass);
-    __ vmov(d2, kResultFail);
+    __ vmov(d1, Double(kResultPass));
+    __ vmov(d2, Double(kResultFail));
 
     __ vsel(eq, d0, d1, d2);
     __ vstr(d0, r2, offsetof(ResultsF64, vseleq_));
@@ -3204,7 +3261,7 @@ TEST(ARMv8_vsel) {
     __ bx(lr);
 
     CodeDesc desc;
-    assm.GetCode(&desc);
+    assm.GetCode(isolate, &desc);
     Handle<Code> code = isolate->factory()->NewCode(
         desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -3298,7 +3355,7 @@ TEST(ARMv8_vminmax_f64) {
     __ bx(lr);
 
     CodeDesc desc;
-    assm.GetCode(&desc);
+    assm.GetCode(isolate, &desc);
     Handle<Code> code = isolate->factory()->NewCode(
         desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -3380,7 +3437,7 @@ TEST(ARMv8_vminmax_f32) {
     __ bx(lr);
 
     CodeDesc desc;
-    assm.GetCode(&desc);
+    assm.GetCode(isolate, &desc);
     Handle<Code> code = isolate->factory()->NewCode(
         desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -3512,7 +3569,7 @@ static F4 GenerateMacroFloatMinMax(MacroAssembler& assm) {
   __ b(&done_max_aba);
 
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(assm.isolate(), &desc);
   Handle<Code> code = assm.isolate()->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -3680,7 +3737,7 @@ TEST(unaligned_loads) {
   __ bx(lr);
 
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -3726,7 +3783,7 @@ TEST(unaligned_stores) {
   __ bx(lr);
 
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -3817,11 +3874,8 @@ TEST(vswp) {
   const uint32_t test_2 = 0x89abcdef;
   __ mov(r4, Operand(test_1));
   __ mov(r5, Operand(test_2));
-  // TODO(bbudge) replace with vdup when implemented.
-  __ vmov(d8, r4, r4);
-  __ vmov(d9, r4, r4);  // q4 = [1.0, 1.0]
-  __ vmov(d10, r5, r5);
-  __ vmov(d11, r5, r5);  // q5 = [-1.0, -1.0]
+  __ vdup(Neon32, q4, r4);
+  __ vdup(Neon32, q5, r5);
   __ vswp(q4, q5);
   __ add(r6, r0, Operand(static_cast<int32_t>(offsetof(T, vswp_q4))));
   __ vst1(Neon8, NeonListOperand(q4), NeonMemOperand(r6));
@@ -3832,7 +3886,7 @@ TEST(vswp) {
   __ bx(lr);
 
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
 #ifdef DEBUG
@@ -3913,6 +3967,28 @@ TEST(regress4292_CheckConstPool) {
   __ BlockConstPoolFor(1019);
   for (int i = 0; i < 1019; ++i) __ nop();
   __ vldr(d0, MemOperand(r0, 0));
+}
+
+TEST(use_scratch_register_scope) {
+  CcTest::InitializeVM();
+  Isolate* isolate = CcTest::i_isolate();
+  HandleScope scope(isolate);
+
+  Assembler assm(isolate, NULL, 0);
+
+  // The assembler should have ip as a scratch by default.
+  CHECK_EQ(*assm.GetScratchRegisterList(), ip.bit());
+
+  {
+    UseScratchRegisterScope temps(&assm);
+    CHECK_EQ(*assm.GetScratchRegisterList(), ip.bit());
+
+    Register scratch = temps.Acquire();
+    CHECK_EQ(scratch.code(), ip.code());
+    CHECK_EQ(*assm.GetScratchRegisterList(), 0);
+  }
+
+  CHECK_EQ(*assm.GetScratchRegisterList(), ip.bit());
 }
 
 #undef __

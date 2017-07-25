@@ -16,17 +16,16 @@ void SetupIsolateDelegate::SetupBuiltins(Isolate* isolate,
                                          bool create_heap_objects) {
   DCHECK(!create_heap_objects);
   // No actual work to be done; builtins will be deserialized from the snapshot.
-  isolate->builtins()->MarkInitialized();
 }
 
 void SetupIsolateDelegate::SetupInterpreter(
     interpreter::Interpreter* interpreter, bool create_heap_objects) {
-#ifdef V8_USE_SNAPSHOT
-  if (FLAG_trace_ignition || FLAG_trace_ignition_codegen ||
-      FLAG_trace_ignition_dispatches) {
+#if defined(V8_USE_SNAPSHOT) && !defined(V8_USE_SNAPSHOT_WITH_UNWINDING_INFO)
+  if (FLAG_perf_prof_unwinding_info) {
     OFStream os(stdout);
-    os << "Warning: --trace-ignition-* flags must be passed at mksnapshot "
-       << "time or used with nosnapshot builds." << std::endl;
+    os << "Warning: The --perf-prof-unwinding-info flag can be passed at "
+          "mksnapshot time to get better results."
+       << std::endl;
   }
 #endif
   DCHECK(interpreter->IsDispatchTableInitialized());

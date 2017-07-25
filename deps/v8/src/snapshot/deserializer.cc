@@ -22,11 +22,11 @@ namespace internal {
 
 void Deserializer::DecodeReservation(
     Vector<const SerializedData::Reservation> res) {
-  DCHECK_EQ(0, reservations_[NEW_SPACE].length());
+  DCHECK_EQ(0, reservations_[NEW_SPACE].size());
   STATIC_ASSERT(NEW_SPACE == 0);
   int current_space = NEW_SPACE;
   for (auto& r : res) {
-    reservations_[current_space].Add({r.chunk_size(), NULL, NULL});
+    reservations_[current_space].push_back({r.chunk_size(), NULL, NULL});
     if (r.is_last()) current_space++;
   }
   DCHECK_EQ(kNumberOfSpaces, current_space);
@@ -57,7 +57,7 @@ void Deserializer::FlushICacheForNewCodeObjectsAndRecordEmbeddedObjects() {
 bool Deserializer::ReserveSpace() {
 #ifdef DEBUG
   for (int i = NEW_SPACE; i < kNumberOfSpaces; ++i) {
-    CHECK(reservations_[i].length() > 0);
+    CHECK(reservations_[i].size() > 0);
   }
 #endif  // DEBUG
   DCHECK(allocated_maps_.is_empty());
@@ -92,6 +92,8 @@ void Deserializer::Deserialize(Isolate* isolate) {
   DCHECK(isolate_->handle_scope_implementer()->blocks()->is_empty());
   // Partial snapshot cache is not yet populated.
   DCHECK(isolate_->partial_snapshot_cache()->is_empty());
+  // Builtins are not yet created.
+  DCHECK(!isolate_->builtins()->is_initialized());
 
   {
     DisallowHeapAllocation no_gc;
@@ -114,13 +116,19 @@ void Deserializer::Deserialize(Isolate* isolate) {
         isolate_->heap()->undefined_value());
   }
 
-  // If needed, print the dissassembly of deserialized code objects.
-  PrintDisassembledCodeObjects();
-
   // Issue code events for newly deserialized code objects.
   LOG_CODE_EVENT(isolate_, LogCodeObjects());
   LOG_CODE_EVENT(isolate_, LogBytecodeHandlers());
   LOG_CODE_EVENT(isolate_, LogCompiledFunctions());
+
+  isolate_->builtins()->MarkInitialized();
+
+  // If needed, print the dissassembly of deserialized code objects.
+  // Needs to be called after the builtins are marked as initialized, in order
+  // to display the builtin names.
+  PrintDisassembledCodeObjects();
+
+  if (FLAG_rehash_snapshot && can_rehash_) Rehash();
 }
 
 MaybeHandle<Object> Deserializer::DeserializePartial(
@@ -140,17 +148,20 @@ MaybeHandle<Object> Deserializer::DeserializePartial(
   OldSpace* code_space = isolate_->heap()->code_space();
   Address start_address = code_space->top();
   Object* root;
-  VisitPointer(&root);
+  VisitRootPointer(Root::kPartialSnapshotCache, &root);
   DeserializeDeferredObjects();
   DeserializeEmbedderFields(embedder_fields_deserializer);
 
   isolate->heap()->RegisterDeserializedObjectsForBlackAllocation(
-      reservations_, &deserialized_large_objects_);
+      reservations_, &deserialized_large_objects_, &allocated_maps_);
 
   // There's no code deserialized here. If this assert fires then that's
   // changed and logging should be added to notify the profiler et al of the
   // new code, which also has to be flushed from instruction cache.
   CHECK_EQ(start_address, code_space->top());
+
+  if (FLAG_rehash_snapshot && can_rehash_) RehashContext(Context::cast(root));
+
   return Handle<Object>(root, isolate);
 }
 
@@ -165,15 +176,39 @@ MaybeHandle<HeapObject> Deserializer::DeserializeObject(Isolate* isolate) {
     {
       DisallowHeapAllocation no_gc;
       Object* root;
-      VisitPointer(&root);
+      VisitRootPointer(Root::kPartialSnapshotCache, &root);
       DeserializeDeferredObjects();
       FlushICacheForNewCodeObjectsAndRecordEmbeddedObjects();
       result = Handle<HeapObject>(HeapObject::cast(root));
       isolate->heap()->RegisterDeserializedObjectsForBlackAllocation(
-          reservations_, &deserialized_large_objects_);
+          reservations_, &deserialized_large_objects_, &allocated_maps_);
     }
     CommitPostProcessedObjects(isolate);
     return scope.CloseAndEscape(result);
+  }
+}
+
+void Deserializer::Rehash() {
+  DCHECK(can_rehash_);
+  isolate_->heap()->InitializeHashSeed();
+  isolate_->heap()->string_table()->Rehash();
+  isolate_->heap()->weak_object_to_code_table()->Rehash();
+  SortMapDescriptors();
+}
+
+void Deserializer::RehashContext(Context* context) {
+  DCHECK(can_rehash_);
+  for (const auto& array : transition_arrays_) array->Sort();
+  context->global_object()->global_dictionary()->Rehash();
+  SortMapDescriptors();
+}
+
+void Deserializer::SortMapDescriptors() {
+  for (const auto& address : allocated_maps_) {
+    Map* map = Map::cast(HeapObject::FromAddress(address));
+    if (map->instance_descriptors()->number_of_descriptors() > 1) {
+      map->instance_descriptors()->Sort();
+    }
   }
 }
 
@@ -185,7 +220,7 @@ Deserializer::~Deserializer() {
   while (source_.HasMore()) CHECK_EQ(kNop, source_.Get());
   for (int space = 0; space < kNumberOfPreallocatedSpaces; space++) {
     int chunk_index = current_chunk_[space];
-    CHECK_EQ(reservations_[space].length(), chunk_index + 1);
+    CHECK_EQ(reservations_[space].size(), chunk_index + 1);
     CHECK_EQ(reservations_[space][chunk_index].end, high_water_[space]);
   }
   CHECK_EQ(allocated_maps_.length(), next_map_index_);
@@ -194,7 +229,7 @@ Deserializer::~Deserializer() {
 
 // This is called on the roots.  It is the driver of the deserialization
 // process.  It is also called on the body of each function.
-void Deserializer::VisitPointers(Object** start, Object** end) {
+void Deserializer::VisitRootPointers(Root root, Object** start, Object** end) {
   // The space must be new space.  Any other space would cause ReadChunk to try
   // to update the remembered using NULL as the address.
   ReadData(start, end, NEW_SPACE, NULL);
@@ -277,34 +312,33 @@ void Deserializer::PrintDisassembledCodeObjects() {
 }
 
 // Used to insert a deserialized internalized string into the string table.
-class StringTableInsertionKey : public HashTableKey {
+class StringTableInsertionKey : public StringTableKey {
  public:
   explicit StringTableInsertionKey(String* string)
-      : string_(string), hash_(HashForObject(string)) {
+      : StringTableKey(ComputeHashField(string)), string_(string) {
     DCHECK(string->IsInternalizedString());
   }
 
   bool IsMatch(Object* string) override {
     // We know that all entries in a hash table had their hash keys created.
     // Use that knowledge to have fast failure.
-    if (hash_ != HashForObject(string)) return false;
+    if (Hash() != String::cast(string)->Hash()) return false;
     // We want to compare the content of two internalized strings here.
     return string_->SlowEquals(String::cast(string));
   }
 
-  uint32_t Hash() override { return hash_; }
-
-  uint32_t HashForObject(Object* key) override {
-    return String::cast(key)->Hash();
-  }
-
-  MUST_USE_RESULT Handle<Object> AsHandle(Isolate* isolate) override {
+  MUST_USE_RESULT Handle<String> AsHandle(Isolate* isolate) override {
     return handle(string_, isolate);
   }
 
  private:
+  uint32_t ComputeHashField(String* string) {
+    // Make sure hash_field() is computed.
+    string->Hash();
+    return string->hash_field();
+  }
+
   String* string_;
-  uint32_t hash_;
   DisallowHeapAllocation no_gc;
 };
 
@@ -334,7 +368,6 @@ HeapObject* Deserializer::PostProcessNewObject(HeapObject* obj, int space) {
     }
   }
   if (obj->IsAllocationSite()) {
-    DCHECK(obj->IsAllocationSite());
     // Allocation sites are present in the snapshot, and must be linked into
     // a list at deserialization time.
     AllocationSite* site = AllocationSite::cast(obj);
@@ -366,6 +399,16 @@ HeapObject* Deserializer::PostProcessNewObject(HeapObject* obj, int space) {
         NativesExternalStringResource::DecodeForDeserialization(
             string->resource()));
     isolate_->heap()->RegisterExternalString(string);
+  }
+  if (FLAG_rehash_snapshot && can_rehash_ && !deserializing_user_code()) {
+    if (obj->IsString()) {
+      // Uninitialize hash field as we are going to reinitialize the hash seed.
+      String* string = String::cast(obj);
+      string->set_hash_field(String::kEmptyHashField);
+    } else if (obj->IsTransitionArray() &&
+               TransitionArray::cast(obj)->number_of_entries() > 1) {
+      transition_arrays_.Add(TransitionArray::cast(obj));
+    }
   }
   // Check alignment.
   DCHECK_EQ(0, Heap::GetFillToAlign(obj->address(), obj->RequiredAlignment()));
@@ -791,7 +834,7 @@ bool Deserializer::ReadData(Object** current, Object** limit, int source_space,
         CHECK_EQ(reservation[chunk_index].end, high_water_[space]);
         // Move to next reserved chunk.
         chunk_index = ++current_chunk_[space];
-        CHECK_LT(chunk_index, reservation.length());
+        CHECK_LT(chunk_index, reservation.size());
         high_water_[space] = reservation[chunk_index].start;
         break;
       }

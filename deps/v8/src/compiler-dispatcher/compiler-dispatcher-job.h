@@ -11,7 +11,7 @@
 #include "src/base/macros.h"
 #include "src/globals.h"
 #include "src/handles.h"
-#include "testing/gtest/include/gtest/gtest_prod.h"
+#include "testing/gtest/include/gtest/gtest_prod.h"  // nogncheck
 
 namespace v8 {
 namespace internal {
@@ -43,7 +43,7 @@ enum class CompileJobStatus {
   kDone,
 };
 
-class CompileJobFinishCallback {
+class V8_EXPORT_PRIVATE CompileJobFinishCallback {
  public:
   virtual ~CompileJobFinishCallback() {}
   virtual void ParseFinished(std::unique_ptr<ParseInfo> parse_info) = 0;
@@ -61,9 +61,8 @@ class V8_EXPORT_PRIVATE CompilerDispatcherJob {
                         Handle<String> source, int start_position,
                         int end_position, LanguageMode language_mode,
                         int function_literal_id, bool native, bool module,
-                        bool is_named_expression, bool calls_eval,
-                        uint32_t hash_seed, AccountingAllocator* zone_allocator,
-                        int compiler_hints,
+                        bool is_named_expression, uint32_t hash_seed,
+                        AccountingAllocator* zone_allocator, int compiler_hints,
                         const AstStringConstants* ast_string_constants,
                         CompileJobFinishCallback* finish_callback);
   // Creates a CompilerDispatcherJob in the analyzed state.
@@ -77,8 +76,6 @@ class V8_EXPORT_PRIVATE CompilerDispatcherJob {
                         size_t max_stack_size);
   ~CompilerDispatcherJob();
 
-  CompileJobStatus status() const { return status_; }
-
   bool has_context() const { return !context_.is_null(); }
   Context* context() { return *context_; }
 
@@ -88,31 +85,26 @@ class V8_EXPORT_PRIVATE CompilerDispatcherJob {
   // function.
   bool IsAssociatedWith(Handle<SharedFunctionInfo> shared) const;
 
-  // Transition from kInitial to kReadyToParse.
-  void PrepareToParseOnMainThread();
+  bool IsFinished() {
+    return status() == CompileJobStatus::kDone ||
+           status() == CompileJobStatus::kFailed;
+  }
 
-  // Transition from kReadyToParse to kParsed (or kDone if there is
-  // finish_callback).
-  void Parse();
+  bool IsFailed() { return status() == CompileJobStatus::kFailed; }
 
-  // Transition from kParsed to kReadyToAnalyze (or kFailed). Returns false
-  // when transitioning to kFailed. In that case, an exception is pending.
-  bool FinalizeParsingOnMainThread();
+  // Return true if the next step can be run on any thread, that is when both
+  // StepNextOnMainThread and StepNextOnBackgroundThread could be used for the
+  // next step.
+  bool CanStepNextOnAnyThread() {
+    return status() == CompileJobStatus::kReadyToParse ||
+           status() == CompileJobStatus::kReadyToCompile;
+  }
 
-  // Transition from kReadyToAnalyze to kAnalyzed (or kFailed). Returns
-  // false when transitioning to kFailed. In that case, an exception is pending.
-  bool AnalyzeOnMainThread();
+  // Step the job forward by one state on the main thread.
+  void StepNextOnMainThread();
 
-  // Transition from kAnalyzed to kReadyToCompile (or kFailed). Returns
-  // false when transitioning to kFailed. In that case, an exception is pending.
-  bool PrepareToCompileOnMainThread();
-
-  // Transition from kReadyToCompile to kCompiled.
-  void Compile();
-
-  // Transition from kCompiled to kDone (or kFailed). Returns false when
-  // transitioning to kFailed. In that case, an exception is pending.
-  bool FinalizeCompilingOnMainThread();
+  // Step the job forward by one state on a background thread.
+  void StepNextOnBackgroundThread();
 
   // Transition from any state to kInitial and free all resources.
   void ResetOnMainThread();
@@ -125,7 +117,10 @@ class V8_EXPORT_PRIVATE CompilerDispatcherJob {
   void ShortPrint();
 
  private:
-  FRIEND_TEST(CompilerDispatcherJobTest, ScopeChain);
+  friend class CompilerDispatcherTest;
+  friend class CompilerDispatcherJobTest;
+
+  CompileJobStatus status() const { return status_; }
 
   CompileJobStatus status_;
   Isolate* isolate_;
@@ -152,6 +147,28 @@ class V8_EXPORT_PRIVATE CompilerDispatcherJob {
   std::unique_ptr<CompilationJob> compile_job_;
 
   bool trace_compiler_dispatcher_jobs_;
+
+  // Transition from kInitial to kReadyToParse.
+  void PrepareToParseOnMainThread();
+
+  // Transition from kReadyToParse to kParsed (or kDone if there is
+  // finish_callback).
+  void Parse();
+
+  // Transition from kParsed to kReadyToAnalyze (or kFailed).
+  void FinalizeParsingOnMainThread();
+
+  // Transition from kReadyToAnalyze to kAnalyzed (or kFailed).
+  void AnalyzeOnMainThread();
+
+  // Transition from kAnalyzed to kReadyToCompile (or kFailed).
+  void PrepareToCompileOnMainThread();
+
+  // Transition from kReadyToCompile to kCompiled.
+  void Compile();
+
+  // Transition from kCompiled to kDone (or kFailed).
+  void FinalizeCompilingOnMainThread();
 
   DISALLOW_COPY_AND_ASSIGN(CompilerDispatcherJob);
 };

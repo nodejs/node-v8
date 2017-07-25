@@ -182,16 +182,14 @@ Scanner::Scanner(UnicodeCache* unicode_cache)
       octal_message_(MessageTemplate::kNone),
       found_html_comment_(false) {}
 
-void Scanner::Initialize(Utf16CharacterStream* source) {
+void Scanner::Initialize(Utf16CharacterStream* source, bool is_module) {
   DCHECK_NOT_NULL(source);
   source_ = source;
+  is_module_ = is_module;
   // Need to capture identifiers in order to recognize "get" and "set"
   // in object literals.
   Init();
-  // Skip initial whitespace allowing HTML comment ends just like
-  // after a newline and scan first token.
   has_line_terminator_before_next_ = true;
-  SkipWhiteSpace();
   Scan();
 }
 
@@ -431,19 +429,7 @@ Token::Value Scanner::PeekAhead() {
 }
 
 
-// TODO(yangguo): check whether this is actually necessary.
-static inline bool IsLittleEndianByteOrderMark(uc32 c) {
-  // The Unicode value U+FFFE is guaranteed never to be assigned as a
-  // Unicode character; this implies that in a Unicode context the
-  // 0xFF, 0xFE byte pattern can only be interpreted as the U+FEFF
-  // character expressed in little-endian byte order (since it could
-  // not be a U+FFFE character expressed in big-endian byte
-  // order). Nevertheless, we check for it to be compatible with
-  // Spidermonkey.
-  return c == 0xFFFE;
-}
-
-bool Scanner::SkipWhiteSpace() {
+Token::Value Scanner::SkipWhiteSpace() {
   int start_position = source_pos();
 
   while (true) {
@@ -455,8 +441,7 @@ bool Scanner::SkipWhiteSpace() {
       // Remember if the latter is the case.
       if (unicode_cache_->IsLineTerminator(c0_)) {
         has_line_terminator_before_next_ = true;
-      } else if (!unicode_cache_->IsWhiteSpace(c0_) &&
-                 !IsLittleEndianByteOrderMark(c0_)) {
+      } else if (!unicode_cache_->IsWhiteSpace(c0_)) {
         break;
       }
       Advance();
@@ -481,11 +466,26 @@ bool Scanner::SkipWhiteSpace() {
     }
 
     // Treat the rest of the line as a comment.
-    SkipSingleLineComment();
+    Token::Value token = SkipSingleHTMLComment();
+    if (token == Token::ILLEGAL) {
+      return token;
+    }
   }
 
   // Return whether or not we skipped any characters.
-  return source_pos() != start_position;
+  if (source_pos() == start_position) {
+    return Token::ILLEGAL;
+  }
+
+  return Token::WHITESPACE;
+}
+
+Token::Value Scanner::SkipSingleHTMLComment() {
+  if (is_module_) {
+    ReportScannerError(source_pos(), MessageTemplate::kHtmlCommentInModule);
+    return Token::ILLEGAL;
+  }
+  return SkipSingleLineComment();
 }
 
 Token::Value Scanner::SkipSingleLineComment() {
@@ -606,7 +606,7 @@ Token::Value Scanner::ScanHtmlComment() {
   }
 
   found_html_comment_ = true;
-  return SkipSingleLineComment();
+  return SkipSingleHTMLComment();
 }
 
 void Scanner::Scan() {
@@ -712,7 +712,7 @@ void Scanner::Scan() {
           if (c0_ == '>' && HasAnyLineTerminatorBeforeNext()) {
             // For compatibility with SpiderMonkey, we skip lines that
             // start with an HTML comment end '-->'.
-            token = SkipSingleLineComment();
+            token = SkipSingleHTMLComment();
           } else {
             token = Token::DEC;
           }
@@ -864,10 +864,11 @@ void Scanner::Scan() {
           token = ScanIdentifierOrKeyword();
         } else if (IsDecimalDigit(c0_)) {
           token = ScanNumber(false);
-        } else if (SkipWhiteSpace()) {
-          token = Token::WHITESPACE;
         } else {
-          token = Select(Token::ILLEGAL);
+          token = SkipWhiteSpace();
+          if (token == Token::ILLEGAL) {
+            Advance();
+          }
         }
         break;
     }
@@ -969,10 +970,8 @@ bool Scanner::ScanEscape() {
   // Skip escaped newlines.
   if (!in_template_literal && c0_ != kEndOfInput &&
       unicode_cache_->IsLineTerminator(c)) {
-    // Allow CR+LF newlines in multiline string literals.
+    // Allow escaped CR+LF newlines in multiline string literals.
     if (IsCarriageReturn(c) && IsLineFeed(c0_)) Advance<capture_raw>();
-    // Allow LF+CR newlines in multiline string literals.
-    if (IsLineFeed(c) && IsCarriageReturn(c0_)) Advance<capture_raw>();
     return true;
   }
 
@@ -1033,7 +1032,7 @@ uc32 Scanner::ScanOctalEscape(uc32 c, int length) {
   // can be reported later (in strict mode).
   // We don't report the error immediately, because the octal escape can
   // occur before the "use strict" directive.
-  if (c != '0' || i > 0) {
+  if (c != '0' || i > 0 || c0_ == '8' || c0_ == '9') {
     octal_pos_ = Location(source_pos() - i - 1, source_pos() - 1);
     octal_message_ = MessageTemplate::kStrictOctalEscape;
   }
@@ -1176,13 +1175,6 @@ Token::Value Scanner::ScanTemplateStart() {
   DCHECK(c0_ == '`');
   next_.location.beg_pos = source_pos();
   Advance();  // Consume `
-  return ScanTemplateSpan();
-}
-
-
-Token::Value Scanner::ScanTemplateContinuation() {
-  DCHECK_EQ(next_.token, Token::RBRACE);
-  next_.location.beg_pos = source_pos() - 1;  // We already consumed }
   return ScanTemplateSpan();
 }
 
@@ -1775,13 +1767,6 @@ double Scanner::DoubleValue() {
       unicode_cache_,
       literal_one_byte_string(),
       ALLOW_HEX | ALLOW_OCTAL | ALLOW_IMPLICIT_OCTAL | ALLOW_BINARY);
-}
-
-
-bool Scanner::ContainsDot() {
-  DCHECK(is_literal_one_byte());
-  Vector<const uint8_t> str = literal_one_byte_string();
-  return std::find(str.begin(), str.end(), '.') != str.end();
 }
 
 bool Scanner::IsDuplicateSymbol(DuplicateFinder* duplicate_finder,

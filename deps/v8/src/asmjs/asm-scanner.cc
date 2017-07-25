@@ -35,14 +35,20 @@ AsmJsScanner::AsmJsScanner()
   STDLIB_MATH_FUNCTION_LIST(V)
   STDLIB_ARRAY_TYPE_LIST(V)
 #undef V
-#define V(name) property_names_[#name] = kToken_##name;
+#define V(name, _junk1) property_names_[#name] = kToken_##name;
   STDLIB_MATH_VALUE_LIST(V)
+#undef V
+#define V(name) property_names_[#name] = kToken_##name;
   STDLIB_OTHER_LIST(V)
 #undef V
 #define V(name) global_names_[#name] = kToken_##name;
   KEYWORD_NAME_LIST(V)
 #undef V
 }
+
+// Destructor of unique_ptr<T> requires complete declaration of T, we only want
+// to include the necessary declaration here instead of the header file.
+AsmJsScanner::~AsmJsScanner() {}
 
 void AsmJsScanner::SetStream(std::unique_ptr<Utf16CharacterStream> stream) {
   stream_ = std::move(stream);
@@ -70,7 +76,7 @@ void AsmJsScanner::Next() {
     if (Token() == kDouble) {
       PrintF("%lf ", AsDouble());
     } else if (Token() == kUnsigned) {
-      PrintF("%" PRIu64 " ", AsUnsigned());
+      PrintF("%" PRIu32 " ", AsUnsigned());
     } else {
       std::string name = Name(Token());
       PrintF("%s ", name.c_str());
@@ -206,16 +212,10 @@ std::string AsmJsScanner::Name(token_t token) const {
       break;
   }
   UNREACHABLE();
-  return "{unreachable}";
 }
 #endif
 
-int AsmJsScanner::GetPosition() const {
-  DCHECK(!rewind_);
-  return static_cast<int>(stream_->pos());
-}
-
-void AsmJsScanner::Seek(int pos) {
+void AsmJsScanner::Seek(size_t pos) {
   stream_->Seek(pos);
   preceding_token_ = kUninitialized;
   token_ = kUninitialized;
@@ -311,9 +311,8 @@ void AsmJsScanner::ConsumeNumber(uc32 ch) {
   UnicodeCache cache;
   double_value_ = StringToDouble(
       &cache,
-      Vector<uint8_t>(
-          const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(number.data())),
-          static_cast<int>(number.size())),
+      Vector<const uint8_t>(reinterpret_cast<const uint8_t*>(number.data()),
+                            static_cast<int>(number.size())),
       ALLOW_HEX | ALLOW_OCTAL | ALLOW_BINARY | ALLOW_IMPLICIT_OCTAL);
   if (std::isnan(double_value_)) {
     // Check if string to number conversion didn't consume all the characters.
@@ -335,6 +334,11 @@ void AsmJsScanner::ConsumeNumber(uc32 ch) {
   if (has_dot) {
     token_ = kDouble;
   } else {
+    // Exceeding safe integer range is an error.
+    if (double_value_ > static_cast<double>(kMaxUInt32)) {
+      token_ = kParseError;
+      return;
+    }
     unsigned_value_ = static_cast<uint32_t>(double_value_);
     token_ = kUnsigned;
   }

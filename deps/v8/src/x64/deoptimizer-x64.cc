@@ -30,29 +30,27 @@ void Deoptimizer::EnsureRelocSpaceForLazyDeoptimization(Handle<Code> code) {
 
 
 void Deoptimizer::PatchCodeForDeoptimization(Isolate* isolate, Code* code) {
+  Address instruction_start = code->instruction_start();
   // Invalidate the relocation information, as it will become invalid by the
   // code patching below, and is not needed any more.
   code->InvalidateRelocation();
 
-  if (FLAG_zap_code_space) {
-    // Fail hard and early if we enter this code object again.
-    byte* pointer = code->FindCodeAgeSequence();
-    if (pointer != NULL) {
-      pointer += kNoCodeAgeSequenceLength;
-    } else {
-      pointer = code->instruction_start();
-    }
-    CodePatcher patcher(isolate, pointer, 1);
-    patcher.masm()->int3();
+  // Fail hard and early if we enter this code object again.
+  byte* pointer = code->FindCodeAgeSequence();
+  if (pointer != NULL) {
+    pointer += kNoCodeAgeSequenceLength;
+  } else {
+    pointer = code->instruction_start();
+  }
+  CodePatcher patcher(isolate, pointer, 1);
+  patcher.masm()->int3();
 
-    DeoptimizationInputData* data =
-        DeoptimizationInputData::cast(code->deoptimization_data());
-    int osr_offset = data->OsrPcOffset()->value();
-    if (osr_offset > 0) {
-      CodePatcher osr_patcher(isolate, code->instruction_start() + osr_offset,
-                              1);
-      osr_patcher.masm()->int3();
-    }
+  DeoptimizationInputData* data =
+      DeoptimizationInputData::cast(code->deoptimization_data());
+  int osr_offset = data->OsrPcOffset()->value();
+  if (osr_offset > 0) {
+    CodePatcher osr_patcher(isolate, instruction_start + osr_offset, 1);
+    osr_patcher.masm()->int3();
   }
 
   // For each LLazyBailout instruction insert a absolute call to the
@@ -61,7 +59,6 @@ void Deoptimizer::PatchCodeForDeoptimization(Isolate* isolate, Code* code) {
   // before the safepoint table (space was allocated there when the Code
   // object was created, if necessary).
 
-  Address instruction_start = code->instruction_start();
 #ifdef DEBUG
   Address prev_call_address = NULL;
 #endif
@@ -88,23 +85,6 @@ void Deoptimizer::PatchCodeForDeoptimization(Isolate* isolate, Code* code) {
   }
 }
 
-
-void Deoptimizer::SetPlatformCompiledStubRegisters(
-    FrameDescription* output_frame, CodeStubDescriptor* descriptor) {
-  intptr_t handler =
-      reinterpret_cast<intptr_t>(descriptor->deoptimization_handler());
-  int params = descriptor->GetHandlerParameterCount();
-  output_frame->SetRegister(rax.code(), params);
-  output_frame->SetRegister(rbx.code(), handler);
-}
-
-
-void Deoptimizer::CopyDoubleRegisters(FrameDescription* output_frame) {
-  for (int i = 0; i < XMMRegister::kMaxNumRegisters; ++i) {
-    Float64 double_value = input_->GetDoubleRegister(i);
-    output_frame->SetDoubleRegister(i, double_value);
-  }
-}
 
 #define __ masm()->
 
@@ -145,7 +125,8 @@ void Deoptimizer::TableEntryGenerator::Generate() {
   const int kSavedRegistersAreaSize =
       kNumberOfRegisters * kRegisterSize + kDoubleRegsSize + kFloatRegsSize;
 
-  __ Store(ExternalReference(Isolate::kCEntryFPAddress, isolate()), rbp);
+  __ Store(ExternalReference(IsolateAddressId::kCEntryFPAddress, isolate()),
+           rbp);
 
   // We use this to keep the value of the fifth argument temporarily.
   // Unfortunately we can't store it directly in r8 (used for passing

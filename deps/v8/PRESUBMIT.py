@@ -31,6 +31,7 @@ See http://dev.chromium.org/developers/how-tos/depottools/presubmit-scripts
 for more details about the presubmit API built into gcl.
 """
 
+import json
 import re
 import sys
 
@@ -40,6 +41,12 @@ _EXCLUDED_PATHS = (
     r"^testing[\\\/].*",
     r"^third_party[\\\/].*",
     r"^tools[\\\/].*",
+)
+
+
+# Regular expression that matches code which should not be run through cpplint.
+_NO_LINT_PATHS = (
+    r'src[\\\/]base[\\\/]export-template\.h',
 )
 
 
@@ -70,9 +77,15 @@ def _V8PresubmitChecks(input_api, output_api):
   from presubmit import SourceProcessor
   from presubmit import StatusFilesProcessor
 
+  def FilterFile(affected_file):
+    return input_api.FilterSourceFile(
+      affected_file,
+      white_list=None,
+      black_list=_NO_LINT_PATHS)
+
   results = []
   if not CppLintProcessor().RunOnFiles(
-      input_api.AffectedFiles(include_deletes=False)):
+      input_api.AffectedFiles(file_filter=FilterFile, include_deletes=False)):
     results.append(output_api.PresubmitError("C++ lint check failed"))
   if not SourceProcessor().RunOnFiles(
       input_api.AffectedFiles(include_deletes=False)):
@@ -265,6 +278,7 @@ def _CommonChecks(input_api, output_api):
   results.extend(
       _CheckNoInlineHeaderIncludesInNormalHeaders(input_api, output_api))
   results.extend(_CheckMissingFiles(input_api, output_api))
+  results.extend(_CheckJSONFiles(input_api, output_api))
   return results
 
 
@@ -304,6 +318,25 @@ def _CheckCommitMessageBugEntry(input_api, output_api):
   return [output_api.PresubmitError(r) for r in results]
 
 
+def _CheckJSONFiles(input_api, output_api):
+  def FilterFile(affected_file):
+    return input_api.FilterSourceFile(
+        affected_file,
+        white_list=(r'.+\.json',))
+
+  results = []
+  for f in input_api.AffectedFiles(
+      file_filter=FilterFile, include_deletes=False):
+    with open(f.LocalPath()) as j:
+      try:
+        json.load(j)
+      except Exception as e:
+        results.append(
+            'JSON validation failed for %s. Error:\n%s' % (f.LocalPath(), e))
+
+  return [output_api.PresubmitError(r) for r in results]
+
+
 def CheckChangeOnUpload(input_api, output_api):
   results = []
   results.extend(_CommonChecks(input_api, output_api))
@@ -320,3 +353,19 @@ def CheckChangeOnCommit(input_api, output_api):
         input_api, output_api,
         json_url='http://v8-status.appspot.com/current?format=json'))
   return results
+
+def PostUploadHook(cl, change, output_api):
+  """git cl upload will call this hook after the issue is created/modified.
+
+  This hook adds a noi18n bot if the patch affects Intl.
+  """
+  def affects_intl(f):
+    return 'intl' in f.LocalPath() or 'test262' in f.LocalPath()
+  if not change.AffectedFiles(file_filter=affects_intl):
+    return []
+  return output_api.EnsureCQIncludeTrybotsAreAdded(
+      cl,
+      [
+        'master.tryserver.v8:v8_linux_noi18n_rel_ng'
+      ],
+      'Automatically added noi18n trybots to run tests on CQ.')

@@ -39,7 +39,7 @@ int LookupNamedCapture(std::function<bool(String*)> name_matches,
     String* capture_name = String::cast(capture_name_map->get(name_ix));
     if (!name_matches(capture_name)) continue;
 
-    maybe_capture_index = Smi::cast(capture_name_map->get(index_ix))->value();
+    maybe_capture_index = Smi::ToInt(capture_name_map->get(index_ix));
     break;
   }
 
@@ -869,10 +869,10 @@ RUNTIME_FUNCTION(Runtime_StringSplit) {
   int part_count = indices->length();
 
   Handle<JSArray> result =
-      isolate->factory()->NewJSArray(FAST_ELEMENTS, part_count, part_count,
+      isolate->factory()->NewJSArray(PACKED_ELEMENTS, part_count, part_count,
                                      INITIALIZE_ARRAY_ELEMENTS_WITH_HOLE);
 
-  DCHECK(result->HasFastObjectElements());
+  DCHECK(result->HasObjectElements());
 
   Handle<FixedArray> elements(FixedArray::cast(result->elements()));
 
@@ -890,7 +890,7 @@ RUNTIME_FUNCTION(Runtime_StringSplit) {
   }
 
   if (limit == 0xffffffffu) {
-    if (result->HasFastObjectElements()) {
+    if (result->HasObjectElements()) {
       RegExpResultsCache::Enter(isolate, subject, pattern, elements,
                                 isolate->factory()->empty_fixed_array(),
                                 RegExpResultsCache::STRING_SPLIT_SUBSTRINGS);
@@ -1140,7 +1140,7 @@ Handle<JSObject> ConstructNamedCaptureGroupsObject(
     const int index_ix = i * 2 + 1;
 
     Handle<String> capture_name(String::cast(capture_map->get(name_ix)));
-    const int capture_ix = Smi::cast(capture_map->get(index_ix))->value();
+    const int capture_ix = Smi::ToInt(capture_map->get(index_ix));
     DCHECK(1 <= capture_ix && capture_ix <= capture_count);
 
     Handle<Object> capture_value(f_get_capture(capture_ix), isolate);
@@ -1177,7 +1177,7 @@ static Object* SearchRegExpMultiple(Isolate* isolate, Handle<String> subject,
       int capture_registers = (capture_count + 1) * 2;
       int32_t* last_match = NewArray<int32_t>(capture_registers);
       for (int i = 0; i < capture_registers; i++) {
-        last_match[i] = Smi::cast(last_match_cache->get(i))->value();
+        last_match[i] = Smi::ToInt(last_match_cache->get(i));
       }
       Handle<FixedArray> cached_fixed_array =
           Handle<FixedArray>(FixedArray::cast(cached_answer));
@@ -1197,7 +1197,7 @@ static Object* SearchRegExpMultiple(Isolate* isolate, Handle<String> subject,
   if (global_cache.HasException()) return isolate->heap()->exception();
 
   // Ensured in Runtime_RegExpExecMultiple.
-  DCHECK(result_array->HasFastObjectElements());
+  DCHECK(result_array->HasObjectElements());
   Handle<FixedArray> result_elements(
       FixedArray::cast(result_array->elements()));
   if (result_elements->length() < 16) {
@@ -1352,7 +1352,7 @@ MUST_USE_RESULT MaybeHandle<String> RegExpReplace(Isolate* isolate,
 
     uint32_t last_index = 0;
     if (sticky) {
-      Handle<Object> last_index_obj(regexp->LastIndex(), isolate);
+      Handle<Object> last_index_obj(regexp->last_index(), isolate);
       ASSIGN_RETURN_ON_EXCEPTION(isolate, last_index_obj,
                                  Object::ToLength(isolate, last_index_obj),
                                  String);
@@ -1367,7 +1367,7 @@ MUST_USE_RESULT MaybeHandle<String> RegExpReplace(Isolate* isolate,
         RegExpImpl::Exec(regexp, string, last_index, last_match_info), String);
 
     if (match_indices_obj->IsNull(isolate)) {
-      if (sticky) regexp->SetLastIndex(0);
+      if (sticky) regexp->set_last_index(Smi::kZero, SKIP_WRITE_BARRIER);
       return string;
     }
 
@@ -1376,7 +1376,8 @@ MUST_USE_RESULT MaybeHandle<String> RegExpReplace(Isolate* isolate,
     const int start_index = match_indices->Capture(0);
     const int end_index = match_indices->Capture(1);
 
-    if (sticky) regexp->SetLastIndex(end_index);
+    if (sticky)
+      regexp->set_last_index(Smi::FromInt(end_index), SKIP_WRITE_BARRIER);
 
     IncrementalStringBuilder builder(isolate);
     builder.AppendString(factory->NewSubString(string, 0, start_index));
@@ -1423,7 +1424,6 @@ MUST_USE_RESULT MaybeHandle<String> RegExpReplace(Isolate* isolate,
   }
 
   UNREACHABLE();
-  return MaybeHandle<String>();
 }
 
 }  // namespace
@@ -1437,7 +1437,7 @@ RUNTIME_FUNCTION(Runtime_RegExpExecMultiple) {
   CONVERT_ARG_HANDLE_CHECKED(String, subject, 1);
   CONVERT_ARG_HANDLE_CHECKED(RegExpMatchInfo, last_match_info, 2);
   CONVERT_ARG_HANDLE_CHECKED(JSArray, result_array, 3);
-  CHECK(result_array->HasFastObjectElements());
+  CHECK(result_array->HasObjectElements());
 
   subject = String::Flatten(subject);
   CHECK(regexp->GetFlags() & JSRegExp::kGlobal);
@@ -1472,7 +1472,7 @@ RUNTIME_FUNCTION(Runtime_StringReplaceNonGlobalRegExpWithFunction) {
   const bool sticky = (flags & JSRegExp::kSticky) != 0;
   uint32_t last_index = 0;
   if (sticky) {
-    Handle<Object> last_index_obj(regexp->LastIndex(), isolate);
+    Handle<Object> last_index_obj(regexp->last_index(), isolate);
     ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
         isolate, last_index_obj, Object::ToLength(isolate, last_index_obj));
     last_index = PositiveNumberToUint32(*last_index_obj);
@@ -1486,7 +1486,7 @@ RUNTIME_FUNCTION(Runtime_StringReplaceNonGlobalRegExpWithFunction) {
       RegExpImpl::Exec(regexp, subject, last_index, last_match_info));
 
   if (match_indices_obj->IsNull(isolate)) {
-    if (sticky) regexp->SetLastIndex(0);
+    if (sticky) regexp->set_last_index(Smi::kZero, SKIP_WRITE_BARRIER);
     return *subject;
   }
 
@@ -1496,7 +1496,8 @@ RUNTIME_FUNCTION(Runtime_StringReplaceNonGlobalRegExpWithFunction) {
   const int index = match_indices->Capture(0);
   const int end_of_match = match_indices->Capture(1);
 
-  if (sticky) regexp->SetLastIndex(end_of_match);
+  if (sticky)
+    regexp->set_last_index(Smi::FromInt(end_of_match), SKIP_WRITE_BARRIER);
 
   IncrementalStringBuilder builder(isolate);
   builder.AppendString(factory->NewSubString(subject, 0, index));
@@ -1637,10 +1638,10 @@ RUNTIME_FUNCTION(Runtime_RegExpSplit) {
     argv[0] = recv;
     argv[1] = new_flags;
 
-    Handle<JSFunction> ctor_fun = Handle<JSFunction>::cast(ctor);
     Handle<Object> splitter_obj;
     ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-        isolate, splitter_obj, Execution::New(ctor_fun, argc, argv.start()));
+        isolate, splitter_obj,
+        Execution::New(isolate, ctor, argc, argv.start()));
 
     splitter = Handle<JSReceiver>::cast(splitter_obj);
   }

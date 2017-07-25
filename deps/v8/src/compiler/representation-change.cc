@@ -42,7 +42,6 @@ const char* Truncation::description() const {
       }
   }
   UNREACHABLE();
-  return nullptr;
 }
 
 
@@ -114,7 +113,6 @@ bool Truncation::LessGeneral(TruncationKind rep1, TruncationKind rep2) {
       return rep2 == TruncationKind::kAny;
   }
   UNREACHABLE();
-  return false;
 }
 
 // static
@@ -196,14 +194,10 @@ Node* RepresentationChanger::GetRepresentationFor(
       DCHECK(use_info.type_check() == TypeCheckKind::kNone);
       return GetWord64RepresentationFor(node, output_rep, output_type);
     case MachineRepresentation::kSimd128:
-    case MachineRepresentation::kSimd1x4:
-    case MachineRepresentation::kSimd1x8:
-    case MachineRepresentation::kSimd1x16:
     case MachineRepresentation::kNone:
       return node;
   }
   UNREACHABLE();
-  return nullptr;
 }
 
 Node* RepresentationChanger::GetTaggedSignedRepresentationFor(
@@ -364,12 +358,22 @@ Node* RepresentationChanger::GetTaggedPointerRepresentationFor(
     }
     op = simplified()->ChangeFloat64ToTaggedPointer();
   } else if (output_rep == MachineRepresentation::kFloat32) {
-    // float32 -> float64 -> tagged
-    node = InsertChangeFloat32ToFloat64(node);
-    op = simplified()->ChangeFloat64ToTaggedPointer();
+    if (output_type->Is(Type::Number())) {
+      // float32 -> float64 -> tagged
+      node = InsertChangeFloat32ToFloat64(node);
+      op = simplified()->ChangeFloat64ToTaggedPointer();
+    } else {
+      return TypeError(node, output_rep, output_type,
+                       MachineRepresentation::kTaggedPointer);
+    }
   } else if (output_rep == MachineRepresentation::kFloat64) {
-    // float64 -> tagged
-    op = simplified()->ChangeFloat64ToTaggedPointer();
+    if (output_type->Is(Type::Number())) {
+      // float64 -> tagged
+      op = simplified()->ChangeFloat64ToTaggedPointer();
+    } else {
+      return TypeError(node, output_rep, output_type,
+                       MachineRepresentation::kTaggedPointer);
+    }
   } else if (CanBeTaggedSigned(output_rep) &&
              use_info.type_check() == TypeCheckKind::kHeapObject) {
     if (!output_type->Maybe(Type::SignedSmall())) {
@@ -452,11 +456,14 @@ Node* RepresentationChanger::GetTaggedRepresentationFor(
                    Type::Unsigned32())) {  // float64 -> uint32 -> tagged
       node = InsertChangeFloat64ToUint32(node);
       op = simplified()->ChangeUint32ToTagged();
-    } else {
+    } else if (output_type->Is(Type::Number())) {
       op = simplified()->ChangeFloat64ToTagged(
           output_type->Maybe(Type::MinusZero())
               ? CheckForMinusZeroMode::kCheckForMinusZero
               : CheckForMinusZeroMode::kDontCheckForMinusZero);
+    } else {
+      return TypeError(node, output_rep, output_type,
+                       MachineRepresentation::kTagged);
     }
   } else {
     return TypeError(node, output_rep, output_type,
@@ -654,7 +661,7 @@ Node* RepresentationChanger::GetWord32RepresentationFor(
                use_info.type_check() == TypeCheckKind::kSigned32) {
       op = simplified()->CheckedFloat64ToInt32(
           output_type->Maybe(Type::MinusZero())
-              ? CheckForMinusZeroMode::kCheckForMinusZero
+              ? use_info.minus_zero_check()
               : CheckForMinusZeroMode::kDontCheckForMinusZero);
     } else if (output_type->Is(Type::Unsigned32())) {
       op = machine()->ChangeFloat64ToUint32();
@@ -664,37 +671,30 @@ Node* RepresentationChanger::GetWord32RepresentationFor(
       return TypeError(node, output_rep, output_type,
                        MachineRepresentation::kWord32);
     }
-  } else if (output_rep == MachineRepresentation::kTaggedSigned) {
-    if (output_type->Is(Type::Signed32())) {
+  } else if (IsAnyTagged(output_rep)) {
+    if (output_rep == MachineRepresentation::kTaggedSigned &&
+        output_type->Is(Type::SignedSmall())) {
       op = simplified()->ChangeTaggedSignedToInt32();
-    } else if (use_info.truncation().IsUsedAsWord32()) {
-      if (use_info.type_check() != TypeCheckKind::kNone) {
-        op = simplified()->CheckedTruncateTaggedToWord32();
-      } else {
-        op = simplified()->TruncateTaggedToWord32();
-      }
-    } else {
-      return TypeError(node, output_rep, output_type,
-                       MachineRepresentation::kWord32);
-    }
-  } else if (output_rep == MachineRepresentation::kTagged ||
-             output_rep == MachineRepresentation::kTaggedPointer) {
-    if (output_type->Is(Type::Signed32())) {
+    } else if (output_type->Is(Type::Signed32())) {
       op = simplified()->ChangeTaggedToInt32();
     } else if (use_info.type_check() == TypeCheckKind::kSignedSmall) {
       op = simplified()->CheckedTaggedSignedToInt32();
     } else if (use_info.type_check() == TypeCheckKind::kSigned32) {
       op = simplified()->CheckedTaggedToInt32(
           output_type->Maybe(Type::MinusZero())
-              ? CheckForMinusZeroMode::kCheckForMinusZero
+              ? use_info.minus_zero_check()
               : CheckForMinusZeroMode::kDontCheckForMinusZero);
     } else if (output_type->Is(Type::Unsigned32())) {
       op = simplified()->ChangeTaggedToUint32();
     } else if (use_info.truncation().IsUsedAsWord32()) {
       if (output_type->Is(Type::NumberOrOddball())) {
         op = simplified()->TruncateTaggedToWord32();
-      } else if (use_info.type_check() != TypeCheckKind::kNone) {
-        op = simplified()->CheckedTruncateTaggedToWord32();
+      } else if (use_info.type_check() == TypeCheckKind::kNumber) {
+        op = simplified()->CheckedTruncateTaggedToWord32(
+            CheckTaggedInputMode::kNumber);
+      } else if (use_info.type_check() == TypeCheckKind::kNumberOrOddball) {
+        op = simplified()->CheckedTruncateTaggedToWord32(
+            CheckTaggedInputMode::kNumberOrOddball);
       } else {
         return TypeError(node, output_rep, output_type,
                          MachineRepresentation::kWord32);
@@ -716,8 +716,8 @@ Node* RepresentationChanger::GetWord32RepresentationFor(
         return TypeError(node, output_rep, output_type,
                          MachineRepresentation::kWord32);
       }
-    } else {
-      DCHECK_EQ(TypeCheckKind::kNumberOrOddball, use_info.type_check());
+    } else if (use_info.type_check() == TypeCheckKind::kNumber ||
+               use_info.type_check() == TypeCheckKind::kNumberOrOddball) {
       return node;
     }
   } else if (output_rep == MachineRepresentation::kWord8 ||
@@ -863,7 +863,6 @@ const Operator* RepresentationChanger::Int32OperatorFor(
       return machine()->Int32LessThanOrEqual();
     default:
       UNREACHABLE();
-      return nullptr;
   }
 }
 
@@ -880,7 +879,6 @@ const Operator* RepresentationChanger::Int32OverflowOperatorFor(
       return simplified()->CheckedInt32Mod();
     default:
       UNREACHABLE();
-      return nullptr;
   }
 }
 
@@ -898,7 +896,6 @@ const Operator* RepresentationChanger::TaggedSignedOperatorFor(
                                : machine()->Word64Equal();
     default:
       UNREACHABLE();
-      return nullptr;
   }
 }
 
@@ -933,7 +930,6 @@ const Operator* RepresentationChanger::Uint32OperatorFor(
       return machine()->Int32Mul();
     default:
       UNREACHABLE();
-      return nullptr;
   }
 }
 
@@ -946,7 +942,6 @@ const Operator* RepresentationChanger::Uint32OverflowOperatorFor(
       return simplified()->CheckedUint32Mod();
     default:
       UNREACHABLE();
-      return nullptr;
   }
 }
 
@@ -1039,7 +1034,6 @@ const Operator* RepresentationChanger::Float64OperatorFor(
       return machine()->Float64SilenceNaN();
     default:
       UNREACHABLE();
-      return nullptr;
   }
 }
 

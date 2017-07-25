@@ -79,6 +79,10 @@ class V8_EXPORT_PRIVATE NodeProperties final {
   // the present IfException projection is returned via {out_exception}.
   static bool IsExceptionalCall(Node* node, Node** out_exception = nullptr);
 
+  // Returns the node producing the successful control output of {node}. This is
+  // the IfSuccess projection of {node} if present and {node} itself otherwise.
+  static Node* FindSuccessfulControlProjection(Node* node);
+
   // ---------------------------------------------------------------------------
   // Miscellaneous mutators.
 
@@ -134,19 +138,14 @@ class V8_EXPORT_PRIVATE NodeProperties final {
   enum InferReceiverMapsResult {
     kNoReceiverMaps,         // No receiver maps inferred.
     kReliableReceiverMaps,   // Receiver maps can be trusted.
-    kUnreliableReceiverMaps  // Receiver maps might have changed (side-effect).
+    kUnreliableReceiverMaps  // Receiver maps might have changed (side-effect),
+                             // but instance type is reliable.
   };
   static InferReceiverMapsResult InferReceiverMaps(
       Node* receiver, Node* effect, ZoneHandleSet<Map>* maps_return);
 
   // ---------------------------------------------------------------------------
   // Context.
-
-  // Try to retrieve the specialization context from the given {node},
-  // optionally utilizing the knowledge about the (outermost) function
-  // {context}.
-  static MaybeHandle<Context> GetSpecializationContext(
-      Node* node, MaybeHandle<Context> context = MaybeHandle<Context>());
 
   // Walk up the context chain from the given {node} until we reduce the {depth}
   // to 0 or hit a node that does not extend the context chain ({depth} will be

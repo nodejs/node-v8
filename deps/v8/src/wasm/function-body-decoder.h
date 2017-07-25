@@ -5,8 +5,6 @@
 #ifndef V8_WASM_FUNCTION_BODY_DECODER_H_
 #define V8_WASM_FUNCTION_BODY_DECODER_H_
 
-#include <iterator>
-
 #include "src/base/compiler-specific.h"
 #include "src/base/iterator.h"
 #include "src/globals.h"
@@ -32,23 +30,21 @@ struct WasmModule;  // forward declaration of module interface.
 // A wrapper around the signature and bytes of a function.
 struct FunctionBody {
   FunctionSig* sig;   // function signature
-  const byte* base;   // base of the module bytes, for error reporting
+  uint32_t offset;    // offset in the module bytes, for error reporting
   const byte* start;  // start of the function body
   const byte* end;    // end of the function body
 };
 
 static inline FunctionBody FunctionBodyForTesting(const byte* start,
                                                   const byte* end) {
-  return {nullptr, start, start, end};
+  return {nullptr, 0, start, end};
 }
 
-struct DecodeStruct {
-  int unused;
-};
-typedef Result<DecodeStruct*> DecodeResult;
-inline std::ostream& operator<<(std::ostream& os, const DecodeStruct& tree) {
-  return os;
-}
+// A {DecodeResult} only stores the failure / success status, but no data. Thus
+// we use {nullptr_t} as data value, such that the only valid data stored in
+// this type is a nullptr.
+// Storing {void} would require template specialization.
+using DecodeResult = Result<std::nullptr_t>;
 
 V8_EXPORT_PRIVATE DecodeResult VerifyWasmCode(AccountingAllocator* allocator,
                                               const wasm::WasmModule* module,
@@ -64,14 +60,14 @@ void PrintRawWasmCode(const byte* start, const byte* end);
 inline DecodeResult VerifyWasmCode(AccountingAllocator* allocator,
                                    const WasmModule* module, FunctionSig* sig,
                                    const byte* start, const byte* end) {
-  FunctionBody body = {sig, nullptr, start, end};
+  FunctionBody body = {sig, 0, start, end};
   return VerifyWasmCode(allocator, module, body);
 }
 
 inline DecodeResult BuildTFGraph(AccountingAllocator* allocator,
                                  TFBuilder* builder, FunctionSig* sig,
                                  const byte* start, const byte* end) {
-  FunctionBody body = {sig, nullptr, start, end};
+  FunctionBody body = {sig, 0, start, end};
   return BuildTFGraph(allocator, builder, body);
 }
 
@@ -81,12 +77,12 @@ struct BodyLocalDecls {
 
   ZoneVector<ValueType> type_list;
 
-  // Constructor initializes the vector.
   explicit BodyLocalDecls(Zone* zone) : encoded_size(0), type_list(zone) {}
 };
 
 V8_EXPORT_PRIVATE bool DecodeLocalDecls(BodyLocalDecls* decls,
                                         const byte* start, const byte* end);
+
 V8_EXPORT_PRIVATE BitVector* AnalyzeLoopAssignmentForTesting(Zone* zone,
                                                              size_t num_locals,
                                                              const byte* start,
@@ -94,6 +90,15 @@ V8_EXPORT_PRIVATE BitVector* AnalyzeLoopAssignmentForTesting(Zone* zone,
 
 // Computes the length of the opcode at the given address.
 V8_EXPORT_PRIVATE unsigned OpcodeLength(const byte* pc, const byte* end);
+
+// Computes the stack effect of the opcode at the given address.
+// Returns <pop count, push count>.
+// Be cautious with control opcodes: This function only covers their immediate,
+// local stack effect (e.g. BrIf pops 1, Br pops 0). Those opcodes can have
+// non-local stack effect though, which are not covered here.
+std::pair<uint32_t, uint32_t> StackEffect(const WasmModule* module,
+                                          FunctionSig* sig, const byte* pc,
+                                          const byte* end);
 
 // A simple forward iterator for bytecodes.
 class V8_EXPORT_PRIVATE BytecodeIterator : public NON_EXPORTED_BASE(Decoder) {
@@ -122,7 +127,7 @@ class V8_EXPORT_PRIVATE BytecodeIterator : public NON_EXPORTED_BASE(Decoder) {
   // If one wants to iterate over the bytecode without looking at {pc_offset()}.
   class opcode_iterator
       : public iterator_base,
-        public std::iterator<std::input_iterator_tag, WasmOpcode> {
+        public base::iterator<std::input_iterator_tag, WasmOpcode> {
    public:
     inline WasmOpcode operator*() {
       DCHECK_LT(ptr_, end_);
@@ -138,7 +143,7 @@ class V8_EXPORT_PRIVATE BytecodeIterator : public NON_EXPORTED_BASE(Decoder) {
   // opcodes.
   class offset_iterator
       : public iterator_base,
-        public std::iterator<std::input_iterator_tag, uint32_t> {
+        public base::iterator<std::input_iterator_tag, uint32_t> {
    public:
     inline uint32_t operator*() {
       DCHECK_LT(ptr_, end_);

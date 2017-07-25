@@ -23,9 +23,6 @@ class V8_EXPORT_PRIVATE AccessBuilder final
   // ===========================================================================
   // Access to external values (based on external references).
 
-  // Provides access to a double field identified by an external reference.
-  static FieldAccess ForExternalDoubleValue();
-
   // Provides access to a tagged field identified by an external reference.
   static FieldAccess ForExternalTaggedValue();
 
@@ -55,6 +52,12 @@ class V8_EXPORT_PRIVATE AccessBuilder final
   // Provides access to JSCollecton::table() field.
   static FieldAccess ForJSCollectionTable();
 
+  // Provides access to JSCollectionIterator::table() field.
+  static FieldAccess ForJSCollectionIteratorTable();
+
+  // Provides access to JSCollectionIterator::index() field.
+  static FieldAccess ForJSCollectionIteratorIndex();
+
   // Provides access to JSFunction::prototype_or_initial_map() field.
   static FieldAccess ForJSFunctionPrototypeOrInitialMap();
 
@@ -68,10 +71,19 @@ class V8_EXPORT_PRIVATE AccessBuilder final
   static FieldAccess ForJSFunctionFeedbackVector();
 
   // Provides access to JSFunction::code() field.
-  static FieldAccess ForJSFunctionCodeEntry();
+  static FieldAccess ForJSFunctionCode();
 
   // Provides access to JSFunction::next_function_link() field.
   static FieldAccess ForJSFunctionNextFunctionLink();
+
+  // Provides access to JSBoundFunction::bound_target_function() field.
+  static FieldAccess ForJSBoundFunctionBoundTargetFunction();
+
+  // Provides access to JSBoundFunction::bound_this() field.
+  static FieldAccess ForJSBoundFunctionBoundThis();
+
+  // Provides access to JSBoundFunction::bound_arguments() field.
+  static FieldAccess ForJSBoundFunctionBoundArguments();
 
   // Provides access to JSGeneratorObject::context() field.
   static FieldAccess ForJSGeneratorObjectContext();
@@ -82,15 +94,23 @@ class V8_EXPORT_PRIVATE AccessBuilder final
   // Provides access to JSGeneratorObject::input_or_debug_pos() field.
   static FieldAccess ForJSGeneratorObjectInputOrDebugPos();
 
-  // Provides access to JSAsyncGeneratorObject::await_input_or_debug_pos()
-  // field.
-  static FieldAccess ForJSAsyncGeneratorObjectAwaitInputOrDebugPos();
-
   // Provides access to JSGeneratorObject::register_file() field.
   static FieldAccess ForJSGeneratorObjectRegisterFile();
 
+  // Provides access to JSGeneratorObject::function() field.
+  static FieldAccess ForJSGeneratorObjectFunction();
+
+  // Provides access to JSGeneratorObject::receiver() field.
+  static FieldAccess ForJSGeneratorObjectReceiver();
+
   // Provides access to JSGeneratorObject::resume_mode() field.
   static FieldAccess ForJSGeneratorObjectResumeMode();
+
+  // Provides access to JSAsyncGeneratorObject::queue() field.
+  static FieldAccess ForJSAsyncGeneratorObjectQueue();
+
+  // Provides access to JSAsyncGeneratorObject::awaited_promise() field.
+  static FieldAccess ForJSAsyncGeneratorObjectAwaitedPromise();
 
   // Provides access to JSArray::length() field.
   static FieldAccess ForJSArrayLength(ElementsKind elements_kind);
@@ -125,8 +145,14 @@ class V8_EXPORT_PRIVATE AccessBuilder final
   // Provides access to JSIteratorResult::value() field.
   static FieldAccess ForJSIteratorResultValue();
 
+  // Provides access to JSRegExp::data() field.
+  static FieldAccess ForJSRegExpData();
+
   // Provides access to JSRegExp::flags() field.
   static FieldAccess ForJSRegExpFlags();
+
+  // Provides access to JSRegExp::last_index() field.
+  static FieldAccess ForJSRegExpLastIndex();
 
   // Provides access to JSRegExp::source() field.
   static FieldAccess ForJSRegExpSource();
@@ -134,20 +160,26 @@ class V8_EXPORT_PRIVATE AccessBuilder final
   // Provides access to FixedArray::length() field.
   static FieldAccess ForFixedArrayLength();
 
+  // Provides access to PropertyArray::length() field.
+  static FieldAccess ForPropertyArrayLength();
+
   // Provides access to FixedTypedArrayBase::base_pointer() field.
   static FieldAccess ForFixedTypedArrayBaseBasePointer();
 
   // Provides access to FixedTypedArrayBase::external_pointer() field.
   static FieldAccess ForFixedTypedArrayBaseExternalPointer();
 
-  // Provides access to DescriptorArray::enum_cache() field.
-  static FieldAccess ForDescriptorArrayEnumCache();
+  // Provides access to DescriptorArray::enum_cache_bridge() field.
+  static FieldAccess ForDescriptorArrayEnumCacheBridge();
 
   // Provides access to DescriptorArray::enum_cache_bridge_cache() field.
   static FieldAccess ForDescriptorArrayEnumCacheBridgeCache();
 
   // Provides access to Map::bit_field() byte.
   static FieldAccess ForMapBitField();
+
+  // Provides access to Map::bit_field2() byte.
+  static FieldAccess ForMapBitField2();
 
   // Provides access to Map::bit_field3() field.
   static FieldAccess ForMapBitField3();
@@ -261,6 +293,12 @@ class V8_EXPORT_PRIVATE AccessBuilder final
   static FieldAccess ForHashTableBaseNumberOfElements();
   static FieldAccess ForHashTableBaseNumberOfDeletedElement();
   static FieldAccess ForHashTableBaseCapacity();
+
+  // Provides access to OrderedHashTableBase fields.
+  static FieldAccess ForOrderedHashTableBaseNextTable();
+  static FieldAccess ForOrderedHashTableBaseNumberOfBuckets();
+  static FieldAccess ForOrderedHashTableBaseNumberOfElements();
+  static FieldAccess ForOrderedHashTableBaseNumberOfDeletedElements();
 
   // Provides access to Dictionary fields.
   static FieldAccess ForDictionaryMaxNumberKey();

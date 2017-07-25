@@ -156,7 +156,7 @@ class Serializer : public SerializerDeserializer {
   virtual void SerializeObject(HeapObject* o, HowToCode how_to_code,
                                WhereToPoint where_to_point, int skip) = 0;
 
-  void VisitPointers(Object** start, Object** end) override;
+  void VisitRootPointers(Root root, Object** start, Object** end) override;
 
   void PutRoot(int index, HeapObject* object, HowToCode how, WhereToPoint where,
                int skip);
@@ -185,8 +185,6 @@ class Serializer : public SerializerDeserializer {
       sink_.PutInt(skip, "SkipDistanceFromSerializeObject");
     }
   }
-
-  bool BackReferenceIsAlreadyAllocated(SerializerReference back_reference);
 
   // This will return the space for an object.
   SerializerReference AllocateLargeObject(int size);
@@ -221,6 +219,14 @@ class Serializer : public SerializerDeserializer {
   }
 
   void OutputStatistics(const char* name);
+
+#ifdef DEBUG
+  void PushStack(HeapObject* o) { stack_.Add(o); }
+  void PopStack() { stack_.RemoveLast(); }
+  void PrintStack();
+
+  bool BackReferenceIsAlreadyAllocated(SerializerReference back_reference);
+#endif  // DEBUG
 
   Isolate* isolate_;
 
@@ -264,6 +270,10 @@ class Serializer : public SerializerDeserializer {
   size_t* instance_type_size_;
 #endif  // OBJECT_PRINT
 
+#ifdef DEBUG
+  List<HeapObject*> stack_;
+#endif  // DEBUG
+
   DISALLOW_COPY_AND_ASSIGN(Serializer);
 };
 
@@ -277,20 +287,27 @@ class Serializer::ObjectSerializer : public ObjectVisitor {
         sink_(sink),
         reference_representation_(how_to_code + where_to_point),
         bytes_processed_so_far_(0),
-        code_has_been_output_(false) {}
-  ~ObjectSerializer() override {}
+        code_has_been_output_(false) {
+#ifdef DEBUG
+    serializer_->PushStack(obj);
+#endif  // DEBUG
+  }
+  ~ObjectSerializer() override {
+#ifdef DEBUG
+    serializer_->PopStack();
+#endif  // DEBUG
+  }
   void Serialize();
   void SerializeContent();
   void SerializeDeferred();
-  void VisitPointers(Object** start, Object** end) override;
-  void VisitEmbeddedPointer(RelocInfo* target) override;
-  void VisitExternalReference(Address* p) override;
-  void VisitExternalReference(RelocInfo* rinfo) override;
-  void VisitInternalReference(RelocInfo* rinfo) override;
-  void VisitCodeTarget(RelocInfo* target) override;
-  void VisitCodeEntry(Address entry_address) override;
-  void VisitCell(RelocInfo* rinfo) override;
-  void VisitRuntimeEntry(RelocInfo* reloc) override;
+  void VisitPointers(HeapObject* host, Object** start, Object** end) override;
+  void VisitEmbeddedPointer(Code* host, RelocInfo* target) override;
+  void VisitExternalReference(Foreign* host, Address* p) override;
+  void VisitExternalReference(Code* host, RelocInfo* rinfo) override;
+  void VisitInternalReference(Code* host, RelocInfo* rinfo) override;
+  void VisitCodeTarget(Code* host, RelocInfo* target) override;
+  void VisitCellPointer(Code* host, RelocInfo* rinfo) override;
+  void VisitRuntimeEntry(Code* host, RelocInfo* reloc) override;
 
  private:
   bool TryEncodeDeoptimizationEntry(HowToCode how_to_code, Address target,

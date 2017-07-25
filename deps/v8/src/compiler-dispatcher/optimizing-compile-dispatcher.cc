@@ -22,6 +22,9 @@ void DisposeCompilationJob(CompilationJob* job, bool restore_function_code) {
   if (restore_function_code) {
     Handle<JSFunction> function = job->info()->closure();
     function->ReplaceCode(function->shared()->code());
+    if (function->IsInOptimizationQueue()) {
+      function->ClearOptimizationMarker();
+    }
     // TODO(mvstanton): We can't call ensureliterals here due to allocation,
     // but we probably shouldn't call ReplaceCode either, as this
     // sometimes runs on the worker thread!
@@ -135,8 +138,8 @@ void OptimizingCompileDispatcher::FlushOutputQueue(bool restore_function_code) {
 }
 
 void OptimizingCompileDispatcher::Flush(BlockingBehavior blocking_behavior) {
-  if (FLAG_block_concurrent_recompilation) Unblock();
   if (blocking_behavior == BlockingBehavior::kDontBlock) {
+    if (FLAG_block_concurrent_recompilation) Unblock();
     base::LockGuard<base::Mutex> access_input_queue_(&input_queue_mutex_);
     while (input_queue_length_ > 0) {
       CompilationJob* job = input_queue_[InputQueueIndex(0)];
@@ -196,7 +199,7 @@ void OptimizingCompileDispatcher::InstallOptimizedFunctions() {
     }
     CompilationInfo* info = job->info();
     Handle<JSFunction> function(*info->closure());
-    if (function->IsOptimized()) {
+    if (function->HasOptimizedCode()) {
       if (FLAG_trace_concurrent_recompilation) {
         PrintF("  ** Aborting compilation for ");
         function->ShortPrint();

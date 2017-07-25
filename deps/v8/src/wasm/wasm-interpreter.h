@@ -6,6 +6,7 @@
 #define V8_WASM_INTERPRETER_H_
 
 #include "src/wasm/wasm-opcodes.h"
+#include "src/wasm/wasm-value.h"
 #include "src/zone/zone-containers.h"
 
 namespace v8 {
@@ -21,96 +22,78 @@ namespace wasm {
 // forward declarations.
 struct ModuleBytesEnv;
 struct WasmFunction;
+struct WasmModule;
 class WasmInterpreterInternals;
 
-typedef size_t pc_t;
-typedef size_t sp_t;
-typedef int32_t pcdiff_t;
-typedef uint32_t spdiff_t;
+using pc_t = size_t;
+using sp_t = size_t;
+using pcdiff_t = int32_t;
+using spdiff_t = uint32_t;
 
-const pc_t kInvalidPc = 0x80000000;
+constexpr pc_t kInvalidPc = 0x80000000;
 
-typedef ZoneMap<pc_t, pcdiff_t> ControlTransferMap;
-
-// Macro for defining union members.
-#define FOREACH_UNION_MEMBER(V) \
-  V(i32, kWasmI32, int32_t)     \
-  V(u32, kWasmI32, uint32_t)    \
-  V(i64, kWasmI64, int64_t)     \
-  V(u64, kWasmI64, uint64_t)    \
-  V(f32, kWasmF32, float)       \
-  V(f64, kWasmF64, double)
-
-// Representation of values within the interpreter.
-struct WasmVal {
-  ValueType type;
-  union {
-#define DECLARE_FIELD(field, localtype, ctype) ctype field;
-    FOREACH_UNION_MEMBER(DECLARE_FIELD)
-#undef DECLARE_FIELD
-  } val;
-
-  WasmVal() : type(kWasmStmt) {}
-
-#define DECLARE_CONSTRUCTOR(field, localtype, ctype) \
-  explicit WasmVal(ctype v) : type(localtype) { val.field = v; }
-  FOREACH_UNION_MEMBER(DECLARE_CONSTRUCTOR)
-#undef DECLARE_CONSTRUCTOR
-
-  template <typename T>
-  inline T to() {
-    UNREACHABLE();
-  }
-
-  template <typename T>
-  inline T to_unchecked() {
-    UNREACHABLE();
-  }
+struct ControlTransferEntry {
+  // Distance from the instruction to the label to jump to (forward, but can be
+  // negative).
+  pcdiff_t pc_diff;
+  // Delta by which to decrease the stack height.
+  spdiff_t sp_diff;
+  // Arity of the block we jump to.
+  uint32_t target_arity;
 };
 
-#define DECLARE_CAST(field, localtype, ctype) \
-  template <>                                 \
-  inline ctype WasmVal::to_unchecked() {      \
-    return val.field;                         \
-  }                                           \
-  template <>                                 \
-  inline ctype WasmVal::to() {                \
-    CHECK_EQ(localtype, type);                \
-    return val.field;                         \
-  }
-FOREACH_UNION_MEMBER(DECLARE_CAST)
-#undef DECLARE_CAST
+using ControlTransferMap = ZoneMap<pc_t, ControlTransferEntry>;
 
 // Representation of frames within the interpreter.
+//
+// Layout of a frame:
+// -----------------
+// stack slot #N  ‾\.
+// ...             |  stack entries: GetStackHeight(); GetStackValue()
+// stack slot #0  _/·
+// local #L       ‾\.
+// ...             |  locals: GetLocalCount(); GetLocalValue()
+// local #P+1      |
+// param #P        |   ‾\.
+// ...             |    | parameters: GetParameterCount(); GetLocalValue()
+// param #0       _/·  _/·
+// -----------------
+//
 class InterpretedFrame {
  public:
-  const WasmFunction* function() const { return function_; }
-  int pc() const { return pc_; }
+  const WasmFunction* function() const;
+  int pc() const;
 
-  //==========================================================================
-  // Stack frame inspection.
-  //==========================================================================
   int GetParameterCount() const;
-  WasmVal GetLocalVal(int index) const;
-  WasmVal GetExprVal(int pc) const;
-  void SetLocalVal(int index, WasmVal val);
-  void SetExprVal(int pc, WasmVal val);
+  int GetLocalCount() const;
+  int GetStackHeight() const;
+  WasmValue GetLocalValue(int index) const;
+  WasmValue GetStackValue(int index) const;
 
  private:
   friend class WasmInterpreter;
-
-  InterpretedFrame(const WasmFunction* function, int pc, int fp, int sp)
-      : function_(function), pc_(pc), fp_(fp), sp_(sp) {}
-
-  const WasmFunction* function_;
-  int pc_;
-  int fp_;
-  int sp_;
+  // Don't instante InterpretedFrames; they will be allocated as
+  // InterpretedFrameImpl in the interpreter implementation.
+  InterpretedFrame() = delete;
+  DISALLOW_COPY_AND_ASSIGN(InterpretedFrame);
 };
 
-// An interpreter capable of executing WASM.
+// An interpreter capable of executing WebAssembly.
 class V8_EXPORT_PRIVATE WasmInterpreter {
  public:
+  // Open a HeapObjectsScope before running any code in the interpreter which
+  // needs access to the instance object or needs to call to JS functions.
+  class V8_EXPORT_PRIVATE HeapObjectsScope {
+   public:
+    HeapObjectsScope(WasmInterpreter* interpreter,
+                     Handle<WasmInstanceObject> instance);
+    ~HeapObjectsScope();
+
+   private:
+    char data[3 * sizeof(void*)];  // must match sizeof(HeapObjectsScopeImpl).
+    DISALLOW_COPY_AND_ASSIGN(HeapObjectsScope);
+  };
+
   // State machine for a Thread:
   //                         +---------Run()/Step()--------+
   //                         V                             |
@@ -140,7 +123,7 @@ class V8_EXPORT_PRIVATE WasmInterpreter {
 
     // Execution control.
     State state();
-    void InitFrame(const WasmFunction* function, WasmVal* args);
+    void InitFrame(const WasmFunction* function, WasmValue* args);
     // Pass -1 as num_steps to run till completion, pause or breakpoint.
     State Run(int num_steps = -1);
     State Step() { return Run(1); }
@@ -154,9 +137,9 @@ class V8_EXPORT_PRIVATE WasmInterpreter {
     pc_t GetBreakpointPc();
     // TODO(clemensh): Make this uint32_t.
     int GetFrameCount();
-    const InterpretedFrame GetFrame(int index);
-    InterpretedFrame GetMutableFrame(int index);
-    WasmVal GetReturnValue(int index = 0);
+    // The InterpretedFrame is only valid as long as the Thread is paused.
+    std::unique_ptr<InterpretedFrame> GetFrame(int index);
+    WasmValue GetReturnValue(int index = 0);
     TrapReason GetTrapReason();
 
     // Returns true if the thread executed an instruction which may produce
@@ -207,13 +190,6 @@ class V8_EXPORT_PRIVATE WasmInterpreter {
   // Enable or disable tracing for {function}. Return the previous state.
   bool SetTracing(const WasmFunction* function, bool enabled);
 
-  // Set the associated wasm instance object.
-  // If the instance object has been set, some tables stored inside it are used
-  // instead of the tables stored in the WasmModule struct. This allows to call
-  // back and forth between the interpreter and outside code (JS or wasm
-  // compiled) without repeatedly copying information.
-  void SetInstanceObject(WasmInstanceObject*);
-
   //==========================================================================
   // Thread iteration and inspection.
   //==========================================================================
@@ -224,8 +200,10 @@ class V8_EXPORT_PRIVATE WasmInterpreter {
   // Memory access.
   //==========================================================================
   size_t GetMemorySize();
-  WasmVal ReadMemory(size_t offset);
-  void WriteMemory(size_t offset, WasmVal val);
+  WasmValue ReadMemory(size_t offset);
+  void WriteMemory(size_t offset, WasmValue val);
+  // Update the memory region, e.g. after external GrowMemory.
+  void UpdateMemory(byte* mem_start, uint32_t mem_size);
 
   //==========================================================================
   // Testing functionality.
@@ -239,9 +217,8 @@ class V8_EXPORT_PRIVATE WasmInterpreter {
 
   // Computes the control transfers for the given bytecode. Used internally in
   // the interpreter, but exposed for testing.
-  static ControlTransferMap ComputeControlTransfersForTesting(Zone* zone,
-                                                              const byte* start,
-                                                              const byte* end);
+  static ControlTransferMap ComputeControlTransfersForTesting(
+      Zone* zone, const WasmModule* module, const byte* start, const byte* end);
 
  private:
   Zone zone_;

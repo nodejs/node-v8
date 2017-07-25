@@ -99,9 +99,9 @@ Object* ThrowRuntimeError(Isolate* isolate, int message_id, int byte_offset,
   // properties).
   Handle<Object> detailed_stack_trace_obj = JSReceiver::GetDataProperty(
       error, isolate->factory()->detailed_stack_trace_symbol());
-  if (detailed_stack_trace_obj->IsJSArray()) {
+  if (detailed_stack_trace_obj->IsFixedArray()) {
     Handle<FixedArray> stack_elements(
-        FixedArray::cast(JSArray::cast(*detailed_stack_trace_obj)->elements()));
+        FixedArray::cast(*detailed_stack_trace_obj));
     DCHECK_GE(stack_elements->length(), 1);
     Handle<StackFrameInfo> top_frame(
         StackFrameInfo::cast(stack_elements->get(0)));
@@ -180,12 +180,9 @@ RUNTIME_FUNCTION(Runtime_ClearThreadInWasm) {
 RUNTIME_FUNCTION(Runtime_WasmRunInterpreter) {
   DCHECK_EQ(3, args.length());
   HandleScope scope(isolate);
-  CONVERT_ARG_HANDLE_CHECKED(JSObject, instance_obj, 0);
+  CONVERT_ARG_HANDLE_CHECKED(WasmInstanceObject, instance, 0);
   CONVERT_NUMBER_CHECKED(int32_t, func_index, Int32, args[1]);
   CONVERT_ARG_HANDLE_CHECKED(Object, arg_buffer_obj, 2);
-  CHECK(WasmInstanceObject::IsWasmInstanceObject(*instance_obj));
-  Handle<WasmInstanceObject> instance =
-      Handle<WasmInstanceObject>::cast(instance_obj);
 
   // The arg buffer is the raw pointer to the caller's stack. It looks like a
   // Smi (lowest bit not set, as checked by IsSmi), but is no valid Smi. We just

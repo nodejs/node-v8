@@ -16,6 +16,7 @@
 #include "src/log.h"
 #include "src/objects.h"
 #include "src/setup-isolate.h"
+#include "src/visitors.h"
 
 namespace v8 {
 namespace internal {
@@ -66,7 +67,6 @@ class InterpreterCompilationJob final : public CompilationJob {
   BytecodeGenerator generator_;
   RuntimeCallStats* runtime_call_stats_;
   RuntimeCallCounter background_execute_counter_;
-  bool print_bytecode_;
 
   DISALLOW_COPY_AND_ASSIGN(InterpreterCompilationJob);
 };
@@ -106,17 +106,16 @@ size_t Interpreter::GetDispatchTableIndex(Bytecode bytecode,
       return index + 2 * kEntriesPerOperandScale;
   }
   UNREACHABLE();
-  return 0;
 }
 
-void Interpreter::IterateDispatchTable(ObjectVisitor* v) {
+void Interpreter::IterateDispatchTable(RootVisitor* v) {
   for (int i = 0; i < kDispatchTableSize; i++) {
     Address code_entry = dispatch_table_[i];
     Object* code = code_entry == nullptr
                        ? nullptr
                        : Code::GetCodeFromTargetAddress(code_entry);
     Object* old_code = code;
-    v->VisitPointer(&code);
+    v->VisitRootPointer(Root::kDispatchTable, &code);
     if (code != old_code) {
       dispatch_table_[i] = reinterpret_cast<Code*>(code)->entry();
     }
@@ -148,20 +147,10 @@ InterpreterCompilationJob::InterpreterCompilationJob(CompilationInfo* info)
     : CompilationJob(info->isolate(), info, "Ignition"),
       generator_(info),
       runtime_call_stats_(info->isolate()->counters()->runtime_call_stats()),
-      background_execute_counter_("CompileBackgroundIgnition"),
-      print_bytecode_(ShouldPrintBytecode(info->shared_info())) {}
+      background_execute_counter_("CompileBackgroundIgnition") {}
 
 InterpreterCompilationJob::Status InterpreterCompilationJob::PrepareJobImpl() {
   CodeGenerator::MakeCodePrologue(info(), "interpreter");
-
-  if (print_bytecode_) {
-    OFStream os(stdout);
-    std::unique_ptr<char[]> name = info()->GetDebugName();
-    os << "[generating bytecode for function: " << info()->GetDebugName().get()
-       << "]" << std::endl
-       << std::flush;
-  }
-
   return SUCCEEDED;
 }
 
@@ -196,9 +185,12 @@ InterpreterCompilationJob::Status InterpreterCompilationJob::FinalizeJobImpl() {
     return FAILED;
   }
 
-  if (print_bytecode_) {
+  if (ShouldPrintBytecode(info()->shared_info())) {
     OFStream os(stdout);
-    bytecodes->Print(os);
+    std::unique_ptr<char[]> name = info()->GetDebugName();
+    os << "[generating bytecode for function: " << info()->GetDebugName().get()
+       << "]" << std::endl;
+    bytecodes->Disassemble(os);
     os << std::flush;
   }
 

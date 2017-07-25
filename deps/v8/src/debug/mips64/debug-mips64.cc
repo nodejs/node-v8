@@ -124,20 +124,19 @@ void DebugCodegen::GenerateFrameDropperTrampoline(MacroAssembler* masm) {
   // - Leave the frame.
   // - Restart the frame by calling the function.
   __ mov(fp, a1);
-  __ ld(a1, MemOperand(fp, JavaScriptFrameConstants::kFunctionOffset));
+  __ Ld(a1, MemOperand(fp, JavaScriptFrameConstants::kFunctionOffset));
 
   // Pop return address and frame.
   __ LeaveFrame(StackFrame::INTERNAL);
 
-  __ ld(a0, FieldMemOperand(a1, JSFunction::kSharedFunctionInfoOffset));
-  __ ld(a0,
+  __ Ld(a0, FieldMemOperand(a1, JSFunction::kSharedFunctionInfoOffset));
+  __ Lw(a0,
         FieldMemOperand(a0, SharedFunctionInfo::kFormalParameterCountOffset));
   __ mov(a2, a0);
 
   ParameterCount dummy1(a2);
   ParameterCount dummy2(a0);
-  __ InvokeFunction(a1, dummy1, dummy2, JUMP_FUNCTION,
-                    CheckDebugStepCallWrapper());
+  __ InvokeFunction(a1, dummy1, dummy2, JUMP_FUNCTION);
 }
 
 

@@ -9,7 +9,8 @@
 
 #include "src/base/logging.h"
 #include "src/elements-kind.h"
-#include "src/objects.h"
+#include "src/objects/map.h"
+#include "src/objects/name.h"
 #include "src/type-hints.h"
 #include "src/zone/zone-containers.h"
 
@@ -36,7 +37,6 @@ enum class FeedbackSlotKind {
   kStoreKeyedStrict,
   kBinaryOp,
   kCompareOp,
-  kToBoolean,
   kStoreDataPropertyInLiteral,
   kTypeProfile,
   kCreateClosure,
@@ -177,7 +177,7 @@ class FeedbackVectorSpecBase {
   void Print();
 #endif  // OBJECT_PRINT
 
-  DECLARE_PRINTER(FeedbackVectorSpec)
+  DECL_PRINTER(FeedbackVectorSpec)
 
  private:
   inline FeedbackSlot AddSlot(FeedbackSlotKind kind);
@@ -228,7 +228,7 @@ class FeedbackVectorSpec : public FeedbackVectorSpecBase<FeedbackVectorSpec> {
   // If used, the TypeProfileSlot is always added as the first slot and its
   // index is constant. If other slots are added before the TypeProfileSlot,
   // this number changes.
-  static const int kTypeProfileSlotIndex = 2;
+  static const int kTypeProfileSlotIndex = 3;
 
  private:
   friend class FeedbackVectorSpecBase<FeedbackVectorSpec>;
@@ -275,7 +275,7 @@ class FeedbackMetadata : public FixedArray {
   void Print();
 #endif  // OBJECT_PRINT
 
-  DECLARE_PRINTER(FeedbackMetadata)
+  DECL_PRINTER(FeedbackMetadata)
 
   static const char* Kind2String(FeedbackSlotKind kind);
   bool HasTypeProfileSlot() const;
@@ -308,7 +308,8 @@ class FeedbackVector : public FixedArray {
 
   static const int kSharedFunctionInfoIndex = 0;
   static const int kInvocationCountIndex = 1;
-  static const int kReservedIndexCount = 2;
+  static const int kOptimizedCodeIndex = 2;
+  static const int kReservedIndexCount = 3;
 
   inline void ComputeCounts(int* with_type_info, int* generic,
                             int* vector_ic_count, bool code_is_interpreted);
@@ -322,6 +323,18 @@ class FeedbackVector : public FixedArray {
   inline SharedFunctionInfo* shared_function_info() const;
   inline int invocation_count() const;
   inline void clear_invocation_count();
+
+  inline Object* optimized_code_cell() const;
+  inline Code* optimized_code() const;
+  inline OptimizationMarker optimization_marker() const;
+  inline bool has_optimized_code() const;
+  inline bool has_optimization_marker() const;
+  void ClearOptimizedCode();
+  void EvictOptimizedCodeMarkedForDeoptimization(SharedFunctionInfo* shared,
+                                                 const char* reason);
+  static void SetOptimizedCode(Handle<FeedbackVector> vector,
+                               Handle<Code> code);
+  void SetOptimizationMarker(OptimizationMarker marker);
 
   // Conversion from a slot to an integer index to the underlying array.
   static int GetIndex(FeedbackSlot slot) {
@@ -374,7 +387,7 @@ class FeedbackVector : public FixedArray {
   void Print();
 #endif  // OBJECT_PRINT
 
-  DECLARE_PRINTER(FeedbackVector)
+  DECL_PRINTER(FeedbackVector)
 
   // Clears the vector slots.
   void ClearSlots(JSFunction* host_function);
@@ -403,7 +416,8 @@ class FeedbackVector : public FixedArray {
 // code that looks into the contents of a slot assuming to find a String,
 // a Symbol, an AllocationSite, a WeakCell, or a FixedArray.
 STATIC_ASSERT(WeakCell::kSize >= 2 * kPointerSize);
-STATIC_ASSERT(WeakCell::kValueOffset == AllocationSite::kTransitionInfoOffset);
+STATIC_ASSERT(WeakCell::kValueOffset ==
+              AllocationSite::kTransitionInfoOrBoilerplateOffset);
 STATIC_ASSERT(WeakCell::kValueOffset == FixedArray::kLengthOffset);
 STATIC_ASSERT(WeakCell::kValueOffset == Name::kHashFieldSlot);
 // Verify that an empty hash field looks like a tagged object, but can't
@@ -477,17 +491,14 @@ class FeedbackNexus {
   InlineCacheState ic_state() const { return StateFromFeedback(); }
   bool IsUninitialized() const { return StateFromFeedback() == UNINITIALIZED; }
   Map* FindFirstMap() const {
-    MapHandleList maps;
+    MapHandles maps;
     ExtractMaps(&maps);
-    if (maps.length() > 0) return *maps.at(0);
+    if (maps.size() > 0) return *maps.at(0);
     return NULL;
   }
 
-  // TODO(mvstanton): remove FindAllMaps, it didn't survive a code review.
-  void FindAllMaps(MapHandleList* maps) const { ExtractMaps(maps); }
-
   virtual InlineCacheState StateFromFeedback() const = 0;
-  virtual int ExtractMaps(MapHandleList* maps) const;
+  virtual int ExtractMaps(MapHandles* maps) const;
   virtual MaybeHandle<Object> FindHandlerForMap(Handle<Map> map) const;
   virtual bool FindHandlers(List<Handle<Object>>* code_list,
                             int length = -1) const;
@@ -511,7 +522,7 @@ class FeedbackNexus {
   void ConfigureMonomorphic(Handle<Name> name, Handle<Map> receiver_map,
                             Handle<Object> handler);
 
-  void ConfigurePolymorphic(Handle<Name> name, MapHandleList* maps,
+  void ConfigurePolymorphic(Handle<Name> name, MapHandles const& maps,
                             List<Handle<Object>>* handlers);
 
  protected:
@@ -548,7 +559,7 @@ class CallICNexus final : public FeedbackNexus {
 
   InlineCacheState StateFromFeedback() const final;
 
-  int ExtractMaps(MapHandleList* maps) const final {
+  int ExtractMaps(MapHandles* maps) const final {
     // CallICs don't record map feedback.
     return 0;
   }
@@ -594,7 +605,7 @@ class LoadGlobalICNexus : public FeedbackNexus {
     DCHECK(vector->IsLoadGlobalIC(slot));
   }
 
-  int ExtractMaps(MapHandleList* maps) const final {
+  int ExtractMaps(MapHandles* maps) const final {
     // LoadGlobalICs don't record map feedback.
     return 0;
   }
@@ -687,7 +698,7 @@ class BinaryOpICNexus final : public FeedbackNexus {
   InlineCacheState StateFromFeedback() const final;
   BinaryOperationHint GetBinaryOperationFeedback() const;
 
-  int ExtractMaps(MapHandleList* maps) const final {
+  int ExtractMaps(MapHandles* maps) const final {
     // BinaryOpICs don't record map feedback.
     return 0;
   }
@@ -714,8 +725,8 @@ class CompareICNexus final : public FeedbackNexus {
   InlineCacheState StateFromFeedback() const final;
   CompareOperationHint GetCompareOperationFeedback() const;
 
-  int ExtractMaps(MapHandleList* maps) const final {
-    // BinaryOpICs don't record map feedback.
+  int ExtractMaps(MapHandles* maps) const final {
+    // CompareICs don't record map feedback.
     return 0;
   }
   MaybeHandle<Object> FindHandlerForMap(Handle<Map> map) const final {

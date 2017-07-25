@@ -64,9 +64,8 @@ class AstRawString final : public ZoneObject {
   }
 
   // For storing AstRawStrings in a hash map.
-  uint32_t hash() const {
-    return hash_;
-  }
+  uint32_t hash_field() const { return hash_field_; }
+  uint32_t Hash() const { return hash_field_ >> Name::kHashShift; }
 
   // This function can be called after internalizing.
   V8_INLINE Handle<String> string() const {
@@ -83,10 +82,10 @@ class AstRawString final : public ZoneObject {
   // Members accessed only by the AstValueFactory & related classes:
   static bool Compare(void* a, void* b);
   AstRawString(bool is_one_byte, const Vector<const byte>& literal_bytes,
-               uint32_t hash)
+               uint32_t hash_field)
       : next_(nullptr),
         literal_bytes_(literal_bytes),
-        hash_(hash),
+        hash_field_(hash_field),
         is_one_byte_(is_one_byte) {}
   AstRawString* next() {
     DCHECK(!has_string_);
@@ -114,7 +113,7 @@ class AstRawString final : public ZoneObject {
   };
 
   Vector<const byte> literal_bytes_;  // Memory owned by Zone.
-  uint32_t hash_;
+  uint32_t hash_field_;
   bool is_one_byte_;
 #ifdef DEBUG
   // (Debug-only:) Verify the object life-cylce: Some functions may only be
@@ -189,10 +188,6 @@ class AstValue : public ZoneObject {
 
   bool IsNumber() const { return IsSmi() || IsHeapNumber(); }
 
-  bool ContainsDot() const {
-    return type_ == NUMBER_WITH_DOT || type_ == SMI_WITH_DOT;
-  }
-
   const AstRawString* AsString() const {
     CHECK_EQ(STRING, type_);
     return string_;
@@ -207,7 +202,6 @@ class AstValue : public ZoneObject {
     if (IsHeapNumber()) return number_;
     if (IsSmi()) return smi_;
     UNREACHABLE();
-    return 0;
   }
 
   Smi* AsSmi() const {
@@ -236,10 +230,8 @@ class AstValue : public ZoneObject {
 
   bool BooleanValue() const;
 
-  bool IsSmi() const { return type_ == SMI || type_ == SMI_WITH_DOT; }
-  bool IsHeapNumber() const {
-    return type_ == NUMBER || type_ == NUMBER_WITH_DOT;
-  }
+  bool IsSmi() const { return type_ == SMI; }
+  bool IsHeapNumber() const { return type_ == NUMBER; }
   bool IsFalse() const { return type_ == BOOLEAN && !bool_; }
   bool IsTrue() const { return type_ == BOOLEAN && bool_; }
   bool IsUndefined() const { return type_ == UNDEFINED; }
@@ -267,9 +259,7 @@ class AstValue : public ZoneObject {
     STRING,
     SYMBOL,
     NUMBER,
-    NUMBER_WITH_DOT,
     SMI,
-    SMI_WITH_DOT,
     BOOLEAN,
     NULL_TYPE,
     UNDEFINED,
@@ -284,13 +274,13 @@ class AstValue : public ZoneObject {
     symbol_ = symbol;
   }
 
-  explicit AstValue(double n, bool with_dot) : next_(nullptr) {
+  explicit AstValue(double n) : next_(nullptr) {
     int int_value;
     if (DoubleToSmiInteger(n, &int_value)) {
-      type_ = with_dot ? SMI_WITH_DOT : SMI;
+      type_ = SMI;
       smi_ = int_value;
     } else {
-      type_ = with_dot ? NUMBER_WITH_DOT : NUMBER;
+      type_ = NUMBER;
       number_ = n;
     }
   }
@@ -376,21 +366,21 @@ class AstStringConstants final {
         string_table_(AstRawString::Compare),
         hash_seed_(hash_seed) {
     DCHECK(ThreadId::Current().Equals(isolate->thread_id()));
-#define F(name, str)                                                      \
-  {                                                                       \
-    const char* data = str;                                               \
-    Vector<const uint8_t> literal(reinterpret_cast<const uint8_t*>(data), \
-                                  static_cast<int>(strlen(data)));        \
-    uint32_t hash = StringHasher::HashSequentialString<uint8_t>(          \
-        literal.start(), literal.length(), hash_seed_);                   \
-    name##_string_ = new (&zone_) AstRawString(true, literal, hash);      \
-    /* The Handle returned by the factory is located on the roots */      \
-    /* array, not on the temporary HandleScope, so this is safe.  */      \
-    name##_string_->set_string(isolate->factory()->name##_string());      \
-    base::HashMap::Entry* entry =                                         \
-        string_table_.InsertNew(name##_string_, name##_string_->hash());  \
-    DCHECK(entry->value == nullptr);                                      \
-    entry->value = reinterpret_cast<void*>(1);                            \
+#define F(name, str)                                                       \
+  {                                                                        \
+    const char* data = str;                                                \
+    Vector<const uint8_t> literal(reinterpret_cast<const uint8_t*>(data),  \
+                                  static_cast<int>(strlen(data)));         \
+    uint32_t hash_field = StringHasher::HashSequentialString<uint8_t>(     \
+        literal.start(), literal.length(), hash_seed_);                    \
+    name##_string_ = new (&zone_) AstRawString(true, literal, hash_field); \
+    /* The Handle returned by the factory is located on the roots */       \
+    /* array, not on the temporary HandleScope, so this is safe.  */       \
+    name##_string_->set_string(isolate->factory()->name##_string());       \
+    base::HashMap::Entry* entry =                                          \
+        string_table_.InsertNew(name##_string_, name##_string_->Hash());   \
+    DCHECK_NULL(entry->value);                                             \
+    entry->value = reinterpret_cast<void*>(1);                             \
   }
     STRING_CONSTANTS(F)
 #undef F
@@ -481,8 +471,7 @@ class AstValueFactory {
   V8_EXPORT_PRIVATE const AstValue* NewString(const AstRawString* string);
   // A JavaScript symbol (ECMA-262 edition 6).
   const AstValue* NewSymbol(AstSymbol symbol);
-  V8_EXPORT_PRIVATE const AstValue* NewNumber(double number,
-                                              bool with_dot = false);
+  V8_EXPORT_PRIVATE const AstValue* NewNumber(double number);
   const AstValue* NewSmi(uint32_t number);
   const AstValue* NewBoolean(bool b);
   const AstValue* NewStringList(ZoneList<const AstRawString*>* strings);

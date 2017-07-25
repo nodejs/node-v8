@@ -133,35 +133,7 @@ TF_BUILTIN(ToString, CodeStubAssembler) {
   Node* context = Parameter(Descriptor::kContext);
   Node* input = Parameter(Descriptor::kArgument);
 
-  Label is_number(this);
-  Label runtime(this);
-
-  GotoIf(TaggedIsSmi(input), &is_number);
-
-  Node* input_map = LoadMap(input);
-  Node* input_instance_type = LoadMapInstanceType(input_map);
-
-  Label not_string(this);
-  GotoIfNot(IsStringInstanceType(input_instance_type), &not_string);
-  Return(input);
-
-  Label not_heap_number(this);
-
-  BIND(&not_string);
-  { Branch(IsHeapNumberMap(input_map), &is_number, &not_heap_number); }
-
-  BIND(&is_number);
-  { Return(NumberToString(context, input)); }
-
-  BIND(&not_heap_number);
-  {
-    GotoIf(Word32NotEqual(input_instance_type, Int32Constant(ODDBALL_TYPE)),
-           &runtime);
-    Return(LoadObjectField(input, Oddball::kToStringOffset));
-  }
-
-  BIND(&runtime);
-  { Return(CallRuntime(Runtime::kToString, context, input)); }
+  Return(ToString(context, input));
 }
 
 // 7.1.1.1 OrdinaryToPrimitive ( O, hint )
@@ -249,6 +221,22 @@ TF_BUILTIN(ToBoolean, CodeStubAssembler) {
   Return(BooleanConstant(false));
 }
 
+// ES6 section 7.1.2 ToBoolean ( argument )
+// Requires parameter on stack so that it can be used as a continuation from a
+// LAZY deopt.
+TF_BUILTIN(ToBooleanLazyDeoptContinuation, CodeStubAssembler) {
+  Node* value = Parameter(Descriptor::kArgument);
+
+  Label return_true(this), return_false(this);
+  BranchIfToBooleanIsTrue(value, &return_true, &return_false);
+
+  BIND(&return_true);
+  Return(BooleanConstant(true));
+
+  BIND(&return_false);
+  Return(BooleanConstant(false));
+}
+
 TF_BUILTIN(ToLength, CodeStubAssembler) {
   Node* context = Parameter(Descriptor::kContext);
 
@@ -275,8 +263,7 @@ TF_BUILTIN(ToLength, CodeStubAssembler) {
     // Check if {len} is a HeapNumber.
     Label if_lenisheapnumber(this),
         if_lenisnotheapnumber(this, Label::kDeferred);
-    Branch(IsHeapNumberMap(LoadMap(len)), &if_lenisheapnumber,
-           &if_lenisnotheapnumber);
+    Branch(IsHeapNumber(len), &if_lenisheapnumber, &if_lenisnotheapnumber);
 
     BIND(&if_lenisheapnumber);
     {
@@ -301,8 +288,7 @@ TF_BUILTIN(ToLength, CodeStubAssembler) {
     BIND(&if_lenisnotheapnumber);
     {
       // Need to convert {len} to a Number first.
-      Callable callable = CodeFactory::NonNumberToNumber(isolate());
-      var_len.Bind(CallStub(callable, context, len));
+      var_len.Bind(CallBuiltin(Builtins::kNonNumberToNumber, context, len));
       Goto(&loop);
     }
 
@@ -313,7 +299,7 @@ TF_BUILTIN(ToLength, CodeStubAssembler) {
     Return(NumberConstant(kMaxSafeInteger));
 
     BIND(&return_zero);
-    Return(SmiConstant(Smi::kZero));
+    Return(SmiConstant(0));
   }
 }
 
@@ -365,7 +351,7 @@ TF_BUILTIN(ToObject, CodeStubAssembler) {
       LoadObjectField(constructor, JSFunction::kPrototypeOrInitialMapOffset);
   Node* js_value = Allocate(JSValue::kSize);
   StoreMapNoWriteBarrier(js_value, initial_map);
-  StoreObjectFieldRoot(js_value, JSValue::kPropertiesOffset,
+  StoreObjectFieldRoot(js_value, JSValue::kPropertiesOrHashOffset,
                        Heap::kEmptyFixedArrayRootIndex);
   StoreObjectFieldRoot(js_value, JSObject::kElementsOffset,
                        Heap::kEmptyFixedArrayRootIndex);
@@ -373,9 +359,8 @@ TF_BUILTIN(ToObject, CodeStubAssembler) {
   Return(js_value);
 
   BIND(&if_noconstructor);
-  TailCallRuntime(
-      Runtime::kThrowUndefinedOrNullToObject, context,
-      HeapConstant(factory()->NewStringFromAsciiChecked("ToObject", TENURED)));
+  TailCallRuntime(Runtime::kThrowUndefinedOrNullToObject, context,
+                  StringConstant("ToObject"));
 
   BIND(&if_jsreceiver);
   Return(object);

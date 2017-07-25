@@ -10,6 +10,7 @@
 #include "src/isolate.h"
 #include "src/macro-assembler.h"
 #include "src/objects-inl.h"
+#include "src/visitors.h"
 
 namespace v8 {
 namespace internal {
@@ -25,10 +26,37 @@ Builtins::Builtins() : initialized_(false) {
 
 Builtins::~Builtins() {}
 
+BailoutId Builtins::GetContinuationBailoutId(Name name) {
+  switch (name) {
+#define BAILOUT_ID(NAME, ...) \
+  case k##NAME:               \
+    return BailoutId(BailoutId::kFirstBuiltinContinuationId + name);
+    BUILTIN_LIST_TFJ(BAILOUT_ID);
+    BUILTIN_LIST_TFC(BAILOUT_ID);
+#undef BAILOUT_ID
+    default:
+      UNREACHABLE();
+  }
+}
+
+Builtins::Name Builtins::GetBuiltinFromBailoutId(BailoutId id) {
+  switch (id.ToInt()) {
+#define BAILOUT_ID(NAME, ...)                            \
+  case BailoutId::kFirstBuiltinContinuationId + k##NAME: \
+    return k##NAME;
+    BUILTIN_LIST_TFJ(BAILOUT_ID)
+    BUILTIN_LIST_TFC(BAILOUT_ID)
+#undef BAILOUT_ID
+    default:
+      UNREACHABLE();
+  }
+}
+
 void Builtins::TearDown() { initialized_ = false; }
 
-void Builtins::IterateBuiltins(ObjectVisitor* v) {
-  v->VisitPointers(&builtins_[0], &builtins_[0] + builtin_count);
+void Builtins::IterateBuiltins(RootVisitor* v) {
+  v->VisitRootPointers(Root::kBuiltins, &builtins_[0],
+                       &builtins_[0] + builtin_count);
 }
 
 const char* Builtins::Lookup(byte* pc) {
@@ -67,28 +95,6 @@ Handle<Code> Builtins::NewCloneShallowArray(
   return Handle<Code>::null();
 }
 
-Handle<Code> Builtins::NewCloneShallowObject(int length) {
-  switch (length) {
-    case 0:
-      return FastCloneShallowObject0();
-    case 1:
-      return FastCloneShallowObject1();
-    case 2:
-      return FastCloneShallowObject2();
-    case 3:
-      return FastCloneShallowObject3();
-    case 4:
-      return FastCloneShallowObject4();
-    case 5:
-      return FastCloneShallowObject5();
-    case 6:
-      return FastCloneShallowObject6();
-    default:
-      UNREACHABLE();
-  }
-  return Handle<Code>::null();
-}
-
 Handle<Code> Builtins::NonPrimitiveToPrimitive(ToPrimitiveHint hint) {
   switch (hint) {
     case ToPrimitiveHint::kDefault:
@@ -99,7 +105,6 @@ Handle<Code> Builtins::NonPrimitiveToPrimitive(ToPrimitiveHint hint) {
       return NonPrimitiveToPrimitive_String();
   }
   UNREACHABLE();
-  return Handle<Code>::null();
 }
 
 Handle<Code> Builtins::OrdinaryToPrimitive(OrdinaryToPrimitiveHint hint) {
@@ -110,24 +115,89 @@ Handle<Code> Builtins::OrdinaryToPrimitive(OrdinaryToPrimitiveHint hint) {
       return OrdinaryToPrimitive_String();
   }
   UNREACHABLE();
-  return Handle<Code>::null();
+}
+
+Handle<Code> Builtins::builtin_handle(Name name) {
+  return Handle<Code>(reinterpret_cast<Code**>(builtin_address(name)));
+}
+
+// static
+int Builtins::GetBuiltinParameterCount(Name name) {
+  switch (name) {
+#define TFJ_CASE(Name, ParamCount, ...) \
+  case k##Name: {                       \
+    return ParamCount;                  \
+  }
+    BUILTIN_LIST(IGNORE_BUILTIN, IGNORE_BUILTIN, TFJ_CASE, IGNORE_BUILTIN,
+                 IGNORE_BUILTIN, IGNORE_BUILTIN, IGNORE_BUILTIN, IGNORE_BUILTIN)
+#undef TFJ_CASE
+    default:
+      UNREACHABLE();
+  }
 }
 
 // static
 Callable Builtins::CallableFor(Isolate* isolate, Name name) {
+  Handle<Code> code(
+      reinterpret_cast<Code**>(isolate->builtins()->builtin_address(name)));
+  CallDescriptors::Key key;
   switch (name) {
-#define CASE(Name, ...)                                                  \
-  case k##Name: {                                                        \
-    Handle<Code> code(Code::cast(isolate->builtins()->builtins_[name])); \
-    auto descriptor = Builtin_##Name##_InterfaceDescriptor(isolate);     \
-    return Callable(code, descriptor);                                   \
+// This macro is deliberately crafted so as to emit very little code,
+// in order to keep binary size of this function under control.
+#define CASE_OTHER(Name, ...)                          \
+  case k##Name: {                                      \
+    key = Builtin_##Name##_InterfaceDescriptor::key(); \
+    break;                                             \
   }
-    BUILTIN_LIST(IGNORE_BUILTIN, IGNORE_BUILTIN, IGNORE_BUILTIN, CASE, CASE,
-                 CASE, IGNORE_BUILTIN, IGNORE_BUILTIN)
+    BUILTIN_LIST(IGNORE_BUILTIN, IGNORE_BUILTIN, IGNORE_BUILTIN, CASE_OTHER,
+                 CASE_OTHER, CASE_OTHER, IGNORE_BUILTIN, IGNORE_BUILTIN)
+#undef CASE_OTHER
+    case kConsoleAssert: {
+      return Callable(code, BuiltinDescriptor(isolate));
+    }
+    case kArrayForEach: {
+      Handle<Code> code = isolate->builtins()->ArrayForEach();
+      return Callable(code, BuiltinDescriptor(isolate));
+    }
+    case kArrayForEachLoopEagerDeoptContinuation: {
+      Handle<Code> code =
+          isolate->builtins()->ArrayForEachLoopEagerDeoptContinuation();
+      return Callable(code, BuiltinDescriptor(isolate));
+    }
+    case kArrayForEachLoopLazyDeoptContinuation: {
+      Handle<Code> code =
+          isolate->builtins()->ArrayForEachLoopLazyDeoptContinuation();
+      return Callable(code, BuiltinDescriptor(isolate));
+    }
+    case kArrayMapLoopEagerDeoptContinuation: {
+      Handle<Code> code =
+          isolate->builtins()->ArrayMapLoopEagerDeoptContinuation();
+      return Callable(code, BuiltinDescriptor(isolate));
+    }
+    case kArrayMapLoopLazyDeoptContinuation: {
+      Handle<Code> code =
+          isolate->builtins()->ArrayMapLoopLazyDeoptContinuation();
+      return Callable(code, BuiltinDescriptor(isolate));
+    }
+    default:
+      UNREACHABLE();
+  }
+  CallInterfaceDescriptor descriptor(isolate, key);
+  return Callable(code, descriptor);
+}
+
+// static
+int Builtins::GetStackParameterCount(Isolate* isolate, Name name) {
+  switch (name) {
+#define CASE(Name, Count, ...) \
+  case k##Name: {              \
+    return Count;              \
+  }
+    BUILTIN_LIST_TFJ(CASE)
 #undef CASE
     default:
       UNREACHABLE();
-      return Callable(Handle<Code>::null(), VoidDescriptor(isolate));
+      return 0;
   }
 }
 
@@ -221,6 +291,12 @@ bool Builtins::HasCppImplementation(int index) {
   }
 BUILTIN_LIST_ALL(DEFINE_BUILTIN_ACCESSOR)
 #undef DEFINE_BUILTIN_ACCESSOR
+
+Handle<Code> Builtins::JSConstructStubGeneric() {
+  return FLAG_harmony_restrict_constructor_return
+             ? JSConstructStubGenericRestrictedReturn()
+             : JSConstructStubGenericUnrestrictedReturn();
+}
 
 // static
 bool Builtins::AllowDynamicFunction(Isolate* isolate, Handle<JSFunction> target,

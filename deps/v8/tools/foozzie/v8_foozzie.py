@@ -21,36 +21,28 @@ import v8_suppressions
 
 CONFIGS = dict(
   default=[],
-  fullcode=[
-    '--nocrankshaft',
-    '--turbo-filter=~',
-  ],
   ignition=[
-    '--ignition',
     '--turbo-filter=~',
-    '--hydrogen-filter=~',
-    '--nocrankshaft',
+    '--noopt',
+  ],
+  ignition_asm=[
+    '--turbo-filter=~',
+    '--noopt',
+    '--validate-asm',
+    '--stress-validate-asm',
+    '--suppress-asm-messages',
   ],
   ignition_eager=[
-    '--ignition',
     '--turbo-filter=~',
-    '--hydrogen-filter=~',
-    '--nocrankshaft',
+    '--noopt',
     '--no-lazy',
     '--no-lazy-inner-functions',
   ],
-  ignition_turbo=[
-    '--ignition',
-    '--turbo',
-  ],
+  ignition_turbo=[],
   ignition_turbo_opt=[
-    '--ignition',
-    '--turbo',
     '--always-opt',
   ],
   ignition_turbo_opt_eager=[
-    '--ignition',
-    '--turbo',
     '--always-opt',
     '--no-lazy',
     '--no-lazy-inner-functions',

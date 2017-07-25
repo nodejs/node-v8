@@ -66,7 +66,6 @@
   V(Call)                   \
   V(Parameter)              \
   V(OsrValue)               \
-  V(OsrGuard)               \
   V(LoopExit)               \
   V(LoopExitValue)          \
   V(LoopExitEffect)         \
@@ -107,6 +106,7 @@
   JS_COMPARE_BINOP_LIST(V)      \
   JS_BITWISE_BINOP_LIST(V)      \
   JS_ARITH_BINOP_LIST(V)        \
+  V(JSHasInPrototypeChain)      \
   V(JSInstanceOf)               \
   V(JSOrdinaryHasInstance)
 
@@ -147,6 +147,7 @@
   V(JSStoreDataPropertyInLiteral) \
   V(JSDeleteProperty)             \
   V(JSHasProperty)                \
+  V(JSCreateGeneratorObject)      \
   V(JSGetSuperConstructor)
 
 #define JS_CONTEXT_OP_LIST(V) \
@@ -159,10 +160,13 @@
   V(JSCreateScriptContext)
 
 #define JS_OTHER_OP_LIST(V)         \
+  V(JSConstructForwardVarargs)      \
   V(JSConstruct)                    \
+  V(JSConstructWithArrayLike)       \
   V(JSConstructWithSpread)          \
   V(JSCallForwardVarargs)           \
   V(JSCall)                         \
+  V(JSCallWithArrayLike)            \
   V(JSCallWithSpread)               \
   V(JSCallRuntime)                  \
   V(JSConvertReceiver)              \
@@ -310,9 +314,12 @@
   V(BooleanNot)                     \
   V(StringCharAt)                   \
   V(StringCharCodeAt)               \
+  V(SeqStringCharCodeAt)            \
   V(StringFromCharCode)             \
   V(StringFromCodePoint)            \
   V(StringIndexOf)                  \
+  V(StringToLowerCaseIntl)          \
+  V(StringToUpperCaseIntl)          \
   V(CheckBounds)                    \
   V(CheckIf)                        \
   V(CheckMaps)                      \
@@ -320,10 +327,12 @@
   V(CheckInternalizedString)        \
   V(CheckReceiver)                  \
   V(CheckString)                    \
+  V(CheckSeqString)                 \
+  V(CheckSymbol)                    \
   V(CheckSmi)                       \
   V(CheckHeapObject)                \
   V(CheckFloat64Hole)               \
-  V(CheckTaggedHole)                \
+  V(CheckNotTaggedHole)             \
   V(ConvertTaggedHoleToUndefined)   \
   V(Allocate)                       \
   V(LoadField)                      \
@@ -334,6 +343,7 @@
   V(StoreBuffer)                    \
   V(StoreElement)                   \
   V(StoreTypedElement)              \
+  V(TransitionAndStoreElement)      \
   V(ObjectIsDetectableCallable)     \
   V(ObjectIsNaN)                    \
   V(ObjectIsNonCallable)            \
@@ -349,7 +359,9 @@
   V(ArrayBufferWasNeutered)         \
   V(EnsureWritableFastElements)     \
   V(MaybeGrowFastElements)          \
-  V(TransitionElementsKind)
+  V(TransitionElementsKind)         \
+  V(LookupHashStorageIndex)         \
+  V(LoadHashMapValue)
 
 #define SIMPLIFIED_OP_LIST(V)                 \
   SIMPLIFIED_CHANGE_OP_LIST(V)                \
@@ -575,19 +587,14 @@
   V(F32x4UConvertI32x4)         \
   V(F32x4Abs)                   \
   V(F32x4Neg)                   \
-  V(F32x4Sqrt)                  \
   V(F32x4RecipApprox)           \
   V(F32x4RecipSqrtApprox)       \
   V(F32x4Add)                   \
+  V(F32x4AddHoriz)              \
   V(F32x4Sub)                   \
   V(F32x4Mul)                   \
-  V(F32x4Div)                   \
   V(F32x4Min)                   \
   V(F32x4Max)                   \
-  V(F32x4MinNum)                \
-  V(F32x4MaxNum)                \
-  V(F32x4RecipRefine)           \
-  V(F32x4RecipSqrtRefine)       \
   V(F32x4Eq)                    \
   V(F32x4Ne)                    \
   V(F32x4Lt)                    \
@@ -604,6 +611,7 @@
   V(I32x4Shl)                   \
   V(I32x4ShrS)                  \
   V(I32x4Add)                   \
+  V(I32x4AddHoriz)              \
   V(I32x4Sub)                   \
   V(I32x4Mul)                   \
   V(I32x4MinS)                  \
@@ -635,6 +643,7 @@
   V(I16x8SConvertI32x4)         \
   V(I16x8Add)                   \
   V(I16x8AddSaturateS)          \
+  V(I16x8AddHoriz)              \
   V(I16x8Sub)                   \
   V(I16x8SubSaturateS)          \
   V(I16x8Mul)                   \
@@ -691,38 +700,16 @@
   V(S128Load)                   \
   V(S128Store)                  \
   V(S128Zero)                   \
+  V(S128Not)                    \
   V(S128And)                    \
   V(S128Or)                     \
   V(S128Xor)                    \
-  V(S128Not)                    \
-  V(S32x4Select)                \
-  V(S32x4Swizzle)               \
-  V(S32x4Shuffle)               \
-  V(S16x8Select)                \
-  V(S16x8Swizzle)               \
-  V(S16x8Shuffle)               \
-  V(S8x16Select)                \
-  V(S8x16Swizzle)               \
+  V(S128Select)                 \
   V(S8x16Shuffle)               \
-  V(S1x4Zero)                   \
-  V(S1x4And)                    \
-  V(S1x4Or)                     \
-  V(S1x4Xor)                    \
-  V(S1x4Not)                    \
   V(S1x4AnyTrue)                \
   V(S1x4AllTrue)                \
-  V(S1x8Zero)                   \
-  V(S1x8And)                    \
-  V(S1x8Or)                     \
-  V(S1x8Xor)                    \
-  V(S1x8Not)                    \
   V(S1x8AnyTrue)                \
   V(S1x8AllTrue)                \
-  V(S1x16Zero)                  \
-  V(S1x16And)                   \
-  V(S1x16Or)                    \
-  V(S1x16Xor)                   \
-  V(S1x16Not)                   \
   V(S1x16AnyTrue)               \
   V(S1x16AllTrue)
 

@@ -26,7 +26,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // Flags: --allow-natives-syntax
-// Flags: --nostress-opt --crankshaft
+// Flags: --nostress-opt --opt
 
 // Ensure that ElementsKind transitions in various situations are hoisted (or
 // not hoisted) correctly, don't change the semantics programs and don't trigger
@@ -95,8 +95,8 @@ function test_wrapper() {
         a[1] = 2.5;
       }
       a.foo = object;  // This map check should NOT be hoistable because it
-                       // includes a check for the FAST_ELEMENTS map as well as
-                       // the FAST_DOUBLE_ELEMENTS map, which depends on the
+                       // includes a check for the PACKED_ELEMENTS map as well as
+                       // the PACKED_DOUBLE_ELEMENTS map, which depends on the
                        // double transition above in the if, which cannot be
                        // hoisted.
     } while (--count > 0);

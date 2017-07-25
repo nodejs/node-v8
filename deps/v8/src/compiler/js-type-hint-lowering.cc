@@ -25,6 +25,9 @@ bool BinaryOperationHintToNumberOperationHint(
     case BinaryOperationHint::kSigned32:
       *number_hint = NumberOperationHint::kSigned32;
       return true;
+    case BinaryOperationHint::kNumber:
+      *number_hint = NumberOperationHint::kNumber;
+      return true;
     case BinaryOperationHint::kNumberOrOddball:
       *number_hint = NumberOperationHint::kNumberOrOddball;
       return true;
@@ -82,6 +85,7 @@ class JSSpeculativeBinopBuilder final {
       case CompareOperationHint::kAny:
       case CompareOperationHint::kNone:
       case CompareOperationHint::kString:
+      case CompareOperationHint::kSymbol:
       case CompareOperationHint::kReceiver:
       case CompareOperationHint::kInternalizedString:
         break;
@@ -117,7 +121,6 @@ class JSSpeculativeBinopBuilder final {
         break;
     }
     UNREACHABLE();
-    return nullptr;
   }
 
   const Operator* SpeculativeCompareOp(NumberOperationHint hint) {
@@ -138,7 +141,6 @@ class JSSpeculativeBinopBuilder final {
         break;
     }
     UNREACHABLE();
-    return nullptr;
   }
 
   Node* BuildSpeculativeOperation(const Operator* op) {
@@ -249,6 +251,38 @@ Reduction JSTypeHintLowering::ReduceToNumberOperation(Node* input, Node* effect,
     Node* node = jsgraph()->graph()->NewNode(
         jsgraph()->simplified()->SpeculativeToNumber(hint), input, effect,
         control);
+    return Reduction(node);
+  }
+  return Reduction();
+}
+
+Reduction JSTypeHintLowering::ReduceCallOperation(const Operator* op,
+                                                  Node* const* args,
+                                                  int arg_count, Node* effect,
+                                                  Node* control,
+                                                  FeedbackSlot slot) const {
+  DCHECK(op->opcode() == IrOpcode::kJSCall ||
+         op->opcode() == IrOpcode::kJSCallWithSpread);
+  DCHECK(!slot.IsInvalid());
+  CallICNexus nexus(feedback_vector(), slot);
+  if (Node* node = TryBuildSoftDeopt(
+          nexus, effect, control,
+          DeoptimizeReason::kInsufficientTypeFeedbackForCall)) {
+    return Reduction(node);
+  }
+  return Reduction();
+}
+
+Reduction JSTypeHintLowering::ReduceConstructOperation(
+    const Operator* op, Node* const* args, int arg_count, Node* effect,
+    Node* control, FeedbackSlot slot) const {
+  DCHECK(op->opcode() == IrOpcode::kJSConstruct ||
+         op->opcode() == IrOpcode::kJSConstructWithSpread);
+  DCHECK(!slot.IsInvalid());
+  CallICNexus nexus(feedback_vector(), slot);
+  if (Node* node = TryBuildSoftDeopt(
+          nexus, effect, control,
+          DeoptimizeReason::kInsufficientTypeFeedbackForConstruct)) {
     return Reduction(node);
   }
   return Reduction();

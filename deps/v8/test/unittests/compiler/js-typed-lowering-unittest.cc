@@ -254,7 +254,6 @@ TEST_F(JSTypedLoweringTest, JSToStringWithBoolean) {
 // -----------------------------------------------------------------------------
 // JSStrictEqual
 
-
 TEST_F(JSTypedLoweringTest, JSStrictEqualWithTheHole) {
   Node* const the_hole = HeapConstant(factory()->the_hole_value());
   Node* const context = UndefinedConstant();

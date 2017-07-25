@@ -17,11 +17,12 @@ namespace internal {
 
 RUNTIME_FUNCTION(Runtime_GetSubstitution) {
   HandleScope scope(isolate);
-  DCHECK_EQ(4, args.length());
+  DCHECK_EQ(5, args.length());
   CONVERT_ARG_HANDLE_CHECKED(String, matched, 0);
   CONVERT_ARG_HANDLE_CHECKED(String, subject, 1);
   CONVERT_SMI_ARG_CHECKED(position, 2);
   CONVERT_ARG_HANDLE_CHECKED(String, replacement, 3);
+  CONVERT_SMI_ARG_CHECKED(start_index, 4);
 
   // A simple match without captures.
   class SimpleMatch : public String::Match {
@@ -58,7 +59,8 @@ RUNTIME_FUNCTION(Runtime_GetSubstitution) {
   SimpleMatch match(matched, prefix, suffix);
 
   RETURN_RESULT_OR_FAILURE(
-      isolate, String::GetSubstitution(isolate, &match, replacement));
+      isolate,
+      String::GetSubstitution(isolate, &match, replacement, start_index));
 }
 
 // This may return an empty MaybeHandle if an exception is thrown or
@@ -105,7 +107,6 @@ MaybeHandle<String> StringReplaceOneCharWithString(
     return isolate->factory()->NewConsString(cons1, second);
   }
 }
-
 
 RUNTIME_FUNCTION(Runtime_StringReplaceOneCharWithString) {
   HandleScope scope(isolate);
@@ -195,7 +196,6 @@ RUNTIME_FUNCTION(Runtime_SubString) {
   return *isolate->factory()->NewSubString(string, start, end);
 }
 
-
 RUNTIME_FUNCTION(Runtime_StringAdd) {
   HandleScope scope(isolate);
   DCHECK_EQ(2, args.length());
@@ -213,7 +213,6 @@ RUNTIME_FUNCTION(Runtime_InternalizeString) {
   CONVERT_ARG_HANDLE_CHECKED(String, string, 0);
   return *isolate->factory()->InternalizeString(string);
 }
-
 
 RUNTIME_FUNCTION(Runtime_StringCharCodeAtRT) {
   HandleScope handle_scope(isolate);
@@ -234,7 +233,6 @@ RUNTIME_FUNCTION(Runtime_StringCharCodeAtRT) {
   return Smi::FromInt(subject->Get(i));
 }
 
-
 RUNTIME_FUNCTION(Runtime_StringCompare) {
   HandleScope handle_scope(isolate);
   DCHECK_EQ(2, args.length());
@@ -252,9 +250,7 @@ RUNTIME_FUNCTION(Runtime_StringCompare) {
       break;
   }
   UNREACHABLE();
-  return Smi::kZero;
 }
-
 
 RUNTIME_FUNCTION(Runtime_StringBuilderConcat) {
   HandleScope scope(isolate);
@@ -278,7 +274,7 @@ RUNTIME_FUNCTION(Runtime_StringBuilderConcat) {
   JSObject::EnsureCanContainHeapObjectElements(array);
 
   int special_length = special->length();
-  if (!array->HasFastObjectElements()) {
+  if (!array->HasObjectElements()) {
     return isolate->Throw(isolate->heap()->illegal_argument_string());
   }
 
@@ -328,7 +324,6 @@ RUNTIME_FUNCTION(Runtime_StringBuilderConcat) {
   }
 }
 
-
 RUNTIME_FUNCTION(Runtime_StringBuilderJoin) {
   HandleScope scope(isolate);
   DCHECK_EQ(3, args.length());
@@ -338,7 +333,7 @@ RUNTIME_FUNCTION(Runtime_StringBuilderJoin) {
     THROW_NEW_ERROR_RETURN_FAILURE(isolate, NewInvalidStringLengthError());
   }
   CONVERT_ARG_HANDLE_CHECKED(String, separator, 2);
-  CHECK(array->HasFastObjectElements());
+  CHECK(array->HasObjectElements());
   CHECK(array_length >= 0);
 
   Handle<FixedArray> fixed_array(FixedArray::cast(array->elements()));
@@ -469,7 +464,6 @@ static void JoinSparseArrayWithSeparator(FixedArray* elements,
   DCHECK(cursor <= buffer.length());
 }
 
-
 RUNTIME_FUNCTION(Runtime_SparseJoinWithSeparator) {
   HandleScope scope(isolate);
   DCHECK_EQ(3, args.length());
@@ -478,7 +472,7 @@ RUNTIME_FUNCTION(Runtime_SparseJoinWithSeparator) {
   CONVERT_ARG_HANDLE_CHECKED(String, separator, 2);
   // elements_array is fast-mode JSarray of alternating positions
   // (increasing order) and strings.
-  CHECK(elements_array->HasFastSmiOrObjectElements());
+  CHECK(elements_array->HasSmiOrObjectElements());
   // array_length is length of original array (used to add separators);
   // separator is string to put between elements. Assumed to be non-empty.
   CHECK(array_length > 0);
@@ -554,7 +548,6 @@ RUNTIME_FUNCTION(Runtime_SparseJoinWithSeparator) {
   }
 }
 
-
 // Copies Latin1 characters to the given fixed array looking up
 // one-char strings in the cache. Gives up on the first char that is
 // not in the cache and fills the remainder with smi zeros. Returns
@@ -584,7 +577,6 @@ static int CopyCachedOneByteCharsToArray(Heap* heap, const uint8_t* chars,
 #endif
   return i;
 }
-
 
 // Converts a String to JSArray.
 // For example, "foo" => ["f", "o", "o"].
@@ -633,7 +625,6 @@ RUNTIME_FUNCTION(Runtime_StringToArray) {
   return *isolate->factory()->NewJSArrayWithElements(elements);
 }
 
-
 RUNTIME_FUNCTION(Runtime_StringLessThan) {
   HandleScope handle_scope(isolate);
   DCHECK_EQ(2, args.length());
@@ -649,7 +640,6 @@ RUNTIME_FUNCTION(Runtime_StringLessThan) {
       break;
   }
   UNREACHABLE();
-  return Smi::kZero;
 }
 
 RUNTIME_FUNCTION(Runtime_StringLessThanOrEqual) {
@@ -667,7 +657,6 @@ RUNTIME_FUNCTION(Runtime_StringLessThanOrEqual) {
       break;
   }
   UNREACHABLE();
-  return Smi::kZero;
 }
 
 RUNTIME_FUNCTION(Runtime_StringGreaterThan) {
@@ -685,7 +674,6 @@ RUNTIME_FUNCTION(Runtime_StringGreaterThan) {
       break;
   }
   UNREACHABLE();
-  return Smi::kZero;
 }
 
 RUNTIME_FUNCTION(Runtime_StringGreaterThanOrEqual) {
@@ -703,7 +691,6 @@ RUNTIME_FUNCTION(Runtime_StringGreaterThanOrEqual) {
       break;
   }
   UNREACHABLE();
-  return Smi::kZero;
 }
 
 RUNTIME_FUNCTION(Runtime_StringEqual) {
@@ -729,7 +716,6 @@ RUNTIME_FUNCTION(Runtime_FlattenString) {
   return *String::Flatten(str);
 }
 
-
 RUNTIME_FUNCTION(Runtime_StringCharFromCode) {
   HandleScope handlescope(isolate);
   DCHECK_EQ(1, args.length());
@@ -741,14 +727,6 @@ RUNTIME_FUNCTION(Runtime_StringCharFromCode) {
   return isolate->heap()->empty_string();
 }
 
-RUNTIME_FUNCTION(Runtime_ExternalStringGetChar) {
-  SealHandleScope shs(isolate);
-  DCHECK_EQ(2, args.length());
-  CONVERT_ARG_CHECKED(ExternalString, string, 0);
-  CONVERT_INT32_ARG_CHECKED(index, 1);
-  return Smi::FromInt(string->Get(index));
-}
-
 RUNTIME_FUNCTION(Runtime_StringCharCodeAt) {
   SealHandleScope shs(isolate);
   DCHECK_EQ(2, args.length());
@@ -756,6 +734,11 @@ RUNTIME_FUNCTION(Runtime_StringCharCodeAt) {
   if (!args[1]->IsNumber()) return isolate->heap()->undefined_value();
   if (std::isinf(args.number_at(1))) return isolate->heap()->nan_value();
   return __RT_impl_Runtime_StringCharCodeAtRT(args, isolate);
+}
+
+RUNTIME_FUNCTION(Runtime_StringMaxLength) {
+  SealHandleScope shs(isolate);
+  return Smi::FromInt(String::kMaxLength);
 }
 
 }  // namespace internal

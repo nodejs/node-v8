@@ -6,8 +6,10 @@
 #define V8_SNAPSHOT_SERIALIZER_COMMON_H_
 
 #include "src/address-map.h"
+#include "src/base/bits.h"
 #include "src/external-reference-table.h"
 #include "src/globals.h"
+#include "src/visitors.h"
 
 namespace v8 {
 namespace internal {
@@ -62,7 +64,7 @@ class HotObjectsList {
   static const int kSize = 8;
 
  private:
-  STATIC_ASSERT(IS_POWER_OF_TWO(kSize));
+  static_assert(base::bits::IsPowerOfTwo(kSize), "kSize must be power of two");
   static const int kSizeMask = kSize - 1;
   HeapObject* circular_queue_[kSize];
   int index_;
@@ -73,9 +75,9 @@ class HotObjectsList {
 // The Serializer/Deserializer class is a common superclass for Serializer and
 // Deserializer which is used to store common constants and methods used by
 // both.
-class SerializerDeserializer : public ObjectVisitor {
+class SerializerDeserializer : public RootVisitor {
  public:
-  static void Iterate(Isolate* isolate, ObjectVisitor* visitor);
+  static void Iterate(Isolate* isolate, RootVisitor* visitor);
 
   // No reservation for large object space necessary.
   // We also handle map space differenly.
@@ -270,13 +272,12 @@ class SerializedData {
 
  protected:
   void SetHeaderValue(int offset, uint32_t value) {
-    uint32_t* address = reinterpret_cast<uint32_t*>(data_ + offset);
-    memcpy(reinterpret_cast<uint32_t*>(address), &value, sizeof(value));
+    memcpy(data_ + offset, &value, sizeof(value));
   }
 
   uint32_t GetHeaderValue(int offset) const {
     uint32_t value;
-    memcpy(&value, reinterpret_cast<int*>(data_ + offset), sizeof(value));
+    memcpy(&value, data_ + offset, sizeof(value));
     return value;
   }
 

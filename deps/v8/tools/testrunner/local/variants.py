@@ -6,15 +6,12 @@
 ALL_VARIANT_FLAGS = {
   "default": [[]],
   "stress": [["--stress-opt", "--always-opt"]],
-  "turbofan": [["--turbo"]],
-  "turbofan_opt": [["--turbo", "--always-opt"]],
-  "noturbofan": [["--no-turbo"]],
-  "noturbofan_stress": [["--no-turbo", "--stress-opt", "--always-opt"]],
-  "fullcode": [["--nocrankshaft", "--no-turbo"]],
-  # No optimization actually means no profile guided optimization -
-  # %OptimizeFunctionOnNextCall still works.
-  "nooptimization": [["--nocrankshaft"]],
-  "asm_wasm": [["--validate-asm", "--fast-validate-asm", "--stress-validate-asm", "--suppress-asm-messages"]],
+  "fullcode": [["--noopt", "--stress-fullcodegen"]],
+  # No optimization means disable all optimizations. OptimizeFunctionOnNextCall
+  # would not force optimization too. It turns into a Nop. Please see
+  # https://chromium-review.googlesource.com/c/452620/ for more discussion.
+  "nooptimization": [["--noopt"]],
+  "asm_wasm": [["--validate-asm", "--stress-validate-asm", "--suppress-asm-messages"]],
   "wasm_traps": [["--wasm_guard_pages", "--wasm_trap_handler", "--invoke-weak-callbacks"]],
 }
 
@@ -22,17 +19,14 @@ ALL_VARIANT_FLAGS = {
 FAST_VARIANT_FLAGS = {
   "default": [[]],
   "stress": [["--stress-opt"]],
-  "turbofan": [["--turbo"]],
-  "noturbofan": [["--no-turbo"]],
-  "noturbofan_stress": [["--no-turbo", "--stress-opt"]],
-  "fullcode": [["--nocrankshaft", "--no-turbo"]],
-  # No optimization actually means no profile guided optimization -
-  # %OptimizeFunctionOnNextCall still works.
-  "nooptimization": [["--nocrankshaft"]],
-  "asm_wasm": [["--validate-asm", "--fast-validate-asm", "--stress-validate-asm", "--suppress-asm-messages"]],
+  "fullcode": [["--noopt", "--stress-fullcodegen"]],
+  # No optimization means disable all optimizations. OptimizeFunctionOnNextCall
+  # would not force optimization too. It turns into a Nop. Please see
+  # https://chromium-review.googlesource.com/c/452620/ for more discussion.
+  "nooptimization": [["--noopt"]],
+  "asm_wasm": [["--validate-asm", "--stress-validate-asm", "--suppress-asm-messages"]],
   "wasm_traps": [["--wasm_guard_pages", "--wasm_trap_handler", "--invoke-weak-callbacks"]],
 }
 
-ALL_VARIANTS = set(["default", "stress", "turbofan", "turbofan_opt",
-                    "noturbofan", "noturbofan_stress", "fullcode",
-                    "nooptimization", "asm_wasm", "wasm_traps"])
+ALL_VARIANTS = set(["default", "stress", "fullcode", "nooptimization",
+                    "asm_wasm", "wasm_traps"])

@@ -94,25 +94,22 @@ void Deoptimizer::EnsureRelocSpaceForLazyDeoptimization(Handle<Code> code) {
 void Deoptimizer::PatchCodeForDeoptimization(Isolate* isolate, Code* code) {
   Address code_start_address = code->instruction_start();
 
-  if (FLAG_zap_code_space) {
-    // Fail hard and early if we enter this code object again.
-    byte* pointer = code->FindCodeAgeSequence();
-    if (pointer != NULL) {
-      pointer += kNoCodeAgeSequenceLength;
-    } else {
-      pointer = code->instruction_start();
-    }
-    CodePatcher patcher(isolate, pointer, 1);
-    patcher.masm()->int3();
+  // Fail hard and early if we enter this code object again.
+  byte* pointer = code->FindCodeAgeSequence();
+  if (pointer != NULL) {
+    pointer += kNoCodeAgeSequenceLength;
+  } else {
+    pointer = code->instruction_start();
+  }
+  CodePatcher patcher(isolate, pointer, 1);
+  patcher.masm()->int3();
 
-    DeoptimizationInputData* data =
-        DeoptimizationInputData::cast(code->deoptimization_data());
-    int osr_offset = data->OsrPcOffset()->value();
-    if (osr_offset > 0) {
-      CodePatcher osr_patcher(isolate, code->instruction_start() + osr_offset,
-                              1);
-      osr_patcher.masm()->int3();
-    }
+  DeoptimizationInputData* data =
+      DeoptimizationInputData::cast(code->deoptimization_data());
+  int osr_offset = data->OsrPcOffset()->value();
+  if (osr_offset > 0) {
+    CodePatcher osr_patcher(isolate, code_start_address + osr_offset, 1);
+    osr_patcher.masm()->int3();
   }
 
   // We will overwrite the code's relocation info in-place. Relocation info
@@ -169,23 +166,6 @@ void Deoptimizer::PatchCodeForDeoptimization(Isolate* isolate, Code* code) {
 }
 
 
-void Deoptimizer::SetPlatformCompiledStubRegisters(
-    FrameDescription* output_frame, CodeStubDescriptor* descriptor) {
-  intptr_t handler =
-      reinterpret_cast<intptr_t>(descriptor->deoptimization_handler());
-  int params = descriptor->GetHandlerParameterCount();
-  output_frame->SetRegister(eax.code(), params);
-  output_frame->SetRegister(ebx.code(), handler);
-}
-
-
-void Deoptimizer::CopyDoubleRegisters(FrameDescription* output_frame) {
-  for (int i = 0; i < XMMRegister::kMaxNumRegisters; ++i) {
-    Float64 double_value = input_->GetDoubleRegister(i);
-    output_frame->SetDoubleRegister(i, double_value);
-  }
-}
-
 #define __ masm()->
 
 void Deoptimizer::TableEntryGenerator::Generate() {
@@ -216,7 +196,8 @@ void Deoptimizer::TableEntryGenerator::Generate() {
 
   __ pushad();
 
-  ExternalReference c_entry_fp_address(Isolate::kCEntryFPAddress, isolate());
+  ExternalReference c_entry_fp_address(IsolateAddressId::kCEntryFPAddress,
+                                       isolate());
   __ mov(Operand::StaticVariable(c_entry_fp_address), ebp);
 
   const int kSavedRegistersAreaSize =

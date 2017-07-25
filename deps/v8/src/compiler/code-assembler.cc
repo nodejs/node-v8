@@ -221,7 +221,7 @@ Node* CodeAssembler::HeapConstant(Handle<HeapObject> object) {
   return raw_assembler()->HeapConstant(object);
 }
 
-Node* CodeAssembler::CStringConstant(const char* str) {
+Node* CodeAssembler::StringConstant(const char* str) {
   return HeapConstant(factory()->NewStringFromAsciiChecked(str, TENURED));
 }
 
@@ -554,10 +554,16 @@ Node* CodeAssembler::Projection(int index, Node* value) {
 
 void CodeAssembler::GotoIfException(Node* node, Label* if_exception,
                                     Variable* exception_var) {
+  DCHECK(!node->op()->HasProperty(Operator::kNoThrow));
+
+  if (if_exception == nullptr) {
+    // If no handler is supplied, don't add continuations
+    return;
+  }
+
   Label success(this), exception(this, Label::kDeferred);
   success.MergeVariables();
   exception.MergeVariables();
-  DCHECK(!node->op()->HasProperty(Operator::kNoThrow));
 
   raw_assembler()->Continuations(node, success.label_, exception.label_);
 
@@ -639,7 +645,7 @@ Node* CodeAssembler::CallStubR(const CallInterfaceDescriptor& descriptor,
 #define INSTANTIATE(...)                                     \
   template V8_EXPORT_PRIVATE Node* CodeAssembler::CallStubR( \
       const CallInterfaceDescriptor& descriptor, size_t, Node*, __VA_ARGS__);
-REPEAT_1_TO_8(INSTANTIATE, Node*)
+REPEAT_1_TO_11(INSTANTIATE, Node*)
 #undef INSTANTIATE
 
 Node* CodeAssembler::CallStubN(const CallInterfaceDescriptor& descriptor,
@@ -709,6 +715,13 @@ Node* CodeAssembler::CallCFunctionN(Signature<MachineType>* signature,
   return raw_assembler()->CallN(desc, input_count, inputs);
 }
 
+Node* CodeAssembler::CallCFunction1(MachineType return_type,
+                                    MachineType arg0_type, Node* function,
+                                    Node* arg0) {
+  return raw_assembler()->CallCFunction1(return_type, arg0_type, function,
+                                         arg0);
+}
+
 Node* CodeAssembler::CallCFunction2(MachineType return_type,
                                     MachineType arg0_type,
                                     MachineType arg1_type, Node* function,
@@ -724,6 +737,28 @@ Node* CodeAssembler::CallCFunction3(MachineType return_type,
                                     Node* arg0, Node* arg1, Node* arg2) {
   return raw_assembler()->CallCFunction3(return_type, arg0_type, arg1_type,
                                          arg2_type, function, arg0, arg1, arg2);
+}
+
+Node* CodeAssembler::CallCFunction6(
+    MachineType return_type, MachineType arg0_type, MachineType arg1_type,
+    MachineType arg2_type, MachineType arg3_type, MachineType arg4_type,
+    MachineType arg5_type, Node* function, Node* arg0, Node* arg1, Node* arg2,
+    Node* arg3, Node* arg4, Node* arg5) {
+  return raw_assembler()->CallCFunction6(
+      return_type, arg0_type, arg1_type, arg2_type, arg3_type, arg4_type,
+      arg5_type, function, arg0, arg1, arg2, arg3, arg4, arg5);
+}
+
+Node* CodeAssembler::CallCFunction9(
+    MachineType return_type, MachineType arg0_type, MachineType arg1_type,
+    MachineType arg2_type, MachineType arg3_type, MachineType arg4_type,
+    MachineType arg5_type, MachineType arg6_type, MachineType arg7_type,
+    MachineType arg8_type, Node* function, Node* arg0, Node* arg1, Node* arg2,
+    Node* arg3, Node* arg4, Node* arg5, Node* arg6, Node* arg7, Node* arg8) {
+  return raw_assembler()->CallCFunction9(
+      return_type, arg0_type, arg1_type, arg2_type, arg3_type, arg4_type,
+      arg5_type, arg6_type, arg7_type, arg8_type, function, arg0, arg1, arg2,
+      arg3, arg4, arg5, arg6, arg7, arg8);
 }
 
 void CodeAssembler::Goto(Label* label) {
@@ -967,7 +1002,13 @@ void CodeAssemblerLabel::MergeVariables() {
 
 #if DEBUG
 void CodeAssemblerLabel::Bind(AssemblerDebugInfo debug_info) {
-  DCHECK(!bound_);
+  if (bound_) {
+    std::stringstream str;
+    str << "Cannot bind the same label twice:"
+        << "\n#    current:  " << debug_info
+        << "\n#    previous: " << *label_->block();
+    FATAL(str.str().c_str());
+  }
   state_->raw_assembler_->Bind(label_, debug_info);
   UpdateVariablesAfterBind();
 }
@@ -1002,13 +1043,25 @@ void CodeAssemblerLabel::UpdateVariablesAfterBind() {
   for (auto var : variable_phis_) {
     CodeAssemblerVariable::Impl* var_impl = var.first;
     auto i = variable_merges_.find(var_impl);
-    // If the following asserts fire, then a variable that has been marked as
-    // being merged at the label--either by explicitly marking it so in the
-    // label constructor or by having seen different bound values at branches
-    // into the label--doesn't have a bound value along all of the paths that
-    // have been merged into the label up to this point.
-    DCHECK(i != variable_merges_.end());
-    DCHECK_EQ(i->second.size(), merge_count_);
+#if DEBUG
+    bool not_found = i == variable_merges_.end();
+    if (not_found || i->second.size() != merge_count_) {
+      std::stringstream str;
+      str << "A variable that has been marked as beeing merged at the label"
+          << "\n# doesn't have a bound value along all of the paths that "
+          << "\n# have been merged into the label up to this point."
+          << "\n#"
+          << "\n# This can happen in the following cases:"
+          << "\n# - By explicitly marking it so in the label constructor"
+          << "\n# - By having seen different bound values at branches"
+          << "\n#"
+          << "\n# Merge count:     expected=" << merge_count_
+          << " vs. found=" << (not_found ? 0 : i->second.size())
+          << "\n# Variable:      " << *var_impl
+          << "\n# Current Block: " << *label_->block();
+      FATAL(str.str().c_str());
+    }
+#endif  // DEBUG
     Node* phi = state_->raw_assembler_->Phi(
         var.first->rep_, static_cast<int>(merge_count_), &(i->second[0]));
     variable_phis_[var_impl] = phi;

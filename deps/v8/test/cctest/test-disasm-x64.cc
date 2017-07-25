@@ -284,7 +284,7 @@ TEST(DisasmX64) {
   // TODO(mstarzinger): The following is protected.
   // __ call(Operand(rbx, rcx, times_4, 10000));
   __ nop();
-  Handle<Code> ic(CodeFactory::LoadIC(isolate).code());
+  Handle<Code> ic = isolate->builtins()->LoadIC();
   __ call(ic, RelocInfo::CODE_TARGET);
   __ nop();
   __ nop();
@@ -469,6 +469,9 @@ TEST(DisasmX64) {
     __ punpckldq(xmm5, Operand(rdx, 4));
     __ punpckhdq(xmm8, xmm15);
 
+    __ pshuflw(xmm2, xmm4, 3);
+    __ pshufhw(xmm1, xmm9, 6);
+
 #define EMIT_SSE2_INSTR(instruction, notUsed1, notUsed2, notUsed3) \
   __ instruction(xmm5, xmm1);                                      \
   __ instruction(xmm5, Operand(rdx, 4));
@@ -521,6 +524,7 @@ TEST(DisasmX64) {
       __ insertps(xmm5, xmm1, 123);
       __ extractps(rax, xmm1, 0);
       __ pextrw(rbx, xmm2, 1);
+      __ pinsrw(xmm2, rcx, 1);
       __ pextrd(rbx, xmm15, 0);
       __ pextrd(r12, xmm0, 1);
       __ pinsrd(xmm9, r9, 0);
@@ -940,7 +944,7 @@ TEST(DisasmX64) {
   __ ret(0);
 
   CodeDesc desc;
-  assm.GetCode(&desc);
+  assm.GetCode(isolate, &desc);
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
   USE(code);

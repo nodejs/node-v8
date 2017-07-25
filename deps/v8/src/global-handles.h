@@ -18,7 +18,7 @@ namespace v8 {
 namespace internal {
 
 class HeapStats;
-class ObjectVisitor;
+class RootVisitor;
 
 // Structure for tracking global handles.
 // A single list keeps all the allocated global handles.
@@ -43,12 +43,6 @@ enum WeaknessType {
 
 class GlobalHandles {
  public:
-  enum IterationMode {
-    HANDLE_PHANTOM_NODES_VISIT_OTHERS,
-    VISIT_OTHERS,
-    HANDLE_PHANTOM_NODES
-  };
-
   ~GlobalHandles();
 
   // Creates a new global handle that is alive until Destroy is called.
@@ -85,13 +79,6 @@ class GlobalHandles {
 
   void RecordStats(HeapStats* stats);
 
-  // Returns the current number of weak handles.
-  int NumberOfWeakHandles();
-
-  // Returns the current number of weak handles to global objects.
-  // These handles are also included in NumberOfWeakHandles().
-  int NumberOfGlobalObjectWeakHandles();
-
   // Returns the current number of handles to global objects.
   int global_handles_count() const {
     return number_of_global_handles_;
@@ -104,6 +91,8 @@ class GlobalHandles {
   void ResetNumberOfPhantomHandleResets() {
     number_of_phantom_handle_resets_ = 0;
   }
+
+  size_t NumberOfNewSpaceNodes() { return new_space_nodes_.length(); }
 
   // Clear the weakness of a global handle.
   static void* ClearWeakness(Object** location);
@@ -125,10 +114,13 @@ class GlobalHandles {
       GarbageCollector collector, const v8::GCCallbackFlags gc_callback_flags);
 
   // Iterates over all strong handles.
-  void IterateStrongRoots(ObjectVisitor* v);
+  void IterateStrongRoots(RootVisitor* v);
 
   // Iterates over all handles.
-  void IterateAllRoots(ObjectVisitor* v);
+  void IterateAllRoots(RootVisitor* v);
+
+  void IterateAllNewSpaceRoots(RootVisitor* v);
+  void IterateNewSpaceRoots(RootVisitor* v, size_t start, size_t end);
 
   // Iterates over all handles that have embedder-assigned class ID.
   void IterateAllRootsWithClassIds(v8::PersistentHandleVisitor* v);
@@ -142,7 +134,7 @@ class GlobalHandles {
   void IterateWeakRootsInNewSpaceWithClassIds(v8::PersistentHandleVisitor* v);
 
   // Iterates over all weak roots in heap.
-  void IterateWeakRoots(ObjectVisitor* v);
+  void IterateWeakRoots(RootVisitor* v);
 
   // Find all weak handles satisfying the callback predicate, mark
   // them as pending.
@@ -153,16 +145,13 @@ class GlobalHandles {
   // guaranteed to contain all handles holding new space objects (but
   // may also include old space objects).
 
-  // Iterates over strong and dependent handles. See the node above.
-  void IterateNewSpaceStrongAndDependentRoots(ObjectVisitor* v);
+  // Iterates over strong and dependent handles. See the note above.
+  void IterateNewSpaceStrongAndDependentRoots(RootVisitor* v);
 
-  // Finds weak independent or partially independent handles satisfying
-  // the callback predicate and marks them as pending. See the note above.
-  void IdentifyNewSpaceWeakIndependentHandles(WeakSlotCallbackWithHeap f);
-
-  // Iterates over weak independent or partially independent handles.
-  // See the note above.
-  void IterateNewSpaceWeakIndependentRoots(ObjectVisitor* v);
+  // Iterates over strong and dependent handles. See the note above.
+  // Also marks unmodified nodes in the same iteration.
+  void IterateNewSpaceStrongAndDependentRootsAndIdentifyUnmodified(
+      RootVisitor* v, size_t start, size_t end);
 
   // Finds weak independent or unmodified handles satisfying
   // the callback predicate and marks them as pending. See the note above.
@@ -171,8 +160,7 @@ class GlobalHandles {
 
   // Iterates over weak independent or unmodified handles.
   // See the note above.
-  template <IterationMode mode>
-  void IterateNewSpaceWeakUnmodifiedRoots(ObjectVisitor* v);
+  void IterateNewSpaceWeakUnmodifiedRoots(RootVisitor* v);
 
   // Identify unmodified objects that are in weak state and marks them
   // unmodified
@@ -304,9 +292,9 @@ class EternalHandles {
   }
 
   // Iterates over all handles.
-  void IterateAllRoots(ObjectVisitor* visitor);
+  void IterateAllRoots(RootVisitor* visitor);
   // Iterates over all handles which might be in new space.
-  void IterateNewSpaceRoots(ObjectVisitor* visitor);
+  void IterateNewSpaceRoots(RootVisitor* visitor);
   // Rebuilds new space list.
   void PostGarbageCollectionProcessing(Heap* heap);
 

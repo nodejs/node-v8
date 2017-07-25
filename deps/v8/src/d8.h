@@ -6,6 +6,7 @@
 #define V8_D8_H_
 
 #include <iterator>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -292,7 +293,6 @@ class ShellOptions {
         stress_runs(1),
         interactive_shell(false),
         test_shell(false),
-        dump_heap_constants(false),
         expected_to_throw(false),
         mock_arraybuffer_allocator(false),
         enable_inspector(false),
@@ -324,7 +324,6 @@ class ShellOptions {
   int stress_runs;
   bool interactive_shell;
   bool test_shell;
-  bool dump_heap_constants;
   bool expected_to_throw;
   bool mock_arraybuffer_allocator;
   bool enable_inspector;
@@ -358,6 +357,8 @@ class Shell : public i::AllStatic {
   static void OnExit(Isolate* isolate);
   static void CollectGarbage(Isolate* isolate);
   static void EmptyMessageQueues(Isolate* isolate);
+  static void EnsureEventLoopInitialized(Isolate* isolate);
+  static void CompleteMessageLoop(Isolate* isolate);
 
   static std::unique_ptr<SerializationData> SerializeValue(
       Isolate* isolate, Local<Value> value, Local<Value> transfer);
@@ -393,6 +394,8 @@ class Shell : public i::AllStatic {
   static void Print(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void PrintErr(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void Write(const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void WaitUntilDone(const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void NotifyDone(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void QuitOnce(v8::FunctionCallbackInfo<v8::Value>* args);
   static void Quit(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void Version(const v8::FunctionCallbackInfo<v8::Value>& args);
@@ -441,10 +444,8 @@ class Shell : public i::AllStatic {
   static void SetUMask(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void MakeDirectory(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void RemoveDirectory(const v8::FunctionCallbackInfo<v8::Value>& args);
-  static void HostImportModuleDynamically(Isolate* isolate,
-                                          Local<String> referrer,
-                                          Local<String> specifier,
-                                          Local<DynamicImportResult> result);
+  static MaybeLocal<Promise> HostImportModuleDynamically(
+      Local<Context> context, Local<String> referrer, Local<String> specifier);
 
   // Data is of type DynamicImportData*. We use void* here to be able
   // to conform with MicrotaskCallback interface and enqueue this
@@ -456,6 +457,9 @@ class Shell : public i::AllStatic {
   static const char* kPrompt;
   static ShellOptions options;
   static ArrayBuffer::Allocator* array_buffer_allocator;
+
+  static void SetWaitUntilDone(Isolate* isolate, bool value);
+  static bool IsWaitUntilDone(Isolate* isolate);
 
  private:
   static Global<Context> evaluation_context_;
@@ -491,6 +495,10 @@ class Shell : public i::AllStatic {
                            int index);
   static MaybeLocal<Module> FetchModuleTree(v8::Local<v8::Context> context,
                                             const std::string& file_name);
+  // We may have multiple isolates running concurrently, so the access to
+  // the isolate_status_ needs to be concurrency-safe.
+  static base::LazyMutex isolate_status_lock_;
+  static std::map<Isolate*, bool> isolate_status_;
 };
 
 

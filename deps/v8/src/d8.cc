@@ -17,6 +17,7 @@
 #include "src/third_party/vtune/v8-vtune.h"
 #endif
 
+#include "src/d8-console.h"
 #include "src/d8.h"
 #include "src/ostreams.h"
 
@@ -35,6 +36,7 @@
 #include "src/list-inl.h"
 #include "src/msan.h"
 #include "src/objects-inl.h"
+#include "src/objects.h"
 #include "src/snapshot/natives.h"
 #include "src/trap-handler/trap-handler.h"
 #include "src/utils.h"
@@ -71,9 +73,37 @@ const int kMaxSerializerMemoryUsage = 1 * MB;  // Arbitrary maximum for testing.
 // array buffers storing the lengths as a SMI internally.
 #define TWO_GB (2u * 1024u * 1024u * 1024u)
 
-class ShellArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
+// Forwards memory reservation and protection functions to the V8 default
+// allocator. Used by ShellArrayBufferAllocator and MockArrayBufferAllocator.
+class ArrayBufferAllocatorBase : public v8::ArrayBuffer::Allocator {
+  std::unique_ptr<Allocator> allocator_ =
+      std::unique_ptr<Allocator>(NewDefaultAllocator());
+
  public:
-  virtual void* Allocate(size_t length) {
+  void* Reserve(size_t length) override { return allocator_->Reserve(length); }
+
+  void Free(void*, size_t) override = 0;
+
+  void Free(void* data, size_t length, AllocationMode mode) override {
+    switch (mode) {
+      case AllocationMode::kNormal: {
+        return Free(data, length);
+      }
+      case AllocationMode::kReservation: {
+        return allocator_->Free(data, length, mode);
+      }
+    }
+  }
+
+  void SetProtection(void* data, size_t length,
+                     Protection protection) override {
+    allocator_->SetProtection(data, length, protection);
+  }
+};
+
+class ShellArrayBufferAllocator : public ArrayBufferAllocatorBase {
+ public:
+  void* Allocate(size_t length) override {
 #if USE_VM
     if (RoundToPageSize(&length)) {
       void* data = VirtualMemoryAllocate(length);
@@ -93,7 +123,7 @@ class ShellArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
     void* data = AllocateUninitialized(length);
     return data == NULL ? data : memset(data, 0, length);
   }
-  virtual void* AllocateUninitialized(size_t length) {
+  void* AllocateUninitialized(size_t length) override {
 #if USE_VM
     if (RoundToPageSize(&length)) return VirtualMemoryAllocate(length);
 #endif
@@ -105,7 +135,8 @@ class ShellArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
     return malloc(length);
 #endif
   }
-  virtual void Free(void* data, size_t length) {
+  using ArrayBufferAllocatorBase::Free;
+  void Free(void* data, size_t length) override {
 #if USE_VM
     if (RoundToPageSize(&length)) {
       base::VirtualMemory::ReleaseRegion(data, length);
@@ -126,7 +157,7 @@ class ShellArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
   }
 #if USE_VM
   void* VirtualMemoryAllocate(size_t length) {
-    void* data = base::VirtualMemory::ReserveRegion(length);
+    void* data = base::VirtualMemory::ReserveRegion(length, nullptr);
     if (data && !base::VirtualMemory::CommitRegion(data, length, false)) {
       base::VirtualMemory::ReleaseRegion(data, length);
       return nullptr;
@@ -137,85 +168,88 @@ class ShellArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
 #endif
 };
 
+class MockArrayBufferAllocator : public ArrayBufferAllocatorBase {
+  const size_t kAllocationLimit = 10 * MB;
+  size_t get_actual_length(size_t length) const {
+    return length > kAllocationLimit ? base::OS::CommitPageSize() : length;
+  }
 
-class MockArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
  public:
   void* Allocate(size_t length) override {
-    size_t actual_length = length > 10 * MB ? 1 : length;
+    const size_t actual_length = get_actual_length(length);
     void* data = AllocateUninitialized(actual_length);
     return data == NULL ? data : memset(data, 0, actual_length);
   }
   void* AllocateUninitialized(size_t length) override {
-    return length > 10 * MB ? malloc(1) : malloc(length);
+    return malloc(get_actual_length(length));
   }
   void Free(void* p, size_t) override { free(p); }
+  void Free(void* data, size_t length, AllocationMode mode) override {
+    ArrayBufferAllocatorBase::Free(data, get_actual_length(length), mode);
+  }
+  void* Reserve(size_t length) override {
+    return ArrayBufferAllocatorBase::Reserve(get_actual_length(length));
+  }
 };
 
-
-// Predictable v8::Platform implementation. All background and foreground
-// tasks are run immediately, delayed tasks are not executed at all.
+// Predictable v8::Platform implementation. Background tasks and idle tasks are
+// disallowed, and the time reported by {MonotonicallyIncreasingTime} is
+// deterministic.
 class PredictablePlatform : public Platform {
  public:
-  PredictablePlatform() {}
+  explicit PredictablePlatform(std::unique_ptr<Platform> platform)
+      : platform_(std::move(platform)) {
+    DCHECK_NOT_NULL(platform_);
+  }
 
   void CallOnBackgroundThread(Task* task,
                               ExpectedRuntime expected_runtime) override {
+    // It's not defined when background tasks are being executed, so we can just
+    // execute them right away.
     task->Run();
     delete task;
   }
 
   void CallOnForegroundThread(v8::Isolate* isolate, Task* task) override {
-    task->Run();
-    delete task;
+    platform_->CallOnForegroundThread(isolate, task);
   }
 
   void CallDelayedOnForegroundThread(v8::Isolate* isolate, Task* task,
                                      double delay_in_seconds) override {
-    delete task;
+    platform_->CallDelayedOnForegroundThread(isolate, task, delay_in_seconds);
   }
 
-  void CallIdleOnForegroundThread(v8::Isolate* isolate,
-                                  IdleTask* task) override {
+  void CallIdleOnForegroundThread(Isolate* isolate, IdleTask* task) override {
     UNREACHABLE();
   }
 
-  bool IdleTasksEnabled(v8::Isolate* isolate) override { return false; }
+  bool IdleTasksEnabled(Isolate* isolate) override { return false; }
 
   double MonotonicallyIncreasingTime() override {
     return synthetic_time_in_sec_ += 0.00001;
   }
 
-  using Platform::AddTraceEvent;
-  uint64_t AddTraceEvent(char phase, const uint8_t* categoryEnabledFlag,
-                         const char* name, const char* scope, uint64_t id,
-                         uint64_t bind_id, int numArgs, const char** argNames,
-                         const uint8_t* argTypes, const uint64_t* argValues,
-                         unsigned int flags) override {
-    return 0;
+  v8::TracingController* GetTracingController() override {
+    return platform_->GetTracingController();
   }
 
-  void UpdateTraceEventDuration(const uint8_t* categoryEnabledFlag,
-                                const char* name, uint64_t handle) override {}
-
-  const uint8_t* GetCategoryGroupEnabled(const char* name) override {
-    static uint8_t no = 0;
-    return &no;
-  }
-
-  const char* GetCategoryGroupName(
-      const uint8_t* categoryEnabledFlag) override {
-    static const char* dummy = "dummy";
-    return dummy;
-  }
+  Platform* platform() const { return platform_.get(); }
 
  private:
   double synthetic_time_in_sec_ = 0.0;
+  std::unique_ptr<Platform> platform_;
 
   DISALLOW_COPY_AND_ASSIGN(PredictablePlatform);
 };
 
 
 v8::Platform* g_platform = NULL;
+
+v8::Platform* GetDefaultPlatform() {
+  return i::FLAG_verify_predictable
+             ? static_cast<PredictablePlatform*>(g_platform)->platform()
+             : g_platform;
+}
 
 static Local<Value> Throw(Isolate* isolate, const char* message) {
   return isolate->ThrowException(
@@ -393,6 +427,20 @@ class PerIsolateData {
   int RealmFind(Local<Context> context);
 };
 
+class ExternalOwningOneByteStringResource
+    : public String::ExternalOneByteStringResource {
+ public:
+  ExternalOwningOneByteStringResource() : length_(0) {}
+  ExternalOwningOneByteStringResource(std::unique_ptr<const char[]> data,
+                                      size_t length)
+      : data_(std::move(data)), length_(length) {}
+  const char* data() const override { return data_.get(); }
+  size_t length() const override { return length_; }
+
+ private:
+  std::unique_ptr<const char[]> data_;
+  size_t length_;
+};
 
 CounterMap* Shell::counter_map_;
 base::OS::MemoryMappedFile* Shell::counters_file_ = NULL;
@@ -406,6 +454,8 @@ base::LazyMutex Shell::workers_mutex_;
 bool Shell::allow_new_workers_ = true;
 i::List<Worker*> Shell::workers_;
 std::vector<ExternalizedContents> Shell::externalized_contents_;
+base::LazyMutex Shell::isolate_status_lock_;
+std::map<v8::Isolate*, bool> Shell::isolate_status_;
 
 Global<Context> Shell::evaluation_context_;
 ArrayBuffer::Allocator* Shell::array_buffer_allocator;
@@ -435,9 +485,9 @@ ScriptCompiler::CachedData* CompileForCachedData(
   }
   Isolate::CreateParams create_params;
   create_params.array_buffer_allocator = Shell::array_buffer_allocator;
-  create_params.host_import_module_dynamically_callback_ =
-      Shell::HostImportModuleDynamically;
   Isolate* temp_isolate = Isolate::New(create_params);
+  temp_isolate->SetHostImportModuleDynamicallyCallback(
+      Shell::HostImportModuleDynamically);
   ScriptCompiler::CachedData* result = NULL;
   {
     Isolate::Scope isolate_scope(temp_isolate);
@@ -642,8 +692,6 @@ class ModuleEmbedderData {
 };
 
 enum {
-  // The debugger reserves the first slot in the Context embedder data.
-  kDebugIdIndex = Context::kDebugIdIndex,
   kModuleEmbedderDataIndex,
   kInspectorClientIndex
 };
@@ -729,27 +777,36 @@ namespace {
 struct DynamicImportData {
   DynamicImportData(Isolate* isolate_, Local<String> referrer_,
                     Local<String> specifier_,
-                    Local<DynamicImportResult> result_)
+                    Local<Promise::Resolver> resolver_)
       : isolate(isolate_) {
     referrer.Reset(isolate, referrer_);
     specifier.Reset(isolate, specifier_);
-    result.Reset(isolate, result_);
+    resolver.Reset(isolate, resolver_);
   }
 
   Isolate* isolate;
   Global<String> referrer;
   Global<String> specifier;
-  Global<DynamicImportResult> result;
+  Global<Promise::Resolver> resolver;
 };
 
 }  // namespace
-void Shell::HostImportModuleDynamically(Isolate* isolate,
-                                        Local<String> referrer,
-                                        Local<String> specifier,
-                                        Local<DynamicImportResult> result) {
-  DynamicImportData* data =
-      new DynamicImportData(isolate, referrer, specifier, result);
-  isolate->EnqueueMicrotask(Shell::DoHostImportModuleDynamically, data);
+
+MaybeLocal<Promise> Shell::HostImportModuleDynamically(
+    Local<Context> context, Local<String> referrer, Local<String> specifier) {
+  Isolate* isolate = context->GetIsolate();
+
+  MaybeLocal<Promise::Resolver> maybe_resolver =
+      Promise::Resolver::New(context);
+  Local<Promise::Resolver> resolver;
+  if (maybe_resolver.ToLocal(&resolver)) {
+    DynamicImportData* data =
+        new DynamicImportData(isolate, referrer, specifier, resolver);
+    isolate->EnqueueMicrotask(Shell::DoHostImportModuleDynamically, data);
+    return resolver->GetPromise();
+  }
+
+  return MaybeLocal<Promise>();
 }
 
 void Shell::DoHostImportModuleDynamically(void* import_data) {
@@ -760,7 +817,7 @@ void Shell::DoHostImportModuleDynamically(void* import_data) {
 
   Local<String> referrer(import_data_->referrer.Get(isolate));
   Local<String> specifier(import_data_->specifier.Get(isolate));
-  Local<DynamicImportResult> result(import_data_->result.Get(isolate));
+  Local<Promise::Resolver> resolver(import_data_->resolver.Get(isolate));
 
   PerIsolateData* data = PerIsolateData::Get(isolate);
   Local<Context> realm = data->realms_[data->realm_current_].Get(isolate);
@@ -768,9 +825,11 @@ void Shell::DoHostImportModuleDynamically(void* import_data) {
 
   std::string source_url = ToSTLString(referrer);
   std::string dir_name =
-      IsAbsolutePath(source_url) ? DirName(source_url) : GetWorkingDirectory();
+      DirName(IsAbsolutePath(source_url)
+                  ? source_url
+                  : NormalizePath(source_url, GetWorkingDirectory()));
   std::string file_name = ToSTLString(specifier);
-  std::string absolute_path = NormalizePath(file_name.c_str(), dir_name);
+  std::string absolute_path = NormalizePath(file_name, dir_name);
 
   TryCatch try_catch(isolate);
   try_catch.SetVerbose(true);
@@ -782,12 +841,13 @@ void Shell::DoHostImportModuleDynamically(void* import_data) {
     root_module = module_it->second.Get(isolate);
   } else if (!FetchModuleTree(realm, absolute_path).ToLocal(&root_module)) {
     CHECK(try_catch.HasCaught());
-    CHECK(result->FinishDynamicImportFailure(realm, try_catch.Exception()));
+    resolver->Reject(realm, try_catch.Exception()).ToChecked();
     return;
   }
 
   MaybeLocal<Value> maybe_result;
-  if (root_module->Instantiate(realm, ResolveModuleCallback)) {
+  if (root_module->InstantiateModule(realm, ResolveModuleCallback)
+          .FromMaybe(false)) {
     maybe_result = root_module->Evaluate(realm);
     EmptyMessageQueues(isolate);
   }
@@ -795,12 +855,13 @@ void Shell::DoHostImportModuleDynamically(void* import_data) {
   Local<Value> module;
   if (!maybe_result.ToLocal(&module)) {
     DCHECK(try_catch.HasCaught());
-    CHECK(result->FinishDynamicImportFailure(realm, try_catch.Exception()));
+    resolver->Reject(realm, try_catch.Exception()).ToChecked();
     return;
   }
 
   DCHECK(!try_catch.HasCaught());
-  CHECK(result->FinishDynamicImportSuccess(realm, root_module));
+  Local<Value> module_namespace = root_module->GetModuleNamespace();
+  resolver->Resolve(realm, module_namespace).ToChecked();
 }
 
 bool Shell::ExecuteModule(Isolate* isolate, const char* file_name) {
@@ -825,7 +886,8 @@ bool Shell::ExecuteModule(Isolate* isolate, const char* file_name) {
   }
 
   MaybeLocal<Value> maybe_result;
-  if (root_module->Instantiate(realm, ResolveModuleCallback)) {
+  if (root_module->InstantiateModule(realm, ResolveModuleCallback)
+          .FromMaybe(false)) {
     maybe_result = root_module->Evaluate(realm);
     EmptyMessageQueues(isolate);
   }
@@ -851,8 +913,10 @@ PerIsolateData::RealmScope::RealmScope(PerIsolateData* data) : data_(data) {
 
 
 PerIsolateData::RealmScope::~RealmScope() {
-  // Drop realms to avoid keeping them alive.
-  for (int i = 0; i < data_->realm_count_; ++i) {
+  // Drop realms to avoid keeping them alive. We don't dispose the
+  // module embedder data for the first realm here, but instead do
+  // it in RunShell or in RunMain, if not running in interactive mode
+  for (int i = 1; i < data_->realm_count_; ++i) {
     Global<Context>& realm = data_->realms_[i];
     if (realm.IsEmpty()) continue;
     DisposeModuleEmbedderData(realm.Get(data_->isolate_));
@@ -1004,6 +1068,11 @@ void Shell::RealmNavigate(const v8::FunctionCallbackInfo<v8::Value>& args) {
   PerIsolateData* data = PerIsolateData::Get(isolate);
   int index = data->RealmIndexOrThrow(args, 0);
   if (index == -1) return;
+  if (index == 0 || index == data->realm_current_ ||
+      index == data->realm_switch_) {
+    Throw(args.GetIsolate(), "Invalid realm index");
+    return;
+  }
 
   Local<Context> context = Local<Context>::New(isolate, data->realms_[index]);
   v8::MaybeLocal<Value> global_object = context->Global();
@@ -1055,12 +1124,16 @@ void Shell::RealmEval(const v8::FunctionCallbackInfo<v8::Value>& args) {
   }
   Local<Context> realm = Local<Context>::New(isolate, data->realms_[index]);
   realm->Enter();
+  int previous_index = data->realm_current_;
+  data->realm_current_ = data->realm_switch_ = index;
   Local<Value> result;
   if (!script->BindToCurrentContext()->Run(realm).ToLocal(&result)) {
     realm->Exit();
+    data->realm_current_ = data->realm_switch_ = previous_index;
     return;
   }
   realm->Exit();
+  data->realm_current_ = data->realm_switch_ = previous_index;
   args.GetReturnValue().Set(result);
 }
 
@@ -1136,6 +1209,13 @@ void Shell::Read(const v8::FunctionCallbackInfo<v8::Value>& args) {
   if (*file == NULL) {
     Throw(args.GetIsolate(), "Error loading file");
     return;
+  }
+  if (args.Length() == 2) {
+    String::Utf8Value format(args[1]);
+    if (*format && std::strcmp(*format, "binary") == 0) {
+      ReadBuffer(args);
+      return;
+    }
   }
   Local<String> source = ReadFile(args.GetIsolate(), *file);
   if (source.IsEmpty()) {
@@ -1320,6 +1400,13 @@ void Shell::Quit(const v8::FunctionCallbackInfo<v8::Value>& args) {
                  const_cast<v8::FunctionCallbackInfo<v8::Value>*>(&args));
 }
 
+void Shell::WaitUntilDone(const v8::FunctionCallbackInfo<v8::Value>& args) {
+  SetWaitUntilDone(args.GetIsolate(), true);
+}
+
+void Shell::NotifyDone(const v8::FunctionCallbackInfo<v8::Value>& args) {
+  SetWaitUntilDone(args.GetIsolate(), false);
+}
 
 void Shell::Version(const v8::FunctionCallbackInfo<v8::Value>& args) {
   args.GetReturnValue().Set(
@@ -1349,10 +1436,11 @@ void Shell::ReportException(Isolate* isolate, v8::TryCatch* try_catch) {
     // print the exception.
     printf("%s\n", exception_string);
   } else if (message->GetScriptOrigin().Options().IsWasm()) {
-    // Print <WASM>[(function index)]((function name))+(offset): (message).
+    // Print wasm-function[(function index)]:(offset): (message).
     int function_index = message->GetLineNumber(context).FromJust() - 1;
     int offset = message->GetStartColumn(context).FromJust();
-    printf("<WASM>[%d]+%d: %s\n", function_index, offset, exception_string);
+    printf("wasm-function[%d]:%d: %s\n", function_index, offset,
+           exception_string);
   } else {
     // Print (filename):(line number): (message).
     v8::String::Utf8Value filename(message->GetScriptOrigin().ResourceName());
@@ -1557,6 +1645,19 @@ Local<ObjectTemplate> Shell::CreateGlobalTemplate(Isolate* isolate) {
             .ToLocalChecked(),
         FunctionTemplate::New(isolate, Quit));
   }
+  Local<ObjectTemplate> test_template = ObjectTemplate::New(isolate);
+  global_template->Set(
+      String::NewFromUtf8(isolate, "testRunner", NewStringType::kNormal)
+          .ToLocalChecked(),
+      test_template);
+  test_template->Set(
+      String::NewFromUtf8(isolate, "notifyDone", NewStringType::kNormal)
+          .ToLocalChecked(),
+      FunctionTemplate::New(isolate, NotifyDone));
+  test_template->Set(
+      String::NewFromUtf8(isolate, "waitUntilDone", NewStringType::kNormal)
+          .ToLocalChecked(),
+      FunctionTemplate::New(isolate, WaitUntilDone));
   global_template->Set(
       String::NewFromUtf8(isolate, "version", NewStringType::kNormal)
           .ToLocalChecked(),
@@ -1770,6 +1871,33 @@ void Shell::WriteIgnitionDispatchCountersFile(v8::Isolate* isolate) {
       JSON::Stringify(context, dispatch_counters).ToLocalChecked());
 }
 
+namespace {
+int LineFromOffset(Local<debug::Script> script, int offset) {
+  debug::Location location = script->GetSourceLocation(offset);
+  return location.GetLineNumber();
+}
+
+void WriteLcovDataForRange(std::vector<uint32_t>& lines, int start_line,
+                           int end_line, uint32_t count) {
+  // Ensure space in the array.
+  lines.resize(std::max(static_cast<size_t>(end_line + 1), lines.size()), 0);
+  // Boundary lines could be shared between two functions with different
+  // invocation counts. Take the maximum.
+  lines[start_line] = std::max(lines[start_line], count);
+  lines[end_line] = std::max(lines[end_line], count);
+  // Invocation counts for non-boundary lines are overwritten.
+  for (int k = start_line + 1; k < end_line; k++) lines[k] = count;
+}
+
+void WriteLcovDataForNamedRange(std::ostream& sink,
+                                std::vector<uint32_t>& lines, std::string name,
+                                int start_line, int end_line, uint32_t count) {
+  WriteLcovDataForRange(lines, start_line, end_line, count);
+  sink << "FN:" << start_line + 1 << "," << name << std::endl;
+  sink << "FNDA:" << count << "," << name << std::endl;
+}
+}  // namespace
+
 // Write coverage data in LCOV format. See man page for geninfo(1).
 void Shell::WriteLcovData(v8::Isolate* isolate, const char* file) {
   if (!file) return;
@@ -1791,33 +1919,38 @@ void Shell::WriteLcovData(v8::Isolate* isolate, const char* file) {
     for (size_t j = 0; j < script_data.FunctionCount(); j++) {
       debug::Coverage::FunctionData function_data =
           script_data.GetFunctionData(j);
-      debug::Location start =
-          script->GetSourceLocation(function_data.StartOffset());
-      debug::Location end =
-          script->GetSourceLocation(function_data.EndOffset());
-      int start_line = start.GetLineNumber();
-      int end_line = end.GetLineNumber();
-      uint32_t count = function_data.Count();
-      // Ensure space in the array.
-      lines.resize(std::max(static_cast<size_t>(end_line + 1), lines.size()),
-                   0);
-      // Boundary lines could be shared between two functions with different
-      // invocation counts. Take the maximum.
-      lines[start_line] = std::max(lines[start_line], count);
-      lines[end_line] = std::max(lines[end_line], count);
-      // Invocation counts for non-boundary lines are overwritten.
-      for (int k = start_line + 1; k < end_line; k++) lines[k] = count;
+
       // Write function stats.
-      Local<String> name;
-      std::stringstream name_stream;
-      if (function_data.Name().ToLocal(&name)) {
-        name_stream << ToSTLString(name);
-      } else {
-        name_stream << "<" << start_line + 1 << "-";
-        name_stream << start.GetColumnNumber() << ">";
+      {
+        debug::Location start =
+            script->GetSourceLocation(function_data.StartOffset());
+        debug::Location end =
+            script->GetSourceLocation(function_data.EndOffset());
+        int start_line = start.GetLineNumber();
+        int end_line = end.GetLineNumber();
+        uint32_t count = function_data.Count();
+
+        Local<String> name;
+        std::stringstream name_stream;
+        if (function_data.Name().ToLocal(&name)) {
+          name_stream << ToSTLString(name);
+        } else {
+          name_stream << "<" << start_line + 1 << "-";
+          name_stream << start.GetColumnNumber() << ">";
+        }
+
+        WriteLcovDataForNamedRange(sink, lines, name_stream.str(), start_line,
+                                   end_line, count);
       }
-      sink << "FN:" << start_line + 1 << "," << name_stream.str() << std::endl;
-      sink << "FNDA:" << count << "," << name_stream.str() << std::endl;
+
+      // Process inner blocks.
+      for (size_t k = 0; k < function_data.BlockCount(); k++) {
+        debug::Coverage::BlockData block_data = function_data.GetBlockData(k);
+        int start_line = LineFromOffset(script, block_data.StartOffset());
+        int end_line = LineFromOffset(script, block_data.EndOffset() - 1);
+        uint32_t count = block_data.Count();
+        WriteLcovDataForRange(lines, start_line, end_line, count);
+      }
     }
     // Write per-line coverage. LCOV uses 1-based line numbers.
     for (size_t i = 0; i < lines.size(); i++) {
@@ -1985,16 +2118,22 @@ void Shell::ReadBuffer(const v8::FunctionCallbackInfo<v8::Value>& args) {
   args.GetReturnValue().Set(buffer);
 }
 
-
 // Reads a file into a v8 string.
 Local<String> Shell::ReadFile(Isolate* isolate, const char* name) {
   int size = 0;
   char* chars = ReadChars(name, &size);
   if (chars == NULL) return Local<String>();
-  Local<String> result =
-      String::NewFromUtf8(isolate, chars, NewStringType::kNormal, size)
-          .ToLocalChecked();
-  delete[] chars;
+  Local<String> result;
+  if (i::FLAG_use_external_strings && internal::String::IsAscii(chars, size)) {
+    String::ExternalOneByteStringResource* resource =
+        new ExternalOwningOneByteStringResource(
+            std::unique_ptr<const char[]>(chars), size);
+    result = String::NewExternalOneByte(isolate, resource).ToLocalChecked();
+  } else {
+    result = String::NewFromUtf8(isolate, chars, NewStringType::kNormal, size)
+                 .ToLocalChecked();
+    delete[] chars;
+  }
   return result;
 }
 
@@ -2017,6 +2156,9 @@ void Shell::RunShell(Isolate* isolate) {
     ExecuteString(isolate, input, name, true, true);
   }
   printf("\n");
+  // We need to explicitly clean up the module embedder data for
+  // the interative shell context.
+  DisposeModuleEmbedderData(context);
 }
 
 class InspectorFrontend final : public v8_inspector::V8Inspector::Channel {
@@ -2040,6 +2182,7 @@ class InspectorFrontend final : public v8_inspector::V8Inspector::Channel {
   void flushProtocolNotifications() override {}
 
   void Send(const v8_inspector::StringView& string) {
+    v8::Isolate::AllowJavascriptExecutionScope allow_script(isolate_);
     int length = static_cast<int>(string.length());
     DCHECK(length < v8::String::kMaxLength);
     Local<String> message =
@@ -2213,16 +2356,8 @@ void SourceGroup::Execute(Isolate* isolate) {
   }
 }
 
-
 Local<String> SourceGroup::ReadFile(Isolate* isolate, const char* name) {
-  int size;
-  char* chars = ReadChars(name, &size);
-  if (chars == NULL) return Local<String>();
-  Local<String> result =
-      String::NewFromUtf8(isolate, chars, NewStringType::kNormal, size)
-          .ToLocalChecked();
-  delete[] chars;
-  return result;
+  return Shell::ReadFile(isolate, name);
 }
 
 
@@ -2237,9 +2372,13 @@ base::Thread::Options SourceGroup::GetThreadOptions() {
 void SourceGroup::ExecuteInThread() {
   Isolate::CreateParams create_params;
   create_params.array_buffer_allocator = Shell::array_buffer_allocator;
-  create_params.host_import_module_dynamically_callback_ =
-      Shell::HostImportModuleDynamically;
   Isolate* isolate = Isolate::New(create_params);
+  isolate->SetHostImportModuleDynamicallyCallback(
+      Shell::HostImportModuleDynamically);
+
+  Shell::EnsureEventLoopInitialized(isolate);
+  D8Console console(isolate);
+  debug::SetConsoleDelegate(isolate, &console);
   for (int i = 0; i < Shell::options.stress_runs; ++i) {
     next_semaphore_.Wait();
     {
@@ -2258,6 +2397,7 @@ void SourceGroup::ExecuteInThread() {
         DisposeModuleEmbedderData(context);
       }
       Shell::CollectGarbage(isolate);
+      Shell::CompleteMessageLoop(isolate);
     }
     done_semaphore_.Signal();
   }
@@ -2353,7 +2493,7 @@ std::unique_ptr<SerializationData> Worker::GetMessage() {
   while (!out_queue_.Dequeue(&result)) {
     // If the worker is no longer running, and there are no messages in the
     // queue, don't expect any more messages from it.
-    if (!base::NoBarrier_Load(&running_)) break;
+    if (!base::Relaxed_Load(&running_)) break;
     out_semaphore_.Wait();
   }
   return result;
@@ -2361,7 +2501,7 @@ std::unique_ptr<SerializationData> Worker::GetMessage() {
 
 
 void Worker::Terminate() {
-  base::NoBarrier_Store(&running_, false);
+  base::Relaxed_Store(&running_, false);
   // Post NULL to wake the Worker thread message loop, and tell it to stop
   // running.
   PostMessage(NULL);
@@ -2377,9 +2517,11 @@ void Worker::WaitForThread() {
 void Worker::ExecuteInThread() {
   Isolate::CreateParams create_params;
   create_params.array_buffer_allocator = Shell::array_buffer_allocator;
-  create_params.host_import_module_dynamically_callback_ =
-      Shell::HostImportModuleDynamically;
   Isolate* isolate = Isolate::New(create_params);
+  isolate->SetHostImportModuleDynamicallyCallback(
+      Shell::HostImportModuleDynamically);
+  D8Console console(isolate);
+  debug::SetConsoleDelegate(isolate, &console);
   {
     Isolate::Scope iscope(isolate);
     {
@@ -2532,9 +2674,6 @@ bool Shell::SetOptions(int argc, char* argv[]) {
       continue;
     } else if (strcmp(argv[i], "--isolate") == 0) {
       options.num_isolates++;
-    } else if (strcmp(argv[i], "--dump-heap-constants") == 0) {
-      options.dump_heap_constants = true;
-      argv[i] = NULL;
     } else if (strcmp(argv[i], "--throws") == 0) {
       options.expected_to_throw = true;
       argv[i] = NULL;
@@ -2619,12 +2758,17 @@ int Shell::RunMain(Isolate* isolate, int argc, char* argv[], bool last_run) {
     options.isolate_sources[i].StartExecuteInThread();
   }
   {
+    EnsureEventLoopInitialized(isolate);
     if (options.lcov_file) {
-      debug::Coverage::SelectMode(isolate, debug::Coverage::kPreciseCount);
+      debug::Coverage::Mode mode = i::FLAG_block_coverage
+                                       ? debug::Coverage::kBlockCount
+                                       : debug::Coverage::kPreciseCount;
+      debug::Coverage::SelectMode(isolate, mode);
     }
     HandleScope scope(isolate);
     Local<Context> context = CreateEvaluationContext(isolate);
-    if (last_run && options.use_interactive_shell()) {
+    bool use_existing_context = last_run && options.use_interactive_shell();
+    if (use_existing_context) {
       // Keep using the same context in the interactive shell.
       evaluation_context_.Reset(isolate, context);
     }
@@ -2634,10 +2778,13 @@ int Shell::RunMain(Isolate* isolate, int argc, char* argv[], bool last_run) {
       PerIsolateData::RealmScope realm_scope(PerIsolateData::Get(isolate));
       options.isolate_sources[0].Execute(isolate);
     }
-    DisposeModuleEmbedderData(context);
+    if (!use_existing_context) {
+      DisposeModuleEmbedderData(context);
+    }
     WriteLcovData(isolate, options.lcov_file);
   }
   CollectGarbage(isolate);
+  CompleteMessageLoop(isolate);
   for (int i = 1; i < options.num_isolates; ++i) {
     if (last_run) {
       options.isolate_sources[i].JoinThread();
@@ -2665,23 +2812,52 @@ void Shell::CollectGarbage(Isolate* isolate) {
   }
 }
 
-void Shell::EmptyMessageQueues(Isolate* isolate) {
-  if (i::FLAG_verify_predictable) return;
-  while (true) {
-    // Pump the message loop until it is empty.
-    while (v8::platform::PumpMessageLoop(g_platform, isolate)) {
-      isolate->RunMicrotasks();
-    }
-    // Run the idle tasks.
-    v8::platform::RunIdleTasks(g_platform, isolate,
+void Shell::EnsureEventLoopInitialized(Isolate* isolate) {
+  v8::platform::EnsureEventLoopInitialized(GetDefaultPlatform(), isolate);
+  SetWaitUntilDone(isolate, false);
+}
+
+void Shell::SetWaitUntilDone(Isolate* isolate, bool value) {
+  base::LockGuard<base::Mutex> guard(isolate_status_lock_.Pointer());
+  if (isolate_status_.count(isolate) == 0) {
+    isolate_status_.insert(std::make_pair(isolate, value));
+  } else {
+    isolate_status_[isolate] = value;
+  }
+}
+
+bool Shell::IsWaitUntilDone(Isolate* isolate) {
+  base::LockGuard<base::Mutex> guard(isolate_status_lock_.Pointer());
+  DCHECK_GT(isolate_status_.count(isolate), 0);
+  return isolate_status_[isolate];
+}
+
+void Shell::CompleteMessageLoop(Isolate* isolate) {
+  Platform* platform = GetDefaultPlatform();
+  while (v8::platform::PumpMessageLoop(
+      platform, isolate,
+      Shell::IsWaitUntilDone(isolate)
+          ? platform::MessageLoopBehavior::kWaitForWork
+          : platform::MessageLoopBehavior::kDoNotWait)) {
+    isolate->RunMicrotasks();
+  }
+  if (platform->IdleTasksEnabled(isolate)) {
+    v8::platform::RunIdleTasks(platform, isolate,
                                50.0 / base::Time::kMillisecondsPerSecond);
-    // If there are still outstanding waiters, sleep a little (to wait for
-    // background tasks) and then try everything again.
-    if (reinterpret_cast<i::Isolate*>(isolate)->GetWaitCountForTesting() > 0) {
-      base::OS::Sleep(base::TimeDelta::FromMilliseconds(1));
-    } else {
-      break;
-    }
+  }
+}
+
+void Shell::EmptyMessageQueues(Isolate* isolate) {
+  Platform* platform = GetDefaultPlatform();
+  // Pump the message loop until it is empty.
+  while (v8::platform::PumpMessageLoop(
+      platform, isolate, platform::MessageLoopBehavior::kDoNotWait)) {
+    isolate->RunMicrotasks();
+  }
+  // Run the idle tasks.
+  if (platform->IdleTasksEnabled(isolate)) {
+    v8::platform::RunIdleTasks(platform, isolate,
+                               50.0 / base::Time::kMillisecondsPerSecond);
   }
 }
 
@@ -2915,73 +3091,6 @@ void Shell::CleanupWorkers() {
   externalized_contents_.clear();
 }
 
-
-static void DumpHeapConstants(i::Isolate* isolate) {
-  i::Heap* heap = isolate->heap();
-  printf(
-      "# Copyright 2017 the V8 project authors. All rights reserved.\n"
-      "# Use of this source code is governed by a BSD-style license that can\n"
-      "# be found in the LICENSE file.\n\n");
-  // Dump the INSTANCE_TYPES table to the console.
-  printf("# List of known V8 instance types.\n");
-#define DUMP_TYPE(T) printf("  %d: \"%s\",\n", i::T, #T);
-  printf("INSTANCE_TYPES = {\n");
-  INSTANCE_TYPE_LIST(DUMP_TYPE)
-  printf("}\n");
-#undef DUMP_TYPE
-
-  // Dump the KNOWN_MAP table to the console.
-  printf("\n# List of known V8 maps.\n");
-#define ROOT_LIST_CASE(type, name, camel_name) \
-  if (n == NULL && o == heap->name()) n = #camel_name;
-#define STRUCT_LIST_CASE(upper_name, camel_name, name) \
-  if (n == NULL && o == heap->name##_map()) n = #camel_name "Map";
-  i::HeapObjectIterator it(heap->map_space());
-  printf("KNOWN_MAPS = {\n");
-  for (i::Object* o = it.Next(); o != NULL; o = it.Next()) {
-    i::Map* m = i::Map::cast(o);
-    const char* n = NULL;
-    intptr_t p = reinterpret_cast<intptr_t>(m) & 0x7ffff;
-    int t = m->instance_type();
-    ROOT_LIST(ROOT_LIST_CASE)
-    STRUCT_LIST(STRUCT_LIST_CASE)
-    if (n == NULL) continue;
-    printf("  0x%05" V8PRIxPTR ": (%d, \"%s\"),\n", p, t, n);
-  }
-  printf("}\n");
-#undef STRUCT_LIST_CASE
-#undef ROOT_LIST_CASE
-
-  // Dump the KNOWN_OBJECTS table to the console.
-  printf("\n# List of known V8 objects.\n");
-#define ROOT_LIST_CASE(type, name, camel_name) \
-  if (n == NULL && o == heap->name()) n = #camel_name;
-  i::OldSpaces spit(heap);
-  printf("KNOWN_OBJECTS = {\n");
-  for (i::PagedSpace* s = spit.next(); s != NULL; s = spit.next()) {
-    i::HeapObjectIterator it(s);
-    const char* sname = AllocationSpaceName(s->identity());
-    for (i::Object* o = it.Next(); o != NULL; o = it.Next()) {
-      const char* n = NULL;
-      intptr_t p = reinterpret_cast<intptr_t>(o) & 0x7ffff;
-      ROOT_LIST(ROOT_LIST_CASE)
-      if (n == NULL) continue;
-      printf("  (\"%s\", 0x%05" V8PRIxPTR "): \"%s\",\n", sname, p, n);
-    }
-  }
-  printf("}\n");
-#undef ROOT_LIST_CASE
-
-  // Dump frame markers
-  printf("\n# List of known V8 Frame Markers.\n");
-#define DUMP_MARKER(T, class) printf("  \"%s\",\n", #T);
-  printf("FRAME_MARKERS = (\n");
-  STACK_FRAME_TYPE_LIST(DUMP_MARKER)
-  printf(")\n");
-#undef DUMP_TYPE
-}
-
-
 int Shell::Main(int argc, char* argv[]) {
   std::ofstream trace_file;
 #if (defined(_WIN32) || defined(_WIN64))
@@ -3007,14 +3116,8 @@ int Shell::Main(int argc, char* argv[]) {
           ? v8::platform::InProcessStackDumping::kDisabled
           : v8::platform::InProcessStackDumping::kEnabled;
 
-  g_platform = i::FLAG_verify_predictable
-                   ? new PredictablePlatform()
-                   : v8::platform::CreateDefaultPlatform(
-                         0, v8::platform::IdleTaskSupport::kEnabled,
-                         in_process_stack_dumping);
-
-  platform::tracing::TracingController* tracing_controller;
-  if (options.trace_enabled) {
+  platform::tracing::TracingController* tracing_controller = nullptr;
+  if (options.trace_enabled && !i::FLAG_verify_predictable) {
     trace_file.open("v8_trace.json");
     tracing_controller = new platform::tracing::TracingController();
     platform::tracing::TraceBuffer* trace_buffer =
@@ -3022,9 +3125,13 @@ int Shell::Main(int argc, char* argv[]) {
             platform::tracing::TraceBuffer::kRingBufferChunks,
             platform::tracing::TraceWriter::CreateJSONTraceWriter(trace_file));
     tracing_controller->Initialize(trace_buffer);
-    if (!i::FLAG_verify_predictable) {
-      platform::SetTracingController(g_platform, tracing_controller);
-    }
+  }
+
+  g_platform = v8::platform::CreateDefaultPlatform(
+      0, v8::platform::IdleTaskSupport::kEnabled, in_process_stack_dumping,
+      tracing_controller);
+  if (i::FLAG_verify_predictable) {
+    g_platform = new PredictablePlatform(std::unique_ptr<Platform>(g_platform));
   }
 
   v8::V8::InitializePlatform(g_platform);
@@ -3062,9 +3169,6 @@ int Shell::Main(int argc, char* argv[]) {
     create_params.add_histogram_sample_callback = AddHistogramSample;
   }
 
-  create_params.host_import_module_dynamically_callback_ =
-      Shell::HostImportModuleDynamically;
-
   if (i::trap_handler::UseTrapHandler()) {
     if (!v8::V8::RegisterDefaultSignalHandler()) {
       fprintf(stderr, "Could not register signal handler");
@@ -3073,10 +3177,15 @@ int Shell::Main(int argc, char* argv[]) {
   }
 
   Isolate* isolate = Isolate::New(create_params);
+  isolate->SetHostImportModuleDynamicallyCallback(
+      Shell::HostImportModuleDynamically);
+
+  D8Console console(isolate);
   {
     Isolate::Scope scope(isolate);
     Initialize(isolate);
     PerIsolateData data(isolate);
+    debug::SetConsoleDelegate(isolate, &console);
 
     if (options.trace_enabled) {
       platform::tracing::TraceConfig* trace_config;
@@ -3091,11 +3200,6 @@ int Shell::Main(int argc, char* argv[]) {
             platform::tracing::TraceConfig::CreateDefaultTraceConfig();
       }
       tracing_controller->StartTracing(trace_config);
-    }
-
-    if (options.dump_heap_constants) {
-      DumpHeapConstants(reinterpret_cast<i::Isolate*>(isolate));
-      return 0;
     }
 
     if (options.stress_opt || options.stress_deopt) {
@@ -3145,9 +3249,6 @@ int Shell::Main(int argc, char* argv[]) {
   V8::Dispose();
   V8::ShutdownPlatform();
   delete g_platform;
-  if (i::FLAG_verify_predictable) {
-    delete tracing_controller;
-  }
 
   return result;
 }

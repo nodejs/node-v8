@@ -6,6 +6,7 @@
 
 #include <type_traits>
 
+#include "include/v8-value-serializer-version.h"
 #include "src/base/logging.h"
 #include "src/conversions.h"
 #include "src/factory.h"
@@ -29,7 +30,17 @@ namespace internal {
 // Version 12: regexp and string objects share normal string encoding
 // Version 13: host objects have an explicit tag (rather than handling all
 //             unknown tags)
+//
+// WARNING: Increasing this value is a change which cannot safely be rolled
+// back without breaking compatibility with data stored on disk. It is
+// strongly recommended that you do not make such changes near a release
+// milestone branch point.
+//
+// Recent changes are routinely reverted in preparation for branch, and this
+// has been the cause of at least one bug in the past.
 static const uint32_t kLatestVersion = 13;
+static_assert(kLatestVersion == v8::CurrentValueSerializerFormatVersion(),
+              "Exported format version must match latest version.");
 
 static const int kPretenureThreshold = 100 * KB;
 
@@ -153,11 +164,6 @@ enum class WasmEncodingTag : uint8_t {
 };
 
 }  // namespace
-
-// static
-uint32_t ValueSerializer::GetCurrentDataFormatVersion() {
-  return kLatestVersion;
-}
 
 ValueSerializer::ValueSerializer(Isolate* isolate,
                                  v8::ValueSerializer::Delegate* delegate)
@@ -443,12 +449,7 @@ Maybe<bool> ValueSerializer::WriteJSReceiver(Handle<JSReceiver> receiver) {
     case JS_OBJECT_TYPE:
     case JS_API_OBJECT_TYPE: {
       Handle<JSObject> js_object = Handle<JSObject>::cast(receiver);
-      Map* map = js_object->map();
-      if (!FLAG_wasm_disable_structured_cloning &&
-          map->GetConstructor() ==
-              isolate_->native_context()->wasm_module_constructor()) {
-        return WriteWasmModule(js_object);
-      } else if (JSObject::GetEmbedderFieldCount(map)) {
+      if (JSObject::GetEmbedderFieldCount(js_object->map())) {
         return WriteHostObject(js_object);
       } else {
         return WriteJSObject(js_object);
@@ -473,6 +474,11 @@ Maybe<bool> ValueSerializer::WriteJSReceiver(Handle<JSReceiver> receiver) {
     case JS_TYPED_ARRAY_TYPE:
     case JS_DATA_VIEW_TYPE:
       return WriteJSArrayBufferView(JSArrayBufferView::cast(*receiver));
+    case WASM_MODULE_TYPE:
+      if (!FLAG_wasm_disable_structured_cloning) {
+        // Only write WebAssembly modules if not disabled by a flag.
+        return WriteWasmModule(Handle<WasmModuleObject>::cast(receiver));
+      }  // fall through to error case
     default:
       ThrowDataCloneError(MessageTemplate::kDataCloneError, receiver);
       return Nothing<bool>();
@@ -554,7 +560,7 @@ Maybe<bool> ValueSerializer::WriteJSArray(Handle<JSArray> array) {
   // existed (as only indices which were enumerable own properties at this point
   // should be serialized).
   const bool should_serialize_densely =
-      array->HasFastElements() && !array->HasFastHoleyElements();
+      array->HasFastElements() && !array->HasHoleyElements();
 
   if (should_serialize_densely) {
     DCHECK_LE(length, static_cast<uint32_t>(FixedArray::kMaxLength));
@@ -562,16 +568,16 @@ Maybe<bool> ValueSerializer::WriteJSArray(Handle<JSArray> array) {
     WriteVarint<uint32_t>(length);
     uint32_t i = 0;
 
-    // Fast paths. Note that FAST_ELEMENTS in particular can bail due to the
+    // Fast paths. Note that PACKED_ELEMENTS in particular can bail due to the
     // structure of the elements changing.
     switch (array->GetElementsKind()) {
-      case FAST_SMI_ELEMENTS: {
+      case PACKED_SMI_ELEMENTS: {
         Handle<FixedArray> elements(FixedArray::cast(array->elements()),
                                     isolate_);
         for (; i < length; i++) WriteSmi(Smi::cast(elements->get(i)));
         break;
       }
-      case FAST_DOUBLE_ELEMENTS: {
+      case PACKED_DOUBLE_ELEMENTS: {
         // Elements are empty_fixed_array, not a FixedDoubleArray, if the array
         // is empty. No elements to encode in this case anyhow.
         if (length == 0) break;
@@ -583,11 +589,11 @@ Maybe<bool> ValueSerializer::WriteJSArray(Handle<JSArray> array) {
         }
         break;
       }
-      case FAST_ELEMENTS: {
+      case PACKED_ELEMENTS: {
         Handle<Object> old_length(array->length(), isolate_);
         for (; i < length; i++) {
           if (array->length() != *old_length ||
-              array->GetElementsKind() != FAST_ELEMENTS) {
+              array->GetElementsKind() != PACKED_ELEMENTS) {
             // Fall back to slow path.
             break;
           }
@@ -809,11 +815,13 @@ Maybe<bool> ValueSerializer::WriteJSArrayBufferView(JSArrayBufferView* view) {
   return ThrowIfOutOfMemory();
 }
 
-Maybe<bool> ValueSerializer::WriteWasmModule(Handle<JSObject> object) {
+Maybe<bool> ValueSerializer::WriteWasmModule(Handle<WasmModuleObject> object) {
   if (delegate_ != nullptr) {
+    // TODO(titzer): introduce a Utils::ToLocal for WasmModuleObject.
     Maybe<uint32_t> transfer_id = delegate_->GetWasmModuleTransferId(
         reinterpret_cast<v8::Isolate*>(isolate_),
-        v8::Local<v8::WasmCompiledModule>::Cast(Utils::ToLocal(object)));
+        v8::Local<v8::WasmCompiledModule>::Cast(
+            Utils::ToLocal(Handle<JSObject>::cast(object))));
     RETURN_VALUE_IF_SCHEDULED_EXCEPTION(isolate_, Nothing<bool>());
     uint32_t id = 0;
     if (transfer_id.To(&id)) {
@@ -823,8 +831,7 @@ Maybe<bool> ValueSerializer::WriteWasmModule(Handle<JSObject> object) {
     }
   }
 
-  Handle<WasmCompiledModule> compiled_part(
-      WasmCompiledModule::cast(object->GetEmbedderField(0)), isolate_);
+  Handle<WasmCompiledModule> compiled_part(object->compiled_module(), isolate_);
   WasmEncodingTag encoding_tag = WasmEncodingTag::kRawBytes;
   WriteTag(SerializationTag::kWasmModule);
   WriteRawBytes(&encoding_tag, sizeof(encoding_tag));
@@ -1058,14 +1065,12 @@ void ValueDeserializer::TransferArrayBuffer(
     uint32_t transfer_id, Handle<JSArrayBuffer> array_buffer) {
   if (array_buffer_transfer_map_.is_null()) {
     array_buffer_transfer_map_ = isolate_->global_handles()->Create(
-        *SeededNumberDictionary::New(isolate_, 0));
+        *UnseededNumberDictionary::New(isolate_, 0));
   }
-  Handle<SeededNumberDictionary> dictionary =
+  Handle<UnseededNumberDictionary> dictionary =
       array_buffer_transfer_map_.ToHandleChecked();
-  Handle<JSObject> not_a_prototype_holder;
-  Handle<SeededNumberDictionary> new_dictionary =
-      SeededNumberDictionary::AtNumberPut(dictionary, transfer_id, array_buffer,
-                                          not_a_prototype_holder);
+  Handle<UnseededNumberDictionary> new_dictionary =
+      UnseededNumberDictionary::Set(dictionary, transfer_id, array_buffer);
   if (!new_dictionary.is_identical_to(dictionary)) {
     GlobalHandles::Destroy(Handle<Object>::cast(dictionary).location());
     array_buffer_transfer_map_ =
@@ -1360,7 +1365,7 @@ MaybeHandle<JSArray> ValueDeserializer::ReadDenseJSArray() {
   uint32_t id = next_id_++;
   HandleScope scope(isolate_);
   Handle<JSArray> array = isolate_->factory()->NewJSArray(
-      FAST_HOLEY_ELEMENTS, length, length, INITIALIZE_ARRAY_ELEMENTS_WITH_HOLE,
+      HOLEY_ELEMENTS, length, length, INITIALIZE_ARRAY_ELEMENTS_WITH_HOLE,
       pretenure_);
   AddObjectWithID(id, array);
 
@@ -1445,7 +1450,6 @@ MaybeHandle<JSValue> ValueDeserializer::ReadJSValue(SerializationTag tag) {
     }
     default:
       UNREACHABLE();
-      return MaybeHandle<JSValue>();
   }
   AddObjectWithID(id, value);
   return value;
@@ -1457,11 +1461,22 @@ MaybeHandle<JSRegExp> ValueDeserializer::ReadJSRegExp() {
   uint32_t raw_flags;
   Handle<JSRegExp> regexp;
   if (!ReadString().ToHandle(&pattern) ||
-      !ReadVarint<uint32_t>().To(&raw_flags) ||
+      !ReadVarint<uint32_t>().To(&raw_flags)) {
+    return MaybeHandle<JSRegExp>();
+  }
+
+  // Ensure the deserialized flags are valid. The context behind this is that
+  // the JSRegExp::Flags enum statically includes kDotAll, but it is only valid
+  // to set kDotAll if FLAG_harmony_regexp_dotall is enabled. Fuzzers don't
+  // know about this and happily set kDotAll anyways, leading to CHECK failures
+  // later on.
+  uint32_t flags_mask = static_cast<uint32_t>(-1) << JSRegExp::FlagCount();
+  if ((raw_flags & flags_mask) ||
       !JSRegExp::New(pattern, static_cast<JSRegExp::Flags>(raw_flags))
            .ToHandle(&regexp)) {
     return MaybeHandle<JSRegExp>();
   }
+
   AddObjectWithID(id, regexp);
   return regexp;
 }
@@ -1564,13 +1579,13 @@ MaybeHandle<JSArrayBuffer> ValueDeserializer::ReadTransferredJSArrayBuffer(
     bool is_shared) {
   uint32_t id = next_id_++;
   uint32_t transfer_id;
-  Handle<SeededNumberDictionary> transfer_map;
+  Handle<UnseededNumberDictionary> transfer_map;
   if (!ReadVarint<uint32_t>().To(&transfer_id) ||
       !array_buffer_transfer_map_.ToHandle(&transfer_map)) {
     return MaybeHandle<JSArrayBuffer>();
   }
   int index = transfer_map->FindEntry(isolate_, transfer_id);
-  if (index == SeededNumberDictionary::kNotFound) {
+  if (index == UnseededNumberDictionary::kNotFound) {
     return MaybeHandle<JSArrayBuffer>();
   }
   Handle<JSArrayBuffer> array_buffer(

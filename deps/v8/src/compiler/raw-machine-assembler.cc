@@ -257,6 +257,26 @@ Node* RawMachineAssembler::CallCFunction3(MachineType return_type,
   return AddNode(common()->Call(descriptor), function, arg0, arg1, arg2);
 }
 
+Node* RawMachineAssembler::CallCFunction6(
+    MachineType return_type, MachineType arg0_type, MachineType arg1_type,
+    MachineType arg2_type, MachineType arg3_type, MachineType arg4_type,
+    MachineType arg5_type, Node* function, Node* arg0, Node* arg1, Node* arg2,
+    Node* arg3, Node* arg4, Node* arg5) {
+  MachineSignature::Builder builder(zone(), 1, 6);
+  builder.AddReturn(return_type);
+  builder.AddParam(arg0_type);
+  builder.AddParam(arg1_type);
+  builder.AddParam(arg2_type);
+  builder.AddParam(arg3_type);
+  builder.AddParam(arg4_type);
+  builder.AddParam(arg5_type);
+  const CallDescriptor* descriptor =
+      Linkage::GetSimplifiedCDescriptor(zone(), builder.Build());
+
+  return AddNode(common()->Call(descriptor), function, arg0, arg1, arg2, arg3,
+                 arg4, arg5);
+}
+
 Node* RawMachineAssembler::CallCFunction8(
     MachineType return_type, MachineType arg0_type, MachineType arg1_type,
     MachineType arg2_type, MachineType arg3_type, MachineType arg4_type,
@@ -278,6 +298,31 @@ Node* RawMachineAssembler::CallCFunction8(
       Linkage::GetSimplifiedCDescriptor(zone(), builder.Build());
   return AddNode(common()->Call(descriptor), arraysize(args), args);
 }
+
+Node* RawMachineAssembler::CallCFunction9(
+    MachineType return_type, MachineType arg0_type, MachineType arg1_type,
+    MachineType arg2_type, MachineType arg3_type, MachineType arg4_type,
+    MachineType arg5_type, MachineType arg6_type, MachineType arg7_type,
+    MachineType arg8_type, Node* function, Node* arg0, Node* arg1, Node* arg2,
+    Node* arg3, Node* arg4, Node* arg5, Node* arg6, Node* arg7, Node* arg8) {
+  MachineSignature::Builder builder(zone(), 1, 9);
+  builder.AddReturn(return_type);
+  builder.AddParam(arg0_type);
+  builder.AddParam(arg1_type);
+  builder.AddParam(arg2_type);
+  builder.AddParam(arg3_type);
+  builder.AddParam(arg4_type);
+  builder.AddParam(arg5_type);
+  builder.AddParam(arg6_type);
+  builder.AddParam(arg7_type);
+  builder.AddParam(arg8_type);
+  Node* args[] = {function, arg0, arg1, arg2, arg3,
+                  arg4,     arg5, arg6, arg7, arg8};
+  const CallDescriptor* descriptor =
+      Linkage::GetSimplifiedCDescriptor(zone(), builder.Build());
+  return AddNode(common()->Call(descriptor), arraysize(args), args);
+}
+
 BasicBlock* RawMachineAssembler::Use(RawMachineLabel* label) {
   label->used_ = true;
   return EnsureBlock(label);
@@ -360,9 +405,17 @@ Node* RawMachineAssembler::MakeNode(const Operator* op, int input_count,
 }
 
 RawMachineLabel::~RawMachineLabel() {
-  // If this DCHECK fails, it means that the label has been bound but it's not
-  // used, or the opposite. This would cause the register allocator to crash.
-  DCHECK_EQ(bound_, used_);
+#if DEBUG
+  if (bound_ == used_) return;
+  std::stringstream str;
+  if (bound_) {
+    str << "A label has been bound but it's not used."
+        << "\n#    label: " << *block_;
+  } else {
+    str << "A label has been used but it's not bound.";
+  }
+  FATAL(str.str().c_str());
+#endif  // DEBUG
 }
 
 }  // namespace compiler

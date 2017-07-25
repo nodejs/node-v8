@@ -5,6 +5,7 @@
 #ifndef V8_PARSING_PARSER_BASE_H
 #define V8_PARSING_PARSER_BASE_H
 
+#include "src/ast/ast-source-ranges.h"
 #include "src/ast/ast.h"
 #include "src/ast/scopes.h"
 #include "src/bailout-reason.h"
@@ -19,7 +20,6 @@
 
 namespace v8 {
 namespace internal {
-
 
 enum FunctionNameValidity {
   kFunctionNameIsStrictReserved,
@@ -82,6 +82,57 @@ struct FormalParametersBase {
   int arity = 0;
 };
 
+// Stack-allocated scope to collect source ranges from the parser.
+class SourceRangeScope final {
+ public:
+  enum PositionKind {
+    POSITION_BEG,
+    POSITION_END,
+    PEEK_POSITION_BEG,
+    PEEK_POSITION_END,
+  };
+
+  SourceRangeScope(Scanner* scanner, SourceRange* range,
+                   PositionKind pre_kind = PEEK_POSITION_BEG,
+                   PositionKind post_kind = POSITION_END)
+      : scanner_(scanner), range_(range), post_kind_(post_kind) {
+    range_->start = GetPosition(pre_kind);
+    DCHECK_NE(range_->start, kNoSourcePosition);
+  }
+
+  ~SourceRangeScope() { Finalize(); }
+
+  const SourceRange& Finalize() {
+    if (is_finalized_) return *range_;
+    is_finalized_ = true;
+    range_->end = GetPosition(post_kind_);
+    DCHECK_NE(range_->end, kNoSourcePosition);
+    return *range_;
+  }
+
+ private:
+  int32_t GetPosition(PositionKind kind) {
+    switch (kind) {
+      case POSITION_BEG:
+        return scanner_->location().beg_pos;
+      case POSITION_END:
+        return scanner_->location().end_pos;
+      case PEEK_POSITION_BEG:
+        return scanner_->peek_location().beg_pos;
+      case PEEK_POSITION_END:
+        return scanner_->peek_location().end_pos;
+      default:
+        UNREACHABLE();
+    }
+  }
+
+  Scanner* scanner_;
+  SourceRange* range_;
+  PositionKind post_kind_;
+  bool is_finalized_ = false;
+
+  DISALLOW_IMPLICIT_CONSTRUCTORS(SourceRangeScope);
+};
 
 // ----------------------------------------------------------------------------
 // The CHECK_OK macro is a convenient macro to enforce error
@@ -207,7 +258,7 @@ class ParserBase {
         extension_(extension),
         fni_(nullptr),
         ast_value_factory_(ast_value_factory),
-        ast_node_factory_(ast_value_factory),
+        ast_node_factory_(ast_value_factory, zone),
         runtime_call_stats_(runtime_call_stats),
         parsing_on_main_thread_(parsing_on_main_thread),
         parsing_module_(false),
@@ -219,11 +270,9 @@ class ParserBase {
         default_eager_compile_hint_(FunctionLiteral::kShouldLazyCompile),
         function_literal_id_(0),
         allow_natives_(false),
-        allow_tailcalls_(false),
         allow_harmony_do_expressions_(false),
         allow_harmony_function_sent_(false),
         allow_harmony_restrictive_generators_(false),
-        allow_harmony_trailing_commas_(false),
         allow_harmony_class_fields_(false),
         allow_harmony_object_rest_spread_(false),
         allow_harmony_dynamic_import_(false),
@@ -235,11 +284,9 @@ class ParserBase {
   void set_allow_##name(bool allow) { allow_##name##_ = allow; }
 
   ALLOW_ACCESSORS(natives);
-  ALLOW_ACCESSORS(tailcalls);
   ALLOW_ACCESSORS(harmony_do_expressions);
   ALLOW_ACCESSORS(harmony_function_sent);
   ALLOW_ACCESSORS(harmony_restrictive_generators);
-  ALLOW_ACCESSORS(harmony_trailing_commas);
   ALLOW_ACCESSORS(harmony_class_fields);
   ALLOW_ACCESSORS(harmony_object_rest_spread);
   ALLOW_ACCESSORS(harmony_dynamic_import);
@@ -268,6 +315,10 @@ class ParserBase {
 
   void ResetFunctionLiteralId() { function_literal_id_ = 0; }
 
+  // The Zone where the parsing outputs are stored.
+  Zone* main_zone() const { return ast_value_factory()->zone(); }
+
+  // The current Zone, which might be the main zone or a temporary Zone.
   Zone* zone() const { return zone_; }
 
  protected:
@@ -323,56 +374,6 @@ class ParserBase {
     Scope* scope;
   };
 
-  class TailCallExpressionList {
-   public:
-    explicit TailCallExpressionList(Zone* zone)
-        : zone_(zone), expressions_(0, zone), has_explicit_tail_calls_(false) {}
-
-    const ZoneList<ExpressionT>& expressions() const { return expressions_; }
-    const Scanner::Location& location() const { return loc_; }
-
-    bool has_explicit_tail_calls() const { return has_explicit_tail_calls_; }
-
-    void Swap(TailCallExpressionList& other) {
-      expressions_.Swap(&other.expressions_);
-      std::swap(loc_, other.loc_);
-      std::swap(has_explicit_tail_calls_, other.has_explicit_tail_calls_);
-    }
-
-    void AddImplicitTailCall(ExpressionT expr) {
-      expressions_.Add(expr, zone_);
-    }
-
-    void Append(const TailCallExpressionList& other) {
-      if (!has_explicit_tail_calls()) {
-        loc_ = other.loc_;
-        has_explicit_tail_calls_ = other.has_explicit_tail_calls_;
-      }
-      expressions_.AddAll(other.expressions_, zone_);
-    }
-
-   private:
-    Zone* zone_;
-    ZoneList<ExpressionT> expressions_;
-    Scanner::Location loc_;
-    bool has_explicit_tail_calls_;
-  };
-
-  // Defines whether tail call expressions are allowed or not.
-  enum class ReturnExprContext {
-    // We are inside return statement which is allowed to contain tail call
-    // expressions. Tail call expressions are allowed.
-    kInsideValidReturnStatement,
-
-    // We are inside a block in which tail call expressions are allowed but
-    // not yet inside a return statement.
-    kInsideValidBlock,
-
-    // Tail call expressions are not allowed in the following blocks.
-    kInsideTryBlock,
-    kInsideForInOfBody,
-  };
-
   class FunctionState final : public BlockState {
    public:
     FunctionState(FunctionState** function_state_stack, Scope** scope_stack,
@@ -386,14 +387,6 @@ class ParserBase {
 
     FunctionKind kind() const { return scope()->function_kind(); }
     FunctionState* outer() const { return outer_function_state_; }
-
-    typename Types::Variable* generator_object_variable() const {
-      return scope()->generator_object_var();
-    }
-
-    typename Types::Variable* promise_variable() const {
-      return scope()->promise_var();
-    }
 
     void RewindDestructuringAssignments(int pos) {
       destructuring_assignments_to_rewrite_.Rewind(pos);
@@ -411,25 +404,8 @@ class ParserBase {
       return destructuring_assignments_to_rewrite_;
     }
 
-    TailCallExpressionList& tail_call_expressions() {
-      return tail_call_expressions_;
-    }
-    void AddImplicitTailCallExpression(ExpressionT expression) {
-      if (return_expr_context() ==
-          ReturnExprContext::kInsideValidReturnStatement) {
-        tail_call_expressions_.AddImplicitTailCall(expression);
-      }
-    }
-
     ZoneList<typename ExpressionClassifier::Error>* GetReportedErrorList() {
       return &reported_errors_;
-    }
-
-    ReturnExprContext return_expr_context() const {
-      return return_expr_context_;
-    }
-    void set_return_expr_context(ReturnExprContext context) {
-      return_expr_context_ = context;
     }
 
     ZoneList<ExpressionT>* non_patterns_to_rewrite() {
@@ -447,6 +423,30 @@ class ParserBase {
     void set_next_function_is_likely_called() {
       next_function_is_likely_called_ = true;
     }
+
+    void RecordFunctionOrEvalCall() { contains_function_or_eval_ = true; }
+    bool contains_function_or_eval() const {
+      return contains_function_or_eval_;
+    }
+
+    class FunctionOrEvalRecordingScope {
+     public:
+      explicit FunctionOrEvalRecordingScope(FunctionState* state)
+          : state_(state) {
+        prev_value_ = state->contains_function_or_eval_;
+        state->contains_function_or_eval_ = false;
+      }
+      ~FunctionOrEvalRecordingScope() {
+        bool found = state_->contains_function_or_eval_;
+        if (!found) {
+          state_->contains_function_or_eval_ = prev_value_;
+        }
+      }
+
+     private:
+      FunctionState* state_;
+      bool prev_value_;
+    };
 
    private:
     void AddDestructuringAssignment(DestructuringAssignment pair) {
@@ -468,8 +468,6 @@ class ParserBase {
     DeclarationScope* scope_;
 
     ZoneList<DestructuringAssignment> destructuring_assignments_to_rewrite_;
-    TailCallExpressionList tail_call_expressions_;
-    ReturnExprContext return_expr_context_;
     ZoneList<ExpressionT> non_patterns_to_rewrite_;
 
     ZoneList<typename ExpressionClassifier::Error> reported_errors_;
@@ -482,49 +480,10 @@ class ParserBase {
     bool next_function_is_likely_called_;
     bool previous_function_was_likely_called_;
 
+    // Track if a function or eval occurs within this FunctionState
+    bool contains_function_or_eval_;
+
     friend Impl;
-  };
-
-  // This scope sets current ReturnExprContext to given value.
-  class ReturnExprScope {
-   public:
-    explicit ReturnExprScope(FunctionState* function_state,
-                             ReturnExprContext return_expr_context)
-        : function_state_(function_state),
-          sav_return_expr_context_(function_state->return_expr_context()) {
-      // Don't update context if we are requested to enable tail call
-      // expressions but current block does not allow them.
-      if (return_expr_context !=
-              ReturnExprContext::kInsideValidReturnStatement ||
-          sav_return_expr_context_ == ReturnExprContext::kInsideValidBlock) {
-        function_state->set_return_expr_context(return_expr_context);
-      }
-    }
-    ~ReturnExprScope() {
-      function_state_->set_return_expr_context(sav_return_expr_context_);
-    }
-
-   private:
-    FunctionState* function_state_;
-    ReturnExprContext sav_return_expr_context_;
-  };
-
-  // Collects all return expressions at tail call position in this scope
-  // to a separate list.
-  class CollectExpressionsInTailPositionToListScope {
-   public:
-    CollectExpressionsInTailPositionToListScope(FunctionState* function_state,
-                                                TailCallExpressionList* list)
-        : function_state_(function_state), list_(list) {
-      function_state->tail_call_expressions().Swap(*list_);
-    }
-    ~CollectExpressionsInTailPositionToListScope() {
-      function_state_->tail_call_expressions().Swap(*list_);
-    }
-
-   private:
-    FunctionState* function_state_;
-    TailCallExpressionList* list_;
   };
 
   struct DeclarationDescriptor {
@@ -546,6 +505,7 @@ class ParserBase {
 
       ExpressionT pattern;
       int initializer_position;
+      int value_beg_position = kNoSourcePosition;
       ExpressionT initializer;
     };
 
@@ -568,15 +528,13 @@ class ParserBase {
           scope(nullptr),
           init_block(parser->impl()->NullBlock()),
           inner_block(parser->impl()->NullBlock()),
-          bound_names(1, parser->zone()),
-          tail_call_expressions(parser->zone()) {}
+          bound_names(1, parser->zone()) {}
     IdentifierT name;
     ExpressionT pattern;
     Scope* scope;
     BlockT init_block;
     BlockT inner_block;
     ZoneList<const AstRawString*> bound_names;
-    TailCallExpressionList tail_call_expressions;
   };
 
   struct ForInfo {
@@ -601,7 +559,8 @@ class ParserBase {
           constructor(parser->impl()->EmptyFunctionLiteral()),
           has_seen_constructor(false),
           has_name_static_property(false),
-          has_static_computed_names(false) {}
+          has_static_computed_names(false),
+          is_anonymous(false) {}
     VariableProxy* proxy;
     ExpressionT extends;
     typename Types::ClassPropertyList properties;
@@ -609,6 +568,7 @@ class ParserBase {
     bool has_seen_constructor;
     bool has_name_static_property;
     bool has_static_computed_names;
+    bool is_anonymous;
   };
 
   DeclarationScope* NewScriptScope() const {
@@ -653,6 +613,10 @@ class ParserBase {
     if (target_zone == nullptr) target_zone = zone();
     DeclarationScope* result = new (target_zone)
         DeclarationScope(zone(), scope(), FUNCTION_SCOPE, kind);
+
+    // Record presence of an inner function scope
+    function_state_->RecordFunctionOrEvalCall();
+
     // TODO(verwaest): Move into the DeclarationScope constructor.
     if (!IsArrowFunction(kind)) {
       result->DeclareDefaultFunctionVariables(ast_value_factory());
@@ -838,6 +802,7 @@ class ParserBase {
   void CheckFunctionName(LanguageMode language_mode, IdentifierT function_name,
                          FunctionNameValidity function_name_validity,
                          const Scanner::Location& function_name_loc, bool* ok) {
+    if (impl()->IsEmptyIdentifier(function_name)) return;
     if (function_name_validity == kSkipFunctionNameCheck) return;
     // The function name needs to be checked in strict mode.
     if (is_sloppy(language_mode)) return;
@@ -1337,6 +1302,7 @@ class ParserBase {
     if (impl()->IsIdentifier(expression) &&
         impl()->IsEval(impl()->AsIdentifier(expression))) {
       scope->RecordEvalCall();
+      function_state_->RecordFunctionOrEvalCall();
       if (is_sloppy(scope->language_mode())) {
         // For sloppy scopes we also have to record the call at function level,
         // in case it includes declarations that will be hoisted.
@@ -1349,29 +1315,11 @@ class ParserBase {
 
   // Convenience method which determines the type of return statement to emit
   // depending on the current function type.
-  inline StatementT BuildReturnStatement(ExpressionT expr, int pos) {
-    if (is_generator() && !is_async_generator()) {
-      expr = impl()->BuildIteratorResult(expr, true);
-    }
-
-    if (is_async_function()) {
-      return factory()->NewAsyncReturnStatement(expr, pos);
-    }
-    return factory()->NewReturnStatement(expr, pos);
-  }
-
-  inline SuspendExpressionT BuildSuspend(ExpressionT generator,
-                                         ExpressionT expr, int pos,
-                                         Suspend::OnException on_exception,
-                                         SuspendFlags suspend_type) {
-    DCHECK_EQ(0,
-              static_cast<int>(suspend_type & ~SuspendFlags::kSuspendTypeMask));
-    if (V8_UNLIKELY(is_async_generator())) {
-      suspend_type = static_cast<SuspendFlags>(suspend_type |
-                                               SuspendFlags::kAsyncGenerator);
-    }
-    return factory()->NewSuspend(generator, expr, pos, on_exception,
-                                 suspend_type);
+  inline StatementT BuildReturnStatement(ExpressionT expr, int pos,
+                                         int end_pos = kNoSourcePosition) {
+    return is_async_function()
+               ? factory()->NewAsyncReturnStatement(expr, pos, end_pos)
+               : factory()->NewReturnStatement(expr, pos, end_pos);
   }
 
   // Validation per ES6 object literals.
@@ -1501,11 +1449,9 @@ class ParserBase {
   int function_literal_id_;
 
   bool allow_natives_;
-  bool allow_tailcalls_;
   bool allow_harmony_do_expressions_;
   bool allow_harmony_function_sent_;
   bool allow_harmony_restrictive_generators_;
-  bool allow_harmony_trailing_commas_;
   bool allow_harmony_class_fields_;
   bool allow_harmony_object_rest_spread_;
   bool allow_harmony_dynamic_import_;
@@ -1525,12 +1471,11 @@ ParserBase<Impl>::FunctionState::FunctionState(
       outer_function_state_(*function_state_stack),
       scope_(scope),
       destructuring_assignments_to_rewrite_(16, scope->zone()),
-      tail_call_expressions_(scope->zone()),
-      return_expr_context_(ReturnExprContext::kInsideValidBlock),
       non_patterns_to_rewrite_(0, scope->zone()),
       reported_errors_(16, scope->zone()),
       next_function_is_likely_called_(false),
-      previous_function_was_likely_called_(false) {
+      previous_function_was_likely_called_(false),
+      contains_function_or_eval_(false) {
   *function_state_stack = this;
   if (outer_function_state_) {
     outer_function_state_->previous_function_was_likely_called_ =
@@ -1791,6 +1736,7 @@ typename ParserBase<Impl>::ExpressionT ParserBase<Impl>::ParsePrimaryExpression(
     case Token::ASYNC:
       if (!scanner()->HasAnyLineTerminatorAfterNext() &&
           PeekAhead() == Token::FUNCTION) {
+        BindingPatternUnexpectedToken();
         Consume(Token::ASYNC);
         return ParseAsyncFunctionLiteral(CHECK_OK);
       }
@@ -1933,6 +1879,11 @@ ParserBase<Impl>::ParseExpressionCoverGrammar(bool accept_IN, bool* ok) {
       int ellipsis_pos = position();
       int pattern_pos = peek_position();
       ExpressionT pattern = ParsePrimaryExpression(CHECK_OK);
+      if (peek() == Token::ASSIGN) {
+        ReportMessage(MessageTemplate::kRestDefaultInitializer);
+        *ok = false;
+        return result;
+      }
       ValidateBindingPattern(CHECK_OK);
       right = factory()->NewSpread(pattern, ellipsis_pos, pattern_pos);
     } else {
@@ -1957,8 +1908,7 @@ ParserBase<Impl>::ParseExpressionCoverGrammar(bool accept_IN, bool* ok) {
           scanner()->location(), MessageTemplate::kParamAfterRest);
     }
 
-    if (allow_harmony_trailing_commas() && peek() == Token::RPAREN &&
-        PeekAhead() == Token::ARROW) {
+    if (peek() == Token::RPAREN && PeekAhead() == Token::ARROW) {
       // a trailing comma is allowed at the end of an arrow parameter list
       break;
     }
@@ -2161,19 +2111,23 @@ typename ParserBase<Impl>::ExpressionT ParserBase<Impl>::ParsePropertyName(
     }
 
     case Token::ELLIPSIS:
-      if (allow_harmony_object_rest_spread()) {
+      if (allow_harmony_object_rest_spread() && !*is_generator && !*is_async &&
+          !*is_get && !*is_set) {
         *name = impl()->EmptyIdentifier();
         Consume(Token::ELLIPSIS);
         expression = ParseAssignmentExpression(true, CHECK_OK);
         *kind = PropertyKind::kSpreadProperty;
 
-        if (expression->IsAssignment()) {
-          classifier()->RecordPatternError(
+        if (!impl()->IsIdentifier(expression)) {
+          classifier()->RecordBindingPatternError(
               scanner()->location(),
-              MessageTemplate::kInvalidDestructuringTarget);
-        } else {
-          CheckDestructuringElement(expression, pos,
-                                    scanner()->location().end_pos);
+              MessageTemplate::kInvalidRestBindingPattern);
+        }
+
+        if (!expression->IsValidReferenceExpression()) {
+          classifier()->RecordAssignmentPatternError(
+              scanner()->location(),
+              MessageTemplate::kInvalidRestAssignmentPattern);
         }
 
         if (peek() != Token::RBRACE) {
@@ -2182,6 +2136,7 @@ typename ParserBase<Impl>::ExpressionT ParserBase<Impl>::ParsePropertyName(
         }
         return expression;
       }
+    // Fall-through.
 
     default:
       *name = ParseIdentifierName(CHECK_OK);
@@ -2222,12 +2177,12 @@ ParserBase<Impl>::ParseClassPropertyDefinition(
 
   Token::Value name_token = peek();
 
-  int function_token_position = scanner()->peek_location().beg_pos;
+  int name_token_position = scanner()->peek_location().beg_pos;
   IdentifierT name = impl()->EmptyIdentifier();
   ExpressionT name_expression;
   if (name_token == Token::STATIC) {
     Consume(Token::STATIC);
-    function_token_position = scanner()->peek_location().beg_pos;
+    name_token_position = scanner()->peek_location().beg_pos;
     if (peek() == Token::LPAREN) {
       kind = PropertyKind::kMethodProperty;
       name = impl()->GetSymbol();  // TODO(bakkot) specialize on 'static'
@@ -2269,9 +2224,12 @@ ParserBase<Impl>::ParseClassPropertyDefinition(
             has_initializer, CHECK_OK_CUSTOM(EmptyClassLiteralProperty));
         ExpectSemicolon(CHECK_OK_CUSTOM(EmptyClassLiteralProperty));
         *property_kind = ClassLiteralProperty::FIELD;
-        return factory()->NewClassLiteralProperty(
+        ClassLiteralPropertyT result = factory()->NewClassLiteralProperty(
             name_expression, function_literal, *property_kind, *is_static,
             *is_computed_name);
+        impl()->SetFunctionNameFromPropertyName(result, name);
+        return result;
+
       } else {
         ReportUnexpectedToken(Next());
         *ok = false;
@@ -2305,15 +2263,17 @@ ParserBase<Impl>::ParseClassPropertyDefinition(
 
       ExpressionT value = impl()->ParseFunctionLiteral(
           name, scanner()->location(), kSkipFunctionNameCheck, kind,
-          FLAG_harmony_function_tostring ? function_token_position
+          FLAG_harmony_function_tostring ? name_token_position
                                          : kNoSourcePosition,
           FunctionLiteral::kAccessorOrMethod, language_mode(),
           CHECK_OK_CUSTOM(EmptyClassLiteralProperty));
 
       *property_kind = ClassLiteralProperty::METHOD;
-      return factory()->NewClassLiteralProperty(name_expression, value,
-                                                *property_kind, *is_static,
-                                                *is_computed_name);
+      ClassLiteralPropertyT result = factory()->NewClassLiteralProperty(
+          name_expression, value, *property_kind, *is_static,
+          *is_computed_name);
+      impl()->SetFunctionNameFromPropertyName(result, name);
+      return result;
     }
 
     case PropertyKind::kAccessorProperty: {
@@ -2335,26 +2295,30 @@ ParserBase<Impl>::ParseClassPropertyDefinition(
 
       FunctionLiteralT value = impl()->ParseFunctionLiteral(
           name, scanner()->location(), kSkipFunctionNameCheck, kind,
-          FLAG_harmony_function_tostring ? function_token_position
+          FLAG_harmony_function_tostring ? name_token_position
                                          : kNoSourcePosition,
           FunctionLiteral::kAccessorOrMethod, language_mode(),
           CHECK_OK_CUSTOM(EmptyClassLiteralProperty));
 
-      if (!*is_computed_name) {
-        impl()->AddAccessorPrefixToFunctionName(is_get, value, name);
-      }
-
       *property_kind =
           is_get ? ClassLiteralProperty::GETTER : ClassLiteralProperty::SETTER;
-      return factory()->NewClassLiteralProperty(name_expression, value,
-                                                *property_kind, *is_static,
-                                                *is_computed_name);
+      ClassLiteralPropertyT result = factory()->NewClassLiteralProperty(
+          name_expression, value, *property_kind, *is_static,
+          *is_computed_name);
+      const AstRawString* prefix =
+          is_get ? ast_value_factory()->get_space_string()
+                 : ast_value_factory()->set_space_string();
+      impl()->SetFunctionNameFromPropertyName(result, name, prefix);
+      return result;
     }
     case PropertyKind::kSpreadProperty:
-      UNREACHABLE();
+      ReportUnexpectedTokenAt(
+          Scanner::Location(name_token_position, name_expression->position()),
+          name_token);
+      *ok = false;
+      return impl()->EmptyClassLiteralProperty();
   }
   UNREACHABLE();
-  return impl()->EmptyClassLiteralProperty();
 }
 
 template <typename Impl>
@@ -2439,11 +2403,7 @@ ParserBase<Impl>::ParseObjectPropertyDefinition(ObjectLiteralChecker* checker,
 
       ObjectLiteralPropertyT result = factory()->NewObjectLiteralProperty(
           name_expression, value, *is_computed_name);
-
-      if (!*is_computed_name) {
-        impl()->SetFunctionNameFromPropertyName(result, name);
-      }
-
+      impl()->SetFunctionNameFromPropertyName(result, name);
       return result;
     }
 
@@ -2510,8 +2470,10 @@ ParserBase<Impl>::ParseObjectPropertyDefinition(ObjectLiteralChecker* checker,
         value = lhs;
       }
 
-      return factory()->NewObjectLiteralProperty(
+      ObjectLiteralPropertyT result = factory()->NewObjectLiteralProperty(
           name_expression, value, ObjectLiteralProperty::COMPUTED, false);
+      impl()->SetFunctionNameFromPropertyName(result, name);
+      return result;
     }
 
     case PropertyKind::kMethodProperty: {
@@ -2533,9 +2495,11 @@ ParserBase<Impl>::ParseObjectPropertyDefinition(ObjectLiteralChecker* checker,
           FunctionLiteral::kAccessorOrMethod, language_mode(),
           CHECK_OK_CUSTOM(EmptyObjectLiteralProperty));
 
-      return factory()->NewObjectLiteralProperty(
+      ObjectLiteralPropertyT result = factory()->NewObjectLiteralProperty(
           name_expression, value, ObjectLiteralProperty::COMPUTED,
           *is_computed_name);
+      impl()->SetFunctionNameFromPropertyName(result, name);
+      return result;
     }
 
     case PropertyKind::kAccessorProperty: {
@@ -2563,14 +2527,16 @@ ParserBase<Impl>::ParseObjectPropertyDefinition(ObjectLiteralChecker* checker,
           FunctionLiteral::kAccessorOrMethod, language_mode(),
           CHECK_OK_CUSTOM(EmptyObjectLiteralProperty));
 
-      if (!*is_computed_name) {
-        impl()->AddAccessorPrefixToFunctionName(is_get, value, name);
-      }
-
-      return factory()->NewObjectLiteralProperty(
-          name_expression, value, is_get ? ObjectLiteralProperty::GETTER
-                                         : ObjectLiteralProperty::SETTER,
+      ObjectLiteralPropertyT result = factory()->NewObjectLiteralProperty(
+          name_expression, value,
+          is_get ? ObjectLiteralProperty::GETTER
+                 : ObjectLiteralProperty::SETTER,
           *is_computed_name);
+      const AstRawString* prefix =
+          is_get ? ast_value_factory()->get_space_string()
+                 : ast_value_factory()->set_space_string();
+      impl()->SetFunctionNameFromPropertyName(result, name, prefix);
+      return result;
     }
 
     case PropertyKind::kClassField:
@@ -2580,7 +2546,6 @@ ParserBase<Impl>::ParseObjectPropertyDefinition(ObjectLiteralChecker* checker,
       return impl()->EmptyObjectLiteralProperty();
   }
   UNREACHABLE();
-  return impl()->EmptyObjectLiteralProperty();
 }
 
 template <typename Impl>
@@ -2672,6 +2637,10 @@ typename ParserBase<Impl>::ExpressionListT ParserBase<Impl>::ParseArguments(
         spread_arg.beg_pos = start_pos;
         spread_arg.end_pos = peek_position();
       }
+      if (argument->IsAssignment()) {
+        classifier()->RecordAsyncArrowFormalParametersError(
+            scanner()->location(), MessageTemplate::kRestDefaultInitializer);
+      }
       argument = factory()->NewSpread(argument, start_pos, expr_pos);
     }
     result->Add(argument, zone_);
@@ -2684,7 +2653,11 @@ typename ParserBase<Impl>::ExpressionListT ParserBase<Impl>::ParseArguments(
     done = (peek() != Token::COMMA);
     if (!done) {
       Next();
-      if (allow_harmony_trailing_commas() && peek() == Token::RPAREN) {
+      if (argument->IsSpread()) {
+        classifier()->RecordAsyncArrowFormalParametersError(
+            scanner()->location(), MessageTemplate::kParamAfterRest);
+      }
+      if (peek() == Token::RPAREN) {
         // allow trailing comma
         done = true;
       }
@@ -2916,8 +2889,6 @@ typename ParserBase<Impl>::ExpressionT ParserBase<Impl>::ParseYieldExpression(
   classifier()->RecordFormalParameterInitializerError(
       scanner()->peek_location(), MessageTemplate::kYieldInParameter);
   Expect(Token::YIELD, CHECK_OK);
-  ExpressionT generator_object =
-      factory()->NewVariableProxy(function_state_->generator_object_variable());
   // The following initialization is necessary.
   ExpressionT expression = impl()->EmptyExpression();
   bool delegating = false;  // yield*
@@ -2945,20 +2916,13 @@ typename ParserBase<Impl>::ExpressionT ParserBase<Impl>::ParseYieldExpression(
   }
 
   if (delegating) {
-    return impl()->RewriteYieldStar(generator_object, expression, pos);
-  }
-
-  if (!is_async_generator()) {
-    // Async generator yield is rewritten in Ignition, and doesn't require
-    // producing an Iterator Result.
-    expression = impl()->BuildIteratorResult(expression, false);
+    return impl()->RewriteYieldStar(expression, pos);
   }
 
   // Hackily disambiguate o from o.next and o [Symbol.iterator]().
   // TODO(verwaest): Come up with a better solution.
   ExpressionT yield =
-      BuildSuspend(generator_object, expression, pos,
-                   Suspend::kOnExceptionThrow, SuspendFlags::kYield);
+      factory()->NewYield(expression, pos, Suspend::kOnExceptionThrow);
   return yield;
 }
 
@@ -2971,6 +2935,7 @@ ParserBase<Impl>::ParseConditionalExpression(bool accept_IN,
   //   LogicalOrExpression
   //   LogicalOrExpression '?' AssignmentExpression ':' AssignmentExpression
 
+  SourceRange then_range, else_range;
   int pos = peek_position();
   // We start using the binary expression parser for prec >= 4 only!
   ExpressionT expression = ParseBinaryExpression(4, accept_IN, CHECK_OK);
@@ -2982,6 +2947,7 @@ ParserBase<Impl>::ParseConditionalExpression(bool accept_IN,
 
   ExpressionT left;
   {
+    SourceRangeScope range_scope(scanner(), &then_range);
     ExpressionClassifier classifier(this);
     // In parsing the first assignment expression in conditional
     // expressions we always accept the 'in' keyword; see ECMA-262,
@@ -2993,12 +2959,15 @@ ParserBase<Impl>::ParseConditionalExpression(bool accept_IN,
   Expect(Token::COLON, CHECK_OK);
   ExpressionT right;
   {
+    SourceRangeScope range_scope(scanner(), &else_range);
     ExpressionClassifier classifier(this);
     right = ParseAssignmentExpression(accept_IN, CHECK_OK);
     AccumulateNonBindingPatternErrors();
   }
   impl()->RewriteNonPattern(CHECK_OK);
-  return factory()->NewConditional(expression, left, right, pos);
+  ExpressionT expr = factory()->NewConditional(expression, left, right, pos);
+  impl()->RecordConditionalSourceRange(expr, then_range, else_range);
+  return expr;
 }
 
 
@@ -3129,7 +3098,7 @@ typename ParserBase<Impl>::ExpressionT ParserBase<Impl>::ParseUnaryExpression(
 
     ExpressionT value = ParseUnaryExpression(CHECK_OK);
 
-    return impl()->RewriteAwaitExpression(value, await_pos);
+    return factory()->NewAwait(value, await_pos);
   } else {
     return ParsePostfixExpression(ok);
   }
@@ -3265,6 +3234,9 @@ ParserBase<Impl>::ParseLeftHandSideExpression(bool* ok) {
         // Explicit calls to the super constructor using super() perform an
         // implicit binding assignment to the 'this' variable.
         if (is_super_call) {
+          classifier()->RecordAssignmentPatternError(
+              Scanner::Location(pos, scanner()->location().end_pos),
+              MessageTemplate::kInvalidDestructuringTarget);
           ExpressionT this_expr = impl()->ThisExpression(pos);
           result =
               factory()->NewAssignment(Token::INIT, this_expr, result, pos);
@@ -3418,6 +3390,10 @@ typename ParserBase<Impl>::ExpressionT ParserBase<Impl>::ParseMemberExpression(
     if (impl()->ParsingDynamicFunctionDeclaration()) {
       // We don't want dynamic functions to actually declare their name
       // "anonymous". We just want that name in the toString().
+      if (stack_overflow()) {
+        *ok = false;
+        return impl()->EmptyExpression();
+      }
       Consume(Token::IDENTIFIER);
       DCHECK(scanner()->CurrentMatchesContextual(Token::ANONYMOUS));
     } else if (peek_any_identifier()) {
@@ -3506,6 +3482,10 @@ ParserBase<Impl>::ParseNewTargetExpression(bool* ok) {
   int pos = position();
   ExpectMetaProperty(Token::TARGET, "new.target", pos, CHECK_OK);
 
+  classifier()->RecordAssignmentPatternError(
+      Scanner::Location(pos, scanner()->location().end_pos),
+      MessageTemplate::kInvalidDestructuringTarget);
+
   if (!GetReceiverScope()->is_function_scope()) {
     impl()->ReportMessageAt(scanner()->location(),
                             MessageTemplate::kUnexpectedNewTarget);
@@ -3546,7 +3526,7 @@ ParserBase<Impl>::ParseMemberExpressionContinuation(ExpressionT expression,
         ArrowFormalParametersUnexpectedToken();
 
         Consume(Token::PERIOD);
-        int pos = position();
+        int pos = peek_position();
         IdentifierT name = ParseIdentifierName(CHECK_OK);
         expression = factory()->NewProperty(
             expression, factory()->NewStringLiteral(name, pos), pos);
@@ -3603,7 +3583,12 @@ void ParserBase<Impl>::ParseFormalParameter(FormalParametersT* parameters,
   }
 
   ExpressionT initializer = impl()->EmptyExpression();
-  if (!is_rest && Check(Token::ASSIGN)) {
+  if (Check(Token::ASSIGN)) {
+    if (is_rest) {
+      ReportMessage(MessageTemplate::kRestDefaultInitializer);
+      *ok = false;
+      return;
+    }
     ExpressionClassifier init_classifier(this);
     initializer = ParseAssignmentExpression(true, CHECK_OK_CUSTOM(Void));
     impl()->RewriteNonPattern(CHECK_OK_CUSTOM(Void));
@@ -3657,14 +3642,15 @@ void ParserBase<Impl>::ParseFormalParameterList(FormalParametersT* parameters,
         break;
       }
       if (!Check(Token::COMMA)) break;
-      if (allow_harmony_trailing_commas() && peek() == Token::RPAREN) {
+      if (peek() == Token::RPAREN) {
         // allow the trailing comma
         break;
       }
     }
   }
 
-  impl()->DeclareFormalParameters(parameters->scope, parameters->params);
+  impl()->DeclareFormalParameters(parameters->scope, parameters->params,
+                                  parameters->is_simple);
 }
 
 template <typename Impl>
@@ -3738,7 +3724,10 @@ typename ParserBase<Impl>::BlockT ParserBase<Impl>::ParseVariableDeclarations(
 
     ExpressionT value = impl()->EmptyExpression();
     int initializer_position = kNoSourcePosition;
+    int value_beg_position = kNoSourcePosition;
     if (Check(Token::ASSIGN)) {
+      value_beg_position = peek_position();
+
       ExpressionClassifier classifier(this);
       value = ParseAssignmentExpression(var_context != kForStatement,
                                         CHECK_OK_CUSTOM(NullBlock));
@@ -3786,6 +3775,7 @@ typename ParserBase<Impl>::BlockT ParserBase<Impl>::ParseVariableDeclarations(
 
     typename DeclarationParsingResult::Declaration decl(
         pattern, initializer_position, value);
+    decl.value_beg_position = value_beg_position;
     if (var_context == kForStatement) {
       // Save the declaration for further handling in ParseForStatement.
       parsing_result->declarations.Add(decl);
@@ -3814,8 +3804,9 @@ ParserBase<Impl>::ParseFunctionDeclaration(bool* ok) {
   int pos = position();
   ParseFunctionFlags flags = ParseFunctionFlags::kIsNormal;
   if (Check(Token::MUL)) {
-    impl()->ReportMessageAt(scanner()->location(),
-                            MessageTemplate::kGeneratorInLegacyContext);
+    impl()->ReportMessageAt(
+        scanner()->location(),
+        MessageTemplate::kGeneratorInSingleStatementContext);
     *ok = false;
     return impl()->NullStatement();
   }
@@ -4021,7 +4012,9 @@ void ParserBase<Impl>::ParseFunctionBody(
   {
     BlockState block_state(&scope_, inner_scope);
 
-    if (IsGeneratorFunction(kind)) {
+    if (IsAsyncGeneratorFunction(kind)) {
+      impl()->ParseAndRewriteAsyncGeneratorFunctionBody(pos, kind, body, ok);
+    } else if (IsGeneratorFunction(kind)) {
       impl()->ParseAndRewriteGeneratorFunctionBody(pos, kind, body, ok);
     } else if (IsAsyncFunction(kind)) {
       const bool accept_IN = true;
@@ -4086,7 +4079,6 @@ void ParserBase<Impl>::ParseFunctionBody(
   impl()->CreateFunctionNameAssignment(function_name, pos, function_type,
                                        function_scope, result,
                                        kFunctionNameAssignmentIndex);
-  impl()->MarkCollectedTailCallExpressions();
 }
 
 template <typename Impl>
@@ -4132,14 +4124,10 @@ bool ParserBase<Impl>::IsNextLetKeyword() {
                       // for those semantics to apply. This ensures that ASI is
                       // not honored when a LineTerminator separates the
                       // tokens.
+    case Token::YIELD:
+    case Token::AWAIT:
     case Token::ASYNC:
       return true;
-    case Token::AWAIT:
-      // In an async function, allow ASI between `let` and `yield`
-      return !is_async_function() || !scanner_->HasAnyLineTerminatorAfterNext();
-    case Token::YIELD:
-      // In an generator, allow ASI between `let` and `yield`
-      return !is_generator() || !scanner_->HasAnyLineTerminatorAfterNext();
     case Token::FUTURE_STRICT_RESERVED_WORD:
       return is_sloppy(language_mode());
     default:
@@ -4203,6 +4191,7 @@ ParserBase<Impl>::ParseArrowFunctionLiteral(
       can_preparse && impl()->AllowsLazyParsingWithoutUnresolvedVariables();
   bool should_be_used_once_hint = false;
   bool has_braces = true;
+  ProducedPreParsedScopeData* produced_preparsed_scope_data = nullptr;
   {
     FunctionState function_state(&function_state_, &scope_,
                                  formal_parameters.scope);
@@ -4216,32 +4205,22 @@ ParserBase<Impl>::ParseArrowFunctionLiteral(
         // FIXME(marja): Arrow function parameters will be parsed even if the
         // body is preparsed; move relevant parts of parameter handling to
         // simulate consistent parameter handling.
-        Scanner::BookmarkScope bookmark(scanner());
-        bookmark.Set();
+
         // For arrow functions, we don't need to retrieve data about function
         // parameters.
         int dummy_num_parameters = -1;
-        int dummy_function_length = -1;
         DCHECK((kind & FunctionKind::kArrowFunction) != 0);
         LazyParsingResult result = impl()->SkipFunction(
-            kind, formal_parameters.scope, &dummy_num_parameters,
-            &dummy_function_length, false, true, CHECK_OK);
-        formal_parameters.scope->ResetAfterPreparsing(
-            ast_value_factory_, result == kLazyParsingAborted);
+            nullptr, kind, FunctionLiteral::kAnonymousExpression,
+            formal_parameters.scope, &dummy_num_parameters,
+            &produced_preparsed_scope_data, false, false, CHECK_OK);
+        DCHECK_NE(result, kLazyParsingAborted);
+        DCHECK_NULL(produced_preparsed_scope_data);
+        USE(result);
+        formal_parameters.scope->ResetAfterPreparsing(ast_value_factory_,
+                                                      false);
 
-        if (result == kLazyParsingAborted) {
-          bookmark.Apply();
-          // Trigger eager (re-)parsing, just below this block.
-          is_lazy_top_level_function = false;
-
-          // This is probably an initialization function. Inform the compiler it
-          // should also eager-compile this function, and that we expect it to
-          // be used once.
-          eager_compile_hint = FunctionLiteral::kShouldEagerCompile;
-          should_be_used_once_hint = true;
-        }
-      }
-      if (!is_lazy_top_level_function) {
+      } else {
         Consume(Token::LBRACE);
         body = impl()->NewStatementList(8);
         impl()->ParseFunctionBody(body, impl()->EmptyIdentifier(),
@@ -4254,10 +4233,6 @@ ParserBase<Impl>::ParseArrowFunctionLiteral(
       // Single-expression body
       has_braces = false;
       int pos = position();
-      DCHECK(ReturnExprContext::kInsideValidBlock ==
-             function_state_->return_expr_context());
-      ReturnExprScope allow_tail_calls(
-          function_state_, ReturnExprContext::kInsideValidReturnStatement);
       body = impl()->NewStatementList(1);
       impl()->AddParameterInitializationBlock(
           formal_parameters, body, kind == kAsyncArrowFunction, CHECK_OK);
@@ -4272,13 +4247,8 @@ ParserBase<Impl>::ParseArrowFunctionLiteral(
         impl()->RewriteNonPattern(CHECK_OK);
         body->Add(BuildReturnStatement(expression, expression->position()),
                   zone());
-        if (allow_tailcalls() && !is_sloppy(language_mode())) {
-          // ES6 14.6.1 Static Semantics: IsInTailPosition
-          impl()->MarkTailPosition(expression);
-        }
       }
       expected_property_count = function_state.expected_property_count();
-      impl()->MarkCollectedTailCallExpressions();
     }
 
     formal_parameters.scope->set_end_position(scanner()->location().end_pos);
@@ -4322,7 +4292,7 @@ ParserBase<Impl>::ParseArrowFunctionLiteral(
       FunctionLiteral::kNoDuplicateParameters,
       FunctionLiteral::kAnonymousExpression, eager_compile_hint,
       formal_parameters.scope->start_position(), has_braces,
-      function_literal_id);
+      function_literal_id, produced_preparsed_scope_data);
 
   function_literal->set_function_token_position(
       formal_parameters.scope->start_position());
@@ -4339,24 +4309,30 @@ template <typename Impl>
 typename ParserBase<Impl>::ExpressionT ParserBase<Impl>::ParseClassLiteral(
     IdentifierT name, Scanner::Location class_name_location,
     bool name_is_strict_reserved, int class_token_pos, bool* ok) {
+  bool is_anonymous = impl()->IsEmptyIdentifier(name);
+
   // All parts of a ClassDeclaration and ClassExpression are strict code.
-  if (name_is_strict_reserved) {
-    impl()->ReportMessageAt(class_name_location,
-                            MessageTemplate::kUnexpectedStrictReserved);
-    *ok = false;
-    return impl()->EmptyExpression();
-  }
-  if (impl()->IsEvalOrArguments(name)) {
-    impl()->ReportMessageAt(class_name_location,
-                            MessageTemplate::kStrictEvalArguments);
-    *ok = false;
-    return impl()->EmptyExpression();
+  if (!is_anonymous) {
+    if (name_is_strict_reserved) {
+      impl()->ReportMessageAt(class_name_location,
+                              MessageTemplate::kUnexpectedStrictReserved);
+      *ok = false;
+      return impl()->EmptyExpression();
+    }
+    if (impl()->IsEvalOrArguments(name)) {
+      impl()->ReportMessageAt(class_name_location,
+                              MessageTemplate::kStrictEvalArguments);
+      *ok = false;
+      return impl()->EmptyExpression();
+    }
   }
 
-  BlockState block_state(zone(), &scope_);
+  Scope* block_scope = NewScope(BLOCK_SCOPE);
+  BlockState block_state(&scope_, block_scope);
   RaiseLanguageMode(STRICT);
 
   ClassInfo class_info(this);
+  class_info.is_anonymous = is_anonymous;
   impl()->DeclareClassVariable(name, &class_info, class_token_pos, CHECK_OK);
 
   scope()->set_start_position(scanner()->location().end_pos);
@@ -4401,7 +4377,10 @@ typename ParserBase<Impl>::ExpressionT ParserBase<Impl>::ParseClassLiteral(
   }
 
   Expect(Token::RBRACE, CHECK_OK);
-  return impl()->RewriteClassLiteral(name, &class_info, class_token_pos, ok);
+  int end_pos = scanner()->location().end_pos;
+  block_scope->set_end_position(end_pos);
+  return impl()->RewriteClassLiteral(block_scope, name, &class_info,
+                                     class_token_pos, end_pos, ok);
 }
 
 template <typename Impl>
@@ -4447,11 +4426,15 @@ ParserBase<Impl>::ParseAsyncFunctionLiteral(bool* ok) {
 
   bool is_generator = allow_harmony_async_iteration() && Check(Token::MUL);
   const bool kIsAsync = true;
-  static const FunctionKind kind = FunctionKindFor(is_generator, kIsAsync);
+  const FunctionKind kind = FunctionKindFor(is_generator, kIsAsync);
 
   if (impl()->ParsingDynamicFunctionDeclaration()) {
     // We don't want dynamic functions to actually declare their name
     // "anonymous". We just want that name in the toString().
+    if (stack_overflow()) {
+      *ok = false;
+      return impl()->EmptyExpression();
+    }
     Consume(Token::IDENTIFIER);
     DCHECK(scanner()->CurrentMatchesContextual(Token::ANONYMOUS));
   } else if (peek_any_identifier()) {
@@ -4871,6 +4854,16 @@ typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseStatement(
       return ParseDebuggerStatement(ok);
     case Token::VAR:
       return ParseVariableStatement(kStatement, nullptr, ok);
+    case Token::ASYNC:
+      if (!scanner()->HasAnyLineTerminatorAfterNext() &&
+          PeekAhead() == Token::FUNCTION) {
+        impl()->ReportMessageAt(
+            scanner()->peek_location(),
+            MessageTemplate::kAsyncFunctionInSingleStatementContext);
+        *ok = false;
+        return impl()->NullStatement();
+      }
+    // Falls through
     default:
       return ParseExpressionOrLabelledStatement(labels, allow_function, ok);
   }
@@ -4896,7 +4889,6 @@ ParserBase<Impl>::ParseStatementAsUnlabelled(
       return ParseTryStatement(ok);
     default:
       UNREACHABLE();
-      return impl()->NullStatement();
   }
 }
 
@@ -4924,7 +4916,9 @@ typename ParserBase<Impl>::BlockT ParserBase<Impl>::ParseBlock(
     }
 
     Expect(Token::RBRACE, CHECK_OK_CUSTOM(NullBlock));
-    scope()->set_end_position(scanner()->location().end_pos);
+    int end_pos = scanner()->location().end_pos;
+    scope()->set_end_position(end_pos);
+    impl()->RecordBlockSourceRange(body, end_pos);
     body->set_scope(scope()->FinalizeBlockScope());
   }
   return body;
@@ -5016,8 +5010,10 @@ ParserBase<Impl>::ParseExpressionOrLabelledStatement(
       Token::Value next_next = PeekAhead();
       // "let" followed by either "[", "{" or an identifier means a lexical
       // declaration, which should not appear here.
-      if (next_next != Token::LBRACK && next_next != Token::LBRACE &&
-          next_next != Token::IDENTIFIER) {
+      // However, ASI may insert a line break before an identifier or a brace.
+      if (next_next != Token::LBRACK &&
+          ((next_next != Token::LBRACE && next_next != Token::IDENTIFIER) ||
+           scanner_->HasAnyLineTerminatorAfterNext())) {
         break;
       }
       impl()->ReportMessageAt(scanner()->peek_location(),
@@ -5043,7 +5039,7 @@ ParserBase<Impl>::ParseExpressionOrLabelledStatement(
         allow_function == kAllowLabelledFunctionStatement) {
       return ParseFunctionDeclaration(ok);
     }
-    return ParseStatement(labels, ok);
+    return ParseStatement(labels, allow_function, ok);
   }
 
   // If we have an extension, we allow a native function declaration.
@@ -5071,15 +5067,25 @@ typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseIfStatement(
   Expect(Token::LPAREN, CHECK_OK);
   ExpressionT condition = ParseExpression(true, CHECK_OK);
   Expect(Token::RPAREN, CHECK_OK);
-  StatementT then_statement = ParseScopedStatement(labels, CHECK_OK);
+
+  SourceRange then_range, else_range;
+  StatementT then_statement = impl()->NullStatement();
+  {
+    SourceRangeScope range_scope(scanner(), &then_range);
+    then_statement = ParseScopedStatement(labels, CHECK_OK);
+  }
+
   StatementT else_statement = impl()->NullStatement();
   if (Check(Token::ELSE)) {
+    SourceRangeScope range_scope(scanner(), &else_range);
     else_statement = ParseScopedStatement(labels, CHECK_OK);
   } else {
     else_statement = factory()->NewEmptyStatement(kNoSourcePosition);
   }
-  return factory()->NewIfStatement(condition, then_statement, else_statement,
-                                   pos);
+  StatementT stmt =
+      factory()->NewIfStatement(condition, then_statement, else_statement, pos);
+  impl()->RecordIfStatementSourceRange(stmt, then_range, else_range);
+  return stmt;
 }
 
 template <typename Impl>
@@ -5114,7 +5120,9 @@ typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseContinueStatement(
     return impl()->NullStatement();
   }
   ExpectSemicolon(CHECK_OK);
-  return factory()->NewContinueStatement(target, pos);
+  StatementT stmt = factory()->NewContinueStatement(target, pos);
+  impl()->RecordJumpStatementSourceRange(stmt, scanner_->location().end_pos);
+  return stmt;
 }
 
 template <typename Impl>
@@ -5152,7 +5160,9 @@ typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseBreakStatement(
     return impl()->NullStatement();
   }
   ExpectSemicolon(CHECK_OK);
-  return factory()->NewBreakStatement(target, pos);
+  StatementT stmt = factory()->NewBreakStatement(target, pos);
+  impl()->RecordJumpStatementSourceRange(stmt, scanner_->location().end_pos);
+  return stmt;
 }
 
 template <typename Impl>
@@ -5188,25 +5198,15 @@ typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseReturnStatement(
       return_value = impl()->GetLiteralUndefined(position());
     }
   } else {
-    if (IsDerivedConstructor(function_state_->kind())) {
-      // Because of the return code rewriting that happens in case of a subclass
-      // constructor we don't want to accept tail calls, therefore we don't set
-      // ReturnExprScope to kInsideValidReturnStatement here.
-      return_value = ParseExpression(true, CHECK_OK);
-    } else {
-      ReturnExprScope maybe_allow_tail_calls(
-          function_state_, ReturnExprContext::kInsideValidReturnStatement);
-      return_value = ParseExpression(true, CHECK_OK);
-
-      if (allow_tailcalls() && !is_sloppy(language_mode()) && !is_resumable()) {
-        // ES6 14.6.1 Static Semantics: IsInTailPosition
-        function_state_->AddImplicitTailCallExpression(return_value);
-      }
-    }
+    return_value = ParseExpression(true, CHECK_OK);
   }
   ExpectSemicolon(CHECK_OK);
   return_value = impl()->RewriteReturn(return_value, loc.beg_pos);
-  return BuildReturnStatement(return_value, loc.beg_pos);
+  int continuation_pos = scanner_->location().end_pos;
+  StatementT stmt =
+      BuildReturnStatement(return_value, loc.beg_pos, continuation_pos);
+  impl()->RecordJumpStatementSourceRange(stmt, scanner_->location().end_pos);
+  return stmt;
 }
 
 template <typename Impl>
@@ -5248,8 +5248,14 @@ typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseDoWhileStatement(
   auto loop = factory()->NewDoWhileStatement(labels, peek_position());
   typename Types::Target target(this, loop);
 
+  SourceRange body_range;
+  StatementT body = impl()->NullStatement();
+
   Expect(Token::DO, CHECK_OK);
-  StatementT body = ParseStatement(nullptr, CHECK_OK);
+  {
+    SourceRangeScope range_scope(scanner(), &body_range);
+    body = ParseStatement(nullptr, CHECK_OK);
+  }
   Expect(Token::WHILE, CHECK_OK);
   Expect(Token::LPAREN, CHECK_OK);
 
@@ -5263,6 +5269,8 @@ typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseDoWhileStatement(
   Check(Token::SEMICOLON);
 
   loop->Initialize(cond, body);
+  impl()->RecordIterationStatementSourceRange(loop, body_range);
+
   return loop;
 }
 
@@ -5275,13 +5283,21 @@ typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseWhileStatement(
   auto loop = factory()->NewWhileStatement(labels, peek_position());
   typename Types::Target target(this, loop);
 
+  SourceRange body_range;
+  StatementT body = impl()->NullStatement();
+
   Expect(Token::WHILE, CHECK_OK);
   Expect(Token::LPAREN, CHECK_OK);
   ExpressionT cond = ParseExpression(true, CHECK_OK);
   Expect(Token::RPAREN, CHECK_OK);
-  StatementT body = ParseStatement(nullptr, CHECK_OK);
+  {
+    SourceRangeScope range_scope(scanner(), &body_range);
+    body = ParseStatement(nullptr, CHECK_OK);
+  }
 
   loop->Initialize(cond, body);
+  impl()->RecordIterationStatementSourceRange(loop, body_range);
+
   return loop;
 }
 
@@ -5301,7 +5317,10 @@ typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseThrowStatement(
   ExpressionT exception = ParseExpression(true, CHECK_OK);
   ExpectSemicolon(CHECK_OK);
 
-  return impl()->NewThrowStatement(exception, pos);
+  StatementT stmt = impl()->NewThrowStatement(exception, pos);
+  impl()->RecordThrowSourceRange(stmt, scanner_->location().end_pos);
+
+  return stmt;
 }
 
 template <typename Impl>
@@ -5334,6 +5353,8 @@ typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseSwitchStatement(
     while (peek() != Token::RBRACE) {
       // An empty label indicates the default case.
       ExpressionT label = impl()->EmptyExpression();
+      SourceRange clause_range;
+      SourceRangeScope range_scope(scanner(), &clause_range);
       if (Check(Token::CASE)) {
         label = ParseExpression(true, CHECK_OK);
       } else {
@@ -5354,11 +5375,14 @@ typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseSwitchStatement(
         statements->Add(stat, zone());
       }
       auto clause = factory()->NewCaseClause(label, statements, clause_pos);
+      impl()->RecordCaseClauseSourceRange(clause, range_scope.Finalize());
       cases->Add(clause, zone());
     }
     Expect(Token::RBRACE, CHECK_OK);
 
-    scope()->set_end_position(scanner()->location().end_pos);
+    int end_position = scanner()->location().end_pos;
+    scope()->set_end_position(end_position);
+    impl()->RecordSwitchStatementSourceRange(switch_statement, end_position);
     return impl()->RewriteSwitchStatement(tag, switch_statement, cases,
                                           scope()->FinalizeBlockScope());
   }
@@ -5381,12 +5405,7 @@ typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseTryStatement(
   Expect(Token::TRY, CHECK_OK);
   int pos = position();
 
-  BlockT try_block = impl()->NullBlock();
-  {
-    ReturnExprScope no_tail_calls(function_state_,
-                                  ReturnExprContext::kInsideTryBlock);
-    try_block = ParseBlock(nullptr, CHECK_OK);
-  }
+  BlockT try_block = ParseBlock(nullptr, CHECK_OK);
 
   CatchInfo catch_info(this);
 
@@ -5396,6 +5415,8 @@ typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseTryStatement(
     return impl()->NullStatement();
   }
 
+  SourceRange catch_range, finally_range;
+
   BlockT catch_block = impl()->NullBlock();
   if (Check(Token::CATCH)) {
     Expect(Token::LPAREN, CHECK_OK);
@@ -5403,9 +5424,6 @@ typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseTryStatement(
     catch_info.scope->set_start_position(scanner()->location().beg_pos);
 
     {
-      CollectExpressionsInTailPositionToListScope
-          collect_tail_call_expressions_scope(
-              function_state_, &catch_info.tail_call_expressions);
       BlockState catch_block_state(&scope_, catch_info.scope);
 
       catch_block = factory()->NewBlock(nullptr, 16, false, kNoSourcePosition);
@@ -5436,6 +5454,7 @@ typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseTryStatement(
           catch_block->statements()->Add(catch_info.init_block, zone());
         }
 
+        SourceRangeScope range_scope(scanner(), &catch_range);
         catch_info.inner_block = ParseBlock(nullptr, CHECK_OK);
         catch_block->statements()->Add(catch_info.inner_block, zone());
         impl()->ValidateCatchBlock(catch_info, CHECK_OK);
@@ -5450,16 +5469,20 @@ typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseTryStatement(
   BlockT finally_block = impl()->NullBlock();
   DCHECK(peek() == Token::FINALLY || !impl()->IsNullStatement(catch_block));
   if (Check(Token::FINALLY)) {
+    SourceRangeScope range_scope(scanner(), &finally_range);
     finally_block = ParseBlock(nullptr, CHECK_OK);
   }
 
-  return impl()->RewriteTryStatement(try_block, catch_block, finally_block,
-                                     catch_info, pos);
+  return impl()->RewriteTryStatement(try_block, catch_block, catch_range,
+                                     finally_block, finally_range, catch_info,
+                                     pos);
 }
 
 template <typename Impl>
 typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseForStatement(
     ZoneList<const AstRawString*>* labels, bool* ok) {
+  typename FunctionState::FunctionOrEvalRecordingScope recording_scope(
+      function_state_);
   int stmt_pos = peek_position();
   ForInfo for_info(this);
   bool bound_names_are_lexical = false;
@@ -5469,7 +5492,6 @@ typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseForStatement(
   Expect(Token::FOR, CHECK_OK);
   Expect(Token::LPAREN, CHECK_OK);
   scope()->set_start_position(scanner()->location().beg_pos);
-  scope()->set_is_hidden();
 
   StatementT init = impl()->NullStatement();
 
@@ -5527,6 +5549,7 @@ typename ParserBase<Impl>::StatementT
 ParserBase<Impl>::ParseForEachStatementWithDeclarations(
     int stmt_pos, ForInfo* for_info, ZoneList<const AstRawString*>* labels,
     bool* ok) {
+  scope()->set_is_hidden();
   // Just one declaration followed by in/of.
   if (for_info->parsing_result.declarations.length() != 1) {
     impl()->ReportMessageAt(for_info->parsing_result.bindings_loc,
@@ -5553,8 +5576,6 @@ ParserBase<Impl>::ParseForEachStatementWithDeclarations(
   auto loop = factory()->NewForEachStatement(for_info->mode, labels, stmt_pos);
   typename Types::Target target(this, loop);
 
-  int each_keyword_pos = scanner()->location().beg_pos;
-
   ExpressionT enumerable = impl()->EmptyExpression();
   if (for_info->mode == ForEachStatement::ITERATE) {
     ExpressionClassifier classifier(this);
@@ -5568,20 +5589,22 @@ ParserBase<Impl>::ParseForEachStatementWithDeclarations(
 
   StatementT final_loop = impl()->NullStatement();
   {
-    ReturnExprScope no_tail_calls(function_state_,
-                                  ReturnExprContext::kInsideForInOfBody);
     BlockState block_state(zone(), &scope_);
     scope()->set_start_position(scanner()->location().beg_pos);
 
+    SourceRange body_range;
+    SourceRangeScope range_scope(scanner(), &body_range);
+
     StatementT body = ParseStatement(nullptr, CHECK_OK);
+    impl()->RecordIterationStatementSourceRange(loop, range_scope.Finalize());
 
     BlockT body_block = impl()->NullBlock();
     ExpressionT each_variable = impl()->EmptyExpression();
     impl()->DesugarBindingInForEachStatement(for_info, &body_block,
                                              &each_variable, CHECK_OK);
     body_block->statements()->Add(body, zone());
-    final_loop = impl()->InitializeForEachStatement(
-        loop, each_variable, enumerable, body_block, each_keyword_pos);
+    final_loop = impl()->InitializeForEachStatement(loop, each_variable,
+                                                    enumerable, body_block);
 
     scope()->set_end_position(scanner()->location().end_pos);
     body_block->set_scope(scope()->FinalizeBlockScope());
@@ -5607,6 +5630,7 @@ typename ParserBase<Impl>::StatementT
 ParserBase<Impl>::ParseForEachStatementWithoutDeclarations(
     int stmt_pos, ExpressionT expression, int lhs_beg_pos, int lhs_end_pos,
     ForInfo* for_info, ZoneList<const AstRawString*>* labels, bool* ok) {
+  scope()->set_is_hidden();
   // Initializer is reference followed by in/of.
   if (!expression->IsArrayLiteral() && !expression->IsObjectLiteral()) {
     expression = impl()->CheckAndRewriteReferenceExpression(
@@ -5616,8 +5640,6 @@ ParserBase<Impl>::ParseForEachStatementWithoutDeclarations(
 
   auto loop = factory()->NewForEachStatement(for_info->mode, labels, stmt_pos);
   typename Types::Target target(this, loop);
-
-  int each_keyword_pos = scanner()->location().beg_pos;
 
   ExpressionT enumerable = impl()->EmptyExpression();
   if (for_info->mode == ForEachStatement::ITERATE) {
@@ -5632,15 +5654,17 @@ ParserBase<Impl>::ParseForEachStatementWithoutDeclarations(
   Scope* for_scope = scope();
 
   {
-    ReturnExprScope no_tail_calls(function_state_,
-                                  ReturnExprContext::kInsideForInOfBody);
     BlockState block_state(zone(), &scope_);
     scope()->set_start_position(scanner()->location().beg_pos);
 
+    SourceRange body_range;
+    SourceRangeScope range_scope(scanner(), &body_range);
+
     StatementT body = ParseStatement(nullptr, CHECK_OK);
     scope()->set_end_position(scanner()->location().end_pos);
-    StatementT final_loop = impl()->InitializeForEachStatement(
-        loop, expression, enumerable, body, each_keyword_pos);
+    StatementT final_loop =
+        impl()->InitializeForEachStatement(loop, expression, enumerable, body);
+    impl()->RecordIterationStatementSourceRange(loop, range_scope.Finalize());
 
     for_scope = for_scope->FinalizeBlockScope();
     USE(for_scope);
@@ -5666,6 +5690,8 @@ typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseStandardForLoop(
   StatementT next = impl()->NullStatement();
   StatementT body = impl()->NullStatement();
 
+  SourceRange body_range;
+
   // If there are let bindings, then condition and the next statement of the
   // for loop must be parsed in a new scope.
   Scope* inner_scope = scope();
@@ -5687,18 +5713,20 @@ typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseStandardForLoop(
     }
     Expect(Token::RPAREN, CHECK_OK);
 
+    SourceRangeScope range_scope(scanner(), &body_range);
     body = ParseStatement(nullptr, CHECK_OK);
   }
 
-  if (bound_names_are_lexical && for_info->bound_names.length() > 0) {
-    auto result = impl()->DesugarLexicalBindingsInForStatement(
-        loop, init, cond, next, body, inner_scope, *for_info, CHECK_OK);
-    scope()->set_end_position(scanner()->location().end_pos);
-    inner_scope->set_end_position(scanner()->location().end_pos);
-    return result;
+  scope()->set_end_position(scanner()->location().end_pos);
+  inner_scope->set_end_position(scanner()->location().end_pos);
+  if (bound_names_are_lexical && for_info->bound_names.length() > 0 &&
+      function_state_->contains_function_or_eval()) {
+    scope()->set_is_hidden();
+    return impl()->DesugarLexicalBindingsInForStatement(
+        loop, init, cond, next, body, body_range, inner_scope, *for_info,
+        CHECK_OK);
   }
 
-  scope()->set_end_position(scanner()->location().end_pos);
   Scope* for_scope = scope()->FinalizeBlockScope();
   if (for_scope != nullptr) {
     // Rewrite a for statement of the form
@@ -5722,14 +5750,17 @@ typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseStandardForLoop(
     BlockT block = factory()->NewBlock(nullptr, 2, false, kNoSourcePosition);
     if (!impl()->IsNullStatement(init)) {
       block->statements()->Add(init, zone());
+      init = impl()->NullStatement();
     }
     block->statements()->Add(loop, zone());
     block->set_scope(for_scope);
     loop->Initialize(init, cond, next, body);
+    impl()->RecordIterationStatementSourceRange(loop, body_range);
     return block;
   }
 
   loop->Initialize(init, cond, next, body);
+  impl()->RecordIterationStatementSourceRange(loop, body_range);
   return loop;
 }
 
@@ -5832,13 +5863,15 @@ typename ParserBase<Impl>::StatementT ParserBase<Impl>::ParseForAwaitStatement(
   StatementT final_loop = impl()->NullStatement();
   Scope* for_scope = scope();
   {
-    ReturnExprScope no_tail_calls(function_state_,
-                                  ReturnExprContext::kInsideForInOfBody);
     BlockState block_state(zone(), &scope_);
     scope()->set_start_position(scanner()->location().beg_pos);
 
+    SourceRange body_range;
+    SourceRangeScope range_scope(scanner(), &body_range);
+
     StatementT body = ParseStatement(nullptr, CHECK_OK);
     scope()->set_end_position(scanner()->location().end_pos);
+    impl()->RecordIterationStatementSourceRange(loop, range_scope.Finalize());
 
     if (has_declarations) {
       BlockT body_block = impl()->NullBlock();

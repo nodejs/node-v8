@@ -23,7 +23,6 @@ class V8DebuggerScript;
 class V8InspectorImpl;
 class V8InspectorSessionImpl;
 class V8Regex;
-class V8StackTraceImpl;
 
 using protocol::Maybe;
 using protocol::Response;
@@ -57,8 +56,8 @@ class V8DebuggerAgentImpl : public protocol::Debugger::Backend {
       Maybe<String16> optionalCondition, String16*,
       std::unique_ptr<protocol::Debugger::Location>* actualLocation) override;
   Response removeBreakpoint(const String16& breakpointId) override;
-  Response continueToLocation(
-      std::unique_ptr<protocol::Debugger::Location>) override;
+  Response continueToLocation(std::unique_ptr<protocol::Debugger::Location>,
+                              Maybe<String16> targetCallFrames) override;
   Response searchInContent(
       const String16& scriptId, const String16& query,
       Maybe<bool> optionalCaseSensitive, Maybe<bool> optionalIsRegex,
@@ -110,7 +109,7 @@ class V8DebuggerAgentImpl : public protocol::Debugger::Backend {
       std::unique_ptr<protocol::Array<protocol::Debugger::ScriptPosition>>
           positions) override;
 
-  bool enabled();
+  bool enabled() const { return m_enabled; }
 
   void setBreakpointAt(const String16& scriptId, int lineNumber,
                        int columnNumber, BreakpointSource,
@@ -123,15 +122,14 @@ class V8DebuggerAgentImpl : public protocol::Debugger::Backend {
   void cancelPauseOnNextStatement();
   void breakProgram(const String16& breakReason,
                     std::unique_ptr<protocol::DictionaryValue> data);
-  void breakProgramOnException(const String16& breakReason,
-                               std::unique_ptr<protocol::DictionaryValue> data);
 
   void reset();
 
   // Interface for V8InspectorImpl
   void didPause(int contextId, v8::Local<v8::Value> exception,
                 const std::vector<String16>& hitBreakpoints,
-                bool isPromiseRejection, bool isUncaught, bool isOOMBreak);
+                bool isPromiseRejection, bool isUncaught, bool isOOMBreak,
+                bool isAssert);
   void didContinue();
   void didParseSource(std::unique_ptr<V8DebuggerScript>, bool success);
 
@@ -139,7 +137,7 @@ class V8DebuggerAgentImpl : public protocol::Debugger::Backend {
                             const v8::debug::Location& start,
                             const v8::debug::Location& end);
 
-  bool skipAllPauses() const { return m_skipAllPauses; }
+  bool acceptsPause(bool isOOMBreak) const;
 
   v8::Isolate* isolate() { return m_isolate; }
 
@@ -185,7 +183,6 @@ class V8DebuggerAgentImpl : public protocol::Debugger::Backend {
   ScriptsMap m_scripts;
   BreakpointIdToDebuggerBreakpointIdsMap m_breakpointIdToDebuggerBreakpointIds;
   DebugServerBreakpointToBreakpointIdAndSourceMap m_serverBreakpoints;
-  String16 m_continueToLocationBreakpointId;
 
   using BreakReason =
       std::pair<String16, std::unique_ptr<protocol::DictionaryValue>>;
@@ -197,6 +194,7 @@ class V8DebuggerAgentImpl : public protocol::Debugger::Backend {
   void popBreakDetails();
 
   bool m_skipAllPauses = false;
+  bool m_breakpointsActive = false;
 
   std::unique_ptr<V8Regex> m_blackboxPattern;
   protocol::HashMap<String16, std::vector<std::pair<int, int>>>

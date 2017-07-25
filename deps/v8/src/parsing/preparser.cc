@@ -14,6 +14,7 @@
 #include "src/parsing/parser-base.h"
 #include "src/parsing/preparse-data-format.h"
 #include "src/parsing/preparse-data.h"
+#include "src/parsing/preparsed-scope-data.h"
 #include "src/parsing/preparser.h"
 #include "src/unicode.h"
 #include "src/utils.h"
@@ -100,10 +101,8 @@ PreParserIdentifier PreParser::GetSymbol() const {
   return symbol;
 }
 
-PreParser::PreParseResult PreParser::PreParseProgram(bool is_module,
-                                                     int* use_counts) {
+PreParser::PreParseResult PreParser::PreParseProgram(bool is_module) {
   DCHECK_NULL(scope_);
-  use_counts_ = use_counts;
   DeclarationScope* scope = NewScriptScope();
 #ifdef DEBUG
   scope->set_is_being_lazily_parsed(true);
@@ -122,7 +121,6 @@ PreParser::PreParseResult PreParser::PreParseProgram(bool is_module,
   PreParserStatementList body;
   ParseStatementList(body, Token::EOS, &ok);
   original_scope_ = nullptr;
-  use_counts_ = nullptr;
   if (stack_overflow()) return kPreParseStackOverflow;
   if (!ok) {
     ReportUnexpectedToken(scanner()->current_token());
@@ -133,8 +131,11 @@ PreParser::PreParseResult PreParser::PreParseProgram(bool is_module,
 }
 
 PreParser::PreParseResult PreParser::PreParseFunction(
-    FunctionKind kind, DeclarationScope* function_scope, bool parsing_module,
-    bool is_inner_function, bool may_abort, int* use_counts) {
+    const AstRawString* function_name, FunctionKind kind,
+    FunctionLiteral::FunctionType function_type,
+    DeclarationScope* function_scope, bool parsing_module,
+    bool is_inner_function, bool may_abort, int* use_counts,
+    ProducedPreParsedScopeData** produced_preparsed_scope_data) {
   DCHECK_EQ(FUNCTION_SCOPE, function_scope->scope_type());
   parsing_module_ = parsing_module;
   use_counts_ = use_counts;
@@ -143,6 +144,17 @@ PreParser::PreParseResult PreParser::PreParseFunction(
 #ifdef DEBUG
   function_scope->set_is_being_lazily_parsed(true);
 #endif
+
+  // Start collecting data for a new function which might contain skippable
+  // functions.
+  std::unique_ptr<ProducedPreParsedScopeData::DataGatheringScope>
+      produced_preparsed_scope_data_scope;
+  if (FLAG_experimental_preparser_scope_analysis && !IsArrowFunction(kind)) {
+    track_unresolved_variables_ = true;
+    produced_preparsed_scope_data_scope.reset(
+        new ProducedPreParsedScopeData::DataGatheringScope(function_scope,
+                                                           this));
+  }
 
   // In the preparser, we use the function literal ids to count how many
   // FunctionLiterals were encountered. The PreParser doesn't actually persist
@@ -209,6 +221,8 @@ PreParser::PreParseResult PreParser::PreParseFunction(
   }
 
   if (!IsArrowFunction(kind) && track_unresolved_variables_) {
+    CreateFunctionNameAssignment(function_name, function_type, function_scope);
+
     // Declare arguments after parsing the function since lexical 'arguments'
     // masks the arguments object. Declare arguments before declaring the
     // function var since the arguments object masks 'function arguments'.
@@ -236,6 +250,8 @@ PreParser::PreParseResult PreParser::PreParseFunction(
       ValidateFormalParameters(function_scope->language_mode(),
                                allow_duplicate_parameters,
                                CHECK_OK_VALUE(kPreParseSuccess));
+
+      *produced_preparsed_scope_data = produced_preparsed_scope_data_;
     }
 
     if (is_strict(function_scope->language_mode())) {
@@ -276,11 +292,22 @@ PreParser::Expression PreParser::ParseFunctionLiteral(
       runtime_call_stats_,
       counters[track_unresolved_variables_][parsing_on_main_thread_]);
 
-  bool is_top_level =
-      scope()->AllowsLazyParsingWithoutUnresolvedVariables(original_scope_);
-
   DeclarationScope* function_scope = NewFunctionScope(kind);
   function_scope->SetLanguageMode(language_mode);
+
+  // Start collecting data for a new function which might contain skippable
+  // functions.
+  std::unique_ptr<ProducedPreParsedScopeData::DataGatheringScope>
+      produced_preparsed_scope_data_scope;
+  if (!function_state_->next_function_is_likely_called() &&
+      produced_preparsed_scope_data_ != nullptr) {
+    DCHECK(FLAG_experimental_preparser_scope_analysis);
+    DCHECK(track_unresolved_variables_);
+    produced_preparsed_scope_data_scope.reset(
+        new ProducedPreParsedScopeData::DataGatheringScope(function_scope,
+                                                           this));
+  }
+
   FunctionState function_state(&function_state_, &scope_, function_scope);
   DuplicateFinder duplicate_finder;
   ExpressionClassifier formals_classifier(this, &duplicate_finder);
@@ -326,24 +353,10 @@ PreParser::Expression PreParser::ParseFunctionLiteral(
     CheckStrictOctalLiteral(start_position, end_position, CHECK_OK);
   }
 
-  if (FLAG_use_parse_tasks && is_top_level && preparse_data_) {
-    preparse_data_->AddFunctionData(
-        start_position,
-        PreParseData::FunctionData(
-            end_position, formals.num_parameters(), formals.function_length,
-            GetLastFunctionLiteralId() - func_id, language_mode,
-            function_scope->uses_super_property(),
-            function_scope->calls_eval()));
-    // TODO(wiktorg) spin-off a parse task
-    if (FLAG_trace_parse_tasks) {
-      PrintF("Saved function at %d to %d with:\n", start_position,
-             end_position);
-      PrintF("\t- %d params\n", formals.num_parameters());
-      PrintF("\t- %d function length\n", formals.function_length);
-      PrintF("\t- %d inner-funcs\n", GetLastFunctionLiteralId() - func_id);
-    }
+  if (produced_preparsed_scope_data_scope) {
+    produced_preparsed_scope_data_scope->MarkFunctionAsSkippable(
+        end_position, GetLastFunctionLiteralId() - func_id);
   }
-
   if (FLAG_trace_preparse) {
     PrintF("  [%s]: %i-%i\n",
            track_unresolved_variables_ ? "Preparse resolution"
@@ -366,7 +379,7 @@ PreParser::LazyParsingResult PreParser::ParseStatementListAndLogFunction(
   int body_end = scanner()->peek_location().end_pos;
   DCHECK_EQ(this->scope()->is_function_scope(), formals->is_simple);
   log_.LogFunction(body_end, formals->num_parameters(),
-                   formals->function_length, GetLastFunctionLiteralId());
+                   GetLastFunctionLiteralId());
   return kLazyParsingComplete;
 }
 
@@ -374,13 +387,9 @@ PreParserExpression PreParser::ExpressionFromIdentifier(
     PreParserIdentifier name, int start_position, InferName infer) {
   VariableProxy* proxy = nullptr;
   if (track_unresolved_variables_) {
-    AstNodeFactory factory(ast_value_factory());
-    // Setting the Zone is necessary because zone_ might be the temp Zone, and
-    // AstValueFactory doesn't know about it.
-    factory.set_zone(zone());
     DCHECK_NOT_NULL(name.string_);
-    proxy = scope()->NewUnresolved(&factory, name.string_, start_position,
-                                   NORMAL_VARIABLE);
+    proxy = scope()->NewUnresolved(factory()->ast_node_factory(), name.string_,
+                                   start_position, NORMAL_VARIABLE);
   }
   return PreParserExpression::FromIdentifier(name, proxy, zone());
 }
@@ -397,7 +406,7 @@ void PreParser::DeclareAndInitializeVariables(
       declaration_descriptor->scope->RemoveUnresolved(variable);
       Variable* var = scope()->DeclareVariableName(
           variable->raw_name(), declaration_descriptor->mode);
-      if (FLAG_preparser_scope_analysis) {
+      if (FLAG_experimental_preparser_scope_analysis) {
         MarkLoopVariableAsAssigned(declaration_descriptor->scope, var);
         // This is only necessary if there is an initializer, but we don't have
         // that information here.  Consequently, the preparser sometimes says

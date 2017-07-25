@@ -125,7 +125,7 @@ class Handle final : public HandleBase {
 
   template <typename S>
   static const Handle<T> cast(Handle<S> that) {
-    T::cast(*reinterpret_cast<T**>(that.location_));
+    T::cast(*reinterpret_cast<T**>(that.location()));
     return Handle<T>(reinterpret_cast<T**>(that.location_));
   }
 
@@ -133,10 +133,13 @@ class Handle final : public HandleBase {
   // MaybeHandle to force validation before being used as handles.
   static const Handle<T> null() { return Handle<T>(); }
 
+  // Location equality.
+  bool equals(Handle<T> other) const { return address() == other.address(); }
+
   // Provide function object for location equality comparison.
   struct equal_to : public std::binary_function<Handle<T>, Handle<T>, bool> {
     V8_INLINE bool operator()(Handle<T> lhs, Handle<T> rhs) const {
-      return lhs.address() == rhs.address();
+      return lhs.equals(rhs);
     }
   };
 
@@ -182,7 +185,6 @@ template <typename T>
 class MaybeHandle final {
  public:
   V8_INLINE MaybeHandle() {}
-  V8_INLINE ~MaybeHandle() {}
 
   // Constructor for handling automatic up casting from Handle.
   // Ex. Handle<JSArray> can be passed when MaybeHandle<Object> is expected.

@@ -67,6 +67,7 @@ namespace internal {
   V(kEval, "eval")                                                             \
   V(kExpectedAllocationSite, "Expected allocation site")                       \
   V(kExpectedBooleanValue, "Expected boolean value")                           \
+  V(kExpectedFeedbackVector, "Expected feedback vector")                       \
   V(kExpectedFixedDoubleArrayMap,                                              \
     "Expected a fixed double array map in fast shallow clone array literal")   \
   V(kExpectedFunctionObject, "Expected function object in register")           \
@@ -75,6 +76,8 @@ namespace internal {
   V(kExpectedNativeContext, "Expected native context")                         \
   V(kExpectedNonIdenticalObjects, "Expected non-identical objects")            \
   V(kExpectedNonNullContext, "Expected non-null context")                      \
+  V(kExpectedOptimizationSentinel,                                             \
+    "Expected optimized code cell or optimization sentinel")                   \
   V(kExpectedPositiveZero, "Expected +0.0")                                    \
   V(kExpectedNewSpaceObject, "Expected new space object")                      \
   V(kExpectedUndefinedOrCell, "Expected undefined or cell in register")        \
@@ -120,7 +123,6 @@ namespace internal {
   V(kInvalidLhsInCountOperation, "Invalid lhs in count operation")             \
   V(kInvalidMinLength, "Invalid min_length")                                   \
   V(kInvalidRegisterFileInGenerator, "invalid register file in generator")     \
-  V(kLetBindingReInitialization, "Let binding re-initialization")              \
   V(kLiveEdit, "LiveEdit")                                                     \
   V(kLookupVariableInCountOperation, "Lookup variable in count operation")     \
   V(kMapBecameDeprecated, "Map became deprecated")                             \
@@ -143,6 +145,7 @@ namespace internal {
   V(kOffsetOutOfRange, "Offset out of range")                                  \
   V(kOperandIsASmiAndNotABoundFunction,                                        \
     "Operand is a smi and not a bound function")                               \
+  V(kOperandIsASmiAndNotAFixedArray, "Operand is a smi and not a fixed array") \
   V(kOperandIsASmiAndNotAFunction, "Operand is a smi and not a function")      \
   V(kOperandIsASmiAndNotAGeneratorObject,                                      \
     "Operand is a smi and not a generator object")                             \
@@ -151,6 +154,7 @@ namespace internal {
   V(kOperandIsASmiAndNotAString, "Operand is a smi and not a string")          \
   V(kOperandIsASmi, "Operand is a smi")                                        \
   V(kOperandIsNotABoundFunction, "Operand is not a bound function")            \
+  V(kOperandIsNotAFixedArray, "Operand is not a fixed array")                  \
   V(kOperandIsNotAFunction, "Operand is not a function")                       \
   V(kOperandIsNotAGeneratorObject, "Operand is not a generator object")        \
   V(kOperandIsNotAReceiver, "Operand is not a receiver")                       \
@@ -234,7 +238,6 @@ namespace internal {
   V(kUnexpectedStringType, "Unexpected string type")                           \
   V(kUnexpectedTestTypeofLiteralFlag,                                          \
     "Unexpected literal flag for TestTypeof bytecode")                         \
-  V(kUnexpectedRegExpExecCall, "Unexpected call to the RegExpExecStub")        \
   V(kUnexpectedValue, "Unexpected value")                                      \
   V(kUnsupportedDoubleImmediate, "Unsupported double immediate")               \
   V(kUnsupportedLetCompoundAssignment, "Unsupported let compound assignment")  \

@@ -32,7 +32,7 @@ RUNTIME_FUNCTION(Runtime_ThrowConstructorNonCallableError) {
   HandleScope scope(isolate);
   DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSFunction, constructor, 0);
-  Handle<Object> name(constructor->shared()->name(), isolate);
+  Handle<String> name(constructor->shared()->name(), isolate);
   THROW_NEW_ERROR_RETURN_FAILURE(
       isolate, NewTypeError(MessageTemplate::kConstructorNonCallable, name));
 }
@@ -63,7 +63,7 @@ namespace {
 
 Object* ThrowNotSuperConstructor(Isolate* isolate, Handle<Object> constructor,
                                  Handle<JSFunction> function) {
-  Handle<Object> super_name;
+  Handle<String> super_name;
   if (constructor->IsJSFunction()) {
     super_name = handle(Handle<JSFunction>::cast(constructor)->shared()->name(),
                         isolate);
@@ -74,12 +74,12 @@ Object* ThrowNotSuperConstructor(Isolate* isolate, Handle<Object> constructor,
     super_name = Object::NoSideEffectsToString(isolate, constructor);
   }
   // null constructor
-  if (Handle<String>::cast(super_name)->length() == 0) {
+  if (super_name->length() == 0) {
     super_name = isolate->factory()->null_string();
   }
-  Handle<Object> function_name(function->shared()->name(), isolate);
+  Handle<String> function_name(function->shared()->name(), isolate);
   // anonymous class
-  if (Handle<String>::cast(function_name)->length() == 0) {
+  if (function_name->length() == 0) {
     THROW_NEW_ERROR_RETURN_FAILURE(
         isolate,
         NewTypeError(MessageTemplate::kNotSuperConstructorAnonymousClass,
@@ -148,15 +148,6 @@ static MaybeHandle<Object> DefineClass(Isolate* isolate,
   Map::SetPrototype(map, prototype_parent);
   map->SetConstructor(*constructor);
   Handle<JSObject> prototype = isolate->factory()->NewJSObjectFromMap(map);
-
-  if (!super_class->IsTheHole(isolate)) {
-    // Derived classes, just like builtins, don't create implicit receivers in
-    // [[construct]]. Instead they just set up new.target and call into the
-    // constructor. Hence we can reuse the builtins construct stub for derived
-    // classes.
-    Handle<Code> stub(isolate->builtins()->JSBuiltinsConstructStubForDerived());
-    constructor->shared()->SetConstructStub(*stub);
-  }
 
   JSFunction::SetPrototype(constructor, prototype);
   PropertyAttributes attribs =

@@ -18,24 +18,15 @@ namespace interpreter {
 uint8_t CreateArrayLiteralFlags::Encode(bool use_fast_shallow_clone,
                                         int runtime_flags) {
   uint8_t result = FlagsBits::encode(runtime_flags);
-  result |= FastShallowCloneBit::encode(use_fast_shallow_clone);
+  result |= FastCloneSupportedBit::encode(use_fast_shallow_clone);
   return result;
 }
 
 // static
-uint8_t CreateObjectLiteralFlags::Encode(bool fast_clone_supported,
-                                         int properties_count,
-                                         int runtime_flags) {
+uint8_t CreateObjectLiteralFlags::Encode(int runtime_flags,
+                                         bool fast_clone_supported) {
   uint8_t result = FlagsBits::encode(runtime_flags);
-  if (fast_clone_supported) {
-    STATIC_ASSERT(
-        ConstructorBuiltins::kMaximumClonedShallowObjectProperties <=
-        1 << CreateObjectLiteralFlags::FastClonePropertiesCountBits::kShift);
-    DCHECK_LE(properties_count,
-              ConstructorBuiltins::kMaximumClonedShallowObjectProperties);
-    result |= CreateObjectLiteralFlags::FastClonePropertiesCountBits::encode(
-        properties_count);
-  }
+  result |= FastCloneSupportedBit::encode(fast_clone_supported);
   return result;
 }
 
@@ -84,13 +75,12 @@ TestTypeOfFlags::LiteralFlag TestTypeOfFlags::Decode(uint8_t raw_flag) {
 }
 
 // static
-uint8_t SuspendGeneratorBytecodeFlags::Encode(SuspendFlags flags) {
-  return FlagsBits::encode(flags);
-}
-
-// static
-SuspendFlags SuspendGeneratorBytecodeFlags::Decode(uint8_t flags) {
-  return FlagsBits::decode(flags);
+uint8_t StoreLookupSlotFlags::Encode(LanguageMode language_mode,
+                                     LookupHoistingMode lookup_hoisting_mode) {
+  DCHECK_IMPLIES(lookup_hoisting_mode == LookupHoistingMode::kLegacySloppy,
+                 language_mode == SLOPPY);
+  return LanguageModeBit::encode(language_mode) |
+         LookupHoistingModeBit::encode(static_cast<bool>(lookup_hoisting_mode));
 }
 
 }  // namespace interpreter

@@ -22,12 +22,26 @@ class ChunkSource : public v8::ScriptCompiler::ExternalSourceStream {
       chunks++;
     } while (chunks_.back().len > 0);
   }
+  explicit ChunkSource(const char* chunks) : current_(0) {
+    do {
+      chunks_.push_back(
+          {reinterpret_cast<const uint8_t*>(chunks), strlen(chunks)});
+      chunks += strlen(chunks) + 1;
+    } while (chunks_.back().len > 0);
+  }
   ChunkSource(const uint8_t* data, size_t len, bool extra_chunky)
       : current_(0) {
     // If extra_chunky, we'll use increasingly large chunk sizes.
     // If not, we'll have a single chunk of full length.
     size_t chunk_size = extra_chunky ? 1 : len;
     for (size_t i = 0; i < len; i += chunk_size, chunk_size++) {
+      chunks_.push_back({data + i, i::Min(chunk_size, len - i)});
+    }
+    chunks_.push_back({nullptr, 0});
+  }
+  ChunkSource(const uint8_t* data, size_t len, size_t chunk_size)
+      : current_(0) {
+    for (size_t i = 0; i < len; i += chunk_size) {
       chunks_.push_back({data + i, i::Min(chunk_size, len - i)});
     }
     chunks_.push_back({nullptr, 0});
@@ -247,6 +261,9 @@ void TestCharacterStream(const char* reference, i::Utf16CharacterStream* stream,
     CHECK_EQU(reference[i], stream->Advance());
   }
   CHECK_EQU(end, stream->pos());
+  CHECK_EQU(i::Utf16CharacterStream::kEndOfInput, stream->Advance());
+  CHECK_EQU(end + 1, stream->pos());
+  stream->Back();
 
   // Pushback, re-read, pushback again.
   while (i > end / 4) {
@@ -428,6 +445,18 @@ TEST(CharacterStreams) {
   TestCharacterStreams(buffer, arraysize(buffer) - 1, 576, 3298);
 }
 
+TEST(Uft8MultipleBOMChunks) {
+  const char* chunks = "\xef\xbb\xbf\0\xef\xbb\xbf\0\xef\xbb\xbf\0a\0";
+  const uint16_t unicode[] = {0xFEFF, 0xFEFF, 97};
+  ChunkSource chunk_source(chunks);
+  std::unique_ptr<i::Utf16CharacterStream> stream(i::ScannerStream::For(
+      &chunk_source, v8::ScriptCompiler::StreamedSource::UTF8, nullptr));
+  for (size_t i = 0; i < arraysize(unicode); i++) {
+    CHECK_EQ(unicode[i], stream->Advance());
+  }
+  CHECK_EQ(i::Utf16CharacterStream::kEndOfInput, stream->Advance());
+}
+
 // Regression test for crbug.com/651333. Read invalid utf-8.
 TEST(Regress651333) {
   const uint8_t bytes[] =
@@ -448,5 +477,77 @@ TEST(Regress651333) {
       CHECK_EQ(unicode[i], stream->Advance());
     }
     CHECK_EQ(i::Utf16CharacterStream::kEndOfInput, stream->Advance());
+  }
+}
+
+TEST(Regress6377) {
+  const char* cases[] = {
+      "\xf0\x90\0"  // first chunk - start of 4-byte seq
+      "\x80\x80"    // second chunk - end of 4-byte seq
+      "a\0",        // and an 'a'
+
+      "\xe0\xbf\0"  // first chunk - start of 3-byte seq
+      "\xbf"        // second chunk - one-byte end of 3-byte seq
+      "a\0",        // and an 'a'
+
+      "\xc3\0"  // first chunk - start of 2-byte seq
+      "\xbf"    // second chunk - end of 2-byte seq
+      "a\0",    // and an 'a'
+
+      "\xf0\x90\x80\0"  // first chunk - start of 4-byte seq
+      "\x80"            // second chunk - one-byte end of 4-byte seq
+      "a\xc3\0"         // and an 'a' + start of 2-byte seq
+      "\xbf\0",         // third chunk - end of 2-byte seq
+  };
+  const std::vector<std::vector<uint16_t>> unicode = {
+      {0xd800, 0xdc00, 97}, {0xfff, 97}, {0xff, 97}, {0xd800, 0xdc00, 97, 0xff},
+  };
+  CHECK_EQ(unicode.size(), sizeof(cases) / sizeof(cases[0]));
+  for (size_t c = 0; c < unicode.size(); ++c) {
+    ChunkSource chunk_source(cases[c]);
+    std::unique_ptr<i::Utf16CharacterStream> stream(i::ScannerStream::For(
+        &chunk_source, v8::ScriptCompiler::StreamedSource::UTF8, nullptr));
+    for (size_t i = 0; i < unicode[c].size(); i++) {
+      CHECK_EQ(unicode[c][i], stream->Advance());
+    }
+    CHECK_EQ(i::Utf16CharacterStream::kEndOfInput, stream->Advance());
+    stream->Seek(0);
+    for (size_t i = 0; i < unicode[c].size(); i++) {
+      CHECK_EQ(unicode[c][i], stream->Advance());
+    }
+    CHECK_EQ(i::Utf16CharacterStream::kEndOfInput, stream->Advance());
+  }
+}
+
+TEST(Regress724166) {
+  // Chunk size has to be multiple of kBufferCharacterSize
+  constexpr size_t kBufferCharacterSize = 512;
+  constexpr size_t kChunkSize = kBufferCharacterSize * 8;
+  constexpr size_t kChunks = 4;
+  uint8_t buffer[kChunkSize * kChunks];
+  for (size_t j = 0; j < kChunks; ++j) {
+    for (size_t i = 0; i < kChunkSize; ++i) {
+      buffer[kChunkSize * j + i] = (i % 0x7e) + 1;
+    }
+  }
+  // Add BOM at the beginning
+  buffer[0] = '\xef';
+  buffer[1] = '\xbb';
+  buffer[2] = '\xbf';
+  ChunkSource chunk_source(buffer, arraysize(buffer), kChunkSize);
+  std::unique_ptr<i::Utf16CharacterStream> stream(i::ScannerStream::For(
+      &chunk_source, v8::ScriptCompiler::StreamedSource::UTF8, nullptr));
+  for (size_t i = 0; i < arraysize(buffer) - 3; ++i) {
+    CHECK_EQ(static_cast<i::uc32>(buffer[i + 3]), stream->Advance());
+  }
+  CHECK_EQ(i::Utf16CharacterStream::kEndOfInput, stream->Advance());
+  for (int z = -8; z < 8; ++z) {
+    for (size_t j = kBufferCharacterSize + z; j < arraysize(buffer);
+         j += kBufferCharacterSize) {
+      stream->Seek(j);
+      for (size_t i = j; i < arraysize(buffer) - 3; ++i) {
+        CHECK_EQ(static_cast<i::uc32>(buffer[i + 3]), stream->Advance());
+      }
+    }
   }
 }

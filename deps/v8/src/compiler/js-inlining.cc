@@ -66,7 +66,7 @@ class JSCallAccessor {
     return call_->op()->ValueInputCount() - 2;
   }
 
-  float frequency() const {
+  CallFrequency frequency() const {
     return (call_->opcode() == IrOpcode::kJSCall)
                ? CallParametersOf(call_->op()).frequency()
                : ConstructParametersOf(call_->op()).frequency();
@@ -250,36 +250,6 @@ Node* JSInliner::CreateArtificialFrameState(Node* node, Node* outer_frame_state,
                           outer_frame_state);
 }
 
-Node* JSInliner::CreateTailCallerFrameState(Node* node, Node* frame_state) {
-  FrameStateInfo const& frame_info = OpParameter<FrameStateInfo>(frame_state);
-  Handle<SharedFunctionInfo> shared;
-  frame_info.shared_info().ToHandle(&shared);
-
-  Node* function = frame_state->InputAt(kFrameStateFunctionInput);
-
-  // If we are inlining a tail call drop caller's frame state and an
-  // arguments adaptor if it exists.
-  frame_state = NodeProperties::GetFrameStateInput(frame_state);
-  if (frame_state->opcode() == IrOpcode::kFrameState) {
-    FrameStateInfo const& frame_info = OpParameter<FrameStateInfo>(frame_state);
-    if (frame_info.type() == FrameStateType::kArgumentsAdaptor) {
-      frame_state = NodeProperties::GetFrameStateInput(frame_state);
-    }
-  }
-
-  const FrameStateFunctionInfo* state_info =
-      common()->CreateFrameStateFunctionInfo(
-          FrameStateType::kTailCallerFunction, 0, 0, shared);
-
-  const Operator* op = common()->FrameState(
-      BailoutId(-1), OutputFrameStateCombine::Ignore(), state_info);
-  const Operator* op0 = common()->StateValues(0, SparseInputMask::Dense());
-  Node* node0 = graph()->NewNode(op0);
-  return graph()->NewNode(op, node0, node0, node0,
-                          jsgraph()->UndefinedConstant(), function,
-                          frame_state);
-}
-
 namespace {
 
 // TODO(bmeurer): Unify this with the witness helper functions in the
@@ -335,10 +305,11 @@ bool NeedsImplicitReceiver(Handle<SharedFunctionInfo> shared_info) {
   DisallowHeapAllocation no_gc;
   Isolate* const isolate = shared_info->GetIsolate();
   Code* const construct_stub = shared_info->construct_stub();
-  return construct_stub != *isolate->builtins()->JSBuiltinsConstructStub() &&
-         construct_stub !=
-             *isolate->builtins()->JSBuiltinsConstructStubForDerived() &&
-         construct_stub != *isolate->builtins()->JSConstructStubApi();
+  if (construct_stub == *isolate->builtins()->JSConstructStubGeneric()) {
+    return !IsDerivedConstructor(shared_info->kind());
+  } else {
+    return false;
+  }
 }
 
 bool IsNonConstructible(Handle<SharedFunctionInfo> shared_info) {
@@ -486,18 +457,6 @@ Reduction JSInliner::ReduceJSCall(Node* node) {
     return NoChange();
   }
 
-  // TODO(706642): Don't inline derived class constructors for now, as the
-  // inlining logic doesn't deal properly with derived class constructors
-  // that return a primitive, i.e. it's not in sync with what the Parser
-  // and the JSConstructSub does.
-  if (node->opcode() == IrOpcode::kJSConstruct &&
-      IsDerivedConstructor(shared_info->kind())) {
-    TRACE("Not inlining %s into %s because constructor is derived.\n",
-          shared_info->DebugName()->ToCString().get(),
-          info_->shared_info()->DebugName()->ToCString().get());
-    return NoChange();
-  }
-
   // Class constructors are callable, but [[Call]] will raise an exception.
   // See ES6 section 9.2.1 [[Call]] ( thisArgument, argumentsList ).
   if (node->opcode() == IrOpcode::kJSCall &&
@@ -509,7 +468,7 @@ Reduction JSInliner::ReduceJSCall(Node* node) {
   }
 
   // Function contains break points.
-  if (shared_info->HasDebugInfo()) {
+  if (shared_info->HasBreakInfo()) {
     TRACE("Not inlining %s into %s because callee may contain break points\n",
           shared_info->DebugName()->ToCString().get(),
           info_->shared_info()->DebugName()->ToCString().get());
@@ -549,7 +508,8 @@ Reduction JSInliner::ReduceJSCall(Node* node) {
 
   ParseInfo parse_info(shared_info);
   CompilationInfo info(parse_info.zone(), &parse_info,
-                       shared_info->GetIsolate(), Handle<JSFunction>::null());
+                       shared_info->GetIsolate(), shared_info,
+                       Handle<JSFunction>::null());
   if (info_->is_deoptimization_enabled()) info.MarkAsDeoptimizationEnabled();
   info.MarkAsOptimizeFromBytecode();
 
@@ -563,12 +523,6 @@ Reduction JSInliner::ReduceJSCall(Node* node) {
     return NoChange();
   }
 
-  // Remember that we inlined this function. This needs to be called right
-  // after we ensure deoptimization support so that the code flusher
-  // does not remove the code with the deoptimization support.
-  int inlining_id = info_->AddInlinedFunction(
-      shared_info, source_positions_->GetSourcePosition(node));
-
   // ----------------------------------------------------------------
   // After this point, we've made a decision to inline this function.
   // We shall not bailout from inlining if we got here.
@@ -581,6 +535,10 @@ Reduction JSInliner::ReduceJSCall(Node* node) {
   Node* context;
   Handle<FeedbackVector> feedback_vector;
   DetermineCallContext(node, context, feedback_vector);
+
+  // Remember that we inlined this function.
+  int inlining_id = info_->AddInlinedFunction(
+      shared_info, source_positions_->GetSourcePosition(node));
 
   // Create the subgraph for the inlinee.
   Node* start;
@@ -655,21 +613,93 @@ Reduction JSInliner::ReduceJSCall(Node* node) {
       uncaught_subcalls.push_back(create);  // Adds {IfSuccess} & {IfException}.
       NodeProperties::ReplaceControlInput(node, create);
       NodeProperties::ReplaceEffectInput(node, create);
-      // Insert a check of the return value to determine whether the return
-      // value or the implicit receiver should be selected as a result of the
-      // call.
-      Node* check = graph()->NewNode(simplified()->ObjectIsReceiver(), node);
-      Node* select =
-          graph()->NewNode(common()->Select(MachineRepresentation::kTagged),
-                           check, node, create);
-      NodeProperties::ReplaceUses(node, select, node, node, node);
-      // Fix-up inputs that have been mangled by the {ReplaceUses} call above.
-      NodeProperties::ReplaceValueInput(select, node, 1);  // Fix-up input.
-      NodeProperties::ReplaceValueInput(check, node, 0);   // Fix-up input.
+      Node* node_success =
+          NodeProperties::FindSuccessfulControlProjection(node);
+      // Placeholder to hold {node}'s value dependencies while {node} is
+      // replaced.
+      Node* dummy = graph()->NewNode(common()->Dead());
+      NodeProperties::ReplaceUses(node, dummy, node, node, node);
+      Node* result;
+      if (FLAG_harmony_restrict_constructor_return &&
+          IsClassConstructor(shared_info->kind())) {
+        Node* is_undefined =
+            graph()->NewNode(simplified()->ReferenceEqual(), node,
+                             jsgraph()->UndefinedConstant());
+        Node* branch_is_undefined =
+            graph()->NewNode(common()->Branch(), is_undefined, node_success);
+        Node* branch_is_undefined_true =
+            graph()->NewNode(common()->IfTrue(), branch_is_undefined);
+        Node* branch_is_undefined_false =
+            graph()->NewNode(common()->IfFalse(), branch_is_undefined);
+        Node* is_receiver =
+            graph()->NewNode(simplified()->ObjectIsReceiver(), node);
+        Node* branch_is_receiver = graph()->NewNode(
+            common()->Branch(), is_receiver, branch_is_undefined_false);
+        Node* branch_is_receiver_true =
+            graph()->NewNode(common()->IfTrue(), branch_is_receiver);
+        Node* branch_is_receiver_false =
+            graph()->NewNode(common()->IfFalse(), branch_is_receiver);
+        branch_is_receiver_false =
+            graph()->NewNode(javascript()->CallRuntime(
+                                 Runtime::kThrowConstructorReturnedNonObject),
+                             context, NodeProperties::GetFrameStateInput(node),
+                             node, branch_is_receiver_false);
+        uncaught_subcalls.push_back(branch_is_receiver_false);
+        branch_is_receiver_false =
+            graph()->NewNode(common()->Throw(), branch_is_receiver_false,
+                             branch_is_receiver_false);
+        NodeProperties::MergeControlToEnd(graph(), common(),
+                                          branch_is_receiver_false);
+        Node* merge =
+            graph()->NewNode(common()->Merge(2), branch_is_undefined_true,
+                             branch_is_receiver_true);
+        result =
+            graph()->NewNode(common()->Phi(MachineRepresentation::kTagged, 2),
+                             create, node, merge);
+        ReplaceWithValue(node_success, node_success, node_success, merge);
+        // Fix input destroyed by the above {ReplaceWithValue} call.
+        NodeProperties::ReplaceControlInput(branch_is_undefined, node_success,
+                                            0);
+      } else {
+        // Insert a check of the return value to determine whether the return
+        // value or the implicit receiver should be selected as a result of the
+        // call.
+        Node* check = graph()->NewNode(simplified()->ObjectIsReceiver(), node);
+        result =
+            graph()->NewNode(common()->Select(MachineRepresentation::kTagged),
+                             check, node, create);
+      }
       receiver = create;  // The implicit receiver.
+      ReplaceWithValue(dummy, result);
+    } else if (IsDerivedConstructor(shared_info->kind())) {
+      Node* node_success =
+          NodeProperties::FindSuccessfulControlProjection(node);
+      Node* is_receiver =
+          graph()->NewNode(simplified()->ObjectIsReceiver(), node);
+      Node* branch_is_receiver =
+          graph()->NewNode(common()->Branch(), is_receiver, node_success);
+      Node* branch_is_receiver_true =
+          graph()->NewNode(common()->IfTrue(), branch_is_receiver);
+      Node* branch_is_receiver_false =
+          graph()->NewNode(common()->IfFalse(), branch_is_receiver);
+      branch_is_receiver_false =
+          graph()->NewNode(javascript()->CallRuntime(
+                               Runtime::kThrowConstructorReturnedNonObject),
+                           context, NodeProperties::GetFrameStateInput(node),
+                           node, branch_is_receiver_false);
+      uncaught_subcalls.push_back(branch_is_receiver_false);
+      branch_is_receiver_false =
+          graph()->NewNode(common()->Throw(), branch_is_receiver_false,
+                           branch_is_receiver_false);
+      NodeProperties::MergeControlToEnd(graph(), common(),
+                                        branch_is_receiver_false);
+
+      ReplaceWithValue(node_success, node_success, node_success,
+                       branch_is_receiver_true);
+      // Fix input destroyed by the above {ReplaceWithValue} call.
+      NodeProperties::ReplaceControlInput(branch_is_receiver, node_success, 0);
     }
     node->ReplaceInput(1, receiver);
-
     // Insert a construct stub frame into the chain of frame states. This will
     // reconstruct the proper frame when deoptimizing within the constructor.
     frame_state = CreateArtificialFrameState(
@@ -690,20 +720,6 @@ Reduction JSInliner::ReduceJSCall(Node* node) {
                            call.receiver(), context, effect, start);
       NodeProperties::ReplaceValueInput(node, convert, 1);
       NodeProperties::ReplaceEffectInput(node, effect);
-    }
-  }
-
-  // If we are inlining a JS call at tail position then we have to pop current
-  // frame state and its potential arguments adaptor frame state in order to
-  // make the call stack be consistent with non-inlining case.
-  // After that we add a tail caller frame state which lets deoptimizer handle
-  // the case when the outermost function inlines a tail call (it should remove
-  // potential arguments adaptor frame that belongs to outermost function when
-  // deopt happens).
-  if (node->opcode() == IrOpcode::kJSCall) {
-    const CallParameters& p = CallParametersOf(node->op());
-    if (p.tail_call_mode() == TailCallMode::kAllow) {
-      frame_state = CreateTailCallerFrameState(node, frame_state);
     }
   }
 

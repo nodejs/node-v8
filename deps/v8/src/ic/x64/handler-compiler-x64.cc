@@ -69,7 +69,8 @@ void PropertyHandlerCompiler::GenerateDictionaryNegativeLookup(
 
   // Load properties array.
   Register properties = scratch0;
-  __ movp(properties, FieldOperand(receiver, JSObject::kPropertiesOffset));
+  __ movp(properties,
+          FieldOperand(receiver, JSObject::kPropertiesOrHashOffset));
 
   // Check that the properties array is a dictionary.
   __ CompareRoot(FieldOperand(properties, HeapObject::kMapOffset),
@@ -117,9 +118,7 @@ void PropertyHandlerCompiler::GenerateApiAccessorCall(
 
   // Put holder in place.
   CallOptimization::HolderLookup holder_lookup;
-  int holder_depth = 0;
-  optimization.LookupHolderOfExpectedType(receiver_map, &holder_lookup,
-                                          &holder_depth);
+  optimization.LookupHolderOfExpectedType(receiver_map, &holder_lookup);
   switch (holder_lookup) {
     case CallOptimization::kHolderIsReceiver:
       __ Move(holder, receiver);
@@ -127,10 +126,6 @@ void PropertyHandlerCompiler::GenerateApiAccessorCall(
     case CallOptimization::kHolderFound:
       __ movp(holder, FieldOperand(receiver, HeapObject::kMapOffset));
       __ movp(holder, FieldOperand(holder, Map::kPrototypeOffset));
-      for (int i = 1; i < holder_depth; i++) {
-        __ movp(holder, FieldOperand(holder, HeapObject::kMapOffset));
-        __ movp(holder, FieldOperand(holder, Map::kPrototypeOffset));
-      }
       break;
     case CallOptimization::kHolderNotFound:
       UNREACHABLE();
@@ -139,10 +134,8 @@ void PropertyHandlerCompiler::GenerateApiAccessorCall(
 
   Isolate* isolate = masm->isolate();
   Handle<CallHandlerInfo> api_call_info = optimization.api_call_info();
-  bool call_data_undefined = false;
   // Put call data in place.
   if (api_call_info->data()->IsUndefined(isolate)) {
-    call_data_undefined = true;
     __ LoadRoot(data, Heap::kUndefinedValueRootIndex);
   } else {
     if (optimization.is_constant_call()) {
@@ -164,8 +157,7 @@ void PropertyHandlerCompiler::GenerateApiAccessorCall(
           RelocInfo::EXTERNAL_REFERENCE);
 
   // Jump to stub.
-  CallApiCallbackStub stub(isolate, is_store, call_data_undefined,
-                           !optimization.is_constant_call());
+  CallApiCallbackStub stub(isolate, is_store, !optimization.is_constant_call());
   __ TailCallStub(&stub);
 }
 
