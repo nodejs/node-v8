@@ -152,32 +152,6 @@ void RelocInfo::set_target_runtime_entry(Isolate* isolate, Address target,
     set_target_address(isolate, target, write_barrier_mode, icache_flush_mode);
 }
 
-
-Handle<Cell> RelocInfo::target_cell_handle() {
-  DCHECK(rmode_ == RelocInfo::CELL);
-  Address address = Memory::Address_at(pc_);
-  return Handle<Cell>(reinterpret_cast<Cell**>(address));
-}
-
-
-Cell* RelocInfo::target_cell() {
-  DCHECK(rmode_ == RelocInfo::CELL);
-  return Cell::FromValueAddress(Memory::Address_at(pc_));
-}
-
-
-void RelocInfo::set_target_cell(Cell* cell,
-                                WriteBarrierMode write_barrier_mode,
-                                ICacheFlushMode icache_flush_mode) {
-  DCHECK(rmode_ == RelocInfo::CELL);
-  Address address = cell->address() + Cell::kValueOffset;
-  Memory::Address_at(pc_) = address;
-  if (write_barrier_mode == UPDATE_WRITE_BARRIER && host() != NULL) {
-    host()->GetHeap()->incremental_marking()->RecordWriteIntoCode(host(), this,
-                                                                  cell);
-  }
-}
-
 Handle<Code> RelocInfo::code_age_stub_handle(Assembler* origin) {
   UNREACHABLE();  // This should never be reached on Arm.
   return Handle<Code>();
@@ -237,8 +211,6 @@ void RelocInfo::Visit(Isolate* isolate, ObjectVisitor* visitor) {
     visitor->VisitEmbeddedPointer(host(), this);
   } else if (RelocInfo::IsCodeTarget(mode)) {
     visitor->VisitCodeTarget(host(), this);
-  } else if (mode == RelocInfo::CELL) {
-    visitor->VisitCellPointer(host(), this);
   } else if (mode == RelocInfo::EXTERNAL_REFERENCE) {
     visitor->VisitExternalReference(host(), this);
   } else if (mode == RelocInfo::INTERNAL_REFERENCE) {
@@ -261,8 +233,6 @@ void RelocInfo::Visit(Heap* heap) {
     StaticVisitor::VisitEmbeddedPointer(heap, this);
   } else if (RelocInfo::IsCodeTarget(mode)) {
     StaticVisitor::VisitCodeTarget(heap, this);
-  } else if (mode == RelocInfo::CELL) {
-    StaticVisitor::VisitCell(heap, this);
   } else if (mode == RelocInfo::EXTERNAL_REFERENCE) {
     StaticVisitor::VisitExternalReference(this);
   } else if (mode == RelocInfo::INTERNAL_REFERENCE) {
@@ -280,7 +250,7 @@ void RelocInfo::Visit(Heap* heap) {
 
 Operand::Operand(int32_t immediate, RelocInfo::Mode rmode)  {
   rm_ = no_reg;
-  imm32_ = immediate;
+  value_.immediate = immediate;
   rmode_ = rmode;
 }
 
@@ -288,14 +258,14 @@ Operand Operand::Zero() { return Operand(static_cast<int32_t>(0)); }
 
 Operand::Operand(const ExternalReference& f)  {
   rm_ = no_reg;
-  imm32_ = reinterpret_cast<int32_t>(f.address());
+  value_.immediate = reinterpret_cast<int32_t>(f.address());
   rmode_ = RelocInfo::EXTERNAL_REFERENCE;
 }
 
 
 Operand::Operand(Smi* value) {
   rm_ = no_reg;
-  imm32_ =  reinterpret_cast<intptr_t>(value);
+  value_.immediate = reinterpret_cast<intptr_t>(value);
   rmode_ = RelocInfo::NONE32;
 }
 
@@ -400,11 +370,7 @@ void Assembler::deserialization_set_target_internal_reference_at(
 
 
 bool Assembler::is_constant_pool_load(Address pc) {
-  if (CpuFeatures::IsSupported(ARMv7)) {
-    return !Assembler::IsMovW(Memory::int32_at(pc));
-  } else {
-    return !Assembler::IsMovImmed(Memory::int32_at(pc));
-  }
+  return IsLdrPcImmediateOffset(Memory::int32_at(pc));
 }
 
 

@@ -48,8 +48,6 @@
 #include "src/regexp/mips/regexp-macro-assembler-mips.h"
 #elif V8_TARGET_ARCH_MIPS64
 #include "src/regexp/mips64/regexp-macro-assembler-mips64.h"
-#elif V8_TARGET_ARCH_X87
-#include "src/regexp/x87/regexp-macro-assembler-x87.h"
 #else
 #error Unsupported target architecture.
 #endif
@@ -98,37 +96,6 @@ ContainedInLattice AddRange(ContainedInLattice containment,
   return containment;
 }
 
-
-// More makes code generation slower, less makes V8 benchmark score lower.
-const int kMaxLookaheadForBoyerMoore = 8;
-// In a 3-character pattern you can maximally step forwards 3 characters
-// at a time, which is not always enough to pay for the extra logic.
-const int kPatternTooShortForBoyerMoore = 2;
-
-
-// Identifies the sort of regexps where the regexp engine is faster
-// than the code used for atom matches.
-static bool HasFewDifferentCharacters(Handle<String> pattern) {
-  int length = Min(kMaxLookaheadForBoyerMoore, pattern->length());
-  if (length <= kPatternTooShortForBoyerMoore) return false;
-  const int kMod = 128;
-  bool character_found[kMod];
-  int different = 0;
-  memset(&character_found[0], 0, sizeof(character_found));
-  for (int i = 0; i < length; i++) {
-    int ch = (pattern->Get(i) & (kMod - 1));
-    if (!character_found[ch]) {
-      character_found[ch] = true;
-      different++;
-      // We declare a regexp low-alphabet if it has at least 3 times as many
-      // characters as it has different characters.
-      if (different * 3 > length) return false;
-    }
-  }
-  return true;
-}
-
-
 // Generic RegExp methods. Dispatches to implementation specific methods.
 
 
@@ -160,7 +127,7 @@ MaybeHandle<Object> RegExpImpl::Compile(Handle<JSRegExp> re,
   bool has_been_compiled = false;
 
   if (parse_result.simple && !(flags & JSRegExp::kIgnoreCase) &&
-      !(flags & JSRegExp::kSticky) && !HasFewDifferentCharacters(pattern)) {
+      !(flags & JSRegExp::kSticky) && pattern->length() == 1) {
     // Parse-tree is a single atom that is equal to the pattern.
     AtomCompile(re, pattern, flags, pattern);
     has_been_compiled = true;
@@ -168,12 +135,11 @@ MaybeHandle<Object> RegExpImpl::Compile(Handle<JSRegExp> re,
              !(flags & JSRegExp::kSticky) && parse_result.capture_count == 0) {
     RegExpAtom* atom = parse_result.tree->AsAtom();
     Vector<const uc16> atom_pattern = atom->data();
-    Handle<String> atom_string;
-    ASSIGN_RETURN_ON_EXCEPTION(
-        isolate, atom_string,
-        isolate->factory()->NewStringFromTwoByte(atom_pattern),
-        Object);
-    if (!HasFewDifferentCharacters(atom_string)) {
+    if (atom_pattern.length() == 1) {
+      Handle<String> atom_string;
+      ASSIGN_RETURN_ON_EXCEPTION(
+          isolate, atom_string,
+          isolate->factory()->NewStringFromTwoByte(atom_pattern), Object);
       AtomCompile(re, pattern, flags, atom_string);
       has_been_compiled = true;
     }
@@ -201,7 +167,6 @@ MaybeHandle<Object> RegExpImpl::Exec(Handle<JSRegExp> regexp,
     }
     default:
       UNREACHABLE();
-      return MaybeHandle<Object>();
   }
 }
 
@@ -320,15 +285,6 @@ bool RegExpImpl::EnsureCompiledIrregexp(Handle<JSRegExp> re,
 #else  // V8_INTERPRETED_REGEXP (RegExp native code)
   if (compiled_code->IsCode()) return true;
 #endif
-  // We could potentially have marked this as flushable, but have kept
-  // a saved version if we did not flush it yet.
-  Object* saved_code = re->DataAt(JSRegExp::saved_code_index(is_one_byte));
-  if (saved_code->IsCode()) {
-    // Reinstate the code in the original place.
-    re->SetDataAt(JSRegExp::code_index(is_one_byte), saved_code);
-    DCHECK(compiled_code->IsSmi());
-    return true;
-  }
   return CompileIrregexp(re, sample_subject, is_one_byte);
 }
 
@@ -340,28 +296,14 @@ bool RegExpImpl::CompileIrregexp(Handle<JSRegExp> re,
   Isolate* isolate = re->GetIsolate();
   Zone zone(isolate->allocator(), ZONE_NAME);
   PostponeInterruptsScope postpone(isolate);
-  // If we had a compilation error the last time this is saved at the
-  // saved code index.
+#ifdef DEBUG
   Object* entry = re->DataAt(JSRegExp::code_index(is_one_byte));
-  // When arriving here entry can only be a smi, either representing an
-  // uncompiled regexp, a previous compilation error, or code that has
-  // been flushed.
+  // When arriving here entry can only be a smi representing an uncompiled
+  // regexp.
   DCHECK(entry->IsSmi());
-  int entry_value = Smi::cast(entry)->value();
-  DCHECK(entry_value == JSRegExp::kUninitializedValue ||
-         entry_value == JSRegExp::kCompilationErrorValue ||
-         (entry_value < JSRegExp::kCodeAgeMask && entry_value >= 0));
-
-  if (entry_value == JSRegExp::kCompilationErrorValue) {
-    // A previous compilation failed and threw an error which we store in
-    // the saved code index (we store the error message, not the actual
-    // error). Recreate the error object and throw it.
-    Object* error_string = re->DataAt(JSRegExp::saved_code_index(is_one_byte));
-    DCHECK(error_string->IsString());
-    Handle<String> error_message(String::cast(error_string));
-    ThrowRegExpException(re, error_message);
-    return false;
-  }
+  int entry_value = Smi::ToInt(entry);
+  DCHECK_EQ(JSRegExp::kUninitializedValue, entry_value);
+#endif
 
   JSRegExp::Flags flags = re->GetFlags();
 
@@ -419,12 +361,12 @@ void RegExpImpl::SetIrregexpCaptureNameMap(FixedArray* re,
 }
 
 int RegExpImpl::IrregexpNumberOfCaptures(FixedArray* re) {
-  return Smi::cast(re->get(JSRegExp::kIrregexpCaptureCountIndex))->value();
+  return Smi::ToInt(re->get(JSRegExp::kIrregexpCaptureCountIndex));
 }
 
 
 int RegExpImpl::IrregexpNumberOfRegisters(FixedArray* re) {
-  return Smi::cast(re->get(JSRegExp::kIrregexpMaxRegisterCountIndex))->value();
+  return Smi::ToInt(re->get(JSRegExp::kIrregexpMaxRegisterCountIndex));
 }
 
 
@@ -526,7 +468,6 @@ int RegExpImpl::IrregexpExecRaw(Handle<JSRegExp> regexp,
     is_one_byte = subject->IsOneByteRepresentationUnderneath();
   } while (true);
   UNREACHABLE();
-  return RE_EXCEPTION;
 #else  // V8_INTERPRETED_REGEXP
 
   DCHECK(output_size >= IrregexpNumberOfRegisters(*irregexp));
@@ -903,7 +844,6 @@ int TextElement::length() const {
       return 1;
   }
   UNREACHABLE();
-  return 0;
 }
 
 
@@ -1280,7 +1220,7 @@ void Trace::PerformDeferredActions(RegExpMacroAssembler* assembler,
             }
             // SET_REGISTER is currently only used for newly introduced loop
             // counters. They can have a significant previous value if they
-            // occour in a loop. TODO(lrn): Propagate this information, so
+            // occur in a loop. TODO(lrn): Propagate this information, so
             // we can set undo_action to IGNORE if we know there is no value to
             // restore.
             undo_action = RESTORE;
@@ -3057,6 +2997,8 @@ static void EmitHat(RegExpCompiler* compiler,
   on_success->Emit(compiler, &new_trace);
 }
 
+// More makes code generation slower, less makes V8 benchmark score lower.
+const int kMaxLookaheadForBoyerMoore = 8;
 
 // Emit the code to handle \b and \B (word-boundary or non-word-boundary).
 void AssertionNode::EmitBoundaryCheck(RegExpCompiler* compiler, Trace* trace) {
@@ -5871,7 +5813,7 @@ static void AddClassNegated(const int *elmv,
   ranges->Add(CharacterRange::Range(last, String::kMaxCodePoint), zone);
 }
 
-void CharacterRange::AddClassEscape(uc16 type, ZoneList<CharacterRange>* ranges,
+void CharacterRange::AddClassEscape(char type, ZoneList<CharacterRange>* ranges,
                                     bool add_unicode_case_equivalents,
                                     Zone* zone) {
   if (add_unicode_case_equivalents && (type == 'w' || type == 'W')) {
@@ -5894,7 +5836,7 @@ void CharacterRange::AddClassEscape(uc16 type, ZoneList<CharacterRange>* ranges,
   AddClassEscape(type, ranges, zone);
 }
 
-void CharacterRange::AddClassEscape(uc16 type, ZoneList<CharacterRange>* ranges,
+void CharacterRange::AddClassEscape(char type, ZoneList<CharacterRange>* ranges,
                                     Zone* zone) {
   switch (type) {
     case 's':
@@ -6788,9 +6730,6 @@ RegExpEngine::CompilationResult RegExpEngine::Compile(
 #elif V8_TARGET_ARCH_MIPS64
   RegExpMacroAssemblerMIPS macro_assembler(isolate, zone, mode,
                                            (data->capture_count + 1) * 2);
-#elif V8_TARGET_ARCH_X87
-  RegExpMacroAssemblerX87 macro_assembler(isolate, zone, mode,
-                                          (data->capture_count + 1) * 2);
 #else
 #error "Unsupported architecture"
 #endif

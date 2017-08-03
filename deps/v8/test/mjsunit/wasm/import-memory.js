@@ -149,6 +149,7 @@ load("test/mjsunit/wasm/wasm-module-builder.js");
 
 (function TestGrowMemoryZeroInitialMemory() {
   print("ZeroInitialMemory");
+  let kV8MaxPages = 32767;
   let memory = new WebAssembly.Memory({initial: 0});
   assertEquals(0, memory.buffer.byteLength);
   let i32 = new Int32Array(memory.buffer);
@@ -176,7 +177,7 @@ load("test/mjsunit/wasm/wasm-module-builder.js");
   for (offset = 5 * kPageSize; offset < 5 * kPageSize + 4; offset++) {
     assertThrows(load);
   }
-  assertThrows(() => memory.grow(16381));
+  assertThrows(() => memory.grow(kV8MaxPages - 3));
 })();
 
 (function ImportedMemoryBufferLength() {
@@ -325,9 +326,6 @@ load("test/mjsunit/wasm/wasm-module-builder.js");
 })();
 
 (function TestExportImportedMemoryGrowMultipleInstances() {
-  // TODO(gdeepti):Exported memory objects currently do not take max_size
-  // into account so this can grow past the maximum specified in the exported
-  // memory object. Assert that growing past maximum for exported objects fails.
   print("TestExportImportedMemoryGrowMultipleInstances");
   var instance;
   {
@@ -362,6 +360,10 @@ load("test/mjsunit/wasm/wasm-module-builder.js");
     function grow(pages) { return instances[i].exports.grow(pages); }
     assertEquals(current_mem_size, instances[i].exports.grow(1));
     verify_mem_size(++current_mem_size);
+  }
+  for (var i = 0; i < 10; i++) {
+    assertEquals(-1, instances[i].exports.grow(1));
+    verify_mem_size(current_mem_size);
   }
 })();
 

@@ -35,14 +35,17 @@ namespace wasm {
 #define TRACE(...)
 #endif
 
-#define CHECK_PROTOTYPE_OPCODE(flag)                   \
-  if (module_ != nullptr && module_->is_asm_js()) {    \
-    error("Opcode not supported for asmjs modules");   \
-  }                                                    \
-  if (!FLAG_##flag) {                                  \
-    error("Invalid opcode (enable with --" #flag ")"); \
-    break;                                             \
+#define CHECK_PROTOTYPE_OPCODE(flag)                                     \
+  if (module_ != nullptr && module_->is_asm_js()) {                      \
+    error("Opcode not supported for asmjs modules");                     \
+  }                                                                      \
+  if (!FLAG_experimental_wasm_##flag) {                                  \
+    error("Invalid opcode (enable with --experimental-wasm-" #flag ")"); \
+    break;                                                               \
   }
+
+#define OPCODE_ERROR(opcode, message) \
+  (errorf(pc_, "%s: %s", WasmOpcodes::OpcodeName(opcode), (message)))
 
 // An SsaEnv environment carries the current local variable renaming
 // as well as the current effect and control dependency in the TF graph.
@@ -78,8 +81,10 @@ struct Value {
 struct TryInfo : public ZoneObject {
   SsaEnv* catch_env;
   TFNode* exception;
+  size_t catch_count;  // Number of catch blocks associated with the try.
 
-  explicit TryInfo(SsaEnv* c) : catch_env(c), exception(nullptr) {}
+  explicit TryInfo(SsaEnv* c)
+      : catch_env(c), exception(nullptr), catch_count(0) {}
 };
 
 struct MergeValues {
@@ -146,22 +151,6 @@ struct Control {
   }
 };
 
-namespace {
-inline unsigned GetShuffleMaskSize(WasmOpcode opcode) {
-  switch (opcode) {
-    case kExprS32x4Shuffle:
-      return 4;
-    case kExprS16x8Shuffle:
-      return 8;
-    case kExprS8x16Shuffle:
-      return 16;
-    default:
-      UNREACHABLE();
-      return 0;
-  }
-}
-}  // namespace
-
 // Macros that build nodes only if there is a graph and the current SSA
 // environment is reachable from start. This avoids problems with malformed
 // TF graphs when decoding inputs that have unreachable code.
@@ -174,8 +163,8 @@ inline unsigned GetShuffleMaskSize(WasmOpcode opcode) {
 class WasmDecoder : public Decoder {
  public:
   WasmDecoder(const WasmModule* module, FunctionSig* sig, const byte* start,
-              const byte* end)
-      : Decoder(start, end),
+              const byte* end, uint32_t buffer_offset = 0)
+      : Decoder(start, end, buffer_offset),
         module_(module),
         sig_(sig),
         local_types_(nullptr) {}
@@ -228,15 +217,6 @@ class WasmDecoder : public Decoder {
           break;
         case kLocalS128:
           type = kWasmS128;
-          break;
-        case kLocalS1x4:
-          type = kWasmS1x4;
-          break;
-        case kLocalS1x8:
-          type = kWasmS1x8;
-          break;
-        case kLocalS1x16:
-          type = kWasmS1x16;
           break;
         default:
           decoder->error(decoder->pc() - 1, "invalid local type");
@@ -301,6 +281,15 @@ class WasmDecoder : public Decoder {
       return true;
     }
     errorf(pc + 1, "invalid local index: %u", operand.index);
+    return false;
+  }
+
+  inline bool Validate(const byte* pc, ExceptionIndexOperand<true>& operand) {
+    if (module_ != nullptr && operand.index < module_->exceptions.size()) {
+      operand.exception = &module_->exceptions[operand.index];
+      return true;
+    }
+    errorf(pc + 1, "Invalid exception index: %u", operand.index);
     return false;
   }
 
@@ -431,13 +420,12 @@ class WasmDecoder : public Decoder {
     }
   }
 
-  inline bool Validate(const byte* pc, WasmOpcode opcode,
-                       SimdShuffleOperand<true>& operand) {
-    unsigned lanes = GetShuffleMaskSize(opcode);
+  inline bool Validate(const byte* pc, Simd8x16ShuffleOperand<true>& operand) {
     uint8_t max_lane = 0;
-    for (unsigned i = 0; i < lanes; i++)
+    for (uint32_t i = 0; i < kSimd128Size; ++i)
       max_lane = std::max(max_lane, operand.shuffle[i]);
-    if (operand.lanes != lanes || max_lane > 2 * lanes) {
+    // Shuffle indices must be in [0..31] for a 16 lane shuffle.
+    if (max_lane > 2 * kSimd128Size) {
       error(pc_ + 2, "invalid shuffle mask");
       return false;
     } else {
@@ -477,17 +465,22 @@ class WasmDecoder : public Decoder {
       }
 
       case kExprTry:
-      case kExprIf:  // fall thru
+      case kExprIf:  // fall through
       case kExprLoop:
       case kExprBlock: {
         BlockTypeOperand<true> operand(decoder, pc);
         return 1 + operand.length;
       }
 
+      case kExprThrow:
+      case kExprCatch: {
+        ExceptionIndexOperand<true> operand(decoder, pc);
+        return 1 + operand.length;
+      }
+
       case kExprSetLocal:
       case kExprTeeLocal:
-      case kExprGetLocal:
-      case kExprCatch: {
+      case kExprGetLocal: {
         LocalIndexOperand<true> operand(decoder, pc);
         return 1 + operand.length;
       }
@@ -521,20 +514,21 @@ class WasmDecoder : public Decoder {
 #define DECLARE_OPCODE_CASE(name, opcode, sig) case kExpr##name:
           FOREACH_SIMD_0_OPERAND_OPCODE(DECLARE_OPCODE_CASE)
 #undef DECLARE_OPCODE_CASE
-          {
-            return 2;
-          }
+          return 2;
 #define DECLARE_OPCODE_CASE(name, opcode, sig) case kExpr##name:
           FOREACH_SIMD_1_OPERAND_OPCODE(DECLARE_OPCODE_CASE)
 #undef DECLARE_OPCODE_CASE
+          return 3;
+#define DECLARE_OPCODE_CASE(name, opcode, sig) case kExpr##name:
+          FOREACH_SIMD_MEM_OPCODE(DECLARE_OPCODE_CASE)
+#undef DECLARE_OPCODE_CASE
           {
-            return 3;
+            MemoryAccessOperand<true> operand(decoder, pc + 1, UINT32_MAX);
+            return 2 + operand.length;
           }
-          // Shuffles contain a byte array to determine the shuffle.
-          case kExprS32x4Shuffle:
-          case kExprS16x8Shuffle:
+          // Shuffles require a byte per lane, or 16 immediate bytes.
           case kExprS8x16Shuffle:
-            return 2 + GetShuffleMaskSize(opcode);
+            return 2 + kSimd128Size;
           default:
             decoder->error(pc, "invalid SIMD opcode");
             return 2;
@@ -551,14 +545,19 @@ class WasmDecoder : public Decoder {
     FunctionSig* sig = WasmOpcodes::Signature(opcode);
     if (!sig) sig = WasmOpcodes::AsmjsSignature(opcode);
     if (sig) return {sig->parameter_count(), sig->return_count()};
+    if (WasmOpcodes::IsPrefixOpcode(opcode)) {
+      opcode = static_cast<WasmOpcode>(opcode << 8 | *(pc + 1));
+    }
 
 #define DECLARE_OPCODE_CASE(name, opcode, sig) case kExpr##name:
     // clang-format off
     switch (opcode) {
       case kExprSelect:
         return {3, 1};
+      case kExprS128StoreMem:
       FOREACH_STORE_MEM_OPCODE(DECLARE_OPCODE_CASE)
         return {2, 0};
+      case kExprS128LoadMem:
       FOREACH_LOAD_MEM_OPCODE(DECLARE_OPCODE_CASE)
       case kExprTeeLocal:
       case kExprGrowMemory:
@@ -600,7 +599,8 @@ class WasmDecoder : public Decoder {
       case kExprUnreachable:
         return {0, 0};
       default:
-        V8_Fatal(__FILE__, __LINE__, "unimplemented opcode: %x", opcode);
+        V8_Fatal(__FILE__, __LINE__, "unimplemented opcode: %x (%s)", opcode,
+                 WasmOpcodes::OpcodeName(opcode));
         return {0, 0};
     }
 #undef DECLARE_OPCODE_CASE
@@ -610,7 +610,7 @@ class WasmDecoder : public Decoder {
 
 static const int32_t kNullCatch = -1;
 
-// The full WASM decoder for bytecode. Verifies bytecode and, optionally,
+// The full wasm decoder for bytecode. Verifies bytecode and, optionally,
 // generates a TurboFan IR graph.
 class WasmFullDecoder : public WasmDecoder {
  public:
@@ -644,6 +644,7 @@ class WasmFullDecoder : public WasmDecoder {
     WasmDecoder::DecodeLocals(this, sig_, local_types_);
     InitSsaEnv();
     DecodeFunctionBody();
+    FinishFunction();
 
     if (failed()) return TraceFailed();
 
@@ -653,13 +654,13 @@ class WasmFullDecoder : public WasmDecoder {
       if (control_.size() > 1) {
         error(control_.back().pc, "unterminated control structure");
       } else {
-        error("function body must end with \"end\" opcode.");
+        error("function body must end with \"end\" opcode");
       }
       return TraceFailed();
     }
 
     if (!last_end_found_) {
-      error("function body must end with \"end\" opcode.");
+      error("function body must end with \"end\" opcode");
       return false;
     }
 
@@ -674,18 +675,17 @@ class WasmFullDecoder : public WasmDecoder {
   }
 
   bool TraceFailed() {
-    TRACE("wasm-error module+%-6d func+%d: %s\n\n",
-          baserel(start_ + error_offset_), error_offset_, error_msg_.c_str());
+    TRACE("wasm-error module+%-6d func+%d: %s\n\n", error_offset_,
+          GetBufferRelativeOffset(error_offset_), error_msg_.c_str());
     return false;
   }
 
  private:
   WasmFullDecoder(Zone* zone, const wasm::WasmModule* module,
                   TFBuilder* builder, const FunctionBody& body)
-      : WasmDecoder(module, body.sig, body.start, body.end),
+      : WasmDecoder(module, body.sig, body.start, body.end, body.offset),
         zone_(zone),
         builder_(builder),
-        base_(body.base),
         local_type_vec_(zone),
         stack_(zone),
         control_(zone),
@@ -698,7 +698,6 @@ class WasmFullDecoder : public WasmDecoder {
 
   Zone* zone_;
   TFBuilder* builder_;
-  const byte* base_;
 
   SsaEnv* ssa_env_;
 
@@ -742,11 +741,6 @@ class WasmFullDecoder : public WasmDecoder {
     ssa_env->control = start;
     ssa_env->effect = start;
     SetEnv("initial", ssa_env);
-    if (builder_) {
-      // The function-prologue stack check is associated with position 0, which
-      // is never a position of any instruction in the function.
-      builder_->StackCheck(0);
-    }
   }
 
   TFNode* DefaultValue(ValueType type) {
@@ -761,27 +755,9 @@ class WasmFullDecoder : public WasmDecoder {
         return builder_->Float64Constant(0);
       case kWasmS128:
         return builder_->S128Zero();
-      case kWasmS1x4:
-        return builder_->S1x4Zero();
-      case kWasmS1x8:
-        return builder_->S1x8Zero();
-      case kWasmS1x16:
-        return builder_->S1x16Zero();
       default:
         UNREACHABLE();
-        return nullptr;
     }
-  }
-
-  char* indentation() {
-    static const int kMaxIndent = 64;
-    static char bytes[kMaxIndent + 1];
-    for (int i = 0; i < kMaxIndent; ++i) bytes[i] = ' ';
-    bytes[kMaxIndent] = 0;
-    if (stack_.size() < kMaxIndent / 2) {
-      bytes[stack_.size() * 2] = 0;
-    }
-    return bytes;
   }
 
   bool CheckHasMemory() {
@@ -791,11 +767,18 @@ class WasmFullDecoder : public WasmDecoder {
     return module_->has_memory;
   }
 
+  template <bool check>
+  inline TFNode* GetExceptionTag(ExceptionIndexOperand<check>& operand) {
+    // TODO(kschimpf): Need to get runtime exception tag values. This
+    // code only handles non-imported/exported exceptions.
+    return BUILD(Int32Constant, operand.index);
+  }
+
   // Decodes the body of a function.
   void DecodeFunctionBody() {
-    TRACE("wasm-decode %p...%p (module+%d, %d bytes) %s\n",
-          reinterpret_cast<const void*>(start_),
-          reinterpret_cast<const void*>(end_), baserel(pc_),
+    TRACE("wasm-decode %p...%p (module+%u, %d bytes) %s\n",
+          reinterpret_cast<const void*>(start()),
+          reinterpret_cast<const void*>(end()), pc_offset(),
           static_cast<int>(end_ - start_), builder_ ? "graph building" : "");
 
     {
@@ -844,10 +827,23 @@ class WasmFullDecoder : public WasmDecoder {
             len = 1 + operand.length;
             break;
           }
+          case kExprRethrow: {
+            // TODO(kschimpf): Implement.
+            CHECK_PROTOTYPE_OPCODE(eh);
+            OPCODE_ERROR(opcode, "not implemented yet");
+            break;
+          }
           case kExprThrow: {
-            CHECK_PROTOTYPE_OPCODE(wasm_eh_prototype);
-            Value value = Pop(0, kWasmI32);
-            BUILD(Throw, value.node);
+            CHECK_PROTOTYPE_OPCODE(eh);
+            ExceptionIndexOperand<true> operand(this, pc_);
+            len = 1 + operand.length;
+            if (!Validate(pc_, operand)) break;
+            if (operand.exception->sig->parameter_count() > 0) {
+              // TODO(kschimpf): Fix to pull values off stack and build throw.
+              OPCODE_ERROR(opcode, "can't handle exceptions with values yet");
+              break;
+            }
+            BUILD(Throw, GetExceptionTag(operand));
             // TODO(titzer): Throw should end control, but currently we build a
             // (reachable) runtime call instead of connecting it directly to
             // end.
@@ -855,7 +851,7 @@ class WasmFullDecoder : public WasmDecoder {
             break;
           }
           case kExprTry: {
-            CHECK_PROTOTYPE_OPCODE(wasm_eh_prototype);
+            CHECK_PROTOTYPE_OPCODE(eh);
             BlockTypeOperand<true> operand(this, pc_);
             SsaEnv* outer_env = ssa_env_;
             SsaEnv* try_env = Steal(outer_env);
@@ -867,9 +863,12 @@ class WasmFullDecoder : public WasmDecoder {
             break;
           }
           case kExprCatch: {
-            CHECK_PROTOTYPE_OPCODE(wasm_eh_prototype);
-            LocalIndexOperand<true> operand(this, pc_);
+            // TODO(kschimpf): Fix to use type signature of exception.
+            CHECK_PROTOTYPE_OPCODE(eh);
+            ExceptionIndexOperand<true> operand(this, pc_);
             len = 1 + operand.length;
+
+            if (!Validate(pc_, operand)) break;
 
             if (control_.empty()) {
               error("catch does not match any try");
@@ -877,33 +876,51 @@ class WasmFullDecoder : public WasmDecoder {
             }
 
             Control* c = &control_.back();
+            DCHECK_NOT_NULL(c->try_info);
+
             if (!c->is_try()) {
               error("catch does not match any try");
               break;
             }
 
-            if (c->try_info->catch_env == nullptr) {
-              error(pc_, "catch already present for try with catch");
+            if (c->try_info->catch_count > 0) {
+              OPCODE_ERROR(opcode, "multiple catch blocks not implemented");
               break;
             }
+            ++c->try_info->catch_count;
 
             FallThruTo(c);
             stack_.resize(c->stack_depth);
 
-            DCHECK_NOT_NULL(c->try_info);
             SsaEnv* catch_env = c->try_info->catch_env;
-            c->try_info->catch_env = nullptr;
             SetEnv("catch:begin", catch_env);
+
             current_catch_ = c->previous_catch;
 
-            if (Validate(pc_, operand)) {
-              if (ssa_env_->locals) {
-                TFNode* exception_as_i32 =
-                    BUILD(Catch, c->try_info->exception, position());
-                ssa_env_->locals[operand.index] = exception_as_i32;
-              }
-            }
-
+            // Get the exception and see if wanted exception.
+            TFNode* exception_as_i32 =
+                BUILD(Catch, c->try_info->exception, position());
+            TFNode* exception_tag = GetExceptionTag(operand);
+            TFNode* compare_i32 = BUILD(Binop, kExprI32Eq, exception_as_i32,
+                                        exception_tag, position());
+            TFNode* if_true = nullptr;
+            TFNode* if_false = nullptr;
+            BUILD(BranchNoHint, compare_i32, &if_true, &if_false);
+            SsaEnv* end_env = ssa_env_;
+            SsaEnv* false_env = Split(end_env);
+            false_env->control = if_false;
+            SsaEnv* true_env = Steal(ssa_env_);
+            true_env->control = if_true;
+            c->try_info->catch_env = false_env;
+            SetEnv("Try:catch", true_env);
+            len = 1 + operand.length;
+            // TODO(kschimpf): Add code to pop caught exception from isolate.
+            break;
+          }
+          case kExprCatchAll: {
+            // TODO(kschimpf): Implement.
+            CHECK_PROTOTYPE_OPCODE(eh);
+            OPCODE_ERROR(opcode, "not implemented yet");
             break;
           }
           case kExprLoop: {
@@ -992,10 +1009,17 @@ class WasmFullDecoder : public WasmDecoder {
               name = "try:end";
 
               // validate that catch was seen.
-              if (c->try_info->catch_env != nullptr) {
+              if (c->try_info->catch_count == 0) {
                 error(pc_, "missing catch in try");
                 break;
               }
+              SsaEnv* fallthru_ssa_env = ssa_env_;
+              DCHECK_NOT_NULL(c->try_info->catch_env);
+              SetEnv("Catch fail", c->try_info->catch_env);
+              BUILD0(Rethrow);
+              // TODO(karlschimpf): Why not use EndControl ()? (currently fails)
+              FallThruTo(c);
+              SetEnv("Catch fallthru", fallthru_ssa_env);
             }
             FallThruTo(c);
             SetEnv(name, c->end_env);
@@ -1263,10 +1287,6 @@ class WasmFullDecoder : public WasmDecoder {
           case kExprF64LoadMem:
             len = DecodeLoadMem(kWasmF64, MachineType::Float64());
             break;
-          case kExprS128LoadMem:
-            CHECK_PROTOTYPE_OPCODE(wasm_simd_prototype);
-            len = DecodeLoadMem(kWasmS128, MachineType::Simd128());
-            break;
           case kExprI32StoreMem8:
             len = DecodeStoreMem(kWasmI32, MachineType::Int8());
             break;
@@ -1293,10 +1313,6 @@ class WasmFullDecoder : public WasmDecoder {
             break;
           case kExprF64StoreMem:
             len = DecodeStoreMem(kWasmF64, MachineType::Float64());
-            break;
-          case kExprS128StoreMem:
-            CHECK_PROTOTYPE_OPCODE(wasm_simd_prototype);
-            len = DecodeStoreMem(kWasmS128, MachineType::Simd128());
             break;
           case kExprGrowMemory: {
             if (!CheckHasMemory()) break;
@@ -1343,7 +1359,7 @@ class WasmFullDecoder : public WasmDecoder {
             break;
           }
           case kSimdPrefix: {
-            CHECK_PROTOTYPE_OPCODE(wasm_simd_prototype);
+            CHECK_PROTOTYPE_OPCODE(simd);
             len++;
             byte simd_index = read_u8<true>(pc_ + 1, "simd index");
             opcode = static_cast<WasmOpcode>(opcode << 8 | simd_index);
@@ -1353,21 +1369,13 @@ class WasmFullDecoder : public WasmDecoder {
             break;
           }
           case kAtomicPrefix: {
-            if (module_ == nullptr || !module_->is_asm_js()) {
-              error("Atomics are allowed only in AsmJs modules");
-              break;
-            }
-            if (!FLAG_wasm_atomics_prototype) {
-              error("Invalid opcode (enable with --wasm_atomics_prototype)");
-              break;
-            }
-            len = 2;
-            byte atomic_opcode = read_u8<true>(pc_ + 1, "atomic index");
-            opcode = static_cast<WasmOpcode>(opcode << 8 | atomic_opcode);
-            sig = WasmOpcodes::AtomicSignature(opcode);
-            if (sig) {
-              BuildAtomicOperator(opcode);
-            }
+            CHECK_PROTOTYPE_OPCODE(threads);
+            len++;
+            byte atomic_index = read_u8<true>(pc_ + 1, "atomic index");
+            opcode = static_cast<WasmOpcode>(opcode << 8 | atomic_index);
+            TRACE("  @%-4d #%-20s|", startrel(pc_),
+                  WasmOpcodes::OpcodeName(opcode));
+            len += DecodeAtomicOpcode(opcode);
             break;
           }
           default: {
@@ -1455,6 +1463,10 @@ class WasmFullDecoder : public WasmDecoder {
     if (pc_ > end_ && ok()) error("Beyond end of code");
   }
 
+  void FinishFunction() {
+    if (builder_) builder_->PatchInStackCheckIfNeeded();
+  }
+
   void EndControl() {
     ssa_env_->Kill(SsaEnv::kControlEnd);
     if (!control_.empty()) {
@@ -1539,8 +1551,31 @@ class WasmFullDecoder : public WasmDecoder {
     Value val = Pop(1, type);
     Value index = Pop(0, kWasmI32);
     BUILD(StoreMem, mem_type, index.node, operand.offset, operand.alignment,
-          val.node, position());
+          val.node, position(), type);
     return 1 + operand.length;
+  }
+
+  int DecodePrefixedLoadMem(ValueType type, MachineType mem_type) {
+    if (!CheckHasMemory()) return 0;
+    MemoryAccessOperand<true> operand(
+        this, pc_ + 1, ElementSizeLog2Of(mem_type.representation()));
+
+    Value index = Pop(0, kWasmI32);
+    TFNode* node = BUILD(LoadMem, type, mem_type, index.node, operand.offset,
+                         operand.alignment, position());
+    Push(type, node);
+    return operand.length;
+  }
+
+  int DecodePrefixedStoreMem(ValueType type, MachineType mem_type) {
+    if (!CheckHasMemory()) return 0;
+    MemoryAccessOperand<true> operand(
+        this, pc_ + 1, ElementSizeLog2Of(mem_type.representation()));
+    Value val = Pop(1, type);
+    Value index = Pop(0, kWasmI32);
+    BUILD(StoreMem, mem_type, index.node, operand.offset, operand.alignment,
+          val.node, position());
+    return operand.length;
   }
 
   unsigned SimdExtractLane(WasmOpcode opcode, ValueType type) {
@@ -1548,7 +1583,7 @@ class WasmFullDecoder : public WasmDecoder {
     if (Validate(pc_, opcode, operand)) {
       compiler::NodeVector inputs(1, zone_);
       inputs[0] = Pop(0, ValueType::kSimd128).node;
-      TFNode* node = BUILD(SimdLaneOp, opcode, operand.lane, inputs);
+      TFNode* node = BUILD(SimdLaneOp, opcode, operand.lane, inputs.data());
       Push(type, node);
     }
     return operand.length;
@@ -1560,7 +1595,7 @@ class WasmFullDecoder : public WasmDecoder {
       compiler::NodeVector inputs(2, zone_);
       inputs[1] = Pop(1, type).node;
       inputs[0] = Pop(0, ValueType::kSimd128).node;
-      TFNode* node = BUILD(SimdLaneOp, opcode, operand.lane, inputs);
+      TFNode* node = BUILD(SimdLaneOp, opcode, operand.lane, inputs.data());
       Push(ValueType::kSimd128, node);
     }
     return operand.length;
@@ -1571,23 +1606,22 @@ class WasmFullDecoder : public WasmDecoder {
     if (Validate(pc_, opcode, operand)) {
       compiler::NodeVector inputs(1, zone_);
       inputs[0] = Pop(0, ValueType::kSimd128).node;
-      TFNode* node = BUILD(SimdShiftOp, opcode, operand.shift, inputs);
+      TFNode* node = BUILD(SimdShiftOp, opcode, operand.shift, inputs.data());
       Push(ValueType::kSimd128, node);
     }
     return operand.length;
   }
 
-  unsigned SimdShuffleOp(WasmOpcode opcode) {
-    SimdShuffleOperand<true> operand(this, pc_, GetShuffleMaskSize(opcode));
-    if (Validate(pc_, opcode, operand)) {
+  unsigned Simd8x16ShuffleOp() {
+    Simd8x16ShuffleOperand<true> operand(this, pc_);
+    if (Validate(pc_, operand)) {
       compiler::NodeVector inputs(2, zone_);
       inputs[1] = Pop(1, ValueType::kSimd128).node;
       inputs[0] = Pop(0, ValueType::kSimd128).node;
-      TFNode* node =
-          BUILD(SimdShuffleOp, operand.shuffle, operand.lanes, inputs);
+      TFNode* node = BUILD(Simd8x16ShuffleOp, operand.shuffle, inputs.data());
       Push(ValueType::kSimd128, node);
     }
-    return operand.lanes;
+    return 16;
   }
 
   unsigned DecodeSimdOpcode(WasmOpcode opcode) {
@@ -1625,12 +1659,16 @@ class WasmFullDecoder : public WasmDecoder {
         len = SimdShiftOp(opcode);
         break;
       }
-      case kExprS32x4Shuffle:
-      case kExprS16x8Shuffle:
       case kExprS8x16Shuffle: {
-        len = SimdShuffleOp(opcode);
+        len = Simd8x16ShuffleOp();
         break;
       }
+      case kExprS128LoadMem:
+        len = DecodePrefixedLoadMem(kWasmS128, MachineType::Simd128());
+        break;
+      case kExprS128StoreMem:
+        len = DecodePrefixedStoreMem(kWasmS128, MachineType::Simd128());
+        break;
       default: {
         FunctionSig* sig = WasmOpcodes::Signature(opcode);
         if (sig != nullptr) {
@@ -1639,7 +1677,7 @@ class WasmFullDecoder : public WasmDecoder {
             Value val = Pop(static_cast<int>(i - 1), sig->GetParam(i - 1));
             inputs[i - 1] = val.node;
           }
-          TFNode* node = BUILD(SimdOp, opcode, inputs);
+          TFNode* node = BUILD(SimdOp, opcode, inputs.data());
           Push(GetReturnType(sig), node);
         } else {
           error("invalid simd opcode");
@@ -1649,7 +1687,22 @@ class WasmFullDecoder : public WasmDecoder {
     return len;
   }
 
-  void BuildAtomicOperator(WasmOpcode opcode) { UNIMPLEMENTED(); }
+  unsigned DecodeAtomicOpcode(WasmOpcode opcode) {
+    unsigned len = 0;
+    FunctionSig* sig = WasmOpcodes::AtomicSignature(opcode);
+    if (sig != nullptr) {
+      compiler::NodeVector inputs(sig->parameter_count(), zone_);
+      for (int i = static_cast<int>(sig->parameter_count() - 1); i >= 0; --i) {
+        Value val = Pop(i, sig->GetParam(i));
+        inputs[i] = val.node;
+      }
+      TFNode* node = BUILD(AtomicOp, opcode, inputs, position());
+      Push(GetReturnType(sig), node);
+    } else {
+      error("invalid atomic opcode");
+    }
+    return len;
+  }
 
   void DoReturn() {
     int count = static_cast<int>(sig_->return_count());
@@ -1720,10 +1773,6 @@ class WasmFullDecoder : public WasmDecoder {
     Value val = stack_.back();
     stack_.pop_back();
     return val;
-  }
-
-  int baserel(const byte* ptr) {
-    return base_ ? static_cast<int>(ptr - base_) : 0;
   }
 
   int startrel(const byte* ptr) { return static_cast<int>(ptr - start_); }
@@ -2132,7 +2181,7 @@ DecodeResult VerifyWasmCode(AccountingAllocator* allocator,
   Zone zone(allocator, ZONE_NAME);
   WasmFullDecoder decoder(&zone, module, body);
   decoder.Decode();
-  return decoder.toResult<DecodeStruct*>(nullptr);
+  return decoder.toResult(nullptr);
 }
 
 DecodeResult BuildTFGraph(AccountingAllocator* allocator, TFBuilder* builder,
@@ -2140,7 +2189,7 @@ DecodeResult BuildTFGraph(AccountingAllocator* allocator, TFBuilder* builder,
   Zone zone(allocator, ZONE_NAME);
   WasmFullDecoder decoder(&zone, builder, body);
   decoder.Decode();
-  return decoder.toResult<DecodeStruct*>(nullptr);
+  return decoder.toResult(nullptr);
 }
 
 unsigned OpcodeLength(const byte* pc, const byte* end) {

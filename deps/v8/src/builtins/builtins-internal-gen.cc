@@ -35,7 +35,7 @@ TF_BUILTIN(CopyFastSmiOrObjectElements, CodeStubAssembler) {
   Node* length = TaggedToParameter(LoadFixedArrayBaseLength(source), mode);
 
   // Check if we can allocate in new space.
-  ElementsKind kind = FAST_ELEMENTS;
+  ElementsKind kind = PACKED_ELEMENTS;
   int max_elements = FixedArrayBase::GetMaxLengthForNewSpaceAllocation(kind);
   Label if_newspace(this), if_oldspace(this);
   Branch(UintPtrOrSmiLessThan(length, IntPtrOrSmiConstant(max_elements, mode),
@@ -68,7 +68,7 @@ TF_BUILTIN(GrowFastDoubleElements, CodeStubAssembler) {
 
   Label runtime(this, Label::kDeferred);
   Node* elements = LoadElements(object);
-  elements = TryGrowElementsCapacity(object, elements, FAST_DOUBLE_ELEMENTS,
+  elements = TryGrowElementsCapacity(object, elements, PACKED_DOUBLE_ELEMENTS,
                                      key, &runtime);
   Return(elements);
 
@@ -84,7 +84,7 @@ TF_BUILTIN(GrowFastSmiOrObjectElements, CodeStubAssembler) {
   Label runtime(this, Label::kDeferred);
   Node* elements = LoadElements(object);
   elements =
-      TryGrowElementsCapacity(object, elements, FAST_ELEMENTS, key, &runtime);
+      TryGrowElementsCapacity(object, elements, PACKED_ELEMENTS, key, &runtime);
   Return(elements);
 
   BIND(&runtime);
@@ -96,7 +96,7 @@ TF_BUILTIN(NewUnmappedArgumentsElements, CodeStubAssembler) {
   Node* length = SmiToWord(Parameter(Descriptor::kLength));
 
   // Check if we can allocate in new space.
-  ElementsKind kind = FAST_ELEMENTS;
+  ElementsKind kind = PACKED_ELEMENTS;
   int max_elements = FixedArray::GetMaxLengthForNewSpaceAllocation(kind);
   Label if_newspace(this), if_oldspace(this, Label::kDeferred);
   Branch(IntPtrLessThan(length, IntPtrConstant(max_elements)), &if_newspace,
@@ -189,7 +189,7 @@ class DeletePropertyBaseAssembler : public CodeStubAssembler {
     StoreValueByKeyIndex<NameDictionary>(properties, key_index, filler,
                                          SKIP_WRITE_BARRIER);
     StoreDetailsByKeyIndex<NameDictionary>(properties, key_index,
-                                           SmiConstant(Smi::kZero));
+                                           SmiConstant(0));
 
     // Update bookkeeping information (see NameDictionary::ElementRemoved).
     Node* nof = GetNumberOfElements<NameDictionary>(properties);
@@ -204,7 +204,7 @@ class DeletePropertyBaseAssembler : public CodeStubAssembler {
     Node* capacity = GetCapacity<NameDictionary>(properties);
     GotoIf(SmiGreaterThan(new_nof, SmiShr(capacity, 2)), &shrinking_done);
     GotoIf(SmiLessThan(new_nof, SmiConstant(16)), &shrinking_done);
-    CallRuntime(Runtime::kShrinkPropertyDictionary, context, receiver, name);
+    CallRuntime(Runtime::kShrinkPropertyDictionary, context, receiver);
     Goto(&shrinking_done);
     BIND(&shrinking_done);
 
@@ -245,16 +245,15 @@ TF_BUILTIN(DeleteProperty, DeletePropertyBaseAssembler) {
     CheckForAssociatedProtector(unique, &slow);
 
     Label dictionary(this), dont_delete(this);
-    Node* properties = LoadProperties(receiver);
-    Node* properties_map = LoadMap(properties);
-    GotoIf(WordEqual(properties_map, LoadRoot(Heap::kHashTableMapRootIndex)),
-           &dictionary);
+    GotoIf(IsDictionaryMap(receiver_map), &dictionary);
+
     // Fast properties need to clear recorded slots, which can only be done
     // in C++.
     Goto(&slow);
 
     BIND(&dictionary);
     {
+      Node* properties = LoadProperties(receiver);
       DeleteDictionaryProperty(receiver, properties, unique, context,
                                &dont_delete, &if_notfound);
     }

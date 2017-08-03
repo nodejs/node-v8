@@ -52,20 +52,22 @@ let kDeclNoLocals = 0;
 
 // Section declaration constants
 let kUnknownSectionCode = 0;
-let kTypeSectionCode = 1;      // Function signature declarations
-let kImportSectionCode = 2;    // Import declarations
-let kFunctionSectionCode = 3;  // Function declarations
-let kTableSectionCode = 4;     // Indirect function table and other tables
-let kMemorySectionCode = 5;    // Memory attributes
-let kGlobalSectionCode = 6;    // Global declarations
-let kExportSectionCode = 7;    // Exports
-let kStartSectionCode = 8;     // Start function declaration
-let kElementSectionCode = 9;  // Elements section
-let kCodeSectionCode = 10;      // Function code
-let kDataSectionCode = 11;     // Data segments
-let kNameSectionCode = 12;     // Name section (encoded as string)
+let kTypeSectionCode = 1;        // Function signature declarations
+let kImportSectionCode = 2;      // Import declarations
+let kFunctionSectionCode = 3;    // Function declarations
+let kTableSectionCode = 4;       // Indirect function table and other tables
+let kMemorySectionCode = 5;      // Memory attributes
+let kGlobalSectionCode = 6;      // Global declarations
+let kExportSectionCode = 7;      // Exports
+let kStartSectionCode = 8;       // Start function declaration
+let kElementSectionCode = 9;     // Elements section
+let kCodeSectionCode = 10;       // Function code
+let kDataSectionCode = 11;       // Data segments
+let kNameSectionCode = 12;       // Name section (encoded as string)
+let kExceptionSectionCode = 13;  // Exception section (must appear before code section)
 
 // Name section types
+let kModuleNameCode = 0;
 let kFunctionNamesCode = 1;
 let kLocalNamesCode = 2;
 
@@ -86,7 +88,6 @@ let kWasmI32 = 0x7f;
 let kWasmI64 = 0x7e;
 let kWasmF32 = 0x7d;
 let kWasmF64 = 0x7c;
-let kWasmS128 = 0x7b;
 
 let kExternalFunction = 0;
 let kExternalTable = 1;
@@ -117,7 +118,6 @@ let kSig_v_l = makeSig([kWasmI64], []);
 let kSig_v_d = makeSig([kWasmF64], []);
 let kSig_v_dd = makeSig([kWasmF64, kWasmF64], []);
 let kSig_v_ddi = makeSig([kWasmF64, kWasmF64, kWasmI32], []);
-let kSig_s_v = makeSig([], [kWasmS128]);
 
 function makeSig(params, results) {
   return {params: params, results: results};
@@ -319,7 +319,16 @@ let kExprI32ReinterpretF32 = 0xbc;
 let kExprI64ReinterpretF64 = 0xbd;
 let kExprF32ReinterpretI32 = 0xbe;
 let kExprF64ReinterpretI64 = 0xbf;
-let kExprS128LoadMem = 0xc0;
+
+// Prefix opcodes
+let kAtomicPrefix = 0xfe;
+
+let kExprI32AtomicAdd = 0x1e;
+let kExprI32AtomicAdd8U = 0x20;
+let kExprI32AtomicAdd16U = 0x21;
+let kExprI32AtomicSub = 0x25;
+let kExprI32AtomicSub8U = 0x27;
+let kExprI32AtomicSub16U = 0x28;
 
 let kTrapUnreachable          = 0;
 let kTrapMemOutOfBounds       = 1;
@@ -359,8 +368,7 @@ function assertTraps(trap, code) {
   throw new MjsUnitAssertionError('Did not trap, expected: ' + kTrapMsgs[trap]);
 }
 
-function assertWasmThrows(value, code) {
-  assertEquals('number', typeof value);
+function assertWasmThrows(values, code) {
   try {
     if (typeof code === 'function') {
       code();
@@ -368,10 +376,11 @@ function assertWasmThrows(value, code) {
       eval(code);
     }
   } catch (e) {
-    assertEquals('number', typeof e);
-    assertEquals(value, e);
+    // TODO(kschimpf): Extract values from the exception.
+    let e_values = [];
+    assertEquals(values, e_values);
     // Success.
     return;
   }
-  throw new MjsUnitAssertionError('Did not throw, expected: ' + value);
+  throw new MjsUnitAssertionError('Did not throw, expected: ' + values);
 }

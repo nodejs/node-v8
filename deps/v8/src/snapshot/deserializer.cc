@@ -116,15 +116,18 @@ void Deserializer::Deserialize(Isolate* isolate) {
         isolate_->heap()->undefined_value());
   }
 
-  // If needed, print the dissassembly of deserialized code objects.
-  PrintDisassembledCodeObjects();
-
   // Issue code events for newly deserialized code objects.
   LOG_CODE_EVENT(isolate_, LogCodeObjects());
   LOG_CODE_EVENT(isolate_, LogBytecodeHandlers());
   LOG_CODE_EVENT(isolate_, LogCompiledFunctions());
 
   isolate_->builtins()->MarkInitialized();
+
+  // If needed, print the dissassembly of deserialized code objects.
+  // Needs to be called after the builtins are marked as initialized, in order
+  // to display the builtin names.
+  PrintDisassembledCodeObjects();
+
   if (FLAG_rehash_snapshot && can_rehash_) Rehash();
 }
 
@@ -150,7 +153,7 @@ MaybeHandle<Object> Deserializer::DeserializePartial(
   DeserializeEmbedderFields(embedder_fields_deserializer);
 
   isolate->heap()->RegisterDeserializedObjectsForBlackAllocation(
-      reservations_, &deserialized_large_objects_);
+      reservations_, &deserialized_large_objects_, &allocated_maps_);
 
   // There's no code deserialized here. If this assert fires then that's
   // changed and logging should be added to notify the profiler et al of the
@@ -178,58 +181,25 @@ MaybeHandle<HeapObject> Deserializer::DeserializeObject(Isolate* isolate) {
       FlushICacheForNewCodeObjectsAndRecordEmbeddedObjects();
       result = Handle<HeapObject>(HeapObject::cast(root));
       isolate->heap()->RegisterDeserializedObjectsForBlackAllocation(
-          reservations_, &deserialized_large_objects_);
+          reservations_, &deserialized_large_objects_, &allocated_maps_);
     }
     CommitPostProcessedObjects(isolate);
     return scope.CloseAndEscape(result);
   }
 }
 
-// We only really just need HashForObject here.
-class StringRehashKey : public HashTableKey {
- public:
-  uint32_t HashForObject(Object* other) override {
-    return String::cast(other)->Hash();
-  }
-
-  static uint32_t StringHash(Object* obj) {
-    UNREACHABLE();
-    return String::cast(obj)->Hash();
-  }
-
-  bool IsMatch(Object* string) override {
-    UNREACHABLE();
-    return false;
-  }
-
-  uint32_t Hash() override {
-    UNREACHABLE();
-    return 0;
-  }
-
-  Handle<Object> AsHandle(Isolate* isolate) override {
-    UNREACHABLE();
-    return isolate->factory()->empty_string();
-  }
-};
-
 void Deserializer::Rehash() {
   DCHECK(can_rehash_);
   isolate_->heap()->InitializeHashSeed();
-  if (FLAG_profile_deserialization) {
-    PrintF("Re-initializing hash seed to %x\n",
-           isolate_->heap()->hash_seed()->value());
-  }
-  StringRehashKey string_rehash_key;
-  isolate_->heap()->string_table()->Rehash(&string_rehash_key);
+  isolate_->heap()->string_table()->Rehash();
+  isolate_->heap()->weak_object_to_code_table()->Rehash();
   SortMapDescriptors();
 }
 
 void Deserializer::RehashContext(Context* context) {
   DCHECK(can_rehash_);
   for (const auto& array : transition_arrays_) array->Sort();
-  Handle<Name> dummy = isolate_->factory()->empty_string();
-  context->global_object()->global_dictionary()->Rehash(dummy);
+  context->global_object()->global_dictionary()->Rehash();
   SortMapDescriptors();
 }
 
@@ -342,34 +312,33 @@ void Deserializer::PrintDisassembledCodeObjects() {
 }
 
 // Used to insert a deserialized internalized string into the string table.
-class StringTableInsertionKey : public HashTableKey {
+class StringTableInsertionKey : public StringTableKey {
  public:
   explicit StringTableInsertionKey(String* string)
-      : string_(string), hash_(HashForObject(string)) {
+      : StringTableKey(ComputeHashField(string)), string_(string) {
     DCHECK(string->IsInternalizedString());
   }
 
   bool IsMatch(Object* string) override {
     // We know that all entries in a hash table had their hash keys created.
     // Use that knowledge to have fast failure.
-    if (hash_ != HashForObject(string)) return false;
+    if (Hash() != String::cast(string)->Hash()) return false;
     // We want to compare the content of two internalized strings here.
     return string_->SlowEquals(String::cast(string));
   }
 
-  uint32_t Hash() override { return hash_; }
-
-  uint32_t HashForObject(Object* key) override {
-    return String::cast(key)->Hash();
-  }
-
-  MUST_USE_RESULT Handle<Object> AsHandle(Isolate* isolate) override {
+  MUST_USE_RESULT Handle<String> AsHandle(Isolate* isolate) override {
     return handle(string_, isolate);
   }
 
  private:
+  uint32_t ComputeHashField(String* string) {
+    // Make sure hash_field() is computed.
+    string->Hash();
+    return string->hash_field();
+  }
+
   String* string_;
-  uint32_t hash_;
   DisallowHeapAllocation no_gc;
 };
 
@@ -399,7 +368,6 @@ HeapObject* Deserializer::PostProcessNewObject(HeapObject* obj, int space) {
     }
   }
   if (obj->IsAllocationSite()) {
-    DCHECK(obj->IsAllocationSite());
     // Allocation sites are present in the snapshot, and must be linked into
     // a list at deserialization time.
     AllocationSite* site = AllocationSite::cast(obj);
@@ -661,6 +629,7 @@ bool Deserializer::ReadData(Object** current, Object** limit, int source_space,
         emit_write_barrier = false;                                            \
       }                                                                        \
       if (within == kInnerPointer) {                                           \
+        DCHECK(how == kFromCode);                                              \
         if (new_object->IsCode()) {                                            \
           Code* new_code_object = Code::cast(new_object);                      \
           new_object =                                                         \
@@ -728,13 +697,6 @@ bool Deserializer::ReadData(Object** current, Object** limit, int source_space,
       // Deserialize a new object and write a pointer to it to the current
       // object.
       ALL_SPACES(kNewObject, kPlain, kStartOfObject)
-      // Support for direct instruction pointers in functions.  It's an inner
-      // pointer because it points at the entry point, not at the start of the
-      // code object.
-      SINGLE_CASE(kNewObject, kPlain, kInnerPointer, CODE_SPACE)
-      // Support for pointers into a cell. It's an inner pointer because it
-      // points directly at the value field, not the start of the cell object.
-      SINGLE_CASE(kNewObject, kPlain, kInnerPointer, OLD_SPACE)
       // Deserialize a new code object and write a pointer to its first
       // instruction to the current code object.
       ALL_SPACES(kNewObject, kFromCode, kInnerPointer)
@@ -761,12 +723,6 @@ bool Deserializer::ReadData(Object** current, Object** limit, int source_space,
       // object.
       ALL_SPACES(kBackref, kFromCode, kInnerPointer)
       ALL_SPACES(kBackrefWithSkip, kFromCode, kInnerPointer)
-      // Support for direct instruction pointers in functions.
-      SINGLE_CASE(kBackref, kPlain, kInnerPointer, CODE_SPACE)
-      SINGLE_CASE(kBackrefWithSkip, kPlain, kInnerPointer, CODE_SPACE)
-      // Support for pointers into a cell.
-      SINGLE_CASE(kBackref, kPlain, kInnerPointer, OLD_SPACE)
-      SINGLE_CASE(kBackrefWithSkip, kPlain, kInnerPointer, OLD_SPACE)
       // Find an object in the roots array and write a pointer to it to the
       // current object.
       SINGLE_CASE(kRootArray, kPlain, kStartOfObject, 0)
@@ -777,9 +733,6 @@ bool Deserializer::ReadData(Object** current, Object** limit, int source_space,
       // Find an object in the partial snapshots cache and write a pointer to it
       // to the current object.
       SINGLE_CASE(kPartialSnapshotCache, kPlain, kStartOfObject, 0)
-      // Find an code entry in the partial snapshots cache and
-      // write a pointer to it to the current object.
-      SINGLE_CASE(kPartialSnapshotCache, kPlain, kInnerPointer, 0)
       // Find an external reference and write a pointer to it to the current
       // object.
       SINGLE_CASE(kExternalReference, kPlain, kStartOfObject, 0)
@@ -789,12 +742,10 @@ bool Deserializer::ReadData(Object** current, Object** limit, int source_space,
       // Find an object in the attached references and write a pointer to it to
       // the current object.
       SINGLE_CASE(kAttachedReference, kPlain, kStartOfObject, 0)
-      SINGLE_CASE(kAttachedReference, kPlain, kInnerPointer, 0)
       SINGLE_CASE(kAttachedReference, kFromCode, kStartOfObject, 0)
       SINGLE_CASE(kAttachedReference, kFromCode, kInnerPointer, 0)
       // Find a builtin and write a pointer to it to the current object.
       SINGLE_CASE(kBuiltin, kPlain, kStartOfObject, 0)
-      SINGLE_CASE(kBuiltin, kPlain, kInnerPointer, 0)
       SINGLE_CASE(kBuiltin, kFromCode, kInnerPointer, 0)
 
 #undef CASE_STATEMENT

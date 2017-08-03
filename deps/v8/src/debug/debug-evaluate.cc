@@ -172,7 +172,8 @@ DebugEvaluate::ContextBuilder::ContextBuilder(Isolate* isolate,
       evaluation_context_ = outer_context;
       break;
     } else if (scope_type == ScopeIterator::ScopeTypeCatch ||
-               scope_type == ScopeIterator::ScopeTypeWith) {
+               scope_type == ScopeIterator::ScopeTypeWith ||
+               scope_type == ScopeIterator::ScopeTypeModule) {
       ContextChainElement context_chain_element;
       Handle<Context> current_context = it.CurrentContext();
       if (!current_context->IsDebugEvaluateContext()) {
@@ -276,8 +277,6 @@ bool IntrinsicHasNoSideEffect(Runtime::FunctionId id) {
   V(IsJSProxy)                       \
   V(IsJSMap)                         \
   V(IsJSSet)                         \
-  V(IsJSMapIterator)                 \
-  V(IsJSSetIterator)                 \
   V(IsJSWeakMap)                     \
   V(IsJSWeakSet)                     \
   V(IsRegExp)                        \
@@ -297,6 +296,7 @@ bool IntrinsicHasNoSideEffect(Runtime::FunctionId id) {
   V(ThrowSymbolIteratorInvalid)      \
   V(ThrowIteratorResultNotAnObject)  \
   V(NewTypeError)                    \
+  V(ThrowInvalidStringLength)        \
   /* Strings */                      \
   V(StringCharCodeAt)                \
   V(StringIndexOf)                   \
@@ -308,12 +308,7 @@ bool IntrinsicHasNoSideEffect(Runtime::FunctionId id) {
   V(CreateObjectLiteral)             \
   V(CreateRegExpLiteral)             \
   /* Collections */                  \
-  V(JSCollectionGetTable)            \
-  V(FixedArrayGet)                   \
-  V(StringGetRawHashField)           \
   V(GenericHash)                     \
-  V(MapIteratorInitialize)           \
-  V(MapInitialize)                   \
   /* Called from builtins */         \
   V(StringParseFloat)                \
   V(StringParseInt)                  \
@@ -322,7 +317,6 @@ bool IntrinsicHasNoSideEffect(Runtime::FunctionId id) {
   V(StringEqual)                     \
   V(SymbolDescriptiveString)         \
   V(GenerateRandomNumbers)           \
-  V(ExternalStringGetChar)           \
   V(GlobalPrint)                     \
   V(AllocateInNewSpace)              \
   V(AllocateSeqOneByteString)        \
@@ -341,7 +335,10 @@ bool IntrinsicHasNoSideEffect(Runtime::FunctionId id) {
   V(ForInPrepare)                    \
   V(Call)                            \
   V(MaxSmi)                          \
-  V(HasInPrototypeChain)
+  V(NewObject)                       \
+  V(FinalizeInstanceSize)            \
+  V(HasInPrototypeChain)             \
+  V(StringMaxLength)
 
 #define CASE(Name)       \
   case Runtime::k##Name: \
@@ -443,6 +440,9 @@ bool BytecodeHasNoSideEffect(interpreter::Bytecode bytecode) {
     case Bytecode::kForInStep:
     case Bytecode::kThrow:
     case Bytecode::kReThrow:
+    case Bytecode::kThrowReferenceErrorIfHole:
+    case Bytecode::kThrowSuperNotCalledIfHole:
+    case Bytecode::kThrowSuperAlreadyCalledIfNotHole:
     case Bytecode::kIllegal:
     case Bytecode::kCallJSRuntime:
     case Bytecode::kStackCheck:
@@ -476,8 +476,9 @@ bool BuiltinHasNoSideEffect(Builtins::Name id) {
     case Builtins::kObjectPrototypeValueOf:
     case Builtins::kObjectValues:
     case Builtins::kObjectHasOwnProperty:
+    case Builtins::kObjectPrototypeIsPrototypeOf:
     case Builtins::kObjectPrototypePropertyIsEnumerable:
-    case Builtins::kObjectProtoToString:
+    case Builtins::kObjectPrototypeToString:
     // Array builtins.
     case Builtins::kArrayCode:
     case Builtins::kArrayIndexOf:
@@ -525,6 +526,13 @@ bool BuiltinHasNoSideEffect(Builtins::Name id) {
     case Builtins::kDatePrototypeToJson:
     case Builtins::kDatePrototypeToPrimitive:
     case Builtins::kDatePrototypeValueOf:
+    // Map builtins.
+    case Builtins::kMapConstructor:
+    case Builtins::kMapGet:
+    case Builtins::kMapPrototypeEntries:
+    case Builtins::kMapPrototypeGetSize:
+    case Builtins::kMapPrototypeKeys:
+    case Builtins::kMapPrototypeValues:
     // Math builtins.
     case Builtins::kMathAbs:
     case Builtins::kMathAcos:
@@ -574,12 +582,18 @@ bool BuiltinHasNoSideEffect(Builtins::Name id) {
     case Builtins::kNumberPrototypeToPrecision:
     case Builtins::kNumberPrototypeToString:
     case Builtins::kNumberPrototypeValueOf:
+    // Set builtins.
+    case Builtins::kSetConstructor:
+    case Builtins::kSetPrototypeEntries:
+    case Builtins::kSetPrototypeGetSize:
+    case Builtins::kSetPrototypeValues:
     // String builtins. Strings are immutable.
     case Builtins::kStringFromCharCode:
     case Builtins::kStringFromCodePoint:
     case Builtins::kStringConstructor:
     case Builtins::kStringPrototypeCharAt:
     case Builtins::kStringPrototypeCharCodeAt:
+    case Builtins::kStringPrototypeCodePointAt:
     case Builtins::kStringPrototypeConcat:
     case Builtins::kStringPrototypeEndsWith:
     case Builtins::kStringPrototypeIncludes:
@@ -590,8 +604,10 @@ bool BuiltinHasNoSideEffect(Builtins::Name id) {
     case Builtins::kStringPrototypeSubstr:
     case Builtins::kStringPrototypeSubstring:
     case Builtins::kStringPrototypeToString:
+#ifndef V8_INTL_SUPPORT
     case Builtins::kStringPrototypeToLowerCase:
     case Builtins::kStringPrototypeToUpperCase:
+#endif
     case Builtins::kStringPrototypeTrim:
     case Builtins::kStringPrototypeTrimLeft:
     case Builtins::kStringPrototypeTrimRight:

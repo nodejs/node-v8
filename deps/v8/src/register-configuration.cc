@@ -74,9 +74,6 @@ class ArchDefaultRegisterConfiguration : public RegisterConfiguration {
 #if V8_TARGET_ARCH_IA32
             kMaxAllocatableGeneralRegisterCount,
             kMaxAllocatableDoubleRegisterCount,
-#elif V8_TARGET_ARCH_X87
-            kMaxAllocatableGeneralRegisterCount,
-            compiler == TURBOFAN ? 1 : kMaxAllocatableDoubleRegisterCount,
 #elif V8_TARGET_ARCH_X64
             kMaxAllocatableGeneralRegisterCount,
             kMaxAllocatableDoubleRegisterCount,
@@ -268,8 +265,6 @@ bool RegisterConfiguration::AreAliases(MachineRepresentation rep, int index,
   int shift = other_rep_int - rep_int;
   return index >> shift == other_index;
 }
-
-#undef REGISTER_COUNT
 
 }  // namespace internal
 }  // namespace v8

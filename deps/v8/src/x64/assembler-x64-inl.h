@@ -53,19 +53,13 @@ void Assembler::emitw(uint16_t x) {
   pc_ += sizeof(uint16_t);
 }
 
-
-void Assembler::emit_code_target(Handle<Code> target,
-                                 RelocInfo::Mode rmode,
-                                 TypeFeedbackId ast_id) {
+void Assembler::emit_code_target(Handle<Code> target, RelocInfo::Mode rmode) {
   DCHECK(RelocInfo::IsCodeTarget(rmode) ||
       rmode == RelocInfo::CODE_AGE_SEQUENCE);
-  if (rmode == RelocInfo::CODE_TARGET && !ast_id.IsNone()) {
-    RecordRelocInfo(RelocInfo::CODE_TARGET_WITH_ID, ast_id.ToInt());
-  } else {
-    RecordRelocInfo(rmode);
-  }
+  RecordRelocInfo(rmode);
   int current = code_targets_.length();
-  if (current > 0 && code_targets_.last().address() == target.address()) {
+  if (current > 0 && !target.is_null() &&
+      code_targets_.last().address() == target.address()) {
     // Optimization if we keep jumping to the same code target.
     emitl(current - 1);
   } else {
@@ -317,7 +311,6 @@ Handle<Code> Assembler::code_target_object_handle_at(Address pc) {
   return code_targets_[Memory::int32_at(pc)];
 }
 
-
 Address Assembler::runtime_entry_at(Address pc) {
   return Memory::int32_at(pc) + isolate_data().code_range_start_;
 }
@@ -356,7 +349,6 @@ Address RelocInfo::target_address_address() {
 
 Address RelocInfo::constant_pool_entry_address() {
   UNREACHABLE();
-  return NULL;
 }
 
 
@@ -430,36 +422,6 @@ void RelocInfo::set_target_runtime_entry(Isolate* isolate, Address target,
   }
 }
 
-
-Handle<Cell> RelocInfo::target_cell_handle() {
-  DCHECK(rmode_ == RelocInfo::CELL);
-  Address address = Memory::Address_at(pc_);
-  return Handle<Cell>(reinterpret_cast<Cell**>(address));
-}
-
-
-Cell* RelocInfo::target_cell() {
-  DCHECK(rmode_ == RelocInfo::CELL);
-  return Cell::FromValueAddress(Memory::Address_at(pc_));
-}
-
-
-void RelocInfo::set_target_cell(Cell* cell,
-                                WriteBarrierMode write_barrier_mode,
-                                ICacheFlushMode icache_flush_mode) {
-  DCHECK(rmode_ == RelocInfo::CELL);
-  Address address = cell->address() + Cell::kValueOffset;
-  Memory::Address_at(pc_) = address;
-  if (icache_flush_mode != SKIP_ICACHE_FLUSH) {
-    Assembler::FlushICache(cell->GetIsolate(), pc_, sizeof(Address));
-  }
-  if (write_barrier_mode == UPDATE_WRITE_BARRIER &&
-      host() != NULL) {
-    host()->GetHeap()->incremental_marking()->RecordWriteIntoCode(host(), this,
-                                                                  cell);
-  }
-}
-
 void RelocInfo::WipeOut(Isolate* isolate) {
   if (IsEmbeddedObject(rmode_) || IsExternalReference(rmode_) ||
       IsInternalReference(rmode_)) {
@@ -525,8 +487,6 @@ void RelocInfo::Visit(Isolate* isolate, ObjectVisitor* visitor) {
     Assembler::FlushICache(isolate, pc_, sizeof(Address));
   } else if (RelocInfo::IsCodeTarget(mode)) {
     visitor->VisitCodeTarget(host(), this);
-  } else if (mode == RelocInfo::CELL) {
-    visitor->VisitCellPointer(host(), this);
   } else if (mode == RelocInfo::EXTERNAL_REFERENCE) {
     visitor->VisitExternalReference(host(), this);
   } else if (mode == RelocInfo::INTERNAL_REFERENCE) {
@@ -550,8 +510,6 @@ void RelocInfo::Visit(Heap* heap) {
     Assembler::FlushICache(heap->isolate(), pc_, sizeof(Address));
   } else if (RelocInfo::IsCodeTarget(mode)) {
     StaticVisitor::VisitCodeTarget(heap, this);
-  } else if (mode == RelocInfo::CELL) {
-    StaticVisitor::VisitCell(heap, this);
   } else if (mode == RelocInfo::EXTERNAL_REFERENCE) {
     StaticVisitor::VisitExternalReference(this);
   } else if (mode == RelocInfo::INTERNAL_REFERENCE) {

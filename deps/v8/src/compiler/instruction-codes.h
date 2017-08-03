@@ -23,8 +23,6 @@
 #include "src/compiler/ppc/instruction-codes-ppc.h"
 #elif V8_TARGET_ARCH_S390
 #include "src/compiler/s390/instruction-codes-s390.h"
-#elif V8_TARGET_ARCH_X87
-#include "src/compiler/x87/instruction-codes-x87.h"
 #else
 #define TARGET_ARCH_OPCODE_LIST(V)
 #define TARGET_ADDRESSING_MODE_LIST(V)
@@ -47,7 +45,6 @@ enum class RecordWriteMode { kValueIsMap, kValueIsPointer, kValueIsAny };
   V(ArchTailCallCodeObjectFromJSFunction) \
   V(ArchTailCallCodeObject)               \
   V(ArchCallJSFunction)                   \
-  V(ArchTailCallJSFunctionFromJSFunction) \
   V(ArchTailCallAddress)                  \
   V(ArchPrepareCallCFunction)             \
   V(ArchCallCFunction)                    \

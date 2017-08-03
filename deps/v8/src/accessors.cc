@@ -105,6 +105,8 @@ void Accessors::ReconfigureToDataProperty(
     v8::Local<v8::Name> key, v8::Local<v8::Value> val,
     const v8::PropertyCallbackInfo<v8::Boolean>& info) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(info.GetIsolate());
+  RuntimeCallTimerScope stats_scope(
+      isolate, &RuntimeCallStats::ReconfigureToDataProperty);
   HandleScope scope(isolate);
   Handle<Object> receiver = Utils::OpenHandle(*info.This());
   Handle<JSObject> holder =
@@ -152,8 +154,7 @@ void Accessors::ArrayLengthGetter(
     v8::Local<v8::Name> name,
     const v8::PropertyCallbackInfo<v8::Value>& info) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(info.GetIsolate());
-  RuntimeCallTimerScope timer(
-      isolate, &RuntimeCallStats::AccessorNameGetterCallback_ArrayLength);
+  RuntimeCallTimerScope timer(isolate, &RuntimeCallStats::ArrayLengthGetter);
   DisallowHeapAllocation no_allocation;
   HandleScope scope(isolate);
   JSArray* holder = JSArray::cast(*Utils::OpenHandle(*info.Holder()));
@@ -165,6 +166,7 @@ void Accessors::ArrayLengthSetter(
     v8::Local<v8::Name> name, v8::Local<v8::Value> val,
     const v8::PropertyCallbackInfo<v8::Boolean>& info) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(info.GetIsolate());
+  RuntimeCallTimerScope timer(isolate, &RuntimeCallStats::ArrayLengthSetter);
   HandleScope scope(isolate);
 
   DCHECK(Utils::OpenHandle(*name)->SameValue(isolate->heap()->length_string()));
@@ -282,8 +284,7 @@ void Accessors::StringLengthGetter(
     v8::Local<v8::Name> name,
     const v8::PropertyCallbackInfo<v8::Value>& info) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(info.GetIsolate());
-  RuntimeCallTimerScope timer(
-      isolate, &RuntimeCallStats::AccessorNameGetterCallback_StringLength);
+  RuntimeCallTimerScope timer(isolate, &RuntimeCallStats::StringLengthGetter);
   DisallowHeapAllocation no_allocation;
   HandleScope scope(isolate);
 
@@ -649,11 +650,7 @@ void Accessors::ScriptEvalFromFunctionNameGetter(
     Handle<SharedFunctionInfo> shared(
         SharedFunctionInfo::cast(script->eval_from_shared()));
     // Find the name of the function calling eval.
-    if (!shared->name()->IsUndefined(isolate)) {
-      result = Handle<Object>(shared->name(), isolate);
-    } else {
-      result = Handle<Object>(shared->inferred_name(), isolate);
-    }
+    result = Handle<Object>(shared->name(), isolate);
   }
   info.GetReturnValue().Set(Utils::ToLocal(result));
 }
@@ -685,8 +682,8 @@ void Accessors::FunctionPrototypeGetter(
     v8::Local<v8::Name> name,
     const v8::PropertyCallbackInfo<v8::Value>& info) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(info.GetIsolate());
-  RuntimeCallTimerScope timer(
-      isolate, &RuntimeCallStats::AccessorNameGetterCallback_FunctionPrototype);
+  RuntimeCallTimerScope timer(isolate,
+                              &RuntimeCallStats::FunctionPrototypeGetter);
   HandleScope scope(isolate);
   Handle<JSFunction> function =
       Handle<JSFunction>::cast(Utils::OpenHandle(*info.Holder()));
@@ -698,6 +695,8 @@ void Accessors::FunctionPrototypeSetter(
     v8::Local<v8::Name> name, v8::Local<v8::Value> val,
     const v8::PropertyCallbackInfo<v8::Boolean>& info) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(info.GetIsolate());
+  RuntimeCallTimerScope timer(isolate,
+                              &RuntimeCallStats::FunctionPrototypeSetter);
   HandleScope scope(isolate);
   Handle<Object> value = Utils::OpenHandle(*val);
   Handle<JSFunction> object =
@@ -783,7 +782,7 @@ static Handle<Object> ArgumentsForInlinedFunction(
   Factory* factory = isolate->factory();
 
   TranslatedState translated_values(frame);
-  translated_values.Prepare(false, frame->fp());
+  translated_values.Prepare(frame->fp());
 
   int argument_count = 0;
   TranslatedFrame* translated_frame =
@@ -823,7 +822,6 @@ static Handle<Object> ArgumentsForInlinedFunction(
 
 static int FindFunctionInFrame(JavaScriptFrame* frame,
                                Handle<JSFunction> function) {
-  DisallowHeapAllocation no_allocation;
   List<FrameSummary> frames(2);
   frame->Summarize(&frames);
   for (int i = frames.length() - 1; i >= 0; i--) {
@@ -948,7 +946,7 @@ class FrameFunctionIterator {
     }
   }
 
-  // Iterate through functions until the first occurence of 'function'.
+  // Iterate through functions until the first occurrence of 'function'.
   // Returns true if 'function' is found, and false if the iterator ends
   // without finding it.
   bool Find(JSFunction* function) {
@@ -1055,9 +1053,8 @@ Handle<AccessorInfo> Accessors::FunctionCallerInfo(
 void Accessors::BoundFunctionLengthGetter(
     v8::Local<v8::Name> name, const v8::PropertyCallbackInfo<v8::Value>& info) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(info.GetIsolate());
-  RuntimeCallTimerScope timer(
-      isolate,
-      &RuntimeCallStats::AccessorNameGetterCallback_BoundFunctionLength);
+  RuntimeCallTimerScope timer(isolate,
+                              &RuntimeCallStats::BoundFunctionLengthGetter);
   HandleScope scope(isolate);
   Handle<JSBoundFunction> function =
       Handle<JSBoundFunction>::cast(Utils::OpenHandle(*info.Holder()));
@@ -1092,8 +1089,8 @@ Handle<AccessorInfo> Accessors::BoundFunctionLengthInfo(
 void Accessors::BoundFunctionNameGetter(
     v8::Local<v8::Name> name, const v8::PropertyCallbackInfo<v8::Value>& info) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(info.GetIsolate());
-  RuntimeCallTimerScope timer(
-      isolate, &RuntimeCallStats::AccessorNameGetterCallback_BoundFunctionName);
+  RuntimeCallTimerScope timer(isolate,
+                              &RuntimeCallStats::BoundFunctionNameGetter);
   HandleScope scope(isolate);
   Handle<JSBoundFunction> function =
       Handle<JSBoundFunction>::cast(Utils::OpenHandle(*info.Holder()));

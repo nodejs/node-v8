@@ -6,7 +6,6 @@
 
 #include "src/accessors.h"
 #include "src/assembler.h"
-#include "src/builtins/builtins.h"
 #include "src/counters.h"
 #include "src/deoptimizer.h"
 #include "src/ic/stub-cache.h"
@@ -271,6 +270,14 @@ void ExternalReferenceTable::AddReferences(Isolate* isolate) {
   Add(ExternalReference::search_string_raw<const uc16, const uc16>(isolate)
           .address(),
       "search_string_raw<1-byte, 2-byte>");
+  Add(ExternalReference::orderedhashmap_gethash_raw(isolate).address(),
+      "orderedhashmap_gethash_raw");
+  Add(ExternalReference::orderedhashtable_has_raw<OrderedHashMap, 2>(isolate)
+          .address(),
+      "orderedhashtable_has_raw<OrderedHashMap, 2>");
+  Add(ExternalReference::orderedhashtable_has_raw<OrderedHashSet, 1>(isolate)
+          .address(),
+      "orderedhashtable_has_raw<OrderedHashSet, 1>");
   Add(ExternalReference::log_enter_external_function(isolate).address(),
       "Logger::EnterExternal");
   Add(ExternalReference::log_leave_external_function(isolate).address(),
@@ -281,9 +288,6 @@ void ExternalReferenceTable::AddReferences(Isolate* isolate) {
       "Isolate::stress_deopt_count_address()");
   Add(ExternalReference::runtime_function_table_address(isolate).address(),
       "Runtime::runtime_function_table_address()");
-  Add(ExternalReference::is_tail_call_elimination_enabled_address(isolate)
-          .address(),
-      "Isolate::is_tail_call_elimination_enabled_address()");
   Add(ExternalReference::address_of_float_abs_constant().address(),
       "float_absolute_constant");
   Add(ExternalReference::address_of_float_neg_constant().address(),
@@ -337,10 +341,6 @@ void ExternalReferenceTable::AddReferences(Isolate* isolate) {
   Add(ExternalReference::incremental_marking_record_write_function(isolate)
           .address(),
       "IncrementalMarking::RecordWrite");
-  Add(ExternalReference::incremental_marking_record_write_code_entry_function(
-          isolate)
-          .address(),
-      "IncrementalMarking::RecordWriteOfCodeEntryFromCode");
   Add(ExternalReference::store_buffer_overflow_function(isolate).address(),
       "StoreBuffer::StoreBufferOverflow");
 }
@@ -358,19 +358,6 @@ void ExternalReferenceTable::AddBuiltins(Isolate* isolate) {
   for (unsigned i = 0; i < arraysize(c_builtins); ++i) {
     Add(ExternalReference(c_builtins[i].address, isolate).address(),
         c_builtins[i].name);
-  }
-
-  struct BuiltinEntry {
-    Builtins::Name id;
-    const char* name;
-  };
-  static const BuiltinEntry builtins[] = {
-#define DEF_ENTRY(Name, ...) {Builtins::k##Name, "Builtin_" #Name},
-      BUILTIN_LIST_C(DEF_ENTRY) BUILTIN_LIST_A(DEF_ENTRY)
-#undef DEF_ENTRY
-  };
-  for (unsigned i = 0; i < arraysize(builtins); ++i) {
-    Add(isolate->builtins()->builtin_address(builtins[i].id), builtins[i].name);
   }
 }
 
@@ -400,8 +387,8 @@ void ExternalReferenceTable::AddIsolateAddresses(Isolate* isolate) {
 #undef BUILD_NAME_LITERAL
   };
 
-  for (int i = 0; i < Isolate::kIsolateAddressCount; ++i) {
-    Add(isolate->get_address_from_id(static_cast<Isolate::AddressId>(i)),
+  for (int i = 0; i < IsolateAddressId::kIsolateAddressCount; ++i) {
+    Add(isolate->get_address_from_id(static_cast<IsolateAddressId>(i)),
         address_names[i]);
   }
 }

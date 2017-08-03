@@ -47,6 +47,17 @@ bool Isolate::has_pending_exception() {
   return !thread_local_top_.pending_exception_->IsTheHole(this);
 }
 
+Object* Isolate::get_wasm_caught_exception() const {
+  return thread_local_top_.wasm_caught_exception_;
+}
+
+void Isolate::set_wasm_caught_exception(Object* exception_obj) {
+  thread_local_top_.wasm_caught_exception_ = exception_obj;
+}
+
+void Isolate::clear_wasm_caught_exception() {
+  thread_local_top_.wasm_caught_exception_ = nullptr;
+}
 
 void Isolate::clear_pending_message() {
   thread_local_top_.pending_message_obj_ = heap_.the_hole_value();
@@ -128,9 +139,9 @@ bool Isolate::IsArraySpeciesLookupChainIntact() {
   // done here. In place, there are mjsunit tests harmony/array-species* which
   // ensure that behavior is correct in various invalid protector cases.
 
-  Cell* species_cell = heap()->species_protector();
+  PropertyCell* species_cell = heap()->species_protector();
   return species_cell->value()->IsSmi() &&
-         Smi::cast(species_cell->value())->value() == kProtectorValid;
+         Smi::ToInt(species_cell->value()) == kProtectorValid;
 }
 
 bool Isolate::IsStringLengthOverflowIntact() {

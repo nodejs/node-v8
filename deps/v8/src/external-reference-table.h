@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "src/address-map.h"
+#include "src/builtins/builtins.h"
 
 namespace v8 {
 namespace internal {

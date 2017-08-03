@@ -69,7 +69,8 @@ class IC {
   static inline bool IsHandler(Object* object);
 
   // Nofity the IC system that a feedback has changed.
-  static void OnFeedbackChanged(Isolate* isolate, JSFunction* host_function);
+  static void OnFeedbackChanged(Isolate* isolate, FeedbackVector* vector,
+                                JSFunction* host_function);
 
  protected:
   Address fp() const { return fp_; }
@@ -122,11 +123,9 @@ class IC {
   Handle<Object> ComputeHandler(LookupIterator* lookup);
   virtual Handle<Object> GetMapIndependentHandler(LookupIterator* lookup) {
     UNREACHABLE();
-    return Handle<Code>::null();
   }
   virtual Handle<Code> CompileHandler(LookupIterator* lookup) {
     UNREACHABLE();
-    return Handle<Code>::null();
   }
 
   void UpdateMonomorphicIC(Handle<Object> handler, Handle<Name> name);
@@ -265,7 +264,7 @@ class LoadIC : public IC {
 
  protected:
   virtual Handle<Code> slow_stub() const {
-    return isolate()->builtins()->LoadIC_Slow();
+    return BUILTIN_CODE(isolate(), LoadIC_Slow);
   }
 
   // Update the inline cache and the global stub cache based on the
@@ -306,7 +305,7 @@ class LoadGlobalIC : public LoadIC {
 
  protected:
   Handle<Code> slow_stub() const override {
-    return isolate()->builtins()->LoadGlobalIC_Slow();
+    return BUILTIN_CODE(isolate(), LoadGlobalIC_Slow);
   }
 };
 
@@ -357,7 +356,7 @@ class StoreIC : public IC {
   // Stub accessors.
   Handle<Code> slow_stub() const {
     // All StoreICs share the same slow stub.
-    return isolate()->builtins()->KeyedStoreIC_Slow();
+    return BUILTIN_CODE(isolate(), KeyedStoreIC_Slow);
   }
 
   // Update the inline cache and the global stub cache based on the
@@ -423,17 +422,6 @@ class KeyedStoreIC : public StoreIC {
 };
 
 
-// Type Recording BinaryOpIC, that records the types of the inputs and outputs.
-class BinaryOpIC : public IC {
- public:
-  explicit BinaryOpIC(Isolate* isolate) : IC(EXTRA_CALL_FRAME, isolate) {}
-
-  MaybeHandle<Object> Transition(Handle<AllocationSite> allocation_site,
-                                 Handle<Object> left,
-                                 Handle<Object> right) WARN_UNUSED_RESULT;
-};
-
-
 class CompareIC : public IC {
  public:
   CompareIC(Isolate* isolate, Token::Value op)
@@ -461,16 +449,7 @@ class CompareIC : public IC {
   friend class IC;
 };
 
-
-class ToBooleanIC : public IC {
- public:
-  explicit ToBooleanIC(Isolate* isolate) : IC(EXTRA_CALL_FRAME, isolate) {}
-
-  Handle<Object> ToBoolean(Handle<Object> object);
-};
-
-
-// Helper for BinaryOpIC and CompareIC.
+// Helper for CompareIC.
 enum InlinedSmiCheck { ENABLE_INLINED_SMI_CHECK, DISABLE_INLINED_SMI_CHECK };
 void PatchInlinedSmiCode(Isolate* isolate, Address address,
                          InlinedSmiCheck check);

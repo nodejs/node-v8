@@ -93,7 +93,6 @@ Address RelocInfo::target_address_address() {
 
 Address RelocInfo::constant_pool_entry_address() {
   UNREACHABLE();
-  return NULL;
 }
 
 
@@ -160,35 +159,6 @@ void RelocInfo::set_target_runtime_entry(Isolate* isolate, Address target,
 }
 
 
-Handle<Cell> RelocInfo::target_cell_handle() {
-  DCHECK(rmode_ == RelocInfo::CELL);
-  Address address = Memory::Address_at(pc_);
-  return Handle<Cell>(reinterpret_cast<Cell**>(address));
-}
-
-
-Cell* RelocInfo::target_cell() {
-  DCHECK(rmode_ == RelocInfo::CELL);
-  return Cell::FromValueAddress(Memory::Address_at(pc_));
-}
-
-
-void RelocInfo::set_target_cell(Cell* cell,
-                                WriteBarrierMode write_barrier_mode,
-                                ICacheFlushMode icache_flush_mode) {
-  DCHECK(cell->IsCell());
-  DCHECK(rmode_ == RelocInfo::CELL);
-  Address address = cell->address() + Cell::kValueOffset;
-  Memory::Address_at(pc_) = address;
-  if (icache_flush_mode != SKIP_ICACHE_FLUSH) {
-    Assembler::FlushICache(cell->GetIsolate(), pc_, sizeof(Address));
-  }
-  if (write_barrier_mode == UPDATE_WRITE_BARRIER && host() != NULL) {
-    host()->GetHeap()->incremental_marking()->RecordWriteIntoCode(host(), this,
-                                                                  cell);
-  }
-}
-
 Handle<Code> RelocInfo::code_age_stub_handle(Assembler* origin) {
   DCHECK(rmode_ == RelocInfo::CODE_AGE_SEQUENCE);
   DCHECK(*pc_ == kCallOpcode);
@@ -252,8 +222,6 @@ void RelocInfo::Visit(Isolate* isolate, ObjectVisitor* visitor) {
     Assembler::FlushICache(isolate, pc_, sizeof(Address));
   } else if (RelocInfo::IsCodeTarget(mode)) {
     visitor->VisitCodeTarget(host(), this);
-  } else if (mode == RelocInfo::CELL) {
-    visitor->VisitCellPointer(host(), this);
   } else if (mode == RelocInfo::EXTERNAL_REFERENCE) {
     visitor->VisitExternalReference(host(), this);
   } else if (mode == RelocInfo::INTERNAL_REFERENCE) {
@@ -277,8 +245,6 @@ void RelocInfo::Visit(Heap* heap) {
     Assembler::FlushICache(heap->isolate(), pc_, sizeof(Address));
   } else if (RelocInfo::IsCodeTarget(mode)) {
     StaticVisitor::VisitCodeTarget(heap, this);
-  } else if (mode == RelocInfo::CELL) {
-    StaticVisitor::VisitCell(heap, this);
   } else if (mode == RelocInfo::EXTERNAL_REFERENCE) {
     StaticVisitor::VisitExternalReference(this);
   } else if (mode == RelocInfo::INTERNAL_REFERENCE) {
@@ -296,50 +262,40 @@ void RelocInfo::Visit(Heap* heap) {
 
 
 Immediate::Immediate(int x)  {
-  x_ = x;
+  value_.immediate = x;
   rmode_ = RelocInfo::NONE32;
 }
 
 Immediate::Immediate(Address x, RelocInfo::Mode rmode) {
-  x_ = reinterpret_cast<int32_t>(x);
+  value_.immediate = reinterpret_cast<int32_t>(x);
   rmode_ = rmode;
 }
 
 Immediate::Immediate(const ExternalReference& ext) {
-  x_ = reinterpret_cast<int32_t>(ext.address());
+  value_.immediate = reinterpret_cast<int32_t>(ext.address());
   rmode_ = RelocInfo::EXTERNAL_REFERENCE;
 }
 
 
 Immediate::Immediate(Label* internal_offset) {
-  x_ = reinterpret_cast<int32_t>(internal_offset);
+  value_.immediate = reinterpret_cast<int32_t>(internal_offset);
   rmode_ = RelocInfo::INTERNAL_REFERENCE;
 }
 
-
-Immediate::Immediate(Handle<Object> handle) {
-  AllowDeferredHandleDereference using_raw_address;
-  // Verify all Objects referred by code are NOT in new space.
-  Object* obj = *handle;
-  if (obj->IsHeapObject()) {
-    x_ = reinterpret_cast<intptr_t>(handle.location());
-    rmode_ = RelocInfo::EMBEDDED_OBJECT;
-  } else {
-    // no relocation needed
-    x_ =  reinterpret_cast<intptr_t>(obj);
-    rmode_ = RelocInfo::NONE32;
-  }
+Immediate::Immediate(Handle<HeapObject> handle) {
+  value_.immediate = reinterpret_cast<intptr_t>(handle.address());
+  rmode_ = RelocInfo::EMBEDDED_OBJECT;
 }
 
 
 Immediate::Immediate(Smi* value) {
-  x_ = reinterpret_cast<intptr_t>(value);
+  value_.immediate = reinterpret_cast<intptr_t>(value);
   rmode_ = RelocInfo::NONE32;
 }
 
 
 Immediate::Immediate(Address addr) {
-  x_ = reinterpret_cast<int32_t>(addr);
+  value_.immediate = reinterpret_cast<int32_t>(addr);
   rmode_ = RelocInfo::NONE32;
 }
 
@@ -355,48 +311,36 @@ void Assembler::emit_q(uint64_t x) {
   pc_ += sizeof(uint64_t);
 }
 
-
-void Assembler::emit(Handle<Object> handle) {
-  AllowDeferredHandleDereference heap_object_check;
-  // Verify all Objects referred by code are NOT in new space.
-  Object* obj = *handle;
-  if (obj->IsHeapObject()) {
-    emit(reinterpret_cast<intptr_t>(handle.location()),
-         RelocInfo::EMBEDDED_OBJECT);
-  } else {
-    // no relocation needed
-    emit(reinterpret_cast<intptr_t>(obj));
-  }
+void Assembler::emit(Handle<HeapObject> handle) {
+  emit(reinterpret_cast<intptr_t>(handle.address()),
+       RelocInfo::EMBEDDED_OBJECT);
 }
 
-
-void Assembler::emit(uint32_t x, RelocInfo::Mode rmode, TypeFeedbackId id) {
-  if (rmode == RelocInfo::CODE_TARGET && !id.IsNone()) {
-    RecordRelocInfo(RelocInfo::CODE_TARGET_WITH_ID, id.ToInt());
-  } else if (!RelocInfo::IsNone(rmode)
-      && rmode != RelocInfo::CODE_AGE_SEQUENCE) {
+void Assembler::emit(uint32_t x, RelocInfo::Mode rmode) {
+  if (!RelocInfo::IsNone(rmode) && rmode != RelocInfo::CODE_AGE_SEQUENCE) {
     RecordRelocInfo(rmode);
   }
   emit(x);
 }
 
-
-void Assembler::emit(Handle<Code> code,
-                     RelocInfo::Mode rmode,
-                     TypeFeedbackId id) {
-  AllowDeferredHandleDereference embedding_raw_address;
-  emit(reinterpret_cast<intptr_t>(code.location()), rmode, id);
+void Assembler::emit(Handle<Code> code, RelocInfo::Mode rmode) {
+  emit(reinterpret_cast<intptr_t>(code.address()), rmode);
 }
 
 
 void Assembler::emit(const Immediate& x) {
   if (x.rmode_ == RelocInfo::INTERNAL_REFERENCE) {
-    Label* label = reinterpret_cast<Label*>(x.x_);
+    Label* label = reinterpret_cast<Label*>(x.immediate());
     emit_code_relative_offset(label);
     return;
   }
   if (!RelocInfo::IsNone(x.rmode_)) RecordRelocInfo(x.rmode_);
-  emit(x.x_);
+  if (x.is_heap_object_request()) {
+    RequestHeapObject(x.heap_object_request());
+    emit(0);
+  } else {
+    emit(x.immediate());
+  }
 }
 
 
@@ -412,13 +356,13 @@ void Assembler::emit_code_relative_offset(Label* label) {
 
 void Assembler::emit_b(Immediate x) {
   DCHECK(x.is_int8() || x.is_uint8());
-  uint8_t value = static_cast<uint8_t>(x.x_);
+  uint8_t value = static_cast<uint8_t>(x.immediate());
   *pc_++ = value;
 }
 
 void Assembler::emit_w(const Immediate& x) {
   DCHECK(RelocInfo::IsNone(x.rmode_));
-  uint16_t value = static_cast<uint16_t>(x.x_);
+  uint16_t value = static_cast<uint16_t>(x.immediate());
   reinterpret_cast<uint16_t*>(pc_)[0] = value;
   pc_ += sizeof(uint16_t);
 }
@@ -545,7 +489,7 @@ Operand::Operand(int32_t disp, RelocInfo::Mode rmode) {
 Operand::Operand(Immediate imm) {
   // [disp/r]
   set_modrm(0, ebp);
-  set_dispr(imm.x_, imm.rmode_);
+  set_dispr(imm.immediate(), imm.rmode_);
 }
 }  // namespace internal
 }  // namespace v8

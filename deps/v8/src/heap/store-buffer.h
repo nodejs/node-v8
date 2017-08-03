@@ -44,7 +44,7 @@ class StoreBuffer {
   // method takes a lock.
   void MoveEntriesToRememberedSet(int index);
 
-  // This method ensures that all used store buffer entries are transfered to
+  // This method ensures that all used store buffer entries are transferred to
   // the remembered set.
   void MoveAllEntriesToRememberedSet();
 
@@ -208,7 +208,7 @@ class StoreBuffer {
   // IN_GC mode.
   StoreBufferMode mode_;
 
-  base::VirtualMemory* virtual_memory_;
+  base::VirtualMemory virtual_memory_;
 
   // Callbacks are more efficient than reading out the gc state for every
   // store buffer operation.

@@ -7,6 +7,7 @@
 
 #include "src/compiler/types.h"
 #include "src/date.h"
+#include "src/objects/string.h"
 
 namespace v8 {
 namespace internal {
@@ -81,6 +82,11 @@ class TypeCache final {
   // The FixedArray::length property always containts a smi in the range
   // [0, FixedArray::kMaxLength].
   Type* const kFixedArrayLengthType = CreateRange(0.0, FixedArray::kMaxLength);
+
+  // The PropertyArray::length property always containts a smi in the range
+  // [0, PropertyArray::kMaxLength].
+  Type* const kPropertyArrayLengthType =
+      CreateRange(0.0, PropertyArray::kMaxLength);
 
   // The FixedDoubleArray::length property always containts a smi in the range
   // [0, FixedDoubleArray::kMaxLength].

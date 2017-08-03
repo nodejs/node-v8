@@ -113,11 +113,36 @@ namespace compiler {
   V(IA32StackCheck)                \
   V(IA32I32x4Splat)                \
   V(IA32I32x4ExtractLane)          \
-  V(IA32I32x4ReplaceLane)          \
+  V(SSEI32x4ReplaceLane)           \
+  V(AVXI32x4ReplaceLane)           \
+  V(SSEI32x4Shl)                   \
+  V(AVXI32x4Shl)                   \
+  V(SSEI32x4ShrS)                  \
+  V(AVXI32x4ShrS)                  \
   V(SSEI32x4Add)                   \
-  V(SSEI32x4Sub)                   \
   V(AVXI32x4Add)                   \
-  V(AVXI32x4Sub)
+  V(SSEI32x4Sub)                   \
+  V(AVXI32x4Sub)                   \
+  V(SSEI32x4Mul)                   \
+  V(AVXI32x4Mul)                   \
+  V(SSEI32x4MinS)                  \
+  V(AVXI32x4MinS)                  \
+  V(SSEI32x4MaxS)                  \
+  V(AVXI32x4MaxS)                  \
+  V(SSEI32x4ShrU)                  \
+  V(AVXI32x4ShrU)                  \
+  V(SSEI32x4MinU)                  \
+  V(AVXI32x4MinU)                  \
+  V(SSEI32x4MaxU)                  \
+  V(AVXI32x4MaxU)                  \
+  V(IA32I16x8Splat)                \
+  V(IA32I16x8ExtractLane)          \
+  V(SSEI16x8ReplaceLane)           \
+  V(AVXI16x8ReplaceLane)           \
+  V(IA32I8x16Splat)                \
+  V(IA32I8x16ExtractLane)          \
+  V(SSEI8x16ReplaceLane)           \
+  V(AVXI8x16ReplaceLane)
 
 // Addressing modes represent the "shape" of inputs to an instruction.
 // Many instructions support multiple addressing modes. Addressing modes

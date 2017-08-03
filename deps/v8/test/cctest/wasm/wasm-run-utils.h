@@ -31,12 +31,13 @@
 #include "src/wasm/wasm-module.h"
 #include "src/wasm/wasm-objects.h"
 #include "src/wasm/wasm-opcodes.h"
-
+#include "src/zone/accounting-allocator.h"
 #include "src/zone/zone.h"
 
 #include "test/cctest/cctest.h"
 #include "test/cctest/compiler/call-tester.h"
 #include "test/cctest/compiler/graph-builder-tester.h"
+#include "test/common/wasm/flag-utils.h"
 
 static const uint32_t kMaxFunctions = 10;
 
@@ -194,11 +195,11 @@ class TestingModule : public ModuleEnv {
       module_.functions.reserve(kMaxFunctions);
     }
     uint32_t index = static_cast<uint32_t>(module->functions.size());
-    module_.functions.push_back({sig, index, 0, 0, 0, 0, 0, false, false});
+    module_.functions.push_back({sig, index, 0, {0, 0}, {0, 0}, false, false});
     if (name) {
       Vector<const byte> name_vec = Vector<const byte>::cast(CStrVector(name));
-      module_.functions.back().name_offset = AddBytes(name_vec);
-      module_.functions.back().name_length = name_vec.length();
+      module_.functions.back().name = {
+          AddBytes(name_vec), static_cast<uint32_t>(name_vec.length())};
     }
     instance->function_code.push_back(code);
     if (interpreter_) {
@@ -214,7 +215,7 @@ class TestingModule : public ModuleEnv {
     uint32_t index = AddFunction(sig, Handle<Code>::null(), nullptr);
     Handle<Code> code = CompileWasmToJSWrapper(
         isolate_, jsfunc, sig, index, Handle<String>::null(),
-        Handle<String>::null(), module->get_origin());
+        Handle<String>::null(), module->origin());
     instance->function_code[index] = code;
     return index;
   }
@@ -250,12 +251,11 @@ class TestingModule : public ModuleEnv {
 
   void AddIndirectFunctionTable(uint16_t* function_indexes,
                                 uint32_t table_size) {
-    module_.function_tables.push_back({table_size, table_size, true,
-                                       std::vector<int32_t>(), false, false,
-                                       SignatureMap()});
+    module_.function_tables.emplace_back();
     WasmIndirectFunctionTable& table = module_.function_tables.back();
     table.min_size = table_size;
     table.max_size = table_size;
+    table.has_max = true;
     for (uint32_t i = 0; i < table_size; ++i) {
       table.values.push_back(function_indexes[i]);
       table.map.FindOrInsert(module_.functions[function_indexes[i]].sig);
@@ -342,9 +342,9 @@ class TestingModule : public ModuleEnv {
                                   script, Handle<ByteArray>::null());
     Handle<FixedArray> code_table = isolate_->factory()->NewFixedArray(0);
 
+    std::vector<Handle<FixedArray>> empty;
     Handle<WasmCompiledModule> compiled_module = WasmCompiledModule::New(
-        isolate_, shared_module_data, code_table, MaybeHandle<FixedArray>(),
-        MaybeHandle<FixedArray>());
+        isolate_, shared_module_data, code_table, empty, empty);
     Handle<FixedArray> weak_exported = isolate_->factory()->NewFixedArray(0);
     compiled_module->set_weak_exported_functions(weak_exported);
     DCHECK(WasmCompiledModule::IsWasmCompiledModule(*compiled_module));
@@ -355,10 +355,13 @@ class TestingModule : public ModuleEnv {
 inline void TestBuildingGraph(Zone* zone, JSGraph* jsgraph, ModuleEnv* module,
                               FunctionSig* sig,
                               SourcePositionTable* source_position_table,
-                              const byte* start, const byte* end) {
+                              const byte* start, const byte* end,
+                              bool runtime_exception_support = false) {
   compiler::WasmGraphBuilder builder(
       module, zone, jsgraph, CEntryStub(jsgraph->isolate(), 1).GetCode(), sig,
       source_position_table);
+  builder.SetRuntimeExceptionSupport(runtime_exception_support);
+
   DecodeResult result =
       BuildTFGraph(zone->allocator(), &builder, sig, start, end);
   if (result.failed()) {
@@ -504,7 +507,7 @@ class WasmFunctionWrapper : private GraphAndBuilders {
   Signature<MachineType>* signature_;
 };
 
-// A helper for compiling WASM functions for testing.
+// A helper for compiling wasm functions for testing.
 // It contains the internal state for compilation (i.e. TurboFan graph) and
 // interpretation (by adding to the interpreter manually).
 class WasmFunctionCompiler : private GraphAndBuilders {
@@ -516,7 +519,7 @@ class WasmFunctionCompiler : private GraphAndBuilders {
   MachineOperatorBuilder* machine() { return &main_machine_; }
   CallDescriptor* descriptor() {
     if (descriptor_ == nullptr) {
-      descriptor_ = testing_module_->GetWasmCallDescriptor(zone(), sig);
+      descriptor_ = compiler::GetWasmCallDescriptor(zone(), sig);
     }
     return descriptor_;
   }
@@ -538,9 +541,9 @@ class WasmFunctionCompiler : private GraphAndBuilders {
 
     CHECK_GE(kMaxInt, end - start);
     int len = static_cast<int>(end - start);
-    function_->code_start_offset =
-        testing_module_->AddBytes(Vector<const byte>(start, len));
-    function_->code_end_offset = function_->code_start_offset + len;
+    function_->code = {
+        testing_module_->AddBytes(Vector<const byte>(start, len)),
+        static_cast<uint32_t>(len)};
 
     if (interpreter_) {
       // Add the code to the interpreter.
@@ -549,7 +552,8 @@ class WasmFunctionCompiler : private GraphAndBuilders {
 
     // Build the TurboFan graph.
     TestBuildingGraph(zone(), &jsgraph, testing_module_, sig,
-                      &source_position_table_, start, end);
+                      &source_position_table_, start, end,
+                      runtime_exception_support_);
     Handle<Code> code = Compile();
     testing_module_->SetFunctionCode(function_index(), code);
 
@@ -585,7 +589,8 @@ class WasmFunctionCompiler : private GraphAndBuilders {
   friend class WasmRunnerBase;
 
   explicit WasmFunctionCompiler(Zone* zone, FunctionSig* sig,
-                                TestingModule* module, const char* name)
+                                TestingModule* module, const char* name,
+                                bool runtime_exception_support)
       : GraphAndBuilders(zone),
         jsgraph(module->isolate(), this->graph(), this->common(), nullptr,
                 nullptr, this->machine()),
@@ -594,7 +599,8 @@ class WasmFunctionCompiler : private GraphAndBuilders {
         testing_module_(module),
         local_decls(zone, sig),
         source_position_table_(this->graph()),
-        interpreter_(module->interpreter()) {
+        interpreter_(module->interpreter()),
+        runtime_exception_support_(runtime_exception_support) {
     // Get a new function from the testing module.
     int index = module->AddFunction(sig, Handle<Code>::null(), name);
     function_ = testing_module_->GetFunctionAt(index);
@@ -603,7 +609,7 @@ class WasmFunctionCompiler : private GraphAndBuilders {
   Handle<Code> Compile() {
     CallDescriptor* desc = descriptor();
     if (kPointerSize == 4) {
-      desc = testing_module_->GetI32WasmCallDescriptor(this->zone(), desc);
+      desc = compiler::GetI32WasmCallDescriptor(this->zone(), desc);
     }
     EmbeddedVector<char, 16> comp_name;
     int comp_name_len = SNPrintF(comp_name, "wasm#%u", this->function_index());
@@ -611,7 +617,8 @@ class WasmFunctionCompiler : private GraphAndBuilders {
     CompilationInfo info(comp_name, this->isolate(), this->zone(),
                          Code::ComputeFlags(Code::WASM_FUNCTION));
     std::unique_ptr<CompilationJob> job(Pipeline::NewWasmCompilationJob(
-        &info, &jsgraph, desc, &source_position_table_, nullptr, false));
+        &info, &jsgraph, desc, &source_position_table_, nullptr,
+        ModuleOrigin::kAsmJsOrigin));
     if (job->ExecuteJob() != CompilationJob::SUCCEEDED ||
         job->FinalizeJob() != CompilationJob::SUCCEEDED)
       return Handle<Code>::null();
@@ -649,16 +656,19 @@ class WasmFunctionCompiler : private GraphAndBuilders {
   LocalDeclEncoder local_decls;
   SourcePositionTable source_position_table_;
   WasmInterpreter* interpreter_;
+  bool runtime_exception_support_ = false;
 };
 
 // A helper class to build a module around Wasm bytecode, generate machine
 // code, and run that code.
 class WasmRunnerBase : public HandleAndZoneScope {
  public:
-  explicit WasmRunnerBase(WasmExecutionMode execution_mode, int num_params)
+  explicit WasmRunnerBase(WasmExecutionMode execution_mode, int num_params,
+                          bool runtime_exception_support)
       : zone_(&allocator_, ZONE_NAME),
         module_(&zone_, execution_mode),
-        wrapper_(&zone_, num_params) {}
+        wrapper_(&zone_, num_params),
+        runtime_exception_support_(runtime_exception_support) {}
 
   // Builds a graph from the given Wasm code and generates the machine
   // code and call wrapper for that graph. This method must not be called
@@ -681,8 +691,8 @@ class WasmRunnerBase : public HandleAndZoneScope {
   // Returns the index of the previously built function.
   WasmFunctionCompiler& NewFunction(FunctionSig* sig,
                                     const char* name = nullptr) {
-    functions_.emplace_back(
-        new WasmFunctionCompiler(&zone_, sig, &module_, name));
+    functions_.emplace_back(new WasmFunctionCompiler(
+        &zone_, sig, &module_, name, runtime_exception_support_));
     return *functions_.back();
   }
 
@@ -699,16 +709,6 @@ class WasmRunnerBase : public HandleAndZoneScope {
   bool possible_nondeterminism() { return possible_nondeterminism_; }
   TestingModule& module() { return module_; }
   Zone* zone() { return &zone_; }
-
-  // Set the context, such that e.g. runtime functions can be called.
-  void SetModuleContext() {
-    if (!module_.instance->context.is_null()) {
-      CHECK(module_.instance->context.is_identical_to(
-          main_isolate()->native_context()));
-      return;
-    }
-    module_.instance->context = main_isolate()->native_context();
-  }
 
   bool interpret() { return module_.interpret(); }
 
@@ -750,6 +750,7 @@ class WasmRunnerBase : public HandleAndZoneScope {
   WasmFunctionWrapper wrapper_;
   bool compiled_ = false;
   bool possible_nondeterminism_ = false;
+  bool runtime_exception_support_ = false;
 
  public:
   // This field has to be static. Otherwise, gcc complains about the use in
@@ -761,8 +762,10 @@ template <typename ReturnType, typename... ParamTypes>
 class WasmRunner : public WasmRunnerBase {
  public:
   explicit WasmRunner(WasmExecutionMode execution_mode,
-                      const char* main_fn_name = "main")
-      : WasmRunnerBase(execution_mode, sizeof...(ParamTypes)) {
+                      const char* main_fn_name = "main",
+                      bool runtime_exception_support = false)
+      : WasmRunnerBase(execution_mode, sizeof...(ParamTypes),
+                       runtime_exception_support) {
     NewFunction<ReturnType, ParamTypes...>(main_fn_name);
     if (!interpret()) {
       wrapper_.Init<ReturnType, ParamTypes...>(functions_[0]->descriptor());
@@ -796,10 +799,12 @@ class WasmRunner : public WasmRunnerBase {
   ReturnType CallInterpreter(ParamTypes... p) {
     WasmInterpreter::Thread* thread = interpreter()->GetThread(0);
     thread->Reset();
-    std::array<WasmVal, sizeof...(p)> args{{WasmVal(p)...}};
+    std::array<WasmValue, sizeof...(p)> args{{WasmValue(p)...}};
     thread->InitFrame(function(), args.data());
+    WasmInterpreter::HeapObjectsScope heap_objects_scope(
+        interpreter(), module().instance_object());
     if (thread->Run() == WasmInterpreter::FINISHED) {
-      WasmVal val = thread->GetReturnValue();
+      WasmValue val = thread->GetReturnValue();
       possible_nondeterminism_ |= thread->PossibleNondeterminism();
       return val.to<ReturnType>();
     } else if (thread->state() == WasmInterpreter::TRAPPED) {
@@ -837,11 +842,6 @@ bool WasmRunnerBase::trap_happened;
     }                                                    \
     RunWasm_##name(kExecuteInterpreted);                 \
   }                                                      \
-  void RunWasm_##name(WasmExecutionMode execution_mode)
-
-#define WASM_EXEC_COMPILED_TEST(name)                                \
-  void RunWasm_##name(WasmExecutionMode execution_mode);             \
-  TEST(RunWasmCompiled_##name) { RunWasm_##name(kExecuteCompiled); } \
   void RunWasm_##name(WasmExecutionMode execution_mode)
 
 }  // namespace

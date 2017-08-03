@@ -29,32 +29,6 @@ RUNTIME_FUNCTION(Runtime_FunctionGetName) {
   }
 }
 
-
-RUNTIME_FUNCTION(Runtime_FunctionSetName) {
-  HandleScope scope(isolate);
-  DCHECK_EQ(2, args.length());
-
-  CONVERT_ARG_HANDLE_CHECKED(JSFunction, f, 0);
-  CONVERT_ARG_HANDLE_CHECKED(String, name, 1);
-
-  name = String::Flatten(name);
-  f->shared()->set_name(*name);
-  return isolate->heap()->undefined_value();
-}
-
-
-RUNTIME_FUNCTION(Runtime_FunctionRemovePrototype) {
-  SealHandleScope shs(isolate);
-  DCHECK_EQ(1, args.length());
-
-  CONVERT_ARG_CHECKED(JSFunction, f, 0);
-  CHECK(f->RemovePrototype());
-  f->shared()->SetConstructStub(
-      *isolate->builtins()->ConstructedNonConstructable());
-
-  return isolate->heap()->undefined_value();
-}
-
 // TODO(5530): Remove once uses in debug.js are gone.
 RUNTIME_FUNCTION(Runtime_FunctionGetScript) {
   HandleScope scope(isolate);
@@ -114,24 +88,12 @@ RUNTIME_FUNCTION(Runtime_FunctionGetContextData) {
   return fun->native_context()->debug_context_id();
 }
 
-RUNTIME_FUNCTION(Runtime_FunctionSetInstanceClassName) {
-  SealHandleScope shs(isolate);
-  DCHECK_EQ(2, args.length());
-
-  CONVERT_ARG_CHECKED(JSFunction, fun, 0);
-  CONVERT_ARG_CHECKED(String, name, 1);
-  fun->shared()->set_instance_class_name(name);
-  return isolate->heap()->undefined_value();
-}
-
-
 RUNTIME_FUNCTION(Runtime_FunctionSetLength) {
   SealHandleScope shs(isolate);
   DCHECK_EQ(2, args.length());
 
   CONVERT_ARG_CHECKED(JSFunction, fun, 0);
   CONVERT_SMI_ARG_CHECKED(length, 1);
-  CHECK((length & 0xC0000000) == 0xC0000000 || (length & 0xC0000000) == 0x0);
   fun->shared()->set_length(length);
   return isolate->heap()->undefined_value();
 }
@@ -172,13 +134,6 @@ RUNTIME_FUNCTION(Runtime_SetCode) {
     return isolate->heap()->exception();
   }
 
-  // Mark both, the source and the target, as un-flushable because the
-  // shared unoptimized code makes them impossible to enqueue in a list.
-  DCHECK(target_shared->code()->gc_metadata() == NULL);
-  DCHECK(source_shared->code()->gc_metadata() == NULL);
-  target_shared->set_dont_flush(true);
-  source_shared->set_dont_flush(true);
-
   // Set the code, scope info, formal parameter count, and the length
   // of the target shared function info.
   target_shared->ReplaceCode(source_shared->code());
@@ -196,10 +151,7 @@ RUNTIME_FUNCTION(Runtime_SetCode) {
   target_shared->set_end_position(source_shared->end_position());
   bool was_native = target_shared->native();
   target_shared->set_compiler_hints(source_shared->compiler_hints());
-  target_shared->set_opt_count_and_bailout_reason(
-      source_shared->opt_count_and_bailout_reason());
   target_shared->set_native(was_native);
-  target_shared->set_profiler_ticks(source_shared->profiler_ticks());
   target_shared->set_function_literal_id(source_shared->function_literal_id());
 
   Handle<Object> source_script(source_shared->script(), isolate);

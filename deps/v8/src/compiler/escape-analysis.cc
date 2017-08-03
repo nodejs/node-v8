@@ -125,6 +125,8 @@ const Alias EscapeStatusAnalysis::kNotReachable =
 const Alias EscapeStatusAnalysis::kUntrackable =
     std::numeric_limits<Alias>::max() - 1;
 
+namespace impl {
+
 class VirtualObject : public ZoneObject {
  public:
   enum Status {
@@ -566,6 +568,9 @@ bool VirtualState::MergeFrom(MergeCache* cache, Zone* zone, Graph* graph,
   return changed;
 }
 
+}  // namespace impl
+using namespace impl;
+
 EscapeStatusAnalysis::EscapeStatusAnalysis(EscapeAnalysis* object_analysis,
                                            Graph* graph, Zone* zone)
     : stack_(zone),
@@ -833,7 +838,11 @@ bool EscapeStatusAnalysis::CheckUsesForEscape(Node* uses, Node* rep,
       case IrOpcode::kPlainPrimitiveToFloat64:
       case IrOpcode::kStringCharAt:
       case IrOpcode::kStringCharCodeAt:
+      case IrOpcode::kSeqStringCharCodeAt:
       case IrOpcode::kStringIndexOf:
+      case IrOpcode::kStringToLowerCaseIntl:
+      case IrOpcode::kStringToUpperCaseIntl:
+      case IrOpcode::kObjectIsCallable:
       case IrOpcode::kObjectIsDetectableCallable:
       case IrOpcode::kObjectIsNaN:
       case IrOpcode::kObjectIsNonCallable:
@@ -857,13 +866,9 @@ bool EscapeStatusAnalysis::CheckUsesForEscape(Node* uses, Node* rep,
         }
         break;
       default:
-        if (use->op()->EffectInputCount() == 0 &&
-            uses->op()->EffectInputCount() > 0 &&
-            !IrOpcode::IsJsOpcode(use->opcode())) {
-          V8_Fatal(__FILE__, __LINE__,
-                   "Encountered unaccounted use by #%d (%s)\n", use->id(),
-                   use->op()->mnemonic());
-        }
+        DCHECK(use->op()->EffectInputCount() > 0 ||
+               uses->op()->EffectInputCount() == 0 ||
+               IrOpcode::IsJsOpcode(use->opcode()));
         if (SetEscaped(rep)) {
           TRACE("Setting #%d (%s) to escaped because of use by #%d (%s)\n",
                 rep->id(), rep->op()->mnemonic(), use->id(),
@@ -1532,8 +1537,8 @@ void EscapeAnalysis::ProcessCheckMaps(Node* node) {
         // CheckMapsValue operator that takes the load-eliminated map value as
         // input.
         if (value->opcode() == IrOpcode::kHeapConstant &&
-            params.maps().contains(ZoneHandleSet<Map>(
-                Handle<Map>::cast(OpParameter<Handle<HeapObject>>(value))))) {
+            params.maps().contains(ZoneHandleSet<Map>(bit_cast<Handle<Map>>(
+                OpParameter<Handle<HeapObject>>(value))))) {
           TRACE("CheckMaps #%i seems to be redundant (until now).\n",
                 node->id());
           return;
@@ -1612,8 +1617,7 @@ void EscapeAnalysis::ProcessStoreField(Node* node) {
     // fields which are hard-coded in {TranslatedState::MaterializeAt} as well.
     if (val->opcode() == IrOpcode::kInt32Constant ||
         val->opcode() == IrOpcode::kInt64Constant) {
-      DCHECK(FieldAccessOf(node->op()).offset == JSFunction::kCodeEntryOffset ||
-             FieldAccessOf(node->op()).offset == Name::kHashFieldOffset);
+      DCHECK(FieldAccessOf(node->op()).offset == Name::kHashFieldOffset);
       val = slot_not_analyzed_;
     }
     object = CopyForModificationAt(object, state, node);
@@ -1685,8 +1689,8 @@ Node* EscapeAnalysis::GetOrCreateObjectState(Node* effect, Node* node) {
         }
         int input_count = static_cast<int>(cache_->fields().size());
         Node* new_object_state =
-            graph()->NewNode(common()->ObjectState(input_count), input_count,
-                             &cache_->fields().front());
+            graph()->NewNode(common()->ObjectState(vobj->id(), input_count),
+                             input_count, &cache_->fields().front());
         NodeProperties::SetType(new_object_state, Type::OtherInternal());
         vobj->SetObjectState(new_object_state);
         TRACE(

@@ -132,6 +132,14 @@ static bool HasString(const v8::HeapGraphNode* node, const char* contents) {
   return false;
 }
 
+static void EnsureNoUninstrumentedInternals(const v8::HeapGraphNode* node) {
+  for (int i = 0; i < 20; ++i) {
+    i::ScopedVector<char> buffer(10);
+    const v8::HeapGraphNode* internal = GetProperty(
+        node, v8::HeapGraphEdge::kInternal, i::IntToCString(i, buffer));
+    CHECK(!internal);
+  }
+}
 
 // Check that snapshot has no unretained entries except root.
 static bool ValidateSnapshot(const v8::HeapSnapshot* snapshot, int depth = 3) {
@@ -2030,12 +2038,15 @@ TEST(WeakGlobalHandle) {
 
   CHECK(!HasWeakGlobalHandle());
 
-  v8::Persistent<v8::Object> handle(env->GetIsolate(),
-                                    v8::Object::New(env->GetIsolate()));
+  v8::Persistent<v8::Object> handle;
+
+  handle.Reset(env->GetIsolate(), v8::Object::New(env->GetIsolate()));
   handle.SetWeak(&handle, PersistentHandleCallback,
                  v8::WeakCallbackType::kParameter);
 
   CHECK(HasWeakGlobalHandle());
+  CcTest::CollectAllGarbage();
+  EmptyMessageQueues(env->GetIsolate());
 }
 
 
@@ -2457,7 +2468,9 @@ TEST(TrackHeapAllocationsWithInlining) {
 
 TEST(TrackHeapAllocationsWithoutInlining) {
   i::FLAG_turbo_inlining = false;
-  i::FLAG_max_inlined_source_size = 0;  // Disable inlining
+  // Disable inlining
+  i::FLAG_max_inlined_bytecode_size = 0;
+  i::FLAG_max_inlined_bytecode_size_small = 0;
   v8::HandleScope scope(v8::Isolate::GetCurrent());
   LocalContext env;
 
@@ -2700,6 +2713,43 @@ TEST(WeakContainers) {
   }
 }
 
+TEST(JSPromise) {
+  LocalContext env;
+  v8::HandleScope scope(env->GetIsolate());
+  v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
+  CompileRun(
+      "function A() {}\n"
+      "function B() {}\n"
+      "resolved = Promise.resolve(new A());\n"
+      "rejected = Promise.reject(new B());\n"
+      "pending = new Promise(() => 0);\n"
+      "chained = pending.then(A, B);\n");
+  const v8::HeapSnapshot* snapshot = heap_profiler->TakeHeapSnapshot();
+  CHECK(ValidateSnapshot(snapshot));
+  const v8::HeapGraphNode* global = GetGlobalObject(snapshot);
+
+  const v8::HeapGraphNode* resolved =
+      GetProperty(global, v8::HeapGraphEdge::kProperty, "resolved");
+  CHECK(GetProperty(resolved, v8::HeapGraphEdge::kInternal, "result"));
+
+  const v8::HeapGraphNode* rejected =
+      GetProperty(global, v8::HeapGraphEdge::kProperty, "rejected");
+  CHECK(GetProperty(rejected, v8::HeapGraphEdge::kInternal, "result"));
+
+  const v8::HeapGraphNode* pending =
+      GetProperty(global, v8::HeapGraphEdge::kProperty, "pending");
+  CHECK(GetProperty(pending, v8::HeapGraphEdge::kInternal, "deferred_promise"));
+  CHECK(
+      GetProperty(pending, v8::HeapGraphEdge::kInternal, "fulfill_reactions"));
+  CHECK(GetProperty(pending, v8::HeapGraphEdge::kInternal, "reject_reactions"));
+
+  const char* objectNames[] = {"resolved", "rejected", "pending", "chained"};
+  for (auto objectName : objectNames) {
+    const v8::HeapGraphNode* promise =
+        GetProperty(global, v8::HeapGraphEdge::kProperty, objectName);
+    EnsureNoUninstrumentedInternals(promise);
+  }
+}
 
 static inline i::Address ToAddress(int n) {
   return reinterpret_cast<i::Address>(n);

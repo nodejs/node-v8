@@ -125,7 +125,6 @@ Address RelocInfo::constant_pool_entry_address() {
           pc_, constant_pool, access, ConstantPoolEntry::INTPTR);
   }
   UNREACHABLE();
-  return NULL;
 }
 
 
@@ -222,31 +221,6 @@ void RelocInfo::set_target_runtime_entry(Isolate* isolate, Address target,
 }
 
 
-Handle<Cell> RelocInfo::target_cell_handle() {
-  DCHECK(rmode_ == RelocInfo::CELL);
-  Address address = Memory::Address_at(pc_);
-  return Handle<Cell>(reinterpret_cast<Cell**>(address));
-}
-
-
-Cell* RelocInfo::target_cell() {
-  DCHECK(rmode_ == RelocInfo::CELL);
-  return Cell::FromValueAddress(Memory::Address_at(pc_));
-}
-
-
-void RelocInfo::set_target_cell(Cell* cell, WriteBarrierMode write_barrier_mode,
-                                ICacheFlushMode icache_flush_mode) {
-  DCHECK(rmode_ == RelocInfo::CELL);
-  Address address = cell->address() + Cell::kValueOffset;
-  Memory::Address_at(pc_) = address;
-  if (write_barrier_mode == UPDATE_WRITE_BARRIER && host() != NULL) {
-    host()->GetHeap()->incremental_marking()->RecordWriteIntoCode(host(), this,
-                                                                  cell);
-  }
-}
-
-
 static const int kNoCodeAgeInstructions =
     FLAG_enable_embedded_constant_pool ? 7 : 6;
 static const int kCodeAgingInstructions =
@@ -324,8 +298,6 @@ void RelocInfo::Visit(Isolate* isolate, ObjectVisitor* visitor) {
     visitor->VisitEmbeddedPointer(host(), this);
   } else if (RelocInfo::IsCodeTarget(mode)) {
     visitor->VisitCodeTarget(host(), this);
-  } else if (mode == RelocInfo::CELL) {
-    visitor->VisitCellPointer(host(), this);
   } else if (mode == RelocInfo::EXTERNAL_REFERENCE) {
     visitor->VisitExternalReference(host(), this);
   } else if (mode == RelocInfo::INTERNAL_REFERENCE ||
@@ -349,8 +321,6 @@ void RelocInfo::Visit(Heap* heap) {
     StaticVisitor::VisitEmbeddedPointer(heap, this);
   } else if (RelocInfo::IsCodeTarget(mode)) {
     StaticVisitor::VisitCodeTarget(heap, this);
-  } else if (mode == RelocInfo::CELL) {
-    StaticVisitor::VisitCell(heap, this);
   } else if (mode == RelocInfo::EXTERNAL_REFERENCE) {
     StaticVisitor::VisitExternalReference(this);
   } else if (mode == RelocInfo::INTERNAL_REFERENCE ||
@@ -368,19 +338,19 @@ void RelocInfo::Visit(Heap* heap) {
 
 Operand::Operand(intptr_t immediate, RelocInfo::Mode rmode) {
   rm_ = no_reg;
-  imm_ = immediate;
+  value_.immediate = immediate;
   rmode_ = rmode;
 }
 
 Operand::Operand(const ExternalReference& f) {
   rm_ = no_reg;
-  imm_ = reinterpret_cast<intptr_t>(f.address());
+  value_.immediate = reinterpret_cast<intptr_t>(f.address());
   rmode_ = RelocInfo::EXTERNAL_REFERENCE;
 }
 
 Operand::Operand(Smi* value) {
   rm_ = no_reg;
-  imm_ = reinterpret_cast<intptr_t>(value);
+  value_.immediate = reinterpret_cast<intptr_t>(value);
   rmode_ = kRelocInfo_NONEPTR;
 }
 
@@ -466,7 +436,6 @@ Address Assembler::target_address_at(Address pc, Address constant_pool) {
   }
 
   UNREACHABLE();
-  return NULL;
 }
 
 

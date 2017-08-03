@@ -57,7 +57,6 @@ class BytecodeGraphBuilder::Environment : public ZoneObject {
   // Preserve a checkpoint of the environment for the IR graph. Any
   // further mutation of the environment will not affect checkpoints.
   Node* Checkpoint(BailoutId bytecode_offset, OutputFrameStateCombine combine,
-                   bool owner_has_exception,
                    const BytecodeLivenessState* liveness);
 
   // Control dependency tracked by this environment.
@@ -72,7 +71,7 @@ class BytecodeGraphBuilder::Environment : public ZoneObject {
   Environment* Copy();
   void Merge(Environment* other);
 
-  void PrepareForOsrEntry();
+  void FillWithOsrValues();
   void PrepareForLoop(const BytecodeLoopAssignments& assignments);
   void PrepareForLoopExit(Node* loop,
                           const BytecodeLoopAssignments& assignments);
@@ -308,27 +307,18 @@ void BytecodeGraphBuilder::Environment::PrepareForLoop(
   builder()->exit_controls_.push_back(terminate);
 }
 
-void BytecodeGraphBuilder::Environment::PrepareForOsrEntry() {
-  DCHECK_EQ(IrOpcode::kLoop, GetControlDependency()->opcode());
-  DCHECK_EQ(1, GetControlDependency()->InputCount());
-
+void BytecodeGraphBuilder::Environment::FillWithOsrValues() {
   Node* start = graph()->start();
-
-  // Create a control node for the OSR entry point and update the current
-  // environment's dependencies accordingly.
-  Node* entry = graph()->NewNode(common()->OsrLoopEntry(), start, start);
-  UpdateControlDependency(entry);
-  UpdateEffectDependency(entry);
 
   // Create OSR values for each environment value.
   SetContext(graph()->NewNode(
-      common()->OsrValue(Linkage::kOsrContextSpillSlotIndex), entry));
+      common()->OsrValue(Linkage::kOsrContextSpillSlotIndex), start));
   int size = static_cast<int>(values()->size());
   for (int i = 0; i < size; i++) {
     int idx = i;  // Indexing scheme follows {StandardFrame}, adapt accordingly.
     if (i >= register_base()) idx += InterpreterFrameConstants::kExtraSlotCount;
     if (i >= accumulator_base()) idx = Linkage::kOsrAccumulatorRegisterIndex;
-    values()->at(i) = graph()->NewNode(common()->OsrValue(idx), entry);
+    values()->at(i) = graph()->NewNode(common()->OsrValue(idx), start);
   }
 }
 
@@ -406,7 +396,7 @@ Node* BytecodeGraphBuilder::Environment::GetStateValuesFromCache(
 
 Node* BytecodeGraphBuilder::Environment::Checkpoint(
     BailoutId bailout_id, OutputFrameStateCombine combine,
-    bool owner_has_exception, const BytecodeLivenessState* liveness) {
+    const BytecodeLivenessState* liveness) {
   if (parameter_count() == register_count()) {
     // Re-use the state-value cache if the number of local registers happens
     // to match the parameter count.
@@ -441,7 +431,7 @@ BytecodeGraphBuilder::BytecodeGraphBuilder(
     Handle<FeedbackVector> feedback_vector, BailoutId osr_ast_id,
     JSGraph* jsgraph, CallFrequency invocation_frequency,
     SourcePositionTable* source_positions, int inlining_id,
-    JSTypeHintLowering::Flags flags)
+    JSTypeHintLowering::Flags flags, bool stack_check)
     : local_zone_(local_zone),
       jsgraph_(jsgraph),
       invocation_frequency_(invocation_frequency),
@@ -458,6 +448,8 @@ BytecodeGraphBuilder::BytecodeGraphBuilder(
       bytecode_analysis_(nullptr),
       environment_(nullptr),
       osr_ast_id_(osr_ast_id),
+      currently_peeled_loop_offset_(-1),
+      stack_check_(stack_check),
       merge_environments_(local_zone),
       exception_handlers_(local_zone),
       current_exception_handler_(0),
@@ -515,14 +507,10 @@ Node* BytecodeGraphBuilder::BuildLoadNativeContextField(int index) {
 
 
 VectorSlotPair BytecodeGraphBuilder::CreateVectorSlotPair(int slot_id) {
-  FeedbackSlot slot;
-  if (slot_id >= FeedbackVector::kReservedIndexCount) {
-    slot = feedback_vector()->ToSlot(slot_id);
-  }
-  return VectorSlotPair(feedback_vector(), slot);
+  return VectorSlotPair(feedback_vector(), feedback_vector()->ToSlot(slot_id));
 }
 
-bool BytecodeGraphBuilder::CreateGraph(bool stack_check) {
+void BytecodeGraphBuilder::CreateGraph() {
   SourcePositionTable::Scope pos_scope(source_positions_, start_position_);
 
   // Set up the basic structure of the graph. Outputs for {Start} are the formal
@@ -536,7 +524,7 @@ bool BytecodeGraphBuilder::CreateGraph(bool stack_check) {
                   GetFunctionContext());
   set_environment(&env);
 
-  VisitBytecodes(stack_check);
+  VisitBytecodes();
 
   // Finish the basic structure of the graph.
   DCHECK_NE(0u, exit_controls_.size());
@@ -544,8 +532,6 @@ bool BytecodeGraphBuilder::CreateGraph(bool stack_check) {
   Node** const inputs = &exit_controls_.front();
   Node* end = graph()->NewNode(common()->End(input_count), input_count, inputs);
   graph()->SetEnd(end);
-
-  return true;
 }
 
 void BytecodeGraphBuilder::PrepareEagerCheckpoint() {
@@ -564,7 +550,7 @@ void BytecodeGraphBuilder::PrepareEagerCheckpoint() {
             bytecode_iterator().current_offset());
 
     Node* frame_state_before = environment()->Checkpoint(
-        bailout_id, OutputFrameStateCombine::Ignore(), false, liveness_before);
+        bailout_id, OutputFrameStateCombine::Ignore(), liveness_before);
     NodeProperties::ReplaceFrameStateInput(node, frame_state_before);
 #ifdef DEBUG
   } else {
@@ -592,19 +578,239 @@ void BytecodeGraphBuilder::PrepareFrameState(Node* node,
     DCHECK_EQ(IrOpcode::kDead,
               NodeProperties::GetFrameStateInput(node)->opcode());
     BailoutId bailout_id(bytecode_iterator().current_offset());
-    bool has_exception = NodeProperties::IsExceptionalCall(node);
 
     const BytecodeLivenessState* liveness_after =
         bytecode_analysis()->GetOutLivenessFor(
             bytecode_iterator().current_offset());
 
-    Node* frame_state_after = environment()->Checkpoint(
-        bailout_id, combine, has_exception, liveness_after);
+    Node* frame_state_after =
+        environment()->Checkpoint(bailout_id, combine, liveness_after);
     NodeProperties::ReplaceFrameStateInput(node, frame_state_after);
   }
 }
 
-void BytecodeGraphBuilder::VisitBytecodes(bool stack_check) {
+// Stores the state of the SourcePosition iterator, and the index to the
+// current exception handlers stack. We need, during the OSR graph generation,
+// to backup the states of these iterators at the LoopHeader offset of each
+// outer loop which contains the OSR loop. The iterators are then restored when
+// peeling the loops, so that both exception handling and synchronisation with
+// the source position can be achieved.
+class BytecodeGraphBuilder::OsrIteratorState {
+ public:
+  OsrIteratorState(interpreter::BytecodeArrayIterator* iterator,
+                   SourcePositionTableIterator* source_position_iterator,
+                   BytecodeGraphBuilder* graph_builder)
+      : iterator_(iterator),
+        source_position_iterator_(source_position_iterator),
+        graph_builder_(graph_builder),
+        saved_states_(graph_builder->local_zone()) {}
+
+  void ProcessOsrPrelude() {
+    ZoneVector<int> outer_loop_offsets(graph_builder_->local_zone());
+
+    const BytecodeAnalysis& bytecode_analysis =
+        *(graph_builder_->bytecode_analysis());
+    int osr_offset = bytecode_analysis.osr_entry_point();
+
+    // We find here the outermost loop which contains the OSR loop.
+    int outermost_loop_offset = osr_offset;
+    while ((outermost_loop_offset =
+                bytecode_analysis.GetLoopInfoFor(outermost_loop_offset)
+                    .parent_offset()) != -1) {
+      outer_loop_offsets.push_back(outermost_loop_offset);
+    }
+    outermost_loop_offset =
+        outer_loop_offsets.empty() ? osr_offset : outer_loop_offsets.back();
+
+    // We will not processs any bytecode before the outermost_loop_offset, but
+    // the source_position_iterator needs to be advanced step by step through
+    // the bytecode.
+    for (; iterator_->current_offset() != outermost_loop_offset;
+         iterator_->Advance()) {
+      graph_builder_->UpdateSourcePosition(source_position_iterator_,
+                                           iterator_->current_offset());
+    }
+
+    // We save some iterators states at the offsets of the loop headers of the
+    // outer loops (the ones containing the OSR loop). They will be used for
+    // jumping back in the bytecode.
+    for (ZoneVector<int>::const_reverse_iterator it =
+             outer_loop_offsets.crbegin();
+         it != outer_loop_offsets.crend(); ++it) {
+      int next_loop_offset = *it;
+      for (; iterator_->current_offset() != next_loop_offset;
+           iterator_->Advance()) {
+        graph_builder_->UpdateSourcePosition(source_position_iterator_,
+                                             iterator_->current_offset());
+      }
+      graph_builder_->ExitThenEnterExceptionHandlers(
+          iterator_->current_offset());
+      saved_states_.push(
+          IteratorsStates(graph_builder_->current_exception_handler(),
+                          source_position_iterator_->GetState()));
+    }
+
+    // Finishing by advancing to the OSR entry
+    for (; iterator_->current_offset() != osr_offset; iterator_->Advance()) {
+      graph_builder_->UpdateSourcePosition(source_position_iterator_,
+                                           iterator_->current_offset());
+    }
+
+    // Enters all remaining exception handler which end before the OSR loop
+    // so that on next call of VisitSingleBytecode they will get popped from
+    // the exception handlers stack.
+    graph_builder_->ExitThenEnterExceptionHandlers(osr_offset);
+    graph_builder_->set_currently_peeled_loop_offset(
+        bytecode_analysis.GetLoopInfoFor(osr_offset).parent_offset());
+  }
+
+  void RestoreState(int target_offset, int new_parent_offset) {
+    iterator_->SetOffset(target_offset);
+    // In case of a return, we must not build loop exits for
+    // not-yet-built outer loops.
+    graph_builder_->set_currently_peeled_loop_offset(new_parent_offset);
+    IteratorsStates saved_state = saved_states_.top();
+    source_position_iterator_->RestoreState(saved_state.source_iterator_state_);
+    graph_builder_->set_current_exception_handler(
+        saved_state.exception_handler_index_);
+    saved_states_.pop();
+  }
+
+ private:
+  struct IteratorsStates {
+    int exception_handler_index_;
+    SourcePositionTableIterator::IndexAndPosition source_iterator_state_;
+
+    IteratorsStates(
+        int exception_handler_index,
+        SourcePositionTableIterator::IndexAndPosition source_iterator_state)
+        : exception_handler_index_(exception_handler_index),
+          source_iterator_state_(source_iterator_state) {}
+  };
+
+  interpreter::BytecodeArrayIterator* iterator_;
+  SourcePositionTableIterator* source_position_iterator_;
+  BytecodeGraphBuilder* graph_builder_;
+  ZoneStack<IteratorsStates> saved_states_;
+};
+
+void BytecodeGraphBuilder::RemoveMergeEnvironmentsBeforeOffset(
+    int limit_offset) {
+  if (!merge_environments_.empty()) {
+    ZoneMap<int, Environment*>::iterator it = merge_environments_.begin();
+    ZoneMap<int, Environment*>::iterator stop_it = merge_environments_.end();
+    while (it != stop_it && it->first <= limit_offset) {
+      it = merge_environments_.erase(it);
+    }
+  }
+}
+
+// We will iterate through the OSR loop, then its parent, and so on
+// until we have reached the outmost loop containing the OSR loop. We do
+// not generate nodes for anything before the outermost loop.
+void BytecodeGraphBuilder::AdvanceToOsrEntryAndPeelLoops(
+    interpreter::BytecodeArrayIterator* iterator,
+    SourcePositionTableIterator* source_position_iterator) {
+  const BytecodeAnalysis& analysis = *(bytecode_analysis());
+  int osr_offset = analysis.osr_entry_point();
+  OsrIteratorState iterator_states(iterator, source_position_iterator, this);
+
+  iterator_states.ProcessOsrPrelude();
+  DCHECK_EQ(iterator->current_offset(), osr_offset);
+
+  environment()->FillWithOsrValues();
+
+  // Suppose we have n nested loops, loop_0 being the outermost one, and
+  // loop_n being the OSR loop. We start iterating the bytecode at the header
+  // of loop_n (the OSR loop), and then we peel the part of the the body of
+  // loop_{n-1} following the end of loop_n. We then rewind the iterator to
+  // the header of loop_{n-1}, and so on until we have partly peeled loop 0.
+  // The full loop_0 body will be generating with the rest of the function,
+  // outside the OSR generation.
+
+  // To do so, if we are visiting a loop, we continue to visit what's left
+  // of its parent, and then when reaching the parent's JumpLoop, we do not
+  // create any jump for that but rewind the bytecode iterator to visit the
+  // parent loop entirely, and so on.
+
+  int current_parent_offset =
+      analysis.GetLoopInfoFor(osr_offset).parent_offset();
+  while (current_parent_offset != -1) {
+    LoopInfo current_parent_loop =
+        analysis.GetLoopInfoFor(current_parent_offset);
+    // We iterate until the back edge of the parent loop, which we detect by
+    // the offset that the JumpLoop targets.
+    for (; !iterator->done(); iterator->Advance()) {
+      if (iterator->current_bytecode() == interpreter::Bytecode::kJumpLoop &&
+          iterator->GetJumpTargetOffset() == current_parent_offset) {
+        // Reached the end of the current parent loop.
+        break;
+      }
+      VisitSingleBytecode(source_position_iterator);
+    }
+    DCHECK(!iterator->done());  // Should have found the loop's jump target.
+
+    // We also need to take care of the merge environments and exceptions
+    // handlers here because the omitted JumpLoop bytecode can still be the
+    // target of jumps or the first bytecode after a try block.
+    ExitThenEnterExceptionHandlers(iterator->current_offset());
+    SwitchToMergeEnvironment(iterator->current_offset());
+
+    // This jump is the jump of our parent loop, which is not yet created.
+    // So we do not build the jump nodes, but restore the bytecode and the
+    // SourcePosition iterators to the values they had when we were visiting
+    // the offset pointed at by the JumpLoop we've just reached.
+    // We have already built nodes for inner loops, but now we will
+    // iterate again over them and build new nodes corresponding to the same
+    // bytecode offsets. Any jump or reference to this inner loops must now
+    // point to the new nodes we will build, hence we clear the relevant part
+    // of the environment.
+    // Completely clearing the environment is not possible because merge
+    // environments for forward jumps out of the loop need to be preserved
+    // (e.g. a return or a labeled break in the middle of a loop).
+    RemoveMergeEnvironmentsBeforeOffset(iterator->current_offset());
+    iterator_states.RestoreState(current_parent_offset,
+                                 current_parent_loop.parent_offset());
+    current_parent_offset = current_parent_loop.parent_offset();
+  }
+}
+
+// TODO(alexandret) create an iterator which wraps both bytecode_iterator and
+// source_position_iterator and increments them in one, so we don't need to
+// pass source_position_iterator as an argument here.
+void BytecodeGraphBuilder::VisitSingleBytecode(
+    SourcePositionTableIterator* source_position_iterator) {
+  const interpreter::BytecodeArrayIterator& iterator = bytecode_iterator();
+  int current_offset = iterator.current_offset();
+  UpdateSourcePosition(source_position_iterator, current_offset);
+  ExitThenEnterExceptionHandlers(current_offset);
+  DCHECK_GE(exception_handlers_.empty() ? current_offset
+                                        : exception_handlers_.top().end_offset_,
+            current_offset);
+  SwitchToMergeEnvironment(current_offset);
+
+  if (environment() != nullptr) {
+    BuildLoopHeaderEnvironment(current_offset);
+
+    // Skip the first stack check if stack_check is false
+    if (!stack_check() &&
+        iterator.current_bytecode() == interpreter::Bytecode::kStackCheck) {
+      set_stack_check(true);
+      return;
+    }
+
+    switch (iterator.current_bytecode()) {
+#define BYTECODE_CASE(name, ...)       \
+  case interpreter::Bytecode::k##name: \
+    Visit##name();                     \
+    break;
+      BYTECODE_LIST(BYTECODE_CASE)
+#undef BYTECODE_CODE
+    }
+  }
+}
+
+void BytecodeGraphBuilder::VisitBytecodes() {
   BytecodeAnalysis bytecode_analysis(bytecode_array(), local_zone(),
                                      FLAG_analyze_environment_liveness);
   bytecode_analysis.Analyze(osr_ast_id_);
@@ -621,32 +827,16 @@ void BytecodeGraphBuilder::VisitBytecodes(bool stack_check) {
     bytecode_analysis.PrintLivenessTo(of);
   }
 
-  BuildOSRNormalEntryPoint();
+  if (bytecode_analysis.HasOsrEntryPoint()) {
+    // We peel the OSR loop and any outer loop containing it except that we
+    // leave the nodes corresponding to the whole outermost loop (including
+    // the last copies of the loops it contains) to be generated by the normal
+    // bytecode iteration below.
+    AdvanceToOsrEntryAndPeelLoops(&iterator, &source_position_iterator);
+  }
 
   for (; !iterator.done(); iterator.Advance()) {
-    int current_offset = iterator.current_offset();
-    UpdateCurrentSourcePosition(&source_position_iterator, current_offset);
-    EnterAndExitExceptionHandlers(current_offset);
-    SwitchToMergeEnvironment(current_offset);
-    if (environment() != nullptr) {
-      BuildLoopHeaderEnvironment(current_offset);
-
-      // Skip the first stack check if stack_check is false
-      if (!stack_check &&
-          iterator.current_bytecode() == interpreter::Bytecode::kStackCheck) {
-        stack_check = true;
-        continue;
-      }
-
-      switch (iterator.current_bytecode()) {
-#define BYTECODE_CASE(name, ...)       \
-  case interpreter::Bytecode::k##name: \
-    Visit##name();                     \
-    break;
-        BYTECODE_LIST(BYTECODE_CASE)
-#undef BYTECODE_CODE
-      }
-    }
+    VisitSingleBytecode(&source_position_iterator);
   }
   set_bytecode_analysis(nullptr);
   set_bytecode_iterator(nullptr);
@@ -871,8 +1061,8 @@ BytecodeGraphBuilder::Environment* BytecodeGraphBuilder::CheckContextExtensions(
   // Output environment where the context has an extension
   Environment* slow_environment = nullptr;
 
-  // We only need to check up to the last-but-one depth, because the an eval in
-  // the same scope as the variable itself has no way of shadowing it.
+  // We only need to check up to the last-but-one depth, because the an eval
+  // in the same scope as the variable itself has no way of shadowing it.
   for (uint32_t d = 0; d < depth; d++) {
     Node* extension_slot =
         NewNode(javascript()->LoadContext(d, Context::EXTENSION_INDEX, false));
@@ -901,8 +1091,8 @@ BytecodeGraphBuilder::Environment* BytecodeGraphBuilder::CheckContextExtensions(
     // the fast path.
   }
 
-  // The depth can be zero, in which case no slow-path checks are built, and the
-  // slow path environment can be null.
+  // The depth can be zero, in which case no slow-path checks are built, and
+  // the slow path environment can be null.
   DCHECK(depth == 0 || slow_environment != nullptr);
 
   return slow_environment;
@@ -1006,24 +1196,28 @@ void BytecodeGraphBuilder::VisitLdaLookupGlobalSlotInsideTypeof() {
   BuildLdaLookupGlobalSlot(TypeofMode::INSIDE_TYPEOF);
 }
 
-void BytecodeGraphBuilder::BuildStaLookupSlot(LanguageMode language_mode) {
+void BytecodeGraphBuilder::VisitStaLookupSlot() {
   PrepareEagerCheckpoint();
   Node* value = environment()->LookupAccumulator();
   Node* name =
       jsgraph()->Constant(bytecode_iterator().GetConstantForIndexOperand(0));
+  int bytecode_flags = bytecode_iterator().GetFlagOperand(1);
+  LanguageMode language_mode = static_cast<LanguageMode>(
+      interpreter::StoreLookupSlotFlags::LanguageModeBit::decode(
+          bytecode_flags));
+  LookupHoistingMode lookup_hoisting_mode = static_cast<LookupHoistingMode>(
+      interpreter::StoreLookupSlotFlags::LookupHoistingModeBit::decode(
+          bytecode_flags));
+  DCHECK_IMPLIES(lookup_hoisting_mode == LookupHoistingMode::kLegacySloppy,
+                 is_sloppy(language_mode));
   const Operator* op = javascript()->CallRuntime(
-      is_strict(language_mode) ? Runtime::kStoreLookupSlot_Strict
-                               : Runtime::kStoreLookupSlot_Sloppy);
+      is_strict(language_mode)
+          ? Runtime::kStoreLookupSlot_Strict
+          : lookup_hoisting_mode == LookupHoistingMode::kLegacySloppy
+                ? Runtime::kStoreLookupSlot_SloppyHoisting
+                : Runtime::kStoreLookupSlot_Sloppy);
   Node* store = NewNode(op, name, value);
   environment()->BindAccumulator(store, Environment::kAttachFrameState);
-}
-
-void BytecodeGraphBuilder::VisitStaLookupSlotSloppy() {
-  BuildStaLookupSlot(LanguageMode::SLOPPY);
-}
-
-void BytecodeGraphBuilder::VisitStaLookupSlotStrict() {
-  BuildStaLookupSlot(LanguageMode::STRICT);
 }
 
 void BytecodeGraphBuilder::VisitLdaNamedProperty() {
@@ -1295,6 +1489,13 @@ void BytecodeGraphBuilder::VisitCreateArrayLiteral() {
   environment()->BindAccumulator(literal, Environment::kAttachFrameState);
 }
 
+void BytecodeGraphBuilder::VisitCreateEmptyArrayLiteral() {
+  int literal_index = bytecode_iterator().GetIndexOperand(0);
+  Node* literal = NewNode(javascript()->CreateEmptyLiteralArray(literal_index),
+                          GetFunctionClosure());
+  environment()->BindAccumulator(literal);
+}
+
 void BytecodeGraphBuilder::VisitCreateObjectLiteral() {
   Handle<BoilerplateDescription> constant_properties =
       Handle<BoilerplateDescription>::cast(
@@ -1357,8 +1558,7 @@ Node* BytecodeGraphBuilder::ProcessCallArguments(const Operator* call_op,
   return ProcessCallArguments(call_op, call_args, 2 + arg_count);
 }
 
-void BytecodeGraphBuilder::BuildCall(TailCallMode tail_call_mode,
-                                     ConvertReceiverMode receiver_mode,
+void BytecodeGraphBuilder::BuildCall(ConvertReceiverMode receiver_mode,
                                      Node* const* args, size_t arg_count,
                                      int slot_id) {
   DCHECK_EQ(interpreter::Bytecodes::GetReceiverMode(
@@ -1366,20 +1566,23 @@ void BytecodeGraphBuilder::BuildCall(TailCallMode tail_call_mode,
             receiver_mode);
   PrepareEagerCheckpoint();
 
-  // Slot index of 0 is used indicate no feedback slot is available. Assert
-  // the assumption that slot index 0 is never a valid feedback slot.
-  STATIC_ASSERT(FeedbackVector::kReservedIndexCount > 0);
   VectorSlotPair feedback = CreateVectorSlotPair(slot_id);
 
   CallFrequency frequency = ComputeCallFrequency(slot_id);
-  const Operator* call = javascript()->Call(arg_count, frequency, feedback,
-                                            receiver_mode, tail_call_mode);
-  Node* value = ProcessCallArguments(call, args, static_cast<int>(arg_count));
-  environment()->BindAccumulator(value, Environment::kAttachFrameState);
+  const Operator* op =
+      javascript()->Call(arg_count, frequency, feedback, receiver_mode);
+  Node* node = nullptr;
+  if (Node* simplified = TryBuildSimplifiedCall(
+          op, args, static_cast<int>(arg_count), feedback.slot())) {
+    if (environment() == nullptr) return;
+    node = simplified;
+  } else {
+    node = ProcessCallArguments(op, args, static_cast<int>(arg_count));
+  }
+  environment()->BindAccumulator(node, Environment::kAttachFrameState);
 }
 
-void BytecodeGraphBuilder::BuildCallVarArgs(TailCallMode tail_call_mode,
-                                            ConvertReceiverMode receiver_mode) {
+void BytecodeGraphBuilder::BuildCallVarArgs(ConvertReceiverMode receiver_mode) {
   DCHECK_EQ(interpreter::Bytecodes::GetReceiverMode(
                 bytecode_iterator().current_bytecode()),
             receiver_mode);
@@ -1410,17 +1613,16 @@ void BytecodeGraphBuilder::BuildCallVarArgs(TailCallMode tail_call_mode,
 
   Node* const* call_args =
       GetCallArgumentsFromRegister(callee, receiver_node, first_arg, arg_count);
-  BuildCall(tail_call_mode, receiver_mode, call_args,
-            static_cast<size_t>(2 + arg_count), slot_id);
+  BuildCall(receiver_mode, call_args, static_cast<size_t>(2 + arg_count),
+            slot_id);
 }
 
 void BytecodeGraphBuilder::VisitCallAnyReceiver() {
-  BuildCallVarArgs(TailCallMode::kDisallow, ConvertReceiverMode::kAny);
+  BuildCallVarArgs(ConvertReceiverMode::kAny);
 }
 
 void BytecodeGraphBuilder::VisitCallProperty() {
-  BuildCallVarArgs(TailCallMode::kDisallow,
-                   ConvertReceiverMode::kNotNullOrUndefined);
+  BuildCallVarArgs(ConvertReceiverMode::kNotNullOrUndefined);
 }
 
 void BytecodeGraphBuilder::VisitCallProperty0() {
@@ -1429,8 +1631,8 @@ void BytecodeGraphBuilder::VisitCallProperty0() {
   Node* receiver =
       environment()->LookupRegister(bytecode_iterator().GetRegisterOperand(1));
   int const slot_id = bytecode_iterator().GetIndexOperand(2);
-  BuildCall(TailCallMode::kDisallow, ConvertReceiverMode::kNotNullOrUndefined,
-            {callee, receiver}, slot_id);
+  BuildCall(ConvertReceiverMode::kNotNullOrUndefined, {callee, receiver},
+            slot_id);
 }
 
 void BytecodeGraphBuilder::VisitCallProperty1() {
@@ -1441,8 +1643,8 @@ void BytecodeGraphBuilder::VisitCallProperty1() {
   Node* arg0 =
       environment()->LookupRegister(bytecode_iterator().GetRegisterOperand(2));
   int const slot_id = bytecode_iterator().GetIndexOperand(3);
-  BuildCall(TailCallMode::kDisallow, ConvertReceiverMode::kNotNullOrUndefined,
-            {callee, receiver, arg0}, slot_id);
+  BuildCall(ConvertReceiverMode::kNotNullOrUndefined, {callee, receiver, arg0},
+            slot_id);
 }
 
 void BytecodeGraphBuilder::VisitCallProperty2() {
@@ -1455,13 +1657,12 @@ void BytecodeGraphBuilder::VisitCallProperty2() {
   Node* arg1 =
       environment()->LookupRegister(bytecode_iterator().GetRegisterOperand(3));
   int const slot_id = bytecode_iterator().GetIndexOperand(4);
-  BuildCall(TailCallMode::kDisallow, ConvertReceiverMode::kNotNullOrUndefined,
+  BuildCall(ConvertReceiverMode::kNotNullOrUndefined,
             {callee, receiver, arg0, arg1}, slot_id);
 }
 
 void BytecodeGraphBuilder::VisitCallUndefinedReceiver() {
-  BuildCallVarArgs(TailCallMode::kDisallow,
-                   ConvertReceiverMode::kNullOrUndefined);
+  BuildCallVarArgs(ConvertReceiverMode::kNullOrUndefined);
 }
 
 void BytecodeGraphBuilder::VisitCallUndefinedReceiver0() {
@@ -1469,8 +1670,7 @@ void BytecodeGraphBuilder::VisitCallUndefinedReceiver0() {
       environment()->LookupRegister(bytecode_iterator().GetRegisterOperand(0));
   Node* receiver = jsgraph()->UndefinedConstant();
   int const slot_id = bytecode_iterator().GetIndexOperand(1);
-  BuildCall(TailCallMode::kDisallow, ConvertReceiverMode::kNullOrUndefined,
-            {callee, receiver}, slot_id);
+  BuildCall(ConvertReceiverMode::kNullOrUndefined, {callee, receiver}, slot_id);
 }
 
 void BytecodeGraphBuilder::VisitCallUndefinedReceiver1() {
@@ -1480,8 +1680,8 @@ void BytecodeGraphBuilder::VisitCallUndefinedReceiver1() {
   Node* arg0 =
       environment()->LookupRegister(bytecode_iterator().GetRegisterOperand(1));
   int const slot_id = bytecode_iterator().GetIndexOperand(2);
-  BuildCall(TailCallMode::kDisallow, ConvertReceiverMode::kNullOrUndefined,
-            {callee, receiver, arg0}, slot_id);
+  BuildCall(ConvertReceiverMode::kNullOrUndefined, {callee, receiver, arg0},
+            slot_id);
 }
 
 void BytecodeGraphBuilder::VisitCallUndefinedReceiver2() {
@@ -1493,7 +1693,7 @@ void BytecodeGraphBuilder::VisitCallUndefinedReceiver2() {
   Node* arg1 =
       environment()->LookupRegister(bytecode_iterator().GetRegisterOperand(2));
   int const slot_id = bytecode_iterator().GetIndexOperand(3);
-  BuildCall(TailCallMode::kDisallow, ConvertReceiverMode::kNullOrUndefined,
+  BuildCall(ConvertReceiverMode::kNullOrUndefined,
             {callee, receiver, arg0, arg1}, slot_id);
 }
 
@@ -1502,20 +1702,27 @@ void BytecodeGraphBuilder::VisitCallWithSpread() {
   Node* callee =
       environment()->LookupRegister(bytecode_iterator().GetRegisterOperand(0));
   interpreter::Register receiver = bytecode_iterator().GetRegisterOperand(1);
+  Node* receiver_node = environment()->LookupRegister(receiver);
   size_t reg_count = bytecode_iterator().GetRegisterCountOperand(2);
-  const Operator* call =
-      javascript()->CallWithSpread(static_cast<int>(reg_count + 1));
+  interpreter::Register first_arg = interpreter::Register(receiver.index() + 1);
+  int arg_count = static_cast<int>(reg_count) - 1;
+  Node* const* args =
+      GetCallArgumentsFromRegister(callee, receiver_node, first_arg, arg_count);
+  int const slot_id = bytecode_iterator().GetIndexOperand(3);
+  VectorSlotPair feedback = CreateVectorSlotPair(slot_id);
 
-  Node* value = ProcessCallArguments(call, callee, receiver, reg_count);
-  environment()->BindAccumulator(value, Environment::kAttachFrameState);
-}
-
-void BytecodeGraphBuilder::VisitTailCall() {
-  TailCallMode tail_call_mode =
-      bytecode_array_->GetIsolate()->is_tail_call_elimination_enabled()
-          ? TailCallMode::kAllow
-          : TailCallMode::kDisallow;
-  BuildCallVarArgs(tail_call_mode, ConvertReceiverMode::kAny);
+  CallFrequency frequency = ComputeCallFrequency(slot_id);
+  const Operator* op = javascript()->CallWithSpread(
+      static_cast<int>(reg_count + 1), frequency, feedback);
+  Node* node = nullptr;
+  if (Node* simplified = TryBuildSimplifiedCall(
+          op, args, static_cast<int>(arg_count), feedback.slot())) {
+    if (environment() == nullptr) return;
+    node = simplified;
+  } else {
+    node = ProcessCallArguments(op, args, 2 + arg_count);
+  }
+  environment()->BindAccumulator(node, Environment::kAttachFrameState);
 }
 
 void BytecodeGraphBuilder::VisitCallJSRuntime() {
@@ -1574,38 +1781,82 @@ void BytecodeGraphBuilder::VisitCallRuntimeForPair() {
                                             Environment::kAttachFrameState);
 }
 
-Node* BytecodeGraphBuilder::ProcessConstructWithSpreadArguments(
-    const Operator* op, Node* callee, Node* new_target,
-    interpreter::Register receiver, size_t reg_count) {
-  int arg_count = static_cast<int>(reg_count);
+Node* const* BytecodeGraphBuilder::GetConstructArgumentsFromRegister(
+    Node* target, Node* new_target, interpreter::Register first_arg,
+    int arg_count) {
   // arity is args + callee and new target.
   int arity = arg_count + 2;
   Node** all = local_zone()->NewArray<Node*>(static_cast<size_t>(arity));
-  all[0] = callee;
-  int first_arg_index = receiver.index();
+  all[0] = target;
+  int first_arg_index = first_arg.index();
   for (int i = 0; i < arg_count; ++i) {
     all[1 + i] = environment()->LookupRegister(
         interpreter::Register(first_arg_index + i));
   }
   all[arity - 1] = new_target;
-  Node* value = MakeNode(op, arity, all, false);
-  return value;
+  return all;
+}
+
+Node* BytecodeGraphBuilder::ProcessConstructArguments(const Operator* op,
+                                                      Node* const* args,
+                                                      int arg_count) {
+  return MakeNode(op, arg_count, args, false);
+}
+
+void BytecodeGraphBuilder::VisitConstruct() {
+  PrepareEagerCheckpoint();
+  interpreter::Register callee_reg = bytecode_iterator().GetRegisterOperand(0);
+  interpreter::Register first_reg = bytecode_iterator().GetRegisterOperand(1);
+  size_t reg_count = bytecode_iterator().GetRegisterCountOperand(2);
+  int const slot_id = bytecode_iterator().GetIndexOperand(3);
+  VectorSlotPair feedback = CreateVectorSlotPair(slot_id);
+
+  Node* new_target = environment()->LookupAccumulator();
+  Node* callee = environment()->LookupRegister(callee_reg);
+
+  CallFrequency frequency = ComputeCallFrequency(slot_id);
+  const Operator* op = javascript()->Construct(
+      static_cast<uint32_t>(reg_count + 2), frequency, feedback);
+  int arg_count = static_cast<int>(reg_count);
+  Node* const* args = GetConstructArgumentsFromRegister(callee, new_target,
+                                                        first_reg, arg_count);
+  Node* node = nullptr;
+  if (Node* simplified = TryBuildSimplifiedConstruct(
+          op, args, static_cast<int>(arg_count), feedback.slot())) {
+    if (environment() == nullptr) return;
+    node = simplified;
+  } else {
+    node = ProcessConstructArguments(op, args, 2 + arg_count);
+  }
+  environment()->BindAccumulator(node, Environment::kAttachFrameState);
 }
 
 void BytecodeGraphBuilder::VisitConstructWithSpread() {
   PrepareEagerCheckpoint();
   interpreter::Register callee_reg = bytecode_iterator().GetRegisterOperand(0);
-  interpreter::Register receiver = bytecode_iterator().GetRegisterOperand(1);
+  interpreter::Register first_reg = bytecode_iterator().GetRegisterOperand(1);
   size_t reg_count = bytecode_iterator().GetRegisterCountOperand(2);
+  int const slot_id = bytecode_iterator().GetIndexOperand(3);
+  VectorSlotPair feedback = CreateVectorSlotPair(slot_id);
 
   Node* new_target = environment()->LookupAccumulator();
   Node* callee = environment()->LookupRegister(callee_reg);
 
-  const Operator* op =
-      javascript()->ConstructWithSpread(static_cast<uint32_t>(reg_count + 2));
-  Node* value = ProcessConstructWithSpreadArguments(op, callee, new_target,
-                                                    receiver, reg_count);
-  environment()->BindAccumulator(value, Environment::kAttachFrameState);
+  CallFrequency frequency = ComputeCallFrequency(slot_id);
+  const Operator* op = javascript()->ConstructWithSpread(
+      static_cast<uint32_t>(reg_count + 2), frequency, feedback);
+  int arg_count = static_cast<int>(reg_count);
+  Node* const* args = GetConstructArgumentsFromRegister(callee, new_target,
+                                                        first_reg, arg_count);
+  Node* node = nullptr;
+  if (Node* simplified = TryBuildSimplifiedConstruct(
+          op, args, static_cast<int>(arg_count), feedback.slot())) {
+    if (environment() == nullptr) return;
+    node = simplified;
+  } else {
+    node = ProcessConstructArguments(op, args, 2 + arg_count);
+  }
+  environment()->BindAccumulator(node, Environment::kAttachFrameState);
 }
 
 void BytecodeGraphBuilder::VisitInvokeIntrinsic() {
@@ -1618,46 +1869,6 @@ void BytecodeGraphBuilder::VisitInvokeIntrinsic() {
   // lowering.
   const Operator* call = javascript()->CallRuntime(functionId, reg_count);
   Node* value = ProcessCallRuntimeArguments(call, receiver, reg_count);
-  environment()->BindAccumulator(value, Environment::kAttachFrameState);
-}
-
-Node* BytecodeGraphBuilder::ProcessConstructArguments(
-    const Operator* call_new_op, Node* callee, Node* new_target,
-    interpreter::Register receiver, size_t reg_count) {
-  int arg_count = static_cast<int>(reg_count);
-  // arity is args + callee and new target.
-  int arity = arg_count + 2;
-  Node** all = local_zone()->NewArray<Node*>(static_cast<size_t>(arity));
-  all[0] = callee;
-  int first_arg_index = receiver.index();
-  for (int i = 0; i < arg_count; ++i) {
-    all[1 + i] = environment()->LookupRegister(
-        interpreter::Register(first_arg_index + i));
-  }
-  all[arity - 1] = new_target;
-  Node* value = MakeNode(call_new_op, arity, all, false);
-  return value;
-}
-
-void BytecodeGraphBuilder::VisitConstruct() {
-  PrepareEagerCheckpoint();
-  interpreter::Register callee_reg = bytecode_iterator().GetRegisterOperand(0);
-  interpreter::Register receiver = bytecode_iterator().GetRegisterOperand(1);
-  size_t reg_count = bytecode_iterator().GetRegisterCountOperand(2);
-  // Slot index of 0 is used indicate no feedback slot is available. Assert
-  // the assumption that slot index 0 is never a valid feedback slot.
-  STATIC_ASSERT(FeedbackVector::kReservedIndexCount > 0);
-  int const slot_id = bytecode_iterator().GetIndexOperand(3);
-  VectorSlotPair feedback = CreateVectorSlotPair(slot_id);
-
-  Node* new_target = environment()->LookupAccumulator();
-  Node* callee = environment()->LookupRegister(callee_reg);
-
-  CallFrequency frequency = ComputeCallFrequency(slot_id);
-  const Operator* call = javascript()->Construct(
-      static_cast<uint32_t>(reg_count + 2), frequency, feedback);
-  Node* value =
-      ProcessConstructArguments(call, callee, new_target, receiver, reg_count);
   environment()->BindAccumulator(value, Environment::kAttachFrameState);
 }
 
@@ -1676,6 +1887,58 @@ void BytecodeGraphBuilder::VisitReThrow() {
   NewNode(javascript()->CallRuntime(Runtime::kReThrow), value);
   Node* control = NewNode(common()->Throw());
   MergeControlToLeaveFunction(control);
+}
+
+void BytecodeGraphBuilder::BuildHoleCheckAndThrow(
+    Node* condition, Runtime::FunctionId runtime_id, Node* name) {
+  Node* accumulator = environment()->LookupAccumulator();
+  NewBranch(condition, BranchHint::kFalse);
+  {
+    SubEnvironment sub_environment(this);
+
+    NewIfTrue();
+    Node* node;
+    const Operator* op = javascript()->CallRuntime(runtime_id);
+    if (runtime_id == Runtime::kThrowReferenceError) {
+      DCHECK(name != nullptr);
+      node = NewNode(op, name);
+    } else {
+      DCHECK(runtime_id == Runtime::kThrowSuperAlreadyCalledError ||
+             runtime_id == Runtime::kThrowSuperNotCalled);
+      node = NewNode(op);
+    }
+    environment()->RecordAfterState(node, Environment::kAttachFrameState);
+    Node* control = NewNode(common()->Throw());
+    MergeControlToLeaveFunction(control);
+  }
+  NewIfFalse();
+  environment()->BindAccumulator(accumulator);
+}
+
+void BytecodeGraphBuilder::VisitThrowReferenceErrorIfHole() {
+  Node* accumulator = environment()->LookupAccumulator();
+  Node* check_for_hole = NewNode(simplified()->ReferenceEqual(), accumulator,
+                                 jsgraph()->TheHoleConstant());
+  Node* name =
+      jsgraph()->Constant(bytecode_iterator().GetConstantForIndexOperand(0));
+  BuildHoleCheckAndThrow(check_for_hole, Runtime::kThrowReferenceError, name);
+}
+
+void BytecodeGraphBuilder::VisitThrowSuperNotCalledIfHole() {
+  Node* accumulator = environment()->LookupAccumulator();
+  Node* check_for_hole = NewNode(simplified()->ReferenceEqual(), accumulator,
+                                 jsgraph()->TheHoleConstant());
+  BuildHoleCheckAndThrow(check_for_hole, Runtime::kThrowSuperNotCalled);
+}
+
+void BytecodeGraphBuilder::VisitThrowSuperAlreadyCalledIfNotHole() {
+  Node* accumulator = environment()->LookupAccumulator();
+  Node* check_for_hole = NewNode(simplified()->ReferenceEqual(), accumulator,
+                                 jsgraph()->TheHoleConstant());
+  Node* check_for_not_hole =
+      NewNode(simplified()->BooleanNot(), check_for_hole);
+  BuildHoleCheckAndThrow(check_for_not_hole,
+                         Runtime::kThrowSuperAlreadyCalledError);
 }
 
 void BytecodeGraphBuilder::BuildBinaryOp(const Operator* op) {
@@ -1711,11 +1974,7 @@ BinaryOperationHint BytecodeGraphBuilder::GetBinaryOperationHint(
 // feedback.
 CompareOperationHint BytecodeGraphBuilder::GetCompareOperationHint() {
   int slot_index = bytecode_iterator().GetIndexOperand(1);
-  if (slot_index == 0) {
-    return CompareOperationHint::kAny;
-  }
-  FeedbackSlot slot =
-      feedback_vector()->ToSlot(bytecode_iterator().GetIndexOperand(1));
+  FeedbackSlot slot = feedback_vector()->ToSlot(slot_index);
   DCHECK_EQ(FeedbackSlotKind::kCompareOp, feedback_vector()->GetKind(slot));
   CompareICNexus nexus(feedback_vector(), slot);
   return nexus.GetCompareOperationFeedback();
@@ -1922,7 +2181,6 @@ void BytecodeGraphBuilder::BuildCompareOp(const Operator* op) {
   Node* right = environment()->LookupAccumulator();
 
   int slot_index = bytecode_iterator().GetIndexOperand(1);
-  DCHECK(slot_index != 0);
   FeedbackSlot slot = feedback_vector()->ToSlot(slot_index);
   Node* node = nullptr;
   if (Node* simplified = TryBuildSimplifiedBinaryOp(op, left, right, slot)) {
@@ -2119,12 +2377,6 @@ void BytecodeGraphBuilder::VisitJumpIfToBooleanFalseConstant() {
   BuildJumpIfToBooleanFalse();
 }
 
-void BytecodeGraphBuilder::VisitJumpIfNotHole() { BuildJumpIfNotHole(); }
-
-void BytecodeGraphBuilder::VisitJumpIfNotHoleConstant() {
-  BuildJumpIfNotHole();
-}
-
 void BytecodeGraphBuilder::VisitJumpIfJSReceiver() { BuildJumpIfJSReceiver(); }
 
 void BytecodeGraphBuilder::VisitJumpIfJSReceiverConstant() {
@@ -2218,6 +2470,18 @@ void BytecodeGraphBuilder::VisitDebugger() {
 DEBUG_BREAK_BYTECODE_LIST(DEBUG_BREAK);
 #undef DEBUG_BREAK
 
+void BytecodeGraphBuilder::VisitIncBlockCounter() {
+  DCHECK(FLAG_block_coverage);
+
+  Node* closure = GetFunctionClosure();
+  Node* coverage_array_slot =
+      jsgraph()->Constant(bytecode_iterator().GetIndexOperand(0));
+
+  const Operator* op = javascript()->CallRuntime(Runtime::kIncBlockCounter);
+
+  NewNode(op, closure, coverage_array_slot);
+}
+
 void BytecodeGraphBuilder::VisitForInPrepare() {
   PrepareEagerCheckpoint();
   Node* receiver =
@@ -2268,48 +2532,62 @@ void BytecodeGraphBuilder::VisitForInStep() {
 }
 
 void BytecodeGraphBuilder::VisitSuspendGenerator() {
-  Node* state = environment()->LookupAccumulator();
   Node* generator = environment()->LookupRegister(
       bytecode_iterator().GetRegisterOperand(0));
-  SuspendFlags flags = interpreter::SuspendGeneratorBytecodeFlags::Decode(
-      bytecode_iterator().GetFlagOperand(1));
+  interpreter::Register first_reg = bytecode_iterator().GetRegisterOperand(1);
+  // We assume we are storing a range starting from index 0.
+  CHECK_EQ(0, first_reg.index());
+  int register_count =
+      static_cast<int>(bytecode_iterator().GetRegisterCountOperand(2));
+  Node* suspend_id = jsgraph()->SmiConstant(
+      bytecode_iterator().GetUnsignedImmediateOperand(3));
+
   // The offsets used by the bytecode iterator are relative to a different base
   // than what is used in the interpreter, hence the addition.
   Node* offset =
       jsgraph()->Constant(bytecode_iterator().current_offset() +
                           (BytecodeArray::kHeaderSize - kHeapObjectTag));
 
-  int register_count = environment()->register_count();
   int value_input_count = 3 + register_count;
 
   Node** value_inputs = local_zone()->NewArray<Node*>(value_input_count);
   value_inputs[0] = generator;
-  value_inputs[1] = state;
+  value_inputs[1] = suspend_id;
   value_inputs[2] = offset;
   for (int i = 0; i < register_count; ++i) {
     value_inputs[3 + i] =
         environment()->LookupRegister(interpreter::Register(i));
   }
 
-  MakeNode(javascript()->GeneratorStore(register_count, flags),
-           value_input_count, value_inputs, false);
+  MakeNode(javascript()->GeneratorStore(register_count), value_input_count,
+           value_inputs, false);
 }
 
-void BytecodeGraphBuilder::VisitResumeGenerator() {
+void BytecodeGraphBuilder::VisitRestoreGeneratorState() {
   Node* generator = environment()->LookupRegister(
       bytecode_iterator().GetRegisterOperand(0));
-
-  // Bijection between registers and array indices must match that used in
-  // InterpreterAssembler::ExportRegisterFile.
-  for (int i = 0; i < environment()->register_count(); ++i) {
-    Node* value = NewNode(javascript()->GeneratorRestoreRegister(i), generator);
-    environment()->BindRegister(interpreter::Register(i), value);
-  }
 
   Node* state =
       NewNode(javascript()->GeneratorRestoreContinuation(), generator);
 
-  environment()->BindAccumulator(state);
+  environment()->BindAccumulator(state, Environment::kAttachFrameState);
+}
+
+void BytecodeGraphBuilder::VisitRestoreGeneratorRegisters() {
+  Node* generator =
+      environment()->LookupRegister(bytecode_iterator().GetRegisterOperand(0));
+  interpreter::Register first_reg = bytecode_iterator().GetRegisterOperand(1);
+  // We assume we are restoring registers starting fromm index 0.
+  CHECK_EQ(0, first_reg.index());
+  int register_count =
+      static_cast<int>(bytecode_iterator().GetRegisterCountOperand(2));
+
+  // Bijection between registers and array indices must match that used in
+  // InterpreterAssembler::ExportRegisterFile.
+  for (int i = 0; i < register_count; ++i) {
+    Node* value = NewNode(javascript()->GeneratorRestoreRegister(i), generator);
+    environment()->BindRegister(interpreter::Register(i), value);
+  }
 }
 
 void BytecodeGraphBuilder::VisitWide() {
@@ -2326,8 +2604,6 @@ void BytecodeGraphBuilder::VisitIllegal() {
   // Not emitted in valid bytecode.
   UNREACHABLE();
 }
-
-void BytecodeGraphBuilder::VisitNop() {}
 
 void BytecodeGraphBuilder::SwitchToMergeEnvironment(int current_offset) {
   auto it = merge_environments_.find(current_offset);
@@ -2349,8 +2625,6 @@ void BytecodeGraphBuilder::BuildLoopHeaderEnvironment(int current_offset) {
     // Add loop header.
     environment()->PrepareForLoop(loop_info.assignments());
 
-    BuildOSRLoopEntryPoint(current_offset);
-
     // Store a copy of the environment so we can connect merged back edge inputs
     // to the loop header.
     merge_environments_[current_offset] = environment()->Copy();
@@ -2360,6 +2634,7 @@ void BytecodeGraphBuilder::BuildLoopHeaderEnvironment(int current_offset) {
 void BytecodeGraphBuilder::MergeIntoSuccessorEnvironment(int target_offset) {
   BuildLoopExitsForBranch(target_offset);
   Environment*& merge_environment = merge_environments_[target_offset];
+
   if (merge_environment == nullptr) {
     // Append merge nodes to the environment. We may merge here with another
     // environment. So add a place holder for merge nodes. We may add redundant
@@ -2378,26 +2653,6 @@ void BytecodeGraphBuilder::MergeControlToLeaveFunction(Node* exit) {
   set_environment(nullptr);
 }
 
-void BytecodeGraphBuilder::BuildOSRLoopEntryPoint(int current_offset) {
-  DCHECK(bytecode_analysis()->IsLoopHeader(current_offset));
-
-  if (bytecode_analysis()->IsOSREntryPoint(current_offset)) {
-    // For OSR add a special {OsrLoopEntry} node into the current loop header.
-    // It will be turned into a usable entry by the OSR deconstruction.
-    Environment* osr_env = environment()->Copy();
-    osr_env->PrepareForOsrEntry();
-    environment()->Merge(osr_env);
-  }
-}
-
-void BytecodeGraphBuilder::BuildOSRNormalEntryPoint() {
-  if (bytecode_analysis()->HasOSREntryPoint()) {
-    // For OSR add an {OsrNormalEntry} as the the top-level environment start.
-    // It will be replaced with {Dead} by the OSR deconstruction.
-    NewNode(common()->OsrNormalEntry());
-  }
-}
-
 void BytecodeGraphBuilder::BuildLoopExitsForBranch(int target_offset) {
   int origin_offset = bytecode_iterator().current_offset();
   // Only build loop exits for forward edges.
@@ -2410,6 +2665,10 @@ void BytecodeGraphBuilder::BuildLoopExitsForBranch(int target_offset) {
 void BytecodeGraphBuilder::BuildLoopExitsUntilLoop(int loop_offset) {
   int origin_offset = bytecode_iterator().current_offset();
   int current_loop = bytecode_analysis()->GetLoopOffsetFor(origin_offset);
+  // The limit_offset is the stop offset for building loop exists, used for OSR.
+  // It prevents the creations of loopexits for loops which do not exist.
+  loop_offset = std::max(loop_offset, currently_peeled_loop_offset_);
+
   while (loop_offset < current_loop) {
     Node* loop_node = merge_environments_[current_loop]->GetControlDependency();
     const LoopInfo& loop_info =
@@ -2539,13 +2798,39 @@ Node* BytecodeGraphBuilder::TryBuildSimplifiedToNumber(Node* value,
   return nullptr;
 }
 
+Node* BytecodeGraphBuilder::TryBuildSimplifiedCall(const Operator* op,
+                                                   Node* const* args,
+                                                   int arg_count,
+                                                   FeedbackSlot slot) {
+  Node* effect = environment()->GetEffectDependency();
+  Node* control = environment()->GetControlDependency();
+  Reduction early_reduction = type_hint_lowering().ReduceCallOperation(
+      op, args, arg_count, effect, control, slot);
+  if (early_reduction.Changed()) {
+    ApplyEarlyReduction(early_reduction);
+    return early_reduction.replacement();
+  }
+  return nullptr;
+}
+
+Node* BytecodeGraphBuilder::TryBuildSimplifiedConstruct(const Operator* op,
+                                                        Node* const* args,
+                                                        int arg_count,
+                                                        FeedbackSlot slot) {
+  Node* effect = environment()->GetEffectDependency();
+  Node* control = environment()->GetControlDependency();
+  Reduction early_reduction = type_hint_lowering().ReduceConstructOperation(
+      op, args, arg_count, effect, control, slot);
+  if (early_reduction.Changed()) {
+    ApplyEarlyReduction(early_reduction);
+    return early_reduction.replacement();
+  }
+  return nullptr;
+}
+
 Node* BytecodeGraphBuilder::TryBuildSimplifiedLoadNamed(const Operator* op,
                                                         Node* receiver,
                                                         FeedbackSlot slot) {
-  // TODO(mstarzinger,6112): This is a workaround for OSR loop entries being
-  // pruned from the graph by a soft-deopt. It can happen that a LoadIC that
-  // control-dominates the OSR entry is still in "uninitialized" state.
-  if (bytecode_analysis()->HasOSREntryPoint()) return nullptr;
   Node* effect = environment()->GetEffectDependency();
   Node* control = environment()->GetControlDependency();
   Reduction early_reduction = type_hint_lowering().ReduceLoadNamedOperation(
@@ -2561,10 +2846,6 @@ Node* BytecodeGraphBuilder::TryBuildSimplifiedLoadKeyed(const Operator* op,
                                                         Node* receiver,
                                                         Node* key,
                                                         FeedbackSlot slot) {
-  // TODO(mstarzinger,6112): This is a workaround for OSR loop entries being
-  // pruned from the graph by a soft-deopt. It can happen that a LoadIC that
-  // control-dominates the OSR entry is still in "uninitialized" state.
-  if (bytecode_analysis()->HasOSREntryPoint()) return nullptr;
   Node* effect = environment()->GetEffectDependency();
   Node* control = environment()->GetControlDependency();
   Reduction early_reduction = type_hint_lowering().ReduceLoadKeyedOperation(
@@ -2580,10 +2861,6 @@ Node* BytecodeGraphBuilder::TryBuildSimplifiedStoreNamed(const Operator* op,
                                                          Node* receiver,
                                                          Node* value,
                                                          FeedbackSlot slot) {
-  // TODO(mstarzinger,6112): This is a workaround for OSR loop entries being
-  // pruned from the graph by a soft-deopt. It can happen that a LoadIC that
-  // control-dominates the OSR entry is still in "uninitialized" state.
-  if (bytecode_analysis()->HasOSREntryPoint()) return nullptr;
   Node* effect = environment()->GetEffectDependency();
   Node* control = environment()->GetControlDependency();
   Reduction early_reduction = type_hint_lowering().ReduceStoreNamedOperation(
@@ -2599,10 +2876,6 @@ Node* BytecodeGraphBuilder::TryBuildSimplifiedStoreKeyed(const Operator* op,
                                                          Node* receiver,
                                                          Node* key, Node* value,
                                                          FeedbackSlot slot) {
-  // TODO(mstarzinger,6112): This is a workaround for OSR loop entries being
-  // pruned from the graph by a soft-deopt. It can happen that a LoadIC that
-  // control-dominates the OSR entry is still in "uninitialized" state.
-  if (bytecode_analysis()->HasOSREntryPoint()) return nullptr;
   Node* effect = environment()->GetEffectDependency();
   Node* control = environment()->GetControlDependency();
   Reduction early_reduction = type_hint_lowering().ReduceStoreKeyedOperation(
@@ -2634,7 +2907,7 @@ Node** BytecodeGraphBuilder::EnsureInputBufferSize(int size) {
   return input_buffer_;
 }
 
-void BytecodeGraphBuilder::EnterAndExitExceptionHandlers(int current_offset) {
+void BytecodeGraphBuilder::ExitThenEnterExceptionHandlers(int current_offset) {
   Handle<HandlerTable> table = exception_handler_table();
   int num_entries = table->NumberOfRangeEntries();
 
@@ -2749,7 +3022,6 @@ Node* BytecodeGraphBuilder::NewPhi(int count, Node* input, Node* control) {
   return graph()->NewNode(phi_op, count + 1, buffer, true);
 }
 
-
 Node* BytecodeGraphBuilder::NewEffectPhi(int count, Node* input,
                                          Node* control) {
   const Operator* phi_op = common()->EffectPhi(count);
@@ -2781,7 +3053,6 @@ Node* BytecodeGraphBuilder::MergeControl(Node* control, Node* other) {
   return control;
 }
 
-
 Node* BytecodeGraphBuilder::MergeEffect(Node* value, Node* other,
                                         Node* control) {
   int inputs = control->op()->ControlInputCount();
@@ -2797,7 +3068,6 @@ Node* BytecodeGraphBuilder::MergeEffect(Node* value, Node* other,
   }
   return value;
 }
-
 
 Node* BytecodeGraphBuilder::MergeValue(Node* value, Node* other,
                                        Node* control) {
@@ -2816,10 +3086,9 @@ Node* BytecodeGraphBuilder::MergeValue(Node* value, Node* other,
   return value;
 }
 
-void BytecodeGraphBuilder::UpdateCurrentSourcePosition(
-    SourcePositionTableIterator* it, int offset) {
+void BytecodeGraphBuilder::UpdateSourcePosition(SourcePositionTableIterator* it,
+                                                int offset) {
   if (it->done()) return;
-
   if (it->code_offset() == offset) {
     source_positions_->SetCurrentPosition(SourcePosition(
         it->source_position().ScriptOffset(), start_position_.InliningId()));

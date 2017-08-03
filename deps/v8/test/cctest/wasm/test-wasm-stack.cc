@@ -74,7 +74,7 @@ void CheckExceptionInfos(Handle<Object> exc,
 
 }  // namespace
 
-// Call from JS to WASM to JS and throw an Error from JS.
+// Call from JS to wasm to JS and throw an Error from JS.
 TEST(CollectDetailedWasmStack_ExplicitThrowFromJs) {
   WasmRunner<void> r(kExecuteCompiled);
   TestSignatures sigs;
@@ -119,12 +119,11 @@ TEST(CollectDetailedWasmStack_ExplicitThrowFromJs) {
   CheckExceptionInfos(maybe_exc.ToHandleChecked(), expected_exceptions);
 }
 
-// Trigger a trap in WASM, stack should be JS -> WASM -> WASM.
+// Trigger a trap in wasm, stack should be JS -> wasm -> wasm.
 TEST(CollectDetailedWasmStack_WasmError) {
   TestSignatures sigs;
-  WasmRunner<int> r(kExecuteCompiled);
-  // Set the execution context, such that a runtime error can be thrown.
-  r.SetModuleContext();
+  // Create a WasmRunner with stack checks and traps enabled.
+  WasmRunner<int> r(kExecuteCompiled, "main", true);
 
   BUILD(r, WASM_UNREACHABLE);
   uint32_t wasm_index_1 = r.function()->func_index;

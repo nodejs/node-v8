@@ -100,6 +100,8 @@ void Serializer::SerializeDeferredObjects() {
   sink_.Put(kSynchronize, "Finished with deferred objects");
 }
 
+bool Serializer::MustBeDeferred(HeapObject* object) { return false; }
+
 void Serializer::VisitRootPointers(Root root, Object** start, Object** end) {
   for (Object** current = start; current < end; current++) {
     if ((*current)->IsSmi()) {
@@ -145,6 +147,13 @@ bool Serializer::BackReferenceIsAlreadyAllocated(
       return chunk_index < completed_chunks_[space].length() &&
              reference.chunk_offset() < completed_chunks_[space][chunk_index];
     }
+  }
+}
+
+void Serializer::PrintStack() {
+  for (const auto& o : stack_) {
+    o->Print();
+    PrintF("\n");
   }
 }
 #endif  // DEBUG
@@ -256,7 +265,6 @@ void Serializer::PutAttachedReference(SerializerReference reference,
                                       WhereToPoint where_to_point) {
   DCHECK(reference.is_attached_reference());
   DCHECK((how_to_code == kPlain && where_to_point == kStartOfObject) ||
-         (how_to_code == kPlain && where_to_point == kInnerPointer) ||
          (how_to_code == kFromCode && where_to_point == kStartOfObject) ||
          (how_to_code == kFromCode && where_to_point == kInnerPointer));
   sink_.Put(kAttachedReference + how_to_code + where_to_point, "AttachedRef");
@@ -489,11 +497,7 @@ void Serializer::ObjectSerializer::SerializeExternalStringAsSequentialString() {
 class UnlinkWeakNextScope {
  public:
   explicit UnlinkWeakNextScope(HeapObject* object) : object_(nullptr) {
-    if (object->IsWeakCell()) {
-      object_ = object;
-      next_ = WeakCell::cast(object)->next();
-      WeakCell::cast(object)->clear_next(object->GetHeap()->the_hole_value());
-    } else if (object->IsAllocationSite()) {
+    if (object->IsAllocationSite()) {
       object_ = object;
       next_ = AllocationSite::cast(object)->weak_next();
       AllocationSite::cast(object)->set_weak_next(
@@ -503,12 +507,8 @@ class UnlinkWeakNextScope {
 
   ~UnlinkWeakNextScope() {
     if (object_ != nullptr) {
-      if (object_->IsWeakCell()) {
-        WeakCell::cast(object_)->set_next(next_, UPDATE_WEAK_WRITE_BARRIER);
-      } else {
-        AllocationSite::cast(object_)->set_weak_next(next_,
-                                                     UPDATE_WEAK_WRITE_BARRIER);
-      }
+      AllocationSite::cast(object_)->set_weak_next(next_,
+                                                   UPDATE_WEAK_WRITE_BARRIER);
     }
   }
 
@@ -528,6 +528,12 @@ void Serializer::ObjectSerializer::Serialize() {
   if (object_->IsExternalString()) {
     SerializeExternalString();
     return;
+  } else if (object_->IsSeqOneByteString()) {
+    // Clear padding bytes at the end. Done here to avoid having to do this
+    // at allocation sites in generated code.
+    SeqOneByteString::cast(object_)->clear_padding();
+  } else if (object_->IsSeqTwoByteString()) {
+    SeqTwoByteString::cast(object_)->clear_padding();
   }
 
   // We cannot serialize typed array objects correctly.
@@ -559,7 +565,8 @@ void Serializer::ObjectSerializer::SerializeContent() {
   RecursionScope recursion(serializer_);
   // Objects that are immediately post processed during deserialization
   // cannot be deferred, since post processing requires the object content.
-  if (recursion.ExceedsMaximum() && CanBeDeferred(object_)) {
+  if ((recursion.ExceedsMaximum() && CanBeDeferred(object_)) ||
+      serializer_->MustBeDeferred(object_)) {
     serializer_->QueueDeferredObject(object_);
     sink_->Put(kDeferred, "Deferring object content");
     return;
@@ -727,22 +734,6 @@ void Serializer::ObjectSerializer::VisitCodeTarget(Code* host,
   bytes_processed_so_far_ += rinfo->target_address_size();
 }
 
-void Serializer::ObjectSerializer::VisitCodeEntry(JSFunction* host,
-                                                  Address entry_address) {
-  int skip = OutputRawData(entry_address, kCanReturnSkipInsteadOfSkipping);
-  Code* object = Code::cast(Code::GetObjectFromEntryAddress(entry_address));
-  serializer_->SerializeObject(object, kPlain, kInnerPointer, skip);
-  bytes_processed_so_far_ += kPointerSize;
-}
-
-void Serializer::ObjectSerializer::VisitCellPointer(Code* host,
-                                                    RelocInfo* rinfo) {
-  int skip = OutputRawData(rinfo->pc(), kCanReturnSkipInsteadOfSkipping);
-  Cell* object = Cell::cast(rinfo->target_cell());
-  serializer_->SerializeObject(object, kPlain, kInnerPointer, skip);
-  bytes_processed_so_far_ += kPointerSize;
-}
-
 Address Serializer::ObjectSerializer::PrepareCode() {
   Code* code = Code::cast(object_);
   if (FLAG_predictable) {
@@ -803,6 +794,10 @@ int Serializer::ObjectSerializer::OutputRawData(
     if (is_code_object) object_start = PrepareCode();
 
     const char* description = is_code_object ? "Code" : "Byte";
+#ifdef MEMORY_SANITIZER
+    // Check that we do not serialize uninitialized memory.
+    __msan_check_mem_is_initialized(object_start + base, bytes_to_output);
+#endif  // MEMORY_SANITIZER
     sink_->PutRaw(object_start + base, bytes_to_output, description);
   }
   if (to_skip != 0 && return_skip == kIgnoringReturn) {

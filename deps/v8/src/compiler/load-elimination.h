@@ -19,7 +19,7 @@ class Factory;
 
 namespace compiler {
 
-// Foward declarations.
+// Forward declarations.
 class CommonOperatorBuilder;
 struct FieldAccess;
 class Graph;
@@ -31,6 +31,8 @@ class V8_EXPORT_PRIVATE LoadElimination final
   LoadElimination(Editor* editor, JSGraph* jsgraph, Zone* zone)
       : AdvancedReducer(editor), node_states_(zone), jsgraph_(jsgraph) {}
   ~LoadElimination() final {}
+
+  const char* reducer_name() const override { return "LoadElimination"; }
 
   Reduction Reduce(Node* node) final;
 
@@ -274,6 +276,7 @@ class V8_EXPORT_PRIVATE LoadElimination final
   Reduction ReduceStoreField(Node* node);
   Reduction ReduceLoadElement(Node* node);
   Reduction ReduceStoreElement(Node* node);
+  Reduction ReduceTransitionAndStoreElement(Node* node);
   Reduction ReduceStoreTypedElement(Node* node);
   Reduction ReduceEffectPhi(Node* node);
   Reduction ReduceStart(Node* node);

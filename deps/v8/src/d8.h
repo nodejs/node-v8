@@ -337,6 +337,7 @@ class ShellOptions {
   const char* trace_config;
   const char* lcov_file;
   bool disable_in_process_stack_traces;
+  bool enable_os_system = false;
 };
 
 class Shell : public i::AllStatic {
@@ -444,10 +445,8 @@ class Shell : public i::AllStatic {
   static void SetUMask(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void MakeDirectory(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void RemoveDirectory(const v8::FunctionCallbackInfo<v8::Value>& args);
-  static void HostImportModuleDynamically(Isolate* isolate,
-                                          Local<String> referrer,
-                                          Local<String> specifier,
-                                          Local<DynamicImportResult> result);
+  static MaybeLocal<Promise> HostImportModuleDynamically(
+      Local<Context> context, Local<String> referrer, Local<String> specifier);
 
   // Data is of type DynamicImportData*. We use void* here to be able
   // to conform with MicrotaskCallback interface and enqueue this

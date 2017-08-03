@@ -184,6 +184,54 @@ UNINITIALIZED_TEST(StartupSerializerOnce) {
   isolate->Dispose();
 }
 
+UNINITIALIZED_TEST(StartupSerializerRootMapDependencies) {
+  DisableAlwaysOpt();
+  v8::SnapshotCreator snapshot_creator;
+  v8::Isolate* isolate = snapshot_creator.GetIsolate();
+  {
+    v8::Isolate::Scope isolate_scope(isolate);
+    v8::HandleScope handle_scope(isolate);
+    Isolate* internal_isolate = reinterpret_cast<Isolate*>(isolate);
+    // Here is interesting retaining path:
+    // - FreeSpaceMap
+    // - Map for Map types itself
+    // - NullValue
+    // - Internalized one byte string
+    // - Map for Internalized one byte string
+    // - WeakCell
+    // - TheHoleValue
+    // - HeapNumber
+    // HeapNumber objects require kDoubleUnaligned on 32-bit
+    // platforms. So, without special measures we're risking to serialize
+    // object, requiring alignment before FreeSpaceMap is fully serialized.
+    v8::internal::Handle<Map> map(
+        internal_isolate->heap()->one_byte_internalized_string_map());
+    Map::WeakCellForMap(map);
+    // Need to avoid DCHECKs inside SnapshotCreator.
+    snapshot_creator.SetDefaultContext(v8::Context::New(isolate));
+  }
+
+  v8::StartupData startup_data = snapshot_creator.CreateBlob(
+      v8::SnapshotCreator::FunctionCodeHandling::kKeep);
+
+  v8::Isolate::CreateParams params;
+  params.snapshot_blob = &startup_data;
+  params.array_buffer_allocator = CcTest::array_buffer_allocator();
+  isolate = v8::Isolate::New(params);
+
+  {
+    v8::HandleScope handle_scope(isolate);
+    v8::Isolate::Scope isolate_scope(isolate);
+
+    v8::Local<v8::Context> env = v8::Context::New(isolate);
+    env->Enter();
+
+    SanityCheck(isolate);
+  }
+  isolate->Dispose();
+  delete[] startup_data.data;
+}
+
 UNINITIALIZED_TEST(StartupSerializerTwice) {
   DisableAlwaysOpt();
   v8::Isolate* isolate = TestIsolate::NewInitialized(true);
@@ -1127,12 +1175,14 @@ TEST(CodeSerializerLargeCodeObject) {
 }
 
 TEST(CodeSerializerLargeCodeObjectWithIncrementalMarking) {
+  if (FLAG_never_compact) return;
+  FLAG_stress_incremental_marking = false;
   FLAG_serialize_toplevel = true;
   FLAG_always_opt = false;
   // This test relies on (full-codegen) code objects going to large object
   // space. Once FCG goes away, it must either be redesigned (to put some
   // other large deserialized object into LO space), or it can be deleted.
-  FLAG_ignition = false;
+  FLAG_stress_fullcodegen = true;
   const char* filter_flag = "--turbo-filter=NOTHING";
   FlagList::SetFlagsFromString(filter_flag, StrLength(filter_flag));
   FLAG_black_allocation = true;
@@ -1148,7 +1198,7 @@ TEST(CodeSerializerLargeCodeObjectWithIncrementalMarking) {
   Vector<const uint8_t> source = ConstructSource(
       STATIC_CHAR_VECTOR("var j=1; if (j == 0) {"),
       STATIC_CHAR_VECTOR("for (var i = 0; i < Object.prototype; i++);"),
-      STATIC_CHAR_VECTOR("} j=7; var s = 'happy_hippo'; j"), 2100);
+      STATIC_CHAR_VECTOR("} j=7; var s = 'happy_hippo'; j"), 2200);
   Handle<String> source_str =
       isolate->factory()->NewStringFromOneByte(source).ToHandleChecked();
 
@@ -1771,7 +1821,7 @@ TEST(CodeSerializerWithHarmonyScoping) {
 }
 
 TEST(CodeSerializerEagerCompilationAndPreAge) {
-  if (FLAG_ignition || FLAG_turbo) return;
+  if (!FLAG_stress_fullcodegen) return;
 
   FLAG_lazy = true;
   FLAG_serialize_toplevel = true;
@@ -1848,60 +1898,6 @@ TEST(Regress503552) {
   delete script_data;
 }
 
-#if V8_TARGET_ARCH_X64
-TEST(CodeSerializerCell) {
-  FLAG_serialize_toplevel = true;
-  LocalContext context;
-  Isolate* isolate = CcTest::i_isolate();
-  isolate->compilation_cache()->Disable();  // Disable same-isolate code cache.
-
-  v8::HandleScope scope(CcTest::isolate());
-
-  size_t actual_size;
-  byte* buffer = static_cast<byte*>(v8::base::OS::Allocate(
-      Assembler::kMinimalBufferSize, &actual_size, true));
-  CHECK(buffer);
-  HandleScope handles(isolate);
-
-  MacroAssembler assembler(isolate, buffer, static_cast<int>(actual_size),
-                           v8::internal::CodeObjectRequired::kYes);
-  assembler.enable_serializer();
-  Handle<HeapNumber> number = isolate->factory()->NewHeapNumber(0.3);
-  CHECK(isolate->heap()->InNewSpace(*number));
-  Handle<Code> code;
-  {
-    MacroAssembler* masm = &assembler;
-    Handle<Cell> cell = isolate->factory()->NewCell(number);
-    masm->Move(rax, cell, RelocInfo::CELL);
-    masm->movp(rax, Operand(rax, 0));
-    masm->ret(0);
-    CodeDesc desc;
-    masm->GetCode(&desc);
-    code = isolate->factory()->NewCode(desc, Code::ComputeFlags(Code::FUNCTION),
-                                       masm->CodeObject());
-    code->set_has_reloc_info_for_serialization(true);
-  }
-  RelocIterator rit1(*code, 1 << RelocInfo::CELL);
-  CHECK_EQ(*number, rit1.rinfo()->target_cell()->value());
-
-  Handle<String> source = isolate->factory()->empty_string();
-  Handle<SharedFunctionInfo> sfi =
-      isolate->factory()->NewSharedFunctionInfo(source, code, false);
-  ScriptData* script_data = CodeSerializer::Serialize(isolate, sfi, source);
-
-  Handle<SharedFunctionInfo> copy =
-      CodeSerializer::Deserialize(isolate, script_data, source)
-          .ToHandleChecked();
-  RelocIterator rit2(copy->code(), 1 << RelocInfo::CELL);
-  CHECK(rit2.rinfo()->target_cell()->IsCell());
-  Handle<Cell> cell(rit2.rinfo()->target_cell());
-  CHECK(cell->value()->IsHeapNumber());
-  CHECK_EQ(0.3, HeapNumber::cast(cell->value())->value());
-
-  delete script_data;
-}
-#endif  // V8_TARGET_ARCH_X64
-
 TEST(CodeSerializerEmbeddedObject) {
   FLAG_serialize_toplevel = true;
   LocalContext context;
@@ -1918,14 +1914,14 @@ TEST(CodeSerializerEmbeddedObject) {
   MacroAssembler assembler(isolate, buffer, static_cast<int>(actual_size),
                            v8::internal::CodeObjectRequired::kYes);
   assembler.enable_serializer();
-  Handle<Object> number = isolate->factory()->NewHeapNumber(0.3);
+  Handle<HeapNumber> number = isolate->factory()->NewHeapNumber(0.3);
   CHECK(isolate->heap()->InNewSpace(*number));
   Handle<Code> code;
   {
     MacroAssembler* masm = &assembler;
     masm->Push(number);
     CodeDesc desc;
-    masm->GetCode(&desc);
+    masm->GetCode(isolate, &desc);
     code = isolate->factory()->NewCode(desc, Code::ComputeFlags(Code::FUNCTION),
                                        masm->CodeObject());
     code->set_has_reloc_info_for_serialization(true);

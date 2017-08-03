@@ -8,11 +8,11 @@ load('test/mjsunit/wasm/wasm-constants.js');
 load('test/mjsunit/wasm/wasm-module-builder.js');
 
 function unexpectedSuccess() {
-  % AbortJS('unexpected success');
+  %AbortJS('unexpected success');
 }
 
 function unexpectedFail(error) {
-  % AbortJS('unexpected fail: ' + error);
+  %AbortJS('unexpected fail: ' + error);
 }
 
 function assertEq(val, expected) {
@@ -516,6 +516,13 @@ buf = mem.buffer;
 assertEq(buf.byteLength, 2 * kPageSize);
 assertErrorMessage(() => mem.grow(1), Error, /failed to grow memory/);
 assertEq(buf, mem.buffer);
+
+let empty_mem = new Memory({initial: 0, maximum: 5});
+let empty_buf = empty_mem.buffer;
+assertEq(empty_buf.byteLength, 0);
+assertEq(empty_mem.grow(0), 0);
+assertEq(empty_mem.buffer.byteLength, 0);
+assertTrue(empty_buf !== empty_mem.buffer);
 
 // 'WebAssembly.Table' data property
 let tableDesc = Object.getOwnPropertyDescriptor(WebAssembly, 'Table');

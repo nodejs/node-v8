@@ -5,6 +5,7 @@
 #ifndef V8_LOG_H_
 #define V8_LOG_H_
 
+#include <set>
 #include <string>
 
 #include "src/allocation.h"
@@ -196,11 +197,6 @@ class Logger : public CodeEventListener {
                  const char* op, const char* old_left, const char* old_right,
                  const char* old_state, const char* new_left,
                  const char* new_right, const char* new_state);
-  void BinaryOpIC(const Address pc, int line, int column, Code* stub,
-                  const char* old_state, const char* new_state,
-                  AllocationSite* allocation_site);
-  void ToBooleanIC(const Address pc, int line, int column, Code* stub,
-                   const char* old_state, const char* new_state);
   void PatchIC(const Address pc, const Address test, int delta);
 
   // ==== Events logged by --log-gc. ====
@@ -327,6 +323,8 @@ class Logger : public CodeEventListener {
   JitLogger* jit_logger_;
   std::unique_ptr<ProfilerListener> profiler_listener_;
   List<CodeEventListener*> listeners_;
+  std::set<int> logged_source_code_;
+  uint32_t next_source_info_id_ = 0;
 
   // Guards against multiple calls to TearDown() that can happen in some tests.
   // 'true' between SetUp() and TearDown().

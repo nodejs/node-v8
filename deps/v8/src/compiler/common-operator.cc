@@ -28,7 +28,6 @@ std::ostream& operator<<(std::ostream& os, BranchHint hint) {
       return os << "False";
   }
   UNREACHABLE();
-  return os;
 }
 
 
@@ -141,6 +140,22 @@ std::ostream& operator<<(std::ostream& os, ParameterInfo const& i) {
   if (i.debug_name()) os << i.debug_name() << '#';
   os << i.index();
   return os;
+}
+
+std::ostream& operator<<(std::ostream& os, ObjectStateInfo const& i) {
+  return os << "id:" << i.object_id() << "|size:" << i.size();
+}
+
+size_t hash_value(ObjectStateInfo const& p) {
+  return base::hash_combine(p.object_id(), p.size());
+}
+
+std::ostream& operator<<(std::ostream& os, TypedObjectStateInfo const& i) {
+  return os << "id:" << i.object_id() << "|" << i.machine_types();
+}
+
+size_t hash_value(TypedObjectStateInfo const& p) {
+  return base::hash_combine(p.object_id(), p.machine_types());
 }
 
 bool operator==(RelocatablePtrConstantInfo const& lhs,
@@ -275,7 +290,6 @@ std::ostream& operator<<(std::ostream& os, RegionObservability observability) {
       return os << "not-observable";
   }
   UNREACHABLE();
-  return os;
 }
 
 RegionObservability RegionObservabilityOf(Operator const* op) {
@@ -324,7 +338,7 @@ ZoneVector<MachineType> const* MachineTypesOf(Operator const* op) {
   if (op->opcode() == IrOpcode::kTypedStateValues) {
     return OpParameter<TypedStateValueInfo>(op).machine_types();
   }
-  return OpParameter<const ZoneVector<MachineType>*>(op);
+  return OpParameter<TypedObjectStateInfo>(op).machine_types();
 }
 
 #define CACHED_OP_LIST(V)                                                     \
@@ -802,7 +816,6 @@ const Operator* CommonOperatorBuilder::Branch(BranchHint hint) {
       return &cache_.kBranchFalseOperator;
   }
   UNREACHABLE();
-  return nullptr;
 }
 
 const Operator* CommonOperatorBuilder::Deoptimize(DeoptimizeKind kind,
@@ -1079,6 +1092,14 @@ const Operator* CommonOperatorBuilder::RelocatableInt64Constant(
       RelocatablePtrConstantInfo(value, rmode));              // parameter
 }
 
+const Operator* CommonOperatorBuilder::ObjectId(uint32_t object_id) {
+  return new (zone()) Operator1<uint32_t>(   // --
+      IrOpcode::kObjectId, Operator::kPure,  // opcode
+      "ObjectId",                            // name
+      0, 0, 0, 1, 0, 0,                      // counts
+      object_id);                            // parameter
+}
+
 const Operator* CommonOperatorBuilder::Select(MachineRepresentation rep,
                                               BranchHint hint) {
   return new (zone()) Operator1<SelectParameters>(  // --
@@ -1161,7 +1182,6 @@ const Operator* CommonOperatorBuilder::BeginRegion(
       return &cache_.kBeginRegionNotObservableOperator;
   }
   UNREACHABLE();
-  return nullptr;
 }
 
 const Operator* CommonOperatorBuilder::StateValues(int arguments,
@@ -1224,21 +1244,35 @@ bool IsRestOf(Operator const* op) {
   return OpParameter<bool>(op);
 }
 
-const Operator* CommonOperatorBuilder::ObjectState(int pointer_slots) {
-  return new (zone()) Operator1<int>(           // --
-      IrOpcode::kObjectState, Operator::kPure,  // opcode
-      "ObjectState",                            // name
-      pointer_slots, 0, 0, 1, 0, 0,             // counts
-      pointer_slots);                           // parameter
+const Operator* CommonOperatorBuilder::ObjectState(int object_id,
+                                                   int pointer_slots) {
+  return new (zone()) Operator1<ObjectStateInfo>(  // --
+      IrOpcode::kObjectState, Operator::kPure,     // opcode
+      "ObjectState",                               // name
+      pointer_slots, 0, 0, 1, 0, 0,                // counts
+      ObjectStateInfo{object_id, pointer_slots});  // parameter
 }
 
 const Operator* CommonOperatorBuilder::TypedObjectState(
-    const ZoneVector<MachineType>* types) {
-  return new (zone()) Operator1<const ZoneVector<MachineType>*>(  // --
-      IrOpcode::kTypedObjectState, Operator::kPure,               // opcode
-      "TypedObjectState",                                         // name
-      static_cast<int>(types->size()), 0, 0, 1, 0, 0,             // counts
-      types);                                                     // parameter
+    int object_id, const ZoneVector<MachineType>* types) {
+  return new (zone()) Operator1<TypedObjectStateInfo>(  // --
+      IrOpcode::kTypedObjectState, Operator::kPure,     // opcode
+      "TypedObjectState",                               // name
+      static_cast<int>(types->size()), 0, 0, 1, 0, 0,   // counts
+      TypedObjectStateInfo(object_id, types));          // parameter
+}
+
+uint32_t ObjectIdOf(Operator const* op) {
+  switch (op->opcode()) {
+    case IrOpcode::kObjectState:
+      return OpParameter<ObjectStateInfo>(op).object_id();
+    case IrOpcode::kTypedObjectState:
+      return OpParameter<TypedObjectStateInfo>(op).object_id();
+    case IrOpcode::kObjectId:
+      return OpParameter<uint32_t>(op);
+    default:
+      UNREACHABLE();
+  }
 }
 
 const Operator* CommonOperatorBuilder::FrameState(
@@ -1325,7 +1359,6 @@ const Operator* CommonOperatorBuilder::ResizeMergeOrPhi(const Operator* op,
     return Loop(size);
   } else {
     UNREACHABLE();
-    return nullptr;
   }
 }
 

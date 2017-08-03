@@ -359,7 +359,7 @@ static Local<Value> GetStdout(Isolate* isolate, int child_fd,
 // we don't get here before the child has closed stdout and most programs don't
 // do that before they exit.
 //
-// We're disabling usage of waitid in Mac OS X because it doens't work for us:
+// We're disabling usage of waitid in Mac OS X because it doesn't work for us:
 // a parent process hangs on waiting while a child process is already a zombie.
 // See http://code.google.com/p/v8/issues/detail?id=401.
 #if defined(WNOWAIT) && !defined(ANDROID) && !defined(__APPLE__) \
@@ -749,9 +749,11 @@ void Shell::UnsetEnvironment(const v8::FunctionCallbackInfo<v8::Value>& args) {
 
 
 void Shell::AddOSMethods(Isolate* isolate, Local<ObjectTemplate> os_templ) {
-  os_templ->Set(String::NewFromUtf8(isolate, "system", NewStringType::kNormal)
-                    .ToLocalChecked(),
-                FunctionTemplate::New(isolate, System));
+  if (options.enable_os_system) {
+    os_templ->Set(String::NewFromUtf8(isolate, "system", NewStringType::kNormal)
+                      .ToLocalChecked(),
+                  FunctionTemplate::New(isolate, System));
+  }
   os_templ->Set(String::NewFromUtf8(isolate, "chdir", NewStringType::kNormal)
                     .ToLocalChecked(),
                 FunctionTemplate::New(isolate, ChangeDirectory));

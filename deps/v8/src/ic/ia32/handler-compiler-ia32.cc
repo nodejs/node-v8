@@ -84,7 +84,7 @@ void PropertyHandlerCompiler::GenerateDictionaryNegativeLookup(
 
   // Load properties array.
   Register properties = scratch0;
-  __ mov(properties, FieldOperand(receiver, JSObject::kPropertiesOffset));
+  __ mov(properties, FieldOperand(receiver, JSObject::kPropertiesOrHashOffset));
 
   // Check that the properties array is a dictionary.
   __ cmp(FieldOperand(properties, HeapObject::kMapOffset),
@@ -139,9 +139,7 @@ void PropertyHandlerCompiler::GenerateApiAccessorCall(
 
   // Put holder in place.
   CallOptimization::HolderLookup holder_lookup;
-  int holder_depth = 0;
-  optimization.LookupHolderOfExpectedType(receiver_map, &holder_lookup,
-                                          &holder_depth);
+  optimization.LookupHolderOfExpectedType(receiver_map, &holder_lookup);
   switch (holder_lookup) {
     case CallOptimization::kHolderIsReceiver:
       __ Move(holder, receiver);
@@ -149,10 +147,6 @@ void PropertyHandlerCompiler::GenerateApiAccessorCall(
     case CallOptimization::kHolderFound:
       __ mov(holder, FieldOperand(receiver, HeapObject::kMapOffset));
       __ mov(holder, FieldOperand(holder, Map::kPrototypeOffset));
-      for (int i = 1; i < holder_depth; i++) {
-        __ mov(holder, FieldOperand(holder, HeapObject::kMapOffset));
-        __ mov(holder, FieldOperand(holder, Map::kPrototypeOffset));
-      }
       break;
     case CallOptimization::kHolderNotFound:
       UNREACHABLE();
@@ -309,8 +303,8 @@ Register PropertyHandlerCompiler::CheckPrototypes(
       Map::GetOrCreatePrototypeChainValidityCell(receiver_map, isolate());
   if (!validity_cell.is_null()) {
     DCHECK_EQ(Smi::FromInt(Map::kPrototypeChainValid), validity_cell->value());
-    // Operand::ForCell(...) points to the cell's payload!
-    __ cmp(Operand::ForCell(validity_cell),
+    __ mov(scratch1, validity_cell);
+    __ cmp(FieldOperand(scratch1, Cell::kValueOffset),
            Immediate(Smi::FromInt(Map::kPrototypeChainValid)));
     __ j(not_equal, miss);
   }

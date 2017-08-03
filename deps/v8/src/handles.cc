@@ -12,6 +12,7 @@
 namespace v8 {
 namespace internal {
 
+
 #ifdef DEBUG
 bool HandleBase::IsDereferenceAllowed(DereferenceCheckMode mode) const {
   DCHECK_NOT_NULL(location_);

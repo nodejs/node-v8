@@ -114,7 +114,6 @@ Address RelocInfo::target_address_address() {
 
 Address RelocInfo::constant_pool_entry_address() {
   UNREACHABLE();
-  return NULL;
 }
 
 int RelocInfo::target_address_size() { return Assembler::kSpecialTargetSize; }
@@ -200,27 +199,6 @@ void RelocInfo::set_target_runtime_entry(Isolate* isolate, Address target,
     set_target_address(isolate, target, write_barrier_mode, icache_flush_mode);
 }
 
-Handle<Cell> RelocInfo::target_cell_handle() {
-  DCHECK(rmode_ == RelocInfo::CELL);
-  Address address = Memory::Address_at(pc_);
-  return Handle<Cell>(reinterpret_cast<Cell**>(address));
-}
-
-Cell* RelocInfo::target_cell() {
-  DCHECK(rmode_ == RelocInfo::CELL);
-  return Cell::FromValueAddress(Memory::Address_at(pc_));
-}
-
-void RelocInfo::set_target_cell(Cell* cell, WriteBarrierMode write_barrier_mode,
-                                ICacheFlushMode icache_flush_mode) {
-  DCHECK(rmode_ == RelocInfo::CELL);
-  Address address = cell->address() + Cell::kValueOffset;
-  Memory::Address_at(pc_) = address;
-  if (write_barrier_mode == UPDATE_WRITE_BARRIER && host() != NULL) {
-    host()->GetHeap()->incremental_marking()->RecordWriteIntoCode(host(), this,
-                                                                  cell);
-  }
-}
 
 #if V8_TARGET_ARCH_S390X
 // NOP(2byte) + PUSH + MOV + BASR =
@@ -303,8 +281,6 @@ void RelocInfo::Visit(Isolate* isolate, ObjectVisitor* visitor) {
     visitor->VisitEmbeddedPointer(host(), this);
   } else if (RelocInfo::IsCodeTarget(mode)) {
     visitor->VisitCodeTarget(host(), this);
-  } else if (mode == RelocInfo::CELL) {
-    visitor->VisitCellPointer(host(), this);
   } else if (mode == RelocInfo::EXTERNAL_REFERENCE) {
     visitor->VisitExternalReference(host(), this);
   } else if (mode == RelocInfo::INTERNAL_REFERENCE) {
@@ -326,8 +302,6 @@ void RelocInfo::Visit(Heap* heap) {
     StaticVisitor::VisitEmbeddedPointer(heap, this);
   } else if (RelocInfo::IsCodeTarget(mode)) {
     StaticVisitor::VisitCodeTarget(heap, this);
-  } else if (mode == RelocInfo::CELL) {
-    StaticVisitor::VisitCell(heap, this);
   } else if (mode == RelocInfo::EXTERNAL_REFERENCE) {
     StaticVisitor::VisitExternalReference(this);
   } else if (mode == RelocInfo::INTERNAL_REFERENCE) {
@@ -345,19 +319,19 @@ void RelocInfo::Visit(Heap* heap) {
 // Operand constructors
 Operand::Operand(intptr_t immediate, RelocInfo::Mode rmode) {
   rm_ = no_reg;
-  imm_ = immediate;
+  value_.immediate = immediate;
   rmode_ = rmode;
 }
 
 Operand::Operand(const ExternalReference& f) {
   rm_ = no_reg;
-  imm_ = reinterpret_cast<intptr_t>(f.address());
+  value_.immediate = reinterpret_cast<intptr_t>(f.address());
   rmode_ = RelocInfo::EXTERNAL_REFERENCE;
 }
 
 Operand::Operand(Smi* value) {
   rm_ = no_reg;
-  imm_ = reinterpret_cast<intptr_t>(value);
+  value_.immediate = reinterpret_cast<intptr_t>(value);
   rmode_ = kRelocInfo_NONEPTR;
 }
 
@@ -372,18 +346,14 @@ void Assembler::CheckBuffer() {
   }
 }
 
-int32_t Assembler::emit_code_target(Handle<Code> target, RelocInfo::Mode rmode,
-                                    TypeFeedbackId ast_id) {
+int32_t Assembler::emit_code_target(Handle<Code> target,
+                                    RelocInfo::Mode rmode) {
   DCHECK(RelocInfo::IsCodeTarget(rmode));
-  if (rmode == RelocInfo::CODE_TARGET && !ast_id.IsNone()) {
-    SetRecordedAstId(ast_id);
-    RecordRelocInfo(RelocInfo::CODE_TARGET_WITH_ID);
-  } else {
-    RecordRelocInfo(rmode);
-  }
+  RecordRelocInfo(rmode);
 
   int current = code_targets_.length();
-  if (current > 0 && code_targets_.last().is_identical_to(target)) {
+  if (current > 0 && !target.is_null() &&
+      code_targets_.last().is_identical_to(target)) {
     // Optimization if we keep jumping to the same code target.
     current--;
   } else {

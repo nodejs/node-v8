@@ -132,15 +132,14 @@ void KeyedStoreGenericAssembler::TryRewriteElements(
   DCHECK(IsFastPackedElementsKind(from_kind));
   ElementsKind holey_from_kind = GetHoleyElementsKind(from_kind);
   ElementsKind holey_to_kind = GetHoleyElementsKind(to_kind);
-  if (AllocationSite::GetMode(from_kind, to_kind) == TRACK_ALLOCATION_SITE) {
+  if (AllocationSite::ShouldTrack(from_kind, to_kind)) {
     TrapAllocationMemento(receiver, bailout);
   }
   Label perform_transition(this), check_holey_map(this);
   VARIABLE(var_target_map, MachineRepresentation::kTagged);
   // Check if the receiver has the default |from_kind| map.
   {
-    Node* packed_map =
-        LoadContextElement(native_context, Context::ArrayMapIndex(from_kind));
+    Node* packed_map = LoadJSArrayElementsMap(from_kind, native_context);
     GotoIf(WordNotEqual(receiver_map, packed_map), &check_holey_map);
     var_target_map.Bind(
         LoadContextElement(native_context, Context::ArrayMapIndex(to_kind)));
@@ -161,8 +160,7 @@ void KeyedStoreGenericAssembler::TryRewriteElements(
   // Found a supported transition target map, perform the transition!
   BIND(&perform_transition);
   {
-    if (IsFastDoubleElementsKind(from_kind) !=
-        IsFastDoubleElementsKind(to_kind)) {
+    if (IsDoubleElementsKind(from_kind) != IsDoubleElementsKind(to_kind)) {
       Node* capacity = SmiUntag(LoadFixedArrayBaseLength(elements));
       GrowElementsCapacity(receiver, elements, from_kind, to_kind, capacity,
                            capacity, INTPTR_PARAMETERS, bailout);
@@ -175,11 +173,9 @@ void KeyedStoreGenericAssembler::TryChangeToHoleyMapHelper(
     Node* receiver, Node* receiver_map, Node* native_context,
     ElementsKind packed_kind, ElementsKind holey_kind, Label* done,
     Label* map_mismatch, Label* bailout) {
-  Node* packed_map =
-      LoadContextElement(native_context, Context::ArrayMapIndex(packed_kind));
+  Node* packed_map = LoadJSArrayElementsMap(packed_kind, native_context);
   GotoIf(WordNotEqual(receiver_map, packed_map), map_mismatch);
-  if (AllocationSite::GetMode(packed_kind, holey_kind) ==
-      TRACK_ALLOCATION_SITE) {
+  if (AllocationSite::ShouldTrack(packed_kind, holey_kind)) {
     TrapAllocationMemento(receiver, bailout);
   }
   Node* holey_map =
@@ -263,7 +259,7 @@ void KeyedStoreGenericAssembler::StoreElementWithCapacity(
 
   // FixedArray backing store -> Smi or object elements.
   {
-    Node* offset = ElementOffsetFromIndex(intptr_index, FAST_ELEMENTS,
+    Node* offset = ElementOffsetFromIndex(intptr_index, PACKED_ELEMENTS,
                                           INTPTR_PARAMETERS, kHeaderSize);
     // Check if we're about to overwrite the hole. We can safely do that
     // only if there can be no setters on the prototype chain.
@@ -288,7 +284,7 @@ void KeyedStoreGenericAssembler::StoreElementWithCapacity(
       // If we're about to introduce holes, ensure holey elements.
       if (update_length == kBumpLengthWithGap) {
         TryChangeToHoleyMapMulti(receiver, receiver_map, elements_kind, context,
-                                 FAST_SMI_ELEMENTS, FAST_ELEMENTS, slow);
+                                 PACKED_SMI_ELEMENTS, PACKED_ELEMENTS, slow);
       }
       StoreNoWriteBarrier(MachineRepresentation::kTagged, elements, offset,
                           value);
@@ -300,14 +296,14 @@ void KeyedStoreGenericAssembler::StoreElementWithCapacity(
     // Check if we already have object elements; just do the store if so.
     {
       Label must_transition(this);
-      STATIC_ASSERT(FAST_SMI_ELEMENTS == 0);
-      STATIC_ASSERT(FAST_HOLEY_SMI_ELEMENTS == 1);
+      STATIC_ASSERT(PACKED_SMI_ELEMENTS == 0);
+      STATIC_ASSERT(HOLEY_SMI_ELEMENTS == 1);
       GotoIf(Int32LessThanOrEqual(elements_kind,
-                                  Int32Constant(FAST_HOLEY_SMI_ELEMENTS)),
+                                  Int32Constant(HOLEY_SMI_ELEMENTS)),
              &must_transition);
       if (update_length == kBumpLengthWithGap) {
         TryChangeToHoleyMap(receiver, receiver_map, elements_kind, context,
-                            FAST_ELEMENTS, slow);
+                            PACKED_ELEMENTS, slow);
       }
       Store(elements, offset, value);
       MaybeUpdateLengthAndReturn(receiver, intptr_index, value, update_length);
@@ -326,14 +322,15 @@ void KeyedStoreGenericAssembler::StoreElementWithCapacity(
         // If we're adding holes at the end, always transition to a holey
         // elements kind, otherwise try to remain packed.
         ElementsKind target_kind = update_length == kBumpLengthWithGap
-                                       ? FAST_HOLEY_DOUBLE_ELEMENTS
-                                       : FAST_DOUBLE_ELEMENTS;
+                                       ? HOLEY_DOUBLE_ELEMENTS
+                                       : PACKED_DOUBLE_ELEMENTS;
         TryRewriteElements(receiver, receiver_map, elements, native_context,
-                           FAST_SMI_ELEMENTS, target_kind, slow);
+                           PACKED_SMI_ELEMENTS, target_kind, slow);
         // Reload migrated elements.
         Node* double_elements = LoadElements(receiver);
-        Node* double_offset = ElementOffsetFromIndex(
-            intptr_index, FAST_DOUBLE_ELEMENTS, INTPTR_PARAMETERS, kHeaderSize);
+        Node* double_offset =
+            ElementOffsetFromIndex(intptr_index, PACKED_DOUBLE_ELEMENTS,
+                                   INTPTR_PARAMETERS, kHeaderSize);
         // Make sure we do not store signalling NaNs into double arrays.
         Node* double_value = Float64SilenceNaN(LoadHeapNumberValue(value));
         StoreNoWriteBarrier(MachineRepresentation::kFloat64, double_elements,
@@ -347,10 +344,10 @@ void KeyedStoreGenericAssembler::StoreElementWithCapacity(
         // If we're adding holes at the end, always transition to a holey
         // elements kind, otherwise try to remain packed.
         ElementsKind target_kind = update_length == kBumpLengthWithGap
-                                       ? FAST_HOLEY_ELEMENTS
-                                       : FAST_ELEMENTS;
+                                       ? HOLEY_ELEMENTS
+                                       : PACKED_ELEMENTS;
         TryRewriteElements(receiver, receiver_map, elements, native_context,
-                           FAST_SMI_ELEMENTS, target_kind, slow);
+                           PACKED_SMI_ELEMENTS, target_kind, slow);
         // The elements backing store didn't change, no reload necessary.
         CSA_ASSERT(this, WordEqual(elements, LoadElements(receiver)));
         Store(elements, offset, value);
@@ -366,7 +363,7 @@ void KeyedStoreGenericAssembler::StoreElementWithCapacity(
          &check_cow_elements);
   // FixedDoubleArray backing store -> double elements.
   {
-    Node* offset = ElementOffsetFromIndex(intptr_index, FAST_DOUBLE_ELEMENTS,
+    Node* offset = ElementOffsetFromIndex(intptr_index, PACKED_DOUBLE_ELEMENTS,
                                           INTPTR_PARAMETERS, kHeaderSize);
     // Check if we're about to overwrite the hole. We can safely do that
     // only if there can be no setters on the prototype chain.
@@ -396,7 +393,7 @@ void KeyedStoreGenericAssembler::StoreElementWithCapacity(
       // If we're about to introduce holes, ensure holey elements.
       if (update_length == kBumpLengthWithGap) {
         TryChangeToHoleyMap(receiver, receiver_map, elements_kind, context,
-                            FAST_DOUBLE_ELEMENTS, slow);
+                            PACKED_DOUBLE_ELEMENTS, slow);
       }
       StoreNoWriteBarrier(MachineRepresentation::kFloat64, elements, offset,
                           double_value);
@@ -409,14 +406,14 @@ void KeyedStoreGenericAssembler::StoreElementWithCapacity(
     {
       Node* native_context = LoadNativeContext(context);
       ElementsKind target_kind = update_length == kBumpLengthWithGap
-                                     ? FAST_HOLEY_ELEMENTS
-                                     : FAST_ELEMENTS;
+                                     ? HOLEY_ELEMENTS
+                                     : PACKED_ELEMENTS;
       TryRewriteElements(receiver, receiver_map, elements, native_context,
-                         FAST_DOUBLE_ELEMENTS, target_kind, slow);
+                         PACKED_DOUBLE_ELEMENTS, target_kind, slow);
       // Reload migrated elements.
       Node* fast_elements = LoadElements(receiver);
       Node* fast_offset = ElementOffsetFromIndex(
-          intptr_index, FAST_ELEMENTS, INTPTR_PARAMETERS, kHeaderSize);
+          intptr_index, PACKED_ELEMENTS, INTPTR_PARAMETERS, kHeaderSize);
       Store(fast_elements, fast_offset, value);
       MaybeUpdateLengthAndReturn(receiver, intptr_index, value, update_length);
     }
@@ -488,7 +485,8 @@ void KeyedStoreGenericAssembler::EmitGenericElementStore(
     Goto(slow);
   }
 
-  // Any ElementsKind > LAST_FAST_ELEMENTS_KIND jumps here for further dispatch.
+  // Any ElementsKind > LAST_FAST_ELEMENTS_KIND jumps here for further
+  // dispatch.
   BIND(&if_nonfast);
   {
     STATIC_ASSERT(LAST_ELEMENTS_KIND == LAST_FIXED_TYPED_ARRAY_ELEMENTS_KIND);
@@ -753,15 +751,13 @@ void KeyedStoreGenericAssembler::EmitGenericPropertyStore(
   VARIABLE(var_accessor_holder, MachineRepresentation::kTagged);
   Label stub_cache(this), fast_properties(this), dictionary_properties(this),
       accessor(this), readonly(this);
-  Node* properties = LoadProperties(receiver);
-  Node* properties_map = LoadMap(properties);
-  Branch(WordEqual(properties_map, LoadRoot(Heap::kHashTableMapRootIndex)),
-         &dictionary_properties, &fast_properties);
+  Node* bitfield3 = LoadMapBitField3(receiver_map);
+  Branch(IsSetWord32<Map::DictionaryMap>(bitfield3), &dictionary_properties,
+         &fast_properties);
 
   BIND(&fast_properties);
   {
     Comment("fast property store");
-    Node* bitfield3 = LoadMapBitField3(receiver_map);
     Node* descriptors = LoadMapDescriptors(receiver_map);
     Label descriptor_found(this);
     VARIABLE(var_name_index, MachineType::PointerRepresentation());
@@ -789,6 +785,7 @@ void KeyedStoreGenericAssembler::EmitGenericPropertyStore(
       BIND(&data_property);
       {
         CheckForAssociatedProtector(p->name, slow);
+        Node* properties = LoadProperties(receiver);
         OverwriteExistingFastProperty(receiver, receiver_map, properties,
                                       descriptors, name_index, details,
                                       p->value, slow);
@@ -805,6 +802,7 @@ void KeyedStoreGenericAssembler::EmitGenericPropertyStore(
 
     VARIABLE(var_name_index, MachineType::PointerRepresentation());
     Label dictionary_found(this, &var_name_index), not_found(this);
+    Node* properties = LoadProperties(receiver);
     NameDictionaryLookup<NameDictionary>(properties, p->name, &dictionary_found,
                                          &var_name_index, &not_found);
     BIND(&dictionary_found);
@@ -866,8 +864,7 @@ void KeyedStoreGenericAssembler::EmitGenericPropertyStore(
     BIND(&not_callable);
     {
       if (language_mode == STRICT) {
-        Node* message =
-            SmiConstant(Smi::FromInt(MessageTemplate::kNoSetterInCallback));
+        Node* message = SmiConstant(MessageTemplate::kNoSetterInCallback);
         TailCallRuntime(Runtime::kThrowTypeError, p->context, message, p->name,
                         var_accessor_holder.value());
       } else {
@@ -880,8 +877,7 @@ void KeyedStoreGenericAssembler::EmitGenericPropertyStore(
   BIND(&readonly);
   {
     if (language_mode == STRICT) {
-      Node* message =
-          SmiConstant(Smi::FromInt(MessageTemplate::kStrictReadOnlyProperty));
+      Node* message = SmiConstant(MessageTemplate::kStrictReadOnlyProperty);
       Node* type = Typeof(p->receiver);
       TailCallRuntime(Runtime::kThrowTypeError, p->context, message, p->name,
                       type, p->receiver);
@@ -984,9 +980,9 @@ void KeyedStoreGenericAssembler::StoreIC_Uninitialized(
          &miss);
 
   // Optimistically write the state transition to the vector.
-  StoreFixedArrayElement(vector, slot,
-                         LoadRoot(Heap::kpremonomorphic_symbolRootIndex),
-                         SKIP_WRITE_BARRIER, 0, SMI_PARAMETERS);
+  StoreFeedbackVectorSlot(vector, slot,
+                          LoadRoot(Heap::kpremonomorphic_symbolRootIndex),
+                          SKIP_WRITE_BARRIER, 0, SMI_PARAMETERS);
 
   StoreICParameters p(context, receiver, name, value, slot, vector);
   EmitGenericPropertyStore(receiver, receiver_map, &p, &miss, language_mode,
@@ -995,9 +991,9 @@ void KeyedStoreGenericAssembler::StoreIC_Uninitialized(
   BIND(&miss);
   {
     // Undo the optimistic state transition.
-    StoreFixedArrayElement(vector, slot,
-                           LoadRoot(Heap::kuninitialized_symbolRootIndex),
-                           SKIP_WRITE_BARRIER, 0, SMI_PARAMETERS);
+    StoreFeedbackVectorSlot(vector, slot,
+                            LoadRoot(Heap::kuninitialized_symbolRootIndex),
+                            SKIP_WRITE_BARRIER, 0, SMI_PARAMETERS);
     TailCallRuntime(Runtime::kStoreIC_Miss, context, value, slot, vector,
                     receiver, name);
   }
