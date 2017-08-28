@@ -64,15 +64,14 @@ void CheckExceptionInfos(Handle<Object> exc,
 
 // Trigger a trap for executing unreachable.
 TEST(Unreachable) {
-  WasmRunner<void> r(kExecuteCompiled);
+  // Create a WasmRunner with stack checks and traps enabled.
+  WasmRunner<void> r(kExecuteCompiled, "main", true);
   TestSignatures sigs;
-  // Set the execution context, such that a runtime error can be thrown.
-  r.SetModuleContext();
 
   BUILD(r, WASM_UNREACHABLE);
   uint32_t wasm_index = r.function()->func_index;
 
-  Handle<JSFunction> js_wasm_wrapper = r.module().WrapCode(wasm_index);
+  Handle<JSFunction> js_wasm_wrapper = r.builder().WrapCode(wasm_index);
 
   Handle<JSFunction> js_trampoline = Handle<JSFunction>::cast(
       v8::Utils::OpenHandle(*v8::Local<v8::Function>::Cast(
@@ -99,11 +98,10 @@ TEST(Unreachable) {
 
 // Trigger a trap for loading from out-of-bounds.
 TEST(IllegalLoad) {
-  WasmRunner<void> r(kExecuteCompiled);
+  WasmRunner<void> r(kExecuteCompiled, "main", true);
   TestSignatures sigs;
-  // Set the execution context, such that a runtime error can be thrown.
-  r.SetModuleContext();
-  r.module().AddMemory(0L);
+
+  r.builder().AddMemory(0L);
 
   BUILD(r, WASM_IF(WASM_ONE, WASM_SEQ(WASM_LOAD_MEM(MachineType::Int32(),
                                                     WASM_I32V_1(-3)),
@@ -115,7 +113,7 @@ TEST(IllegalLoad) {
   BUILD(f2, WASM_NOP, WASM_CALL_FUNCTION0(wasm_index_1));
   uint32_t wasm_index_2 = f2.function_index();
 
-  Handle<JSFunction> js_wasm_wrapper = r.module().WrapCode(wasm_index_2);
+  Handle<JSFunction> js_wasm_wrapper = r.builder().WrapCode(wasm_index_2);
 
   Handle<JSFunction> js_trampoline = Handle<JSFunction>::cast(
       v8::Utils::OpenHandle(*v8::Local<v8::Function>::Cast(

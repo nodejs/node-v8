@@ -13,15 +13,26 @@
 #include "test/common/wasm/test-signatures.h"
 #include "test/fuzzer/wasm-fuzzer-common.h"
 
+#if __clang__
+// TODO(mostynb@opera.com): remove the using statements and these pragmas.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wheader-hygiene"
+#endif
+
 using namespace v8::internal;
 using namespace v8::internal::wasm;
 using namespace v8::internal::wasm::fuzzer;
+
+#if __clang__
+// TODO(mostynb@opera.com): remove the using statements and these pragmas.
+#pragma clang diagnostic pop
+#endif
 
 class WasmCodeFuzzer : public WasmExecutionFuzzer {
   virtual bool GenerateModule(
       Isolate* isolate, Zone* zone, const uint8_t* data, size_t size,
       ZoneBuffer& buffer, int32_t& num_args,
-      std::unique_ptr<WasmVal[]>& interpreter_args,
+      std::unique_ptr<WasmValue[]>& interpreter_args,
       std::unique_ptr<Handle<Object>[]>& compiler_args) override {
     TestSignatures sigs;
     WasmModuleBuilder builder(zone);
@@ -33,11 +44,12 @@ class WasmCodeFuzzer : public WasmExecutionFuzzer {
 
     builder.WriteTo(buffer);
     num_args = 3;
-    interpreter_args.reset(new WasmVal[3]{WasmVal(1), WasmVal(2), WasmVal(3)});
+    interpreter_args.reset(
+        new WasmValue[3]{WasmValue(1), WasmValue(2), WasmValue(3)});
 
     compiler_args.reset(new Handle<Object>[3]{
-        handle(Smi::FromInt(1), isolate), handle(Smi::FromInt(1), isolate),
-        handle(Smi::FromInt(1), isolate)});
+        handle(Smi::FromInt(1), isolate), handle(Smi::FromInt(2), isolate),
+        handle(Smi::FromInt(3), isolate)});
     return true;
   }
 };

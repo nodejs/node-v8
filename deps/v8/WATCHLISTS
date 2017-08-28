@@ -33,9 +33,6 @@
 
 {
   'WATCHLIST_DEFINITIONS': {
-    'public_api': {
-      'filepath': 'include/',
-    },
     'snapshot': {
       'filepath': 'src/snapshot/',
     },
@@ -62,13 +59,30 @@
     },
     'merges': {
       'filepath': '.',
-    }
+    },
+    'gypfiles': {
+      'filepath': 'gypfiles/',
+    },
+    'inspector': {
+      'filepath': 'inspector',
+    },
+    'wasm': {
+      'filepath': 'src/wasm/' \
+                  '|src/compiler/wasm',
+    },
+    'value_serializer': {
+      'filepath': 'src/value-serializer',
+    },
+    'parser': {
+      'filepath': 'src/ast/' \
+                  '|src/parsing/',
+    },
+    'tracing': {
+      'filepath': 'src/tracing/',
+    },
   },
 
   'WATCHLISTS': {
-    'public_api': [
-      'phajdan.jr@chromium.org',
-    ],
     'snapshot': [
       'yangguo@chromium.org',
     ],
@@ -77,14 +91,12 @@
     ],
     'interpreter': [
       'rmcilroy@chromium.org',
-      'oth@chromium.org',
     ],
     'feature_shipping_status': [
       'hablich@chromium.org',
     ],
     'gc_changes': [
       'hpayer@chromium.org',
-      'ulan@chromium.org',
     ],
     'arm': [
       'v8-mips-ports@googlegroups.com',
@@ -95,7 +107,26 @@
     ],
     'merges': [
       # Only enabled on branches created with tools/release/create_release.py
-      'v8-merges@googlegroups.com',
+      # 'v8-merges@googlegroups.com',
+    ],
+    'gypfiles': [
+      'machenbach@chromium.org',
+    ],
+    'inspector': [
+      'devtools-reviews@chromium.org',
+    ],
+    'wasm': [
+      'wasm-v8@google.com',
+    ],
+    'value_serializer': [
+      'jbroman+watch@chromium.org',
+    ],
+    'parser': [
+      'marja+watch@chromium.org',
+    ],
+    'tracing': [
+      'lpy+v8tracing@chromium.org',
+      'fmeawad@chromium.org',
     ],
   },
 }

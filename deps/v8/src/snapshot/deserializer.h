@@ -5,6 +5,8 @@
 #ifndef V8_SNAPSHOT_DESERIALIZER_H_
 #define V8_SNAPSHOT_DESERIALIZER_H_
 
+#include <vector>
+
 #include "src/heap/heap.h"
 #include "src/objects.h"
 #include "src/snapshot/serializer-common.h"
@@ -23,14 +25,27 @@ namespace internal {
 #define V8_CODE_EMBEDS_OBJECT_POINTER 0
 #endif
 
+class BuiltinDeserializer;
 class Heap;
+class StartupDeserializer;
 
 // A Deserializer reads a snapshot and reconstructs the Object graph it defines.
 class Deserializer : public SerializerDeserializer {
  public:
+  ~Deserializer() override;
+
+  // Add an object to back an attached reference. The order to add objects must
+  // mirror the order they are added in the serializer.
+  void AddAttachedObject(Handle<HeapObject> attached_object) {
+    attached_objects_.push_back(attached_object);
+  }
+
+  void SetRehashability(bool v) { can_rehash_ = v; }
+
+ protected:
   // Create a deserializer from a snapshot byte source.
   template <class Data>
-  explicit Deserializer(Data* data, bool deserializing_user_code = false)
+  Deserializer(Data* data, bool deserializing_user_code)
       : isolate_(NULL),
         source_(data->Payload()),
         magic_number_(data->GetMagicNumber()),
@@ -42,41 +57,59 @@ class Deserializer : public SerializerDeserializer {
         next_alignment_(kWordAligned),
         can_rehash_(false) {
     DecodeReservation(data->Reservations());
+    // We start the indicies here at 1, so that we can distinguish between an
+    // actual index and a nullptr in a deserialized object requiring fix-up.
+    off_heap_backing_stores_.push_back(nullptr);
   }
 
-  ~Deserializer() override;
+  bool ReserveSpace();
 
-  // Deserialize the snapshot into an empty heap.
-  void Deserialize(Isolate* isolate);
+  // Atomically reserves space for the two given deserializers. Guarantees
+  // reservation for both without garbage collection in-between.
+  // TODO(jgruber): Replace this with advance builtin handle allocation.
+  static bool ReserveSpace(StartupDeserializer* lhs, BuiltinDeserializer* rhs);
 
-  // Deserialize a single object and the objects reachable from it.
-  MaybeHandle<Object> DeserializePartial(
-      Isolate* isolate, Handle<JSGlobalProxy> global_proxy,
-      v8::DeserializeEmbedderFieldsCallback embedder_fields_deserializer);
+  void Initialize(Isolate* isolate);
+  void DeserializeDeferredObjects();
+  void RegisterDeserializedObjectsForBlackAllocation();
 
-  // Deserialize an object graph. Fail gracefully.
-  MaybeHandle<HeapObject> DeserializeObject(Isolate* isolate);
+  // This returns the address of an object that has been described in the
+  // snapshot by chunk index and offset.
+  HeapObject* GetBackReferencedObject(int space);
 
-  // Add an object to back an attached reference. The order to add objects must
-  // mirror the order they are added in the serializer.
-  void AddAttachedObject(Handle<HeapObject> attached_object) {
-    attached_objects_.Add(attached_object);
+  // Sort descriptors of deserialized maps using new string hashes.
+  void SortMapDescriptors();
+
+  // Fix up all recorded pointers to builtins once builtins have been
+  // deserialized.
+  void PostProcessDeferredBuiltinReferences();
+
+  Isolate* isolate() const { return isolate_; }
+  SnapshotByteSource* source() { return &source_; }
+  const std::vector<Code*>& new_code_objects() const {
+    return new_code_objects_;
   }
-
-  void SetRehashability(bool v) { can_rehash_ = v; }
+  const std::vector<AccessorInfo*>& accessor_infos() const {
+    return accessor_infos_;
+  }
+  const std::vector<Handle<String>>& new_internalized_strings() const {
+    return new_internalized_strings_;
+  }
+  const std::vector<Handle<Script>>& new_scripts() const {
+    return new_scripts_;
+  }
+  const std::vector<TransitionArray*>& transition_arrays() const {
+    return transition_arrays_;
+  }
+  bool deserializing_user_code() const { return deserializing_user_code_; }
+  bool can_rehash() const { return can_rehash_; }
 
  private:
   void VisitRootPointers(Root root, Object** start, Object** end) override;
 
   void Synchronize(VisitorSynchronization::SyncTag tag) override;
 
-  void Initialize(Isolate* isolate);
-
-  bool deserializing_user_code() { return deserializing_user_code_; }
-
   void DecodeReservation(Vector<const SerializedData::Reservation> res);
-
-  bool ReserveSpace();
 
   void UnalignedCopy(Object** dest, Object** src) {
     memcpy(dest, src, sizeof(*src));
@@ -90,16 +123,22 @@ class Deserializer : public SerializerDeserializer {
     next_alignment_ = static_cast<AllocationAlignment>(alignment);
   }
 
-  void DeserializeDeferredObjects();
-  void DeserializeEmbedderFields(
-      v8::DeserializeEmbedderFieldsCallback embedder_fields_deserializer);
+  // Builtin references are collected during initial deserialization and later
+  // iterated and filled in with the correct addresses after builtins have
+  // themselves been deserialized.
+  struct DeferredBuiltinReference {
+    byte bytecode;
+    Builtins::Name builtin_name;
+    Object** target_addr;
+    Address current_object;
 
-  void FlushICacheForNewIsolate();
-  void FlushICacheForNewCodeObjectsAndRecordEmbeddedObjects();
-
-  void CommitPostProcessedObjects(Isolate* isolate);
-
-  void PrintDisassembledCodeObjects();
+    DeferredBuiltinReference(byte bytecode, Builtins::Name builtin_name,
+                             Object** target_addr, Address current_object)
+        : bytecode(bytecode),
+          builtin_name(builtin_name),
+          target_addr(target_addr),
+          current_object(current_object) {}
+  };
 
   // Fills in some heap data in an area from start to end (non-inclusive).  The
   // space id is used for the write barrier.  The object_address is the address
@@ -108,30 +147,25 @@ class Deserializer : public SerializerDeserializer {
   // the heap. Return false if the object content has been deferred.
   bool ReadData(Object** start, Object** end, int space,
                 Address object_address);
+
+  // A helper function for ReadData, templatized on the bytecode for efficiency.
+  // Returns the new value of {current}.
+  template <int where, int how, int within, int space_number_if_any>
+  inline Object** ReadDataCase(Isolate* isolate, Object** current,
+                               Address current_object_address, byte data,
+                               bool write_barrier_needed);
+
   void ReadObject(int space_number, Object** write_back);
   Address Allocate(int space_index, int size);
 
   // Special handling for serialized code like hooking up internalized strings.
   HeapObject* PostProcessNewObject(HeapObject* obj, int space);
 
-  // This returns the address of an object that has been described in the
-  // snapshot by chunk index and offset.
-  HeapObject* GetBackReferencedObject(int space);
-
-  // Rehash after deserializing an isolate.
-  void Rehash();
-
-  // Rehash after deserializing a context.
-  void RehashContext(Context* context);
-
-  // Sort descriptors of deserialized maps using new string hashes.
-  void SortMapDescriptors();
-
   // Cached current isolate.
   Isolate* isolate_;
 
   // Objects from the attached object descriptions in the serialized user code.
-  List<Handle<HeapObject> > attached_objects_;
+  std::vector<Handle<HeapObject>> attached_objects_;
 
   SnapshotByteSource source_;
   uint32_t magic_number_;
@@ -145,18 +179,20 @@ class Deserializer : public SerializerDeserializer {
   uint32_t current_chunk_[kNumberOfPreallocatedSpaces];
   Address high_water_[kNumberOfPreallocatedSpaces];
   int next_map_index_;
-  List<Address> allocated_maps_;
+  std::vector<Address> allocated_maps_;
 
   ExternalReferenceTable* external_reference_table_;
 
-  List<HeapObject*> deserialized_large_objects_;
-  List<Code*> new_code_objects_;
-  List<AccessorInfo*> accessor_infos_;
-  List<Handle<String> > new_internalized_strings_;
-  List<Handle<Script> > new_scripts_;
-  List<TransitionArray*> transition_arrays_;
+  std::vector<HeapObject*> deserialized_large_objects_;
+  std::vector<Code*> new_code_objects_;
+  std::vector<AccessorInfo*> accessor_infos_;
+  std::vector<Handle<String>> new_internalized_strings_;
+  std::vector<Handle<Script>> new_scripts_;
+  std::vector<TransitionArray*> transition_arrays_;
+  std::vector<byte*> off_heap_backing_stores_;
+  std::vector<DeferredBuiltinReference> builtin_references_;
 
-  bool deserializing_user_code_;
+  const bool deserializing_user_code_;
 
   AllocationAlignment next_alignment_;
 
@@ -164,6 +200,22 @@ class Deserializer : public SerializerDeserializer {
   bool can_rehash_;
 
   DISALLOW_COPY_AND_ASSIGN(Deserializer);
+};
+
+// Used to insert a deserialized internalized string into the string table.
+class StringTableInsertionKey : public StringTableKey {
+ public:
+  explicit StringTableInsertionKey(String* string);
+
+  bool IsMatch(Object* string) override;
+
+  MUST_USE_RESULT Handle<String> AsHandle(Isolate* isolate) override;
+
+ private:
+  uint32_t ComputeHashField(String* string);
+
+  String* string_;
+  DisallowHeapAllocation no_gc;
 };
 
 }  // namespace internal

@@ -392,6 +392,7 @@ TARGET_TEST_F(InterpreterAssemblerTest, BytecodeOperand) {
           case interpreter::OperandType::kRegList:
           case interpreter::OperandType::kReg:
           case interpreter::OperandType::kRegOut:
+          case interpreter::OperandType::kRegOutList:
           case interpreter::OperandType::kRegOutPair:
           case interpreter::OperandType::kRegOutTriple:
           case interpreter::OperandType::kRegPair:
@@ -611,32 +612,6 @@ TARGET_TEST_F(InterpreterAssemblerTest, CallRuntime) {
                     IsCall(_, IsHeapConstant(builtin.code()), arg_count,
                            first_arg, function_entry, context, _, _));
       }
-    }
-  }
-}
-
-TARGET_TEST_F(InterpreterAssemblerTest, CallJS) {
-  TRACED_FOREACH(interpreter::Bytecode, bytecode, kBytecodes) {
-    if (Bytecodes::IsCallOrConstruct(bytecode) &&
-        bytecode != Bytecode::kCallWithSpread) {
-      InterpreterAssemblerTestState state(this, bytecode);
-      InterpreterAssemblerForTest m(&state, bytecode);
-      ConvertReceiverMode receiver_mode = Bytecodes::GetReceiverMode(bytecode);
-      TailCallMode tail_call_mode = (bytecode == Bytecode::kTailCall)
-                                        ? TailCallMode::kAllow
-                                        : TailCallMode::kDisallow;
-
-      Callable builtin = CodeFactory::InterpreterPushArgsThenCall(
-          isolate(), receiver_mode, tail_call_mode,
-          InterpreterPushArgsMode::kOther);
-      Node* function = m.IntPtrConstant(0);
-      Node* first_arg = m.IntPtrConstant(1);
-      Node* arg_count = m.Int32Constant(2);
-      Node* context = m.IntPtrConstant(3);
-      Node* call_js = m.CallJS(function, context, first_arg, arg_count,
-                               receiver_mode, tail_call_mode);
-      EXPECT_THAT(call_js, IsCall(_, IsHeapConstant(builtin.code()), arg_count,
-                                  first_arg, function, context, _, _));
     }
   }
 }

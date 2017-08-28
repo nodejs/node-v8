@@ -352,7 +352,7 @@ DECLARATION_NODE_LIST(DEF_VISIT)
 
 // Assumes code has been parsed.  Mutates the AST, so the AST should not
 // continue to be used in the case of failure.
-bool Rewriter::Rewrite(ParseInfo* info, Isolate* isolate) {
+bool Rewriter::Rewrite(ParseInfo* info) {
   DisallowHeapAllocation no_allocation;
   DisallowHandleAllocation no_handles;
   DisallowHandleDereference no_deref;
@@ -386,28 +386,11 @@ bool Rewriter::Rewrite(ParseInfo* info, Isolate* isolate) {
       int pos = kNoSourcePosition;
       Expression* result_value =
           processor.factory()->NewVariableProxy(result, pos);
-      if (scope->is_module_scope()) {
-        auto args = new (info->zone()) ZoneList<Expression*>(2, info->zone());
-        args->Add(result_value, info->zone());
-        args->Add(processor.factory()->NewBooleanLiteral(true, pos),
-                  info->zone());
-        result_value = processor.factory()->NewCallRuntime(
-            Runtime::kInlineCreateIterResultObject, args, pos);
-      }
       Statement* result_statement =
           processor.factory()->NewReturnStatement(result_value, pos);
       body->Add(result_statement, info->zone());
     }
 
-    // TODO(leszeks): Remove this check and releases once internalization is
-    // moved out of parsing/analysis. Also remove the parameter once done.
-    DCHECK(ThreadId::Current().Equals(isolate->thread_id()));
-    no_deref.Release();
-    no_handles.Release();
-    no_allocation.Release();
-
-    // Internalize any values created during rewriting.
-    info->ast_value_factory()->Internalize(isolate);
     if (processor.HasStackOverflow()) return false;
   }
 

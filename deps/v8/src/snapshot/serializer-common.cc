@@ -24,7 +24,11 @@ ExternalReferenceEncoder::ExternalReferenceEncoder(Isolate* isolate) {
     Address addr = table->address(i);
     // Ignore duplicate API references.
     if (table->is_api_reference(i) && !map_->Get(addr).IsNothing()) continue;
+#ifndef V8_OS_WIN
+    // TODO(yangguo): On Windows memcpy and memmove can end up at the same
+    // address due to ICF. See http://crbug.com/726896.
     DCHECK(map_->Get(addr).IsNothing());
+#endif
     map_->Set(addr, i);
     DCHECK(map_->Get(addr).IsJust());
   }
@@ -53,7 +57,7 @@ const char* ExternalReferenceEncoder::NameOfAddress(Isolate* isolate,
       maybe_index.FromJust());
 }
 
-void SerializedData::AllocateData(int size) {
+void SerializedData::AllocateData(uint32_t size) {
   DCHECK(!owns_data_);
   data_ = NewArray<byte>(size);
   size_ = size;
@@ -68,10 +72,10 @@ void SerializedData::AllocateData(int size) {
 //  - not during serialization. The partial serializer adds to it explicitly.
 DISABLE_CFI_PERF
 void SerializerDeserializer::Iterate(Isolate* isolate, RootVisitor* visitor) {
-  List<Object*>* cache = isolate->partial_snapshot_cache();
-  for (int i = 0;; ++i) {
+  std::vector<Object*>* cache = isolate->partial_snapshot_cache();
+  for (size_t i = 0;; ++i) {
     // Extend the array ready to get a value when deserializing.
-    if (cache->length() <= i) cache->Add(Smi::kZero);
+    if (cache->size() <= i) cache->push_back(Smi::kZero);
     // During deserialization, the visitor populates the partial snapshot cache
     // and eventually terminates the cache with undefined.
     visitor->VisitRootPointer(Root::kPartialSnapshotCache, &cache->at(i));
@@ -84,9 +88,9 @@ bool SerializerDeserializer::CanBeDeferred(HeapObject* o) {
 }
 
 void SerializerDeserializer::RestoreExternalReferenceRedirectors(
-    List<AccessorInfo*>* accessor_infos) {
+    const std::vector<AccessorInfo*>& accessor_infos) {
   // Restore wiped accessor infos.
-  for (AccessorInfo* info : *accessor_infos) {
+  for (AccessorInfo* info : accessor_infos) {
     Foreign::cast(info->js_getter())
         ->set_foreign_address(info->redirected_getter());
   }

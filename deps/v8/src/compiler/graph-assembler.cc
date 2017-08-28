@@ -130,6 +130,11 @@ Node* GraphAssembler::StoreElement(ElementAccess const& access, Node* object,
                               value, current_effect_, current_control_);
 }
 
+Node* GraphAssembler::DebugBreak() {
+  return current_effect_ = graph()->NewNode(machine()->DebugBreak(),
+                                            current_effect_, current_control_);
+}
+
 Node* GraphAssembler::Store(StoreRepresentation rep, Node* object, Node* offset,
                             Node* value) {
   return current_effect_ =
@@ -224,7 +229,8 @@ void GraphAssembler::Reset(Node* effect, Node* control) {
 
 Operator const* GraphAssembler::ToNumberOperator() {
   if (!to_number_operator_.is_set()) {
-    Callable callable = CodeFactory::ToNumber(jsgraph()->isolate());
+    Callable callable =
+        Builtins::CallableFor(jsgraph()->isolate(), Builtins::kToNumber);
     CallDescriptor::Flags flags = CallDescriptor::kNoFlags;
     CallDescriptor* desc = Linkage::GetStubCallDescriptor(
         jsgraph()->isolate(), graph()->zone(), callable.descriptor(), 0, flags,

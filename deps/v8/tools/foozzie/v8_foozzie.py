@@ -20,49 +20,40 @@ import v8_commands
 import v8_suppressions
 
 CONFIGS = dict(
-  default=[],
-  fullcode=[
-    '--noopt',
-    '--turbo-filter=~',
+  default=[
+    '--suppress-asm-messages',
   ],
   ignition=[
-    '--ignition',
     '--turbo-filter=~',
-    '--hydrogen-filter=~',
     '--noopt',
+    '--suppress-asm-messages',
   ],
   ignition_asm=[
-    '--ignition',
     '--turbo-filter=~',
-    '--hydrogen-filter=~',
     '--noopt',
     '--validate-asm',
     '--stress-validate-asm',
     '--suppress-asm-messages',
   ],
   ignition_eager=[
-    '--ignition',
     '--turbo-filter=~',
-    '--hydrogen-filter=~',
     '--noopt',
     '--no-lazy',
     '--no-lazy-inner-functions',
+    '--suppress-asm-messages',
   ],
   ignition_turbo=[
-    '--ignition',
-    '--turbo',
+    '--suppress-asm-messages',
   ],
   ignition_turbo_opt=[
-    '--ignition',
-    '--turbo',
     '--always-opt',
+    '--suppress-asm-messages',
   ],
   ignition_turbo_opt_eager=[
-    '--ignition',
-    '--turbo',
     '--always-opt',
     '--no-lazy',
     '--no-lazy-inner-functions',
+    '--suppress-asm-messages',
   ],
 )
 
@@ -80,8 +71,9 @@ PREAMBLE = [
 ]
 ARCH_MOCKS = os.path.join(BASE_PATH, 'v8_mock_archs.js')
 
-FLAGS = ['--abort_on_stack_overflow', '--expose-gc', '--allow-natives-syntax',
-         '--invoke-weak-callbacks', '--omit-quit', '--es-staging']
+FLAGS = ['--abort_on_stack_or_string_length_overflow', '--expose-gc',
+         '--allow-natives-syntax', '--invoke-weak-callbacks', '--omit-quit',
+         '--es-staging']
 
 SUPPORTED_ARCHS = ['ia32', 'x64', 'arm', 'arm64']
 

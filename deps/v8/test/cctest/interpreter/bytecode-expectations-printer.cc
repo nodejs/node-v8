@@ -104,7 +104,6 @@ i::Handle<i::BytecodeArray>
 BytecodeExpectationsPrinter::GetBytecodeArrayForModule(
     v8::Local<v8::Module> module) const {
   i::Handle<i::Module> i_module = v8::Utils::OpenHandle(*module);
-  CHECK(!i_module->instantiated());
   return i::handle(SharedFunctionInfo::cast(i_module->code())->bytecode_array(),
                    i_isolate());
 }
@@ -160,9 +159,7 @@ void BytecodeExpectationsPrinter::PrintBytecodeOperand(
     Register register_value = bytecode_iterator.GetRegisterOperand(op_index);
     stream << 'R';
     if (op_size != OperandSize::kByte) stream << size_tag;
-    if (register_value.is_new_target()) {
-      stream << "(new_target)";
-    } else if (register_value.is_current_context()) {
+    if (register_value.is_current_context()) {
       stream << "(context)";
     } else if (register_value.is_function_closure()) {
       stream << "(closure)";

@@ -130,6 +130,13 @@ class V8_EXPORT_PRIVATE LookupIterator final BASE_EMBEDDED {
       Isolate* isolate, Handle<Object> receiver, Handle<Object> key,
       bool* success, Configuration configuration = DEFAULT);
 
+  static LookupIterator ForTransitionHandler(Isolate* isolate,
+                                             Handle<Object> receiver,
+                                             Handle<Name> name,
+                                             Handle<Object> value,
+                                             MaybeHandle<Object> handler,
+                                             Handle<Map> transition_map);
+
   void Restart() {
     InterceptorState state = InterceptorState::kUninitialized;
     IsElement() ? RestartInternal<true>(state) : RestartInternal<false>(state);
@@ -190,6 +197,7 @@ class V8_EXPORT_PRIVATE LookupIterator final BASE_EMBEDDED {
     return Handle<T>::cast(holder_);
   }
 
+  bool HolderIsReceiver() const;
   bool HolderIsReceiverOrHiddenPrototype() const;
 
   bool check_prototype_chain() const {
@@ -206,7 +214,7 @@ class V8_EXPORT_PRIVATE LookupIterator final BASE_EMBEDDED {
            (IsElement() || !name_->IsPrivate());
   }
   void PrepareForDataProperty(Handle<Object> value);
-  void PrepareTransitionToDataProperty(Handle<JSObject> receiver,
+  bool PrepareTransitionToDataProperty(Handle<JSObject> receiver,
                                        Handle<Object> value,
                                        PropertyAttributes attributes,
                                        Object::StoreFromKeyed store_mode);
@@ -277,6 +285,11 @@ class V8_EXPORT_PRIVATE LookupIterator final BASE_EMBEDDED {
   bool LookupCachedProperty();
 
  private:
+  // For |ForTransitionHandler|.
+  LookupIterator(Isolate* isolate, Handle<Object> receiver, Handle<Name> name,
+                 Handle<Map> transition_map, PropertyDetails details,
+                 bool has_property);
+
   void InternalUpdateProtector();
 
   enum class InterceptorState {

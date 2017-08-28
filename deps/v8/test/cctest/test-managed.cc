@@ -11,8 +11,8 @@
 #include "src/objects-inl.h"
 #include "test/cctest/cctest.h"
 
-using namespace v8::base;
-using namespace v8::internal;
+namespace v8 {
+namespace internal {
 
 class DeleteRecorder {
  public:
@@ -20,8 +20,8 @@ class DeleteRecorder {
     *deleted_ = false;
   }
   ~DeleteRecorder() { *deleted_ = true; }
-  static void Deleter(void* value) {
-    delete reinterpret_cast<DeleteRecorder*>(value);
+  static void Deleter(Isolate::ManagedObjectFinalizer* finalizer) {
+    delete *reinterpret_cast<DeleteRecorder**>(finalizer);
   }
 
  private:
@@ -34,8 +34,8 @@ TEST(ManagedCollect) {
   bool deleted2 = false;
   DeleteRecorder* d1 = new DeleteRecorder(&deleted1);
   DeleteRecorder* d2 = new DeleteRecorder(&deleted2);
-  Isolate::ManagedObjectFinalizer* finalizer =
-      isolate->RegisterForReleaseAtTeardown(d2, DeleteRecorder::Deleter);
+  Isolate::ManagedObjectFinalizer finalizer(d2, DeleteRecorder::Deleter);
+  isolate->RegisterForReleaseAtTeardown(&finalizer);
   {
     HandleScope scope(isolate);
     auto handle = Managed<DeleteRecorder>::New(isolate, d1);
@@ -47,7 +47,6 @@ TEST(ManagedCollect) {
   CHECK(deleted1);
   CHECK(!deleted2);
   isolate->UnregisterFromReleaseAtTeardown(&finalizer);
-  CHECK_NULL(finalizer);
   delete d2;
   CHECK(deleted2);
 }
@@ -69,10 +68,14 @@ TEST(DisposeCollect) {
     auto handle = Managed<DeleteRecorder>::New(i_isolate, d1);
     USE(handle);
   }
-  i_isolate->RegisterForReleaseAtTeardown(d2, DeleteRecorder::Deleter);
+  Isolate::ManagedObjectFinalizer finalizer(d2, DeleteRecorder::Deleter);
+  i_isolate->RegisterForReleaseAtTeardown(&finalizer);
 
   isolate->Exit();
   isolate->Dispose();
   CHECK(deleted1);
   CHECK(deleted2);
 }
+
+}  // namespace internal
+}  // namespace v8

@@ -23,7 +23,6 @@ InterpreterTester::InterpreterTester(
       source_(source),
       bytecode_(bytecode),
       feedback_metadata_(feedback_metadata) {
-  i::FLAG_ignition = true;
   i::FLAG_always_opt = false;
 }
 

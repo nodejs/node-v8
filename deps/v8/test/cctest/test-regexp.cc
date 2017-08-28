@@ -86,16 +86,11 @@
 #include "src/ia32/macro-assembler-ia32.h"
 #include "src/regexp/ia32/regexp-macro-assembler-ia32.h"
 #endif
-#if V8_TARGET_ARCH_X87
-#include "src/regexp/x87/regexp-macro-assembler-x87.h"
-#include "src/x87/assembler-x87.h"
-#include "src/x87/macro-assembler-x87.h"
-#endif
 #endif  // V8_INTERPRETED_REGEXP
 #include "test/cctest/cctest.h"
 
-using namespace v8::internal;
-
+namespace v8 {
+namespace internal {
 
 static bool CheckParse(const char* input) {
   v8::HandleScope scope(CcTest::isolate());
@@ -227,8 +222,8 @@ void TestRegExpParser(bool lookbehind) {
   CheckParseEq("[\\d]", "[0-9]");
   CheckParseEq("[x\\dz]", "[x 0-9 z]");
   CheckParseEq("[\\d-z]", "[0-9 - z]");
-  CheckParseEq("[\\d-\\d]", "[0-9 - 0-9]");
-  CheckParseEq("[z-\\d]", "[z - 0-9]");
+  CheckParseEq("[\\d-\\d]", "[0-9 0-9 -]");
+  CheckParseEq("[z-\\d]", "[0-9 z -]");
   // Control character outside character class.
   CheckParseEq("\\cj\\cJ\\ci\\cI\\ck\\cK", "'\\x0a\\x0a\\x09\\x09\\x0b\\x0b'");
   CheckParseEq("\\c!", "'\\c!'");
@@ -1596,6 +1591,7 @@ TEST(LatinCanonicalize) {
   }
   for (uc32 c = 128; c < (1 << 21); c++)
     CHECK_GE(canonicalize(c), 128);
+#ifndef V8_INTL_SUPPORT
   unibrow::Mapping<unibrow::ToUppercase> to_upper;
   // Canonicalization is only defined for the Basic Multilingual Plane.
   for (uc32 c = 0; c < (1 << 16); c++) {
@@ -1610,6 +1606,7 @@ TEST(LatinCanonicalize) {
       u = c;
     CHECK_EQ(u, canonicalize(c));
   }
+#endif
 }
 
 
@@ -2035,3 +2032,6 @@ TEST(UncachedExternalString) {
   CompileRun("var re = /y(.)/; re.test('ab');");
   ExpectString("external.substring(1).match(re)[1]", "z");
 }
+
+}  // namespace internal
+}  // namespace v8
