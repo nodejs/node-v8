@@ -104,6 +104,7 @@ class String;
 class StringObject;
 class Symbol;
 class SymbolObject;
+class PrimitiveArray;
 class Private;
 class Uint32;
 class Utils;
@@ -139,6 +140,7 @@ template<typename T> class ReturnValue;
 
 namespace internal {
 class Arguments;
+class DeferredHandles;
 class Heap;
 class HeapObject;
 class Isolate;
@@ -869,8 +871,6 @@ class V8_EXPORT HandleScope {
 
   HandleScope(const HandleScope&) = delete;
   void operator=(const HandleScope&) = delete;
-  void* operator new(size_t size);
-  void operator delete(void*, size_t);
 
  protected:
   V8_INLINE HandleScope() {}
@@ -881,6 +881,13 @@ class V8_EXPORT HandleScope {
                                          internal::Object* value);
 
  private:
+  // Declaring operator new and delete as deleted is not spec compliant.
+  // Therefore declare them private instead to disable dynamic alloc
+  void* operator new(size_t size);
+  void* operator new[](size_t size);
+  void operator delete(void*, size_t);
+  void operator delete[](void*, size_t);
+
   // Uses heap_object to obtain the current Isolate.
   static internal::Object** CreateHandle(internal::HeapObject* heap_object,
                                          internal::Object* value);
@@ -921,10 +928,15 @@ class V8_EXPORT EscapableHandleScope : public HandleScope {
 
   EscapableHandleScope(const EscapableHandleScope&) = delete;
   void operator=(const EscapableHandleScope&) = delete;
-  void* operator new(size_t size);
-  void operator delete(void*, size_t);
 
  private:
+  // Declaring operator new and delete as deleted is not spec compliant.
+  // Therefore declare them private instead to disable dynamic alloc
+  void* operator new(size_t size);
+  void* operator new[](size_t size);
+  void operator delete(void*, size_t);
+  void operator delete[](void*, size_t);
+
   internal::Object** Escape(internal::Object** escape_value);
   internal::Object** escape_slot_;
 };
@@ -941,10 +953,15 @@ class V8_EXPORT SealHandleScope {
 
   SealHandleScope(const SealHandleScope&) = delete;
   void operator=(const SealHandleScope&) = delete;
-  void* operator new(size_t size);
-  void operator delete(void*, size_t);
 
  private:
+  // Declaring operator new and delete as deleted is not spec compliant.
+  // Therefore declare them private instead to disable dynamic alloc
+  void* operator new(size_t size);
+  void* operator new[](size_t size);
+  void operator delete(void*, size_t);
+  void operator delete[](void*, size_t);
+
   internal::Isolate* const isolate_;
   internal::Object** prev_limit_;
   int prev_sealed_level_;
@@ -962,6 +979,48 @@ class V8_EXPORT Data {
   Data();
 };
 
+/**
+ * This is an unfinished experimental feature, and is only exposed
+ * here for internal testing purposes. DO NOT USE.
+ *
+ * A container type that holds relevant metadata for module loading.
+ *
+ * This is passed back to the embedder as part of
+ * HostImportDynamicallyCallback for module loading.
+ */
+class V8_EXPORT ScriptOrModule {
+ public:
+  /**
+   * The name that was passed by the embedder as ResourceName to the
+   * ScriptOrigin. This can be either a v8::String or v8::Undefined.
+   */
+  Local<Value> GetResourceName();
+
+  /**
+   * The options that were passed by the embedder as HostDefinedOptions to
+   * the ScriptOrigin.
+   */
+  Local<PrimitiveArray> GetHostDefinedOptions();
+};
+
+/**
+ * This is an unfinished experimental feature, and is only exposed
+ * here for internal testing purposes. DO NOT USE.
+ *
+ * An array to hold Primitive values. This is used by the embedder to
+ * pass host defined options to the ScriptOptions during compilation.
+ *
+ * This is passed back to the embedder as part of
+ * HostImportDynamicallyCallback for module loading.
+ *
+ */
+class V8_EXPORT PrimitiveArray {
+ public:
+  static Local<PrimitiveArray> New(Isolate* isolate, int length);
+  int Length() const;
+  void Set(int index, Local<Primitive> item);
+  Local<Primitive> Get(int index);
+};
 
 /**
  * The optional attributes of ScriptOrigin.
@@ -1011,16 +1070,15 @@ class ScriptOrigin {
       Local<Value> source_map_url = Local<Value>(),
       Local<Boolean> resource_is_opaque = Local<Boolean>(),
       Local<Boolean> is_wasm = Local<Boolean>(),
-      Local<Boolean> is_module = Local<Boolean>());
+      Local<Boolean> is_module = Local<Boolean>(),
+      Local<PrimitiveArray> host_defined_options = Local<PrimitiveArray>());
 
   V8_INLINE Local<Value> ResourceName() const;
   V8_INLINE Local<Integer> ResourceLineOffset() const;
   V8_INLINE Local<Integer> ResourceColumnOffset() const;
-  /**
-    * Returns true for embedder's debugger scripts
-    */
   V8_INLINE Local<Integer> ScriptID() const;
   V8_INLINE Local<Value> SourceMapUrl() const;
+  V8_INLINE Local<PrimitiveArray> HostDefinedOptions() const;
   V8_INLINE ScriptOriginOptions Options() const { return options_; }
 
  private:
@@ -1030,8 +1088,8 @@ class ScriptOrigin {
   ScriptOriginOptions options_;
   Local<Integer> script_id_;
   Local<Value> source_map_url_;
+  Local<PrimitiveArray> host_defined_options_;
 };
-
 
 /**
  * A compiled JavaScript script, not yet tied to a Context.
@@ -1065,6 +1123,22 @@ class V8_EXPORT UnboundScript {
 };
 
 /**
+ * A location in JavaScript source.
+ */
+class V8_EXPORT Location {
+ public:
+  int GetLineNumber() { return line_number_; }
+  int GetColumnNumber() { return column_number_; }
+
+  Location(int line_number, int column_number)
+      : line_number_(line_number), column_number_(column_number) {}
+
+ private:
+  int line_number_;
+  int column_number_;
+};
+
+/**
  * This is an unfinished experimental feature, and is only exposed
  * here for internal testing purposes. DO NOT USE.
  *
@@ -1072,6 +1146,28 @@ class V8_EXPORT UnboundScript {
  */
 class V8_EXPORT Module {
  public:
+  /**
+   * The different states a module can be in.
+   */
+  enum Status {
+    kUninstantiated,
+    kInstantiating,
+    kInstantiated,
+    kEvaluating,
+    kEvaluated,
+    kErrored
+  };
+
+  /**
+   * Returns the module's current status.
+   */
+  Status GetStatus() const;
+
+  /**
+   * For a module in kErrored status, this returns the corresponding exception.
+   */
+  Local<Value> GetException() const;
+
   /**
    * Returns the number of modules requested by this module.
    */
@@ -1082,6 +1178,12 @@ class V8_EXPORT Module {
    * i must be < GetModuleRequestsLength() and >= 0.
    */
   Local<String> GetModuleRequest(int i) const;
+
+  /**
+   * Returns the source location (line number and column number) of the ith
+   * module specifier's first occurrence in this module.
+   */
+  Location GetModuleRequestLocation(int i) const;
 
   /**
    * Returns the identity hash for this object.
@@ -1095,40 +1197,29 @@ class V8_EXPORT Module {
   /**
    * ModuleDeclarationInstantiation
    *
-   * Returns false if an exception occurred during instantiation. (In the case
-   * where the callback throws an exception, that exception is propagated.)
+   * Returns an empty Maybe<bool> if an exception occurred during
+   * instantiation. (In the case where the callback throws an exception, that
+   * exception is propagated.)
    */
-  V8_WARN_UNUSED_RESULT bool Instantiate(Local<Context> context,
-                                         ResolveCallback callback);
+  V8_DEPRECATED("Use Maybe<bool> version",
+                bool Instantiate(Local<Context> context,
+                                 ResolveCallback callback));
+  V8_WARN_UNUSED_RESULT Maybe<bool> InstantiateModule(Local<Context> context,
+                                                      ResolveCallback callback);
 
   /**
    * ModuleEvaluation
    *
    * Returns the completion value.
+   * TODO(neis): Be more precise or say nothing.
    */
   V8_WARN_UNUSED_RESULT MaybeLocal<Value> Evaluate(Local<Context> context);
-};
-
-/**
- * This is an unfinished experimental feature, and is only exposed
- * here for internal testing purposes. DO NOT USE.
- *
- * A compiled JavaScript module.
- */
-class V8_EXPORT DynamicImportResult {
- public:
-  /**
-   * Resolves the promise with the namespace object of the given
-   * module.
-   */
-  V8_WARN_UNUSED_RESULT bool FinishDynamicImportSuccess(Local<Context> context,
-                                                        Local<Module> module);
 
   /**
-   * Rejects the promise with the given exception.
+   * Returns the namespace object of this module.
+   * The module's status must be kEvaluated.
    */
-  V8_WARN_UNUSED_RESULT bool FinishDynamicImportFailure(Local<Context> context,
-                                                        Local<Value> exception);
+  Local<Value> GetModuleNamespace();
 };
 
 /**
@@ -1244,6 +1335,7 @@ class V8_EXPORT ScriptCompiler {
     Local<Integer> resource_column_offset;
     ScriptOriginOptions resource_options;
     Local<Value> source_map_url;
+    Local<PrimitiveArray> host_defined_options;
 
     // Cached data from previous compilation (if a kConsume*Cache flag is
     // set), or hold newly generated cache data (kProduce*Cache flags) are
@@ -1265,11 +1357,6 @@ class V8_EXPORT ScriptCompiler {
      * wait for the data, if the embedder doesn't have data yet. Returns the
      * length of the data returned. When the data ends, GetMoreData should
      * return 0. Caller takes ownership of the data.
-     *
-     * When streaming UTF-8 data, V8 handles multi-byte characters split between
-     * two data chunks, but doesn't handle multi-byte characters split between
-     * more than two data chunks. The embedder can avoid this problem by always
-     * returning at least 2 bytes of data.
      *
      * If the embedder wants to cancel the streaming, they should make the next
      * GetMoreData call return 0. V8 will interpret it as end of data (and most
@@ -1681,7 +1768,16 @@ class V8_EXPORT StackFrame {
 
 
 // A StateTag represents a possible state of the VM.
-enum StateTag { JS, GC, COMPILER, OTHER, EXTERNAL, IDLE };
+enum StateTag {
+  JS,
+  GC,
+  PARSER,
+  BYTECODE_COMPILER,
+  COMPILER,
+  OTHER,
+  EXTERNAL,
+  IDLE
+};
 
 // A RegisterState represents the current state of registers used
 // by the sampling profiler API.
@@ -2398,7 +2494,8 @@ enum class NewStringType {
  */
 class V8_EXPORT String : public Name {
  public:
-  static const int kMaxLength = (1 << 28) - 16;
+  static constexpr int kMaxLength =
+      sizeof(void*) == 4 ? (1 << 28) - 16 : (1 << 30) - 1 - 24;
 
   enum Encoding {
     UNKNOWN_ENCODING = 0x1,
@@ -2717,7 +2814,9 @@ class V8_EXPORT String : public Name {
    */
   class V8_EXPORT Utf8Value {
    public:
-    explicit Utf8Value(Local<v8::Value> obj);
+    V8_DEPRECATE_SOON("Use Isolate version",
+                      explicit Utf8Value(Local<v8::Value> obj));
+    Utf8Value(Isolate* isolate, Local<v8::Value> obj);
     ~Utf8Value();
     char* operator*() { return str_; }
     const char* operator*() const { return str_; }
@@ -2740,7 +2839,9 @@ class V8_EXPORT String : public Name {
    */
   class V8_EXPORT Value {
    public:
-    explicit Value(Local<v8::Value> obj);
+    V8_DEPRECATE_SOON("Use Isolate version",
+                      explicit Value(Local<v8::Value> obj));
+    Value(Isolate* isolate, Local<v8::Value> obj);
     ~Value();
     uint16_t* operator*() { return str_; }
     const uint16_t* operator*() const { return str_; }
@@ -3053,12 +3154,9 @@ class V8_EXPORT Object : public Value {
   //
   // Note also that this only works for named properties.
   V8_DEPRECATED("Use CreateDataProperty / DefineOwnProperty",
-                bool ForceSet(Local<Value> key, Local<Value> value,
-                              PropertyAttribute attribs = None));
-  V8_DEPRECATE_SOON("Use CreateDataProperty / DefineOwnProperty",
-                    Maybe<bool> ForceSet(Local<Context> context,
-                                         Local<Value> key, Local<Value> value,
-                                         PropertyAttribute attribs = None));
+                Maybe<bool> ForceSet(Local<Context> context, Local<Value> key,
+                                     Local<Value> value,
+                                     PropertyAttribute attribs = None));
 
   V8_DEPRECATE_SOON("Use maybe version", Local<Value> Get(Local<Value> key));
   V8_WARN_UNUSED_RESULT MaybeLocal<Value> Get(Local<Context> context,
@@ -4063,12 +4161,10 @@ class V8_EXPORT WasmCompiledModule : public Object {
   // supports move semantics, and does not support copy semantics.
   class TransferrableModule final {
    public:
-    TransferrableModule(TransferrableModule&& src)
-        : compiled_code(std::move(src.compiled_code)),
-          wire_bytes(std::move(src.wire_bytes)) {}
+    TransferrableModule(TransferrableModule&& src) = default;
     TransferrableModule(const TransferrableModule& src) = delete;
 
-    TransferrableModule& operator=(TransferrableModule&& src);
+    TransferrableModule& operator=(TransferrableModule&& src) = default;
     TransferrableModule& operator=(const TransferrableModule& src) = delete;
 
    private:
@@ -4125,6 +4221,46 @@ class V8_EXPORT WasmCompiledModule : public Object {
   static void CheckCast(Value* obj);
 };
 
+// TODO(mtrofin): when streaming compilation is done, we can rename this
+// to simply WasmModuleObjectBuilder
+class V8_EXPORT WasmModuleObjectBuilderStreaming final {
+ public:
+  WasmModuleObjectBuilderStreaming(Isolate* isolate);
+  // The buffer passed into OnBytesReceived is owned by the caller.
+  void OnBytesReceived(const uint8_t*, size_t size);
+  void Finish();
+  void Abort(Local<Value> exception);
+  Local<Promise> GetPromise();
+
+  ~WasmModuleObjectBuilderStreaming();
+
+ private:
+  typedef std::pair<std::unique_ptr<const uint8_t[]>, size_t> Buffer;
+
+  WasmModuleObjectBuilderStreaming(const WasmModuleObjectBuilderStreaming&) =
+      delete;
+  WasmModuleObjectBuilderStreaming(WasmModuleObjectBuilderStreaming&&) =
+      default;
+  WasmModuleObjectBuilderStreaming& operator=(
+      const WasmModuleObjectBuilderStreaming&) = delete;
+  WasmModuleObjectBuilderStreaming& operator=(
+      WasmModuleObjectBuilderStreaming&&) = default;
+  Isolate* isolate_ = nullptr;
+
+#if V8_CC_MSVC
+  // We don't need the static Copy API, so the default
+  // NonCopyablePersistentTraits would be sufficient, however,
+  // MSVC eagerly instantiates the Copy.
+  // We ensure we don't use Copy, however, by compiling with the
+  // defaults everywhere else.
+  Persistent<Promise, CopyablePersistentTraits<Promise>> promise_;
+#else
+  Persistent<Promise> promise_;
+#endif
+  std::vector<Buffer> received_buffers_;
+  size_t total_size_ = 0;
+};
+
 class V8_EXPORT WasmModuleObjectBuilder final {
  public:
   WasmModuleObjectBuilder(Isolate* isolate) : isolate_(isolate) {}
@@ -4141,11 +4277,9 @@ class V8_EXPORT WasmModuleObjectBuilder final {
   // Disable copy semantics *in this implementation*. We can choose to
   // relax this, albeit it's not clear why.
   WasmModuleObjectBuilder(const WasmModuleObjectBuilder&) = delete;
-  WasmModuleObjectBuilder(WasmModuleObjectBuilder&& src)
-      : received_buffers_(std::move(src.received_buffers_)),
-        total_size_(src.total_size_) {}
+  WasmModuleObjectBuilder(WasmModuleObjectBuilder&&) = default;
   WasmModuleObjectBuilder& operator=(const WasmModuleObjectBuilder&) = delete;
-  WasmModuleObjectBuilder& operator=(WasmModuleObjectBuilder&&);
+  WasmModuleObjectBuilder& operator=(WasmModuleObjectBuilder&&) = default;
 
   std::vector<Buffer> received_buffers_;
   size_t total_size_ = 0;
@@ -4251,7 +4385,18 @@ class V8_EXPORT ArrayBuffer : public Object {
    */
   class V8_EXPORT Contents { // NOLINT
    public:
-    Contents() : data_(NULL), byte_length_(0) {}
+    Contents()
+        : data_(nullptr),
+          byte_length_(0),
+          allocation_base_(nullptr),
+          allocation_length_(0),
+          allocation_mode_(Allocator::AllocationMode::kNormal) {}
+
+    void* AllocationBase() const { return allocation_base_; }
+    size_t AllocationLength() const { return allocation_length_; }
+    Allocator::AllocationMode AllocationMode() const {
+      return allocation_mode_;
+    }
 
     void* Data() const { return data_; }
     size_t ByteLength() const { return byte_length_; }
@@ -4259,6 +4404,9 @@ class V8_EXPORT ArrayBuffer : public Object {
    private:
     void* data_;
     size_t byte_length_;
+    void* allocation_base_;
+    size_t allocation_length_;
+    Allocator::AllocationMode allocation_mode_;
 
     friend class ArrayBuffer;
   };
@@ -4404,6 +4552,12 @@ class V8_EXPORT ArrayBufferView : public Object {
  */
 class V8_EXPORT TypedArray : public ArrayBufferView {
  public:
+  /*
+   * The largest typed array size that can be constructed using New.
+   */
+  static constexpr size_t kMaxLength =
+      sizeof(void*) == 4 ? (1u << 30) - 1 : (1u << 31) - 1;
+
   /**
    * Number of elements in this typed array
    * (e.g. for Int16Array, |ByteLength|/2).
@@ -4607,7 +4761,18 @@ class V8_EXPORT SharedArrayBuffer : public Object {
    */
   class V8_EXPORT Contents {  // NOLINT
    public:
-    Contents() : data_(NULL), byte_length_(0) {}
+    Contents()
+        : data_(nullptr),
+          byte_length_(0),
+          allocation_base_(nullptr),
+          allocation_length_(0),
+          allocation_mode_(ArrayBuffer::Allocator::AllocationMode::kNormal) {}
+
+    void* AllocationBase() const { return allocation_base_; }
+    size_t AllocationLength() const { return allocation_length_; }
+    ArrayBuffer::Allocator::AllocationMode AllocationMode() const {
+      return allocation_mode_;
+    }
 
     void* Data() const { return data_; }
     size_t ByteLength() const { return byte_length_; }
@@ -4615,6 +4780,9 @@ class V8_EXPORT SharedArrayBuffer : public Object {
    private:
     void* data_;
     size_t byte_length_;
+    void* allocation_base_;
+    size_t allocation_length_;
+    ArrayBuffer::Allocator::AllocationMode allocation_mode_;
 
     friend class SharedArrayBuffer;
   };
@@ -4861,6 +5029,7 @@ class V8_EXPORT External : public Value {
   F(ArrayProto_forEach, array_for_each_iterator) \
   F(ArrayProto_keys, array_keys_iterator)        \
   F(ArrayProto_values, array_values_iterator)    \
+  F(ErrorPrototype, initial_error_prototype)     \
   F(IteratorPrototype, initial_iterator_prototype)
 
 enum Intrinsic {
@@ -4999,7 +5168,6 @@ typedef void (*NamedPropertyDeleterCallback)(
     Local<String> property,
     const PropertyCallbackInfo<Boolean>& info);
 
-
 /**
  * Returns an array containing the names of the properties the named
  * property getter intercepts.
@@ -5122,7 +5290,6 @@ typedef void (*GenericNamedPropertyQueryCallback)(
  */
 typedef void (*GenericNamedPropertyDeleterCallback)(
     Local<Name> property, const PropertyCallbackInfo<Boolean>& info);
-
 
 /**
  * Returns an array containing the names of the properties the named
@@ -5925,6 +6092,8 @@ V8_INLINE Local<Boolean> False(Isolate* isolate);
  *
  * The arguments for set_max_semi_space_size, set_max_old_space_size,
  * set_max_executable_size, set_code_range_size specify limits in MB.
+ *
+ * The argument for set_max_semi_space_size_in_kb is in KB.
  */
 class V8_EXPORT ResourceConstraints {
  public:
@@ -5942,10 +6111,28 @@ class V8_EXPORT ResourceConstraints {
   void ConfigureDefaults(uint64_t physical_memory,
                          uint64_t virtual_memory_limit);
 
-  int max_semi_space_size() const { return max_semi_space_size_; }
-  void set_max_semi_space_size(int limit_in_mb) {
-    max_semi_space_size_ = limit_in_mb;
+  // Returns the max semi-space size in MB.
+  V8_DEPRECATE_SOON("Use max_semi_space_size_in_kb()",
+                    int max_semi_space_size()) {
+    return static_cast<int>(max_semi_space_size_in_kb_ / 1024);
   }
+
+  // Sets the max semi-space size in MB.
+  V8_DEPRECATE_SOON("Use set_max_semi_space_size_in_kb(size_t limit_in_kb)",
+                    void set_max_semi_space_size(int limit_in_mb)) {
+    max_semi_space_size_in_kb_ = limit_in_mb * 1024;
+  }
+
+  // Returns the max semi-space size in KB.
+  size_t max_semi_space_size_in_kb() const {
+    return max_semi_space_size_in_kb_;
+  }
+
+  // Sets the max semi-space size in KB.
+  void set_max_semi_space_size_in_kb(size_t limit_in_kb) {
+    max_semi_space_size_in_kb_ = limit_in_kb;
+  }
+
   int max_old_space_size() const { return max_old_space_size_; }
   void set_max_old_space_size(int limit_in_mb) {
     max_old_space_size_ = limit_in_mb;
@@ -5971,7 +6158,10 @@ class V8_EXPORT ResourceConstraints {
   }
 
  private:
-  int max_semi_space_size_;
+  // max_semi_space_size_ is in KB
+  size_t max_semi_space_size_in_kb_;
+
+  // The remaining limits are in MB
   int max_old_space_size_;
   int max_executable_size_;
   uint32_t* stack_limit_;
@@ -6059,21 +6249,26 @@ typedef void (*DeprecatedCallCompletedCallback)();
 /**
  * HostImportDynamicallyCallback is called when we require the
  * embedder to load a module. This is used as part of the dynamic
- * import syntax. The behavior of this callback is not specified in
- * EcmaScript.
+ * import syntax.
  *
- * The referrer is the name of the file which calls the dynamic
- * import. The referrer can be used to resolve the module location.
+ * The referrer contains metadata about the script/module that calls
+ * import.
  *
  * The specifier is the name of the module that should be imported.
  *
- * The DynamicImportResult object is used to signal success or failure
- * by calling it's respective methods.
+ * The embedder must compile, instantiate, evaluate the Module, and
+ * obtain it's namespace object.
  *
+ * The Promise returned from this function is forwarded to userland
+ * JavaScript. The embedder must resolve this promise with the module
+ * namespace object. In case of an exception, the embedder must reject
+ * this promise with the exception. If the promise creation itself
+ * fails (e.g. due to stack overflow), the embedder must propagate
+ * that exception by returning an empty MaybeLocal.
  */
-typedef void (*HostImportModuleDynamicallyCallback)(
-    Isolate* isolate, Local<String> referrer, Local<String> specifier,
-    Local<DynamicImportResult> result);
+typedef MaybeLocal<Promise> (*HostImportModuleDynamicallyCallback)(
+    Local<Context> context, Local<ScriptOrModule> referrer,
+    Local<String> specifier);
 
 /**
  * PromiseHook with type kInit is called when a new promise is
@@ -6196,10 +6391,15 @@ typedef void (*FailedAccessCheckCallback)(Local<Object> target,
  * Callback to check if code generation from strings is allowed. See
  * Context::AllowCodeGenerationFromStrings.
  */
-typedef bool (*AllowCodeGenerationFromStringsCallback)(Local<Context> context);
+typedef bool (*AllowCodeGenerationFromStringsCallback)(Local<Context> context,
+                                                       Local<String> source);
 
-// --- WASM compilation callbacks ---
+// --- WebAssembly compilation callbacks ---
 typedef bool (*ExtensionCallback)(const FunctionCallbackInfo<Value>&);
+
+// --- Callback for APIs defined on v8-supported objects, but implemented
+// by the embedder. Example: WebAssembly.{compile|instantiate}Streaming ---
+typedef void (*ApiImplementationCallback)(const FunctionCallbackInfo<Value>&);
 
 // --- Garbage Collection Callbacks ---
 
@@ -6401,7 +6601,7 @@ struct JitCodeEvent {
   struct line_info_t {
     // PC offset
     size_t offset;
-    // Code postion
+    // Code position
     size_t pos;
     // The position type.
     PositionType position_type;
@@ -6624,8 +6824,7 @@ class V8_EXPORT Isolate {
           add_histogram_sample_callback(nullptr),
           array_buffer_allocator(nullptr),
           external_references(nullptr),
-          allow_atomics_wait(true),
-          host_import_module_dynamically_callback_(nullptr) {}
+          allow_atomics_wait(true) {}
 
     /**
      * The optional entry_hook allows the host application to provide the
@@ -6681,23 +6880,13 @@ class V8_EXPORT Isolate {
      * deserialization. This array and its content must stay valid for the
      * entire lifetime of the isolate.
      */
-    intptr_t* external_references;
+    const intptr_t* external_references;
 
     /**
      * Whether calling Atomics.wait (a function that may block) is allowed in
      * this isolate. This can also be configured via SetAllowAtomicsWait.
      */
     bool allow_atomics_wait;
-
-    /**
-     * This is an unfinished experimental feature, and is only exposed
-     * here for internal testing purposes. DO NOT USE.
-     *
-     * This specifies the callback called by the upcoming dynamic
-     * import() language feature to load modules.
-     */
-    HostImportModuleDynamicallyCallback
-        host_import_module_dynamically_callback_;
   };
 
 
@@ -6836,6 +7025,8 @@ class V8_EXPORT Isolate {
     kAssigmentExpressionLHSIsCallInSloppy = 36,
     kAssigmentExpressionLHSIsCallInStrict = 37,
     kPromiseConstructorReturnedUndefined = 38,
+    kConstructorNonUndefinedPrimitiveReturn = 39,
+    kLabeledExpressionStatement = 40,
 
     // If you add new values here, you'll also need to update Chromium's:
     // UseCounter.h, V8PerIsolateData.cpp, histograms.xml
@@ -6887,6 +7078,16 @@ class V8_EXPORT Isolate {
   typedef bool (*AbortOnUncaughtExceptionCallback)(Isolate*);
   void SetAbortOnUncaughtExceptionCallback(
       AbortOnUncaughtExceptionCallback callback);
+
+  /**
+   * This is an unfinished experimental feature, and is only exposed
+   * here for internal testing purposes. DO NOT USE.
+   *
+   * This specifies the callback called by the upcoming dynamic
+   * import() language feature to load modules.
+   */
+  void SetHostImportModuleDynamicallyCallback(
+      HostImportModuleDynamicallyCallback callback);
 
   /**
    * Optional notification that the system is running low on memory.
@@ -7086,6 +7287,12 @@ class V8_EXPORT Isolate {
   Local<Context> GetEnteredOrMicrotaskContext();
 
   /**
+   * Returns the Context that corresponds to the Incumbent realm in HTML spec.
+   * https://html.spec.whatwg.org/multipage/webappapis.html#incumbent
+   */
+  Local<Context> GetIncumbentContext();
+
+  /**
    * Schedules an exception to be thrown when returning to JavaScript.  When an
    * exception has been scheduled it is illegal to invoke any JavaScript
    * operation; the caller must return immediately and only after the exception
@@ -7136,6 +7343,17 @@ class V8_EXPORT Isolate {
    * AddGCEpilogueCallback function.
    */
   void RemoveGCEpilogueCallback(GCCallback callback);
+
+  typedef size_t (*GetExternallyAllocatedMemoryInBytesCallback)();
+
+  /**
+   * Set the callback that tells V8 how much memory is currently allocated
+   * externally of the V8 heap. Ideally this memory is somehow connected to V8
+   * objects and may get freed-up when the corresponding V8 objects get
+   * collected by a V8 garbage collection.
+   */
+  void SetGetExternallyAllocatedMemoryInBytesCallback(
+      GetExternallyAllocatedMemoryInBytesCallback callback);
 
   /**
    * Forcefully terminate the current thread of JavaScript execution
@@ -7234,8 +7452,8 @@ class V8_EXPORT Isolate {
           DeprecatedCallCompletedCallback callback));
 
   /**
-   * Experimental: Set the PromiseHook callback for various promise
-   * lifecycle events.
+   * Set the PromiseHook callback for various promise lifecycle
+   * events.
    */
   void SetPromiseHook(PromiseHook hook);
 
@@ -7454,12 +7672,13 @@ class V8_EXPORT Isolate {
       AllowCodeGenerationFromStringsCallback callback);
 
   /**
-   * Embedder over{ride|load} injection points for wasm APIs.
+   * Embedder over{ride|load} injection points for wasm APIs. The expectation
+   * is that the embedder sets them at most once.
    */
   void SetWasmModuleCallback(ExtensionCallback callback);
-  void SetWasmCompileCallback(ExtensionCallback callback);
   void SetWasmInstanceCallback(ExtensionCallback callback);
-  void SetWasmInstantiateCallback(ExtensionCallback callback);
+
+  void SetWasmCompileStreamingCallback(ApiImplementationCallback callback);
 
   /**
   * Check if V8 is dead and therefore unusable.  This is the case after
@@ -7556,14 +7775,19 @@ class V8_EXPORT Isolate {
   ~Isolate() = delete;
   Isolate(const Isolate&) = delete;
   Isolate& operator=(const Isolate&) = delete;
+  // Deleting operator new and delete here is allowed as ctor and dtor is also
+  // deleted.
   void* operator new(size_t size) = delete;
+  void* operator new[](size_t size) = delete;
   void operator delete(void*, size_t) = delete;
+  void operator delete[](void*, size_t) = delete;
 
  private:
   template <class K, class V, class Traits>
   friend class PersistentValueMapBase;
 
   void ReportExternalAllocationLimitReached();
+  void CheckMemoryPressure();
 };
 
 class V8_EXPORT StartupData {
@@ -7583,7 +7807,7 @@ typedef bool (*EntropySource)(unsigned char* buffer, size_t length);
  * ReturnAddressLocationResolver is used as a callback function when v8 is
  * resolving the location of a return address on the stack. Profilers that
  * change the return address on the stack can use this to resolve the stack
- * location to whereever the profiler stashed the original return address.
+ * location to wherever the profiler stashed the original return address.
  *
  * \param return_addr_location A location on stack where a machine
  *    return address resides.
@@ -7605,14 +7829,6 @@ class V8_EXPORT V8 {
   V8_INLINE static V8_DEPRECATED(
       "Use isolate version",
       void SetFatalErrorHandler(FatalErrorCallback that));
-
-  /**
-   * Set the callback to invoke to check if code generation from
-   * strings should be allowed.
-   */
-  V8_INLINE static V8_DEPRECATED(
-      "Use isolate version", void SetAllowCodeGenerationFromStringsCallback(
-                                 AllowCodeGenerationFromStringsCallback that));
 
   /**
   * Check if V8 is dead and therefore unusable.  This is the case after
@@ -7923,7 +8139,7 @@ class V8_EXPORT V8 {
    */
   static void ShutdownPlatform();
 
-#if V8_OS_LINUX && V8_TARGET_ARCH_X64 && !V8_OS_ANDROID
+#if V8_OS_POSIX
   /**
    * Give the V8 signal handler a chance to handle a fault.
    *
@@ -7944,7 +8160,7 @@ class V8_EXPORT V8 {
    * points to a ucontext_t structure.
    */
   static bool TryHandleSignal(int signal_number, void* info, void* context);
-#endif  // V8_OS_LINUX
+#endif  // V8_OS_POSIX
 
   /**
    * Enable the default signal handler rather than using one provided by the
@@ -8009,7 +8225,7 @@ class V8_EXPORT SnapshotCreator {
    * \param external_references a null-terminated array of external references
    *        that must be equivalent to CreateParams::external_references.
    */
-  SnapshotCreator(intptr_t* external_references = nullptr,
+  SnapshotCreator(const intptr_t* external_references = nullptr,
                   StartupData* existing_blob = nullptr);
 
   ~SnapshotCreator();
@@ -8023,8 +8239,12 @@ class V8_EXPORT SnapshotCreator {
    * Set the default context to be included in the snapshot blob.
    * The snapshot will not contain the global proxy, and we expect one or a
    * global object template to create one, to be provided upon deserialization.
+   *
+   * \param callback optional callback to serialize internal fields.
    */
-  void SetDefaultContext(Local<Context> context);
+  void SetDefaultContext(Local<Context> context,
+                         SerializeInternalFieldsCallback callback =
+                             SerializeInternalFieldsCallback());
 
   /**
    * Add additional context to be included in the snapshot blob.
@@ -8283,10 +8503,15 @@ class V8_EXPORT TryCatch {
 
   TryCatch(const TryCatch&) = delete;
   void operator=(const TryCatch&) = delete;
-  void* operator new(size_t size);
-  void operator delete(void*, size_t);
 
  private:
+  // Declaring operator new and delete as deleted is not spec compliant.
+  // Therefore declare them private instead to disable dynamic alloc
+  void* operator new(size_t size);
+  void* operator new[](size_t size);
+  void operator delete(void*, size_t);
+  void operator delete[](void*, size_t);
+
   void ResetInternal();
 
   internal::Isolate* isolate_;
@@ -8371,7 +8596,9 @@ class V8_EXPORT Context {
   static Local<Context> New(
       Isolate* isolate, ExtensionConfiguration* extensions = NULL,
       MaybeLocal<ObjectTemplate> global_template = MaybeLocal<ObjectTemplate>(),
-      MaybeLocal<Value> global_object = MaybeLocal<Value>());
+      MaybeLocal<Value> global_object = MaybeLocal<Value>(),
+      DeserializeInternalFieldsCallback internal_fields_deserializer =
+          DeserializeInternalFieldsCallback());
 
   /**
    * Create a new context from a (non-default) context snapshot. There
@@ -8537,6 +8764,27 @@ class V8_EXPORT Context {
 
    private:
     Local<Context> context_;
+  };
+
+  /**
+   * Stack-allocated class to support the backup incumbent settings object
+   * stack.
+   * https://html.spec.whatwg.org/multipage/webappapis.html#backup-incumbent-settings-object-stack
+   */
+  class BackupIncumbentScope {
+   public:
+    /**
+     * |backup_incumbent_context| is pushed onto the backup incumbent settings
+     * object stack.
+     */
+    explicit BackupIncumbentScope(Local<Context> backup_incumbent_context);
+    ~BackupIncumbentScope();
+
+   private:
+    friend class internal::Isolate;
+
+    Local<Context> backup_incumbent_context_;
+    const BackupIncumbentScope* prev_ = nullptr;
   };
 
  private:
@@ -8786,6 +9034,8 @@ class Internals {
   static const int kExternalMemoryOffset = 4 * kApiPointerSize;
   static const int kExternalMemoryLimitOffset =
       kExternalMemoryOffset + kApiInt64Size;
+  static const int kExternalMemoryAtLastMarkCompactOffset =
+      kExternalMemoryLimitOffset + kApiInt64Size;
   static const int kIsolateRootsOffset = kExternalMemoryLimitOffset +
                                          kApiInt64Size + kApiInt64Size +
                                          kApiPointerSize + kApiPointerSize;
@@ -8805,8 +9055,8 @@ class Internals {
   static const int kNodeIsIndependentShift = 3;
   static const int kNodeIsActiveShift = 4;
 
-  static const int kJSApiObjectType = 0xbb;
-  static const int kJSObjectType = 0xbc;
+  static const int kJSApiObjectType = 0xbe;
+  static const int kJSObjectType = 0xbf;
   static const int kFirstNonstringType = 0x80;
   static const int kOddballType = 0x82;
   static const int kForeignType = 0x86;
@@ -9329,7 +9579,8 @@ ScriptOrigin::ScriptOrigin(Local<Value> resource_name,
                            Local<Integer> script_id,
                            Local<Value> source_map_url,
                            Local<Boolean> resource_is_opaque,
-                           Local<Boolean> is_wasm, Local<Boolean> is_module)
+                           Local<Boolean> is_wasm, Local<Boolean> is_module,
+                           Local<PrimitiveArray> host_defined_options)
     : resource_name_(resource_name),
       resource_line_offset_(resource_line_offset),
       resource_column_offset_(resource_column_offset),
@@ -9339,10 +9590,14 @@ ScriptOrigin::ScriptOrigin(Local<Value> resource_name,
                !is_wasm.IsEmpty() && is_wasm->IsTrue(),
                !is_module.IsEmpty() && is_module->IsTrue()),
       script_id_(script_id),
-      source_map_url_(source_map_url) {}
+      source_map_url_(source_map_url),
+      host_defined_options_(host_defined_options) {}
 
 Local<Value> ScriptOrigin::ResourceName() const { return resource_name_; }
 
+Local<PrimitiveArray> ScriptOrigin::HostDefinedOptions() const {
+  return host_defined_options_;
+}
 
 Local<Integer> ScriptOrigin::ResourceLineOffset() const {
   return resource_line_offset_;
@@ -9359,7 +9614,6 @@ Local<Integer> ScriptOrigin::ScriptID() const { return script_id_; }
 
 Local<Value> ScriptOrigin::SourceMapUrl() const { return source_map_url_; }
 
-
 ScriptCompiler::Source::Source(Local<String> string, const ScriptOrigin& origin,
                                CachedData* data)
     : source_string(string),
@@ -9368,8 +9622,8 @@ ScriptCompiler::Source::Source(Local<String> string, const ScriptOrigin& origin,
       resource_column_offset(origin.ResourceColumnOffset()),
       resource_options(origin.Options()),
       source_map_url(origin.SourceMapUrl()),
+      host_defined_options(origin.HostDefinedOptions()),
       cached_data(data) {}
-
 
 ScriptCompiler::Source::Source(Local<String> string,
                                CachedData* data)
@@ -10004,13 +10258,32 @@ uint32_t Isolate::GetNumberOfDataSlots() {
 int64_t Isolate::AdjustAmountOfExternalAllocatedMemory(
     int64_t change_in_bytes) {
   typedef internal::Internals I;
+  const int64_t kMemoryReducerActivationLimit = 32 * 1024 * 1024;
   int64_t* external_memory = reinterpret_cast<int64_t*>(
       reinterpret_cast<uint8_t*>(this) + I::kExternalMemoryOffset);
-  const int64_t external_memory_limit = *reinterpret_cast<int64_t*>(
+  int64_t* external_memory_limit = reinterpret_cast<int64_t*>(
       reinterpret_cast<uint8_t*>(this) + I::kExternalMemoryLimitOffset);
+  int64_t* external_memory_at_last_mc =
+      reinterpret_cast<int64_t*>(reinterpret_cast<uint8_t*>(this) +
+                                 I::kExternalMemoryAtLastMarkCompactOffset);
   const int64_t amount = *external_memory + change_in_bytes;
+
   *external_memory = amount;
-  if (change_in_bytes > 0 && amount > external_memory_limit) {
+
+  int64_t allocation_diff_since_last_mc =
+      *external_memory_at_last_mc - *external_memory;
+  allocation_diff_since_last_mc = allocation_diff_since_last_mc < 0
+                                      ? -allocation_diff_since_last_mc
+                                      : allocation_diff_since_last_mc;
+  if (allocation_diff_since_last_mc > kMemoryReducerActivationLimit) {
+    CheckMemoryPressure();
+  }
+
+  if (change_in_bytes < 0) {
+    *external_memory_limit += change_in_bytes;
+  }
+
+  if (change_in_bytes > 0 && amount > *external_memory_limit) {
     ReportExternalAllocationLimitReached();
   }
   return *external_memory;
@@ -10039,14 +10312,6 @@ void* Context::GetAlignedPointerFromEmbedderData(int index) {
   return SlowGetAlignedPointerFromEmbedderData(index);
 #endif
 }
-
-
-void V8::SetAllowCodeGenerationFromStringsCallback(
-    AllowCodeGenerationFromStringsCallback callback) {
-  Isolate* isolate = Isolate::GetCurrent();
-  isolate->SetAllowCodeGenerationFromStringsCallback(callback);
-}
-
 
 bool V8::IsDead() {
   Isolate* isolate = Isolate::GetCurrent();

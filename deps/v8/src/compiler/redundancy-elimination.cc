@@ -27,7 +27,8 @@ Reduction RedundancyElimination::Reduce(Node* node) {
     case IrOpcode::kCheckReceiver:
     case IrOpcode::kCheckSmi:
     case IrOpcode::kCheckString:
-    case IrOpcode::kCheckTaggedHole:
+    case IrOpcode::kCheckSeqString:
+    case IrOpcode::kCheckNotTaggedHole:
     case IrOpcode::kCheckedFloat64ToInt32:
     case IrOpcode::kCheckedInt32Add:
     case IrOpcode::kCheckedInt32Sub:
@@ -41,6 +42,8 @@ Reduction RedundancyElimination::Reduce(Node* node) {
       return ReduceCheckNode(node);
     case IrOpcode::kSpeculativeNumberAdd:
     case IrOpcode::kSpeculativeNumberSubtract:
+    case IrOpcode::kSpeculativeSafeIntegerAdd:
+    case IrOpcode::kSpeculativeSafeIntegerSubtract:
       // For increments and decrements by a constant, try to learn from the last
       // bounds check.
       return TryReuseBoundsCheckForFirstInput(node);
@@ -191,7 +194,9 @@ Reduction RedundancyElimination::ReduceCheckNode(Node* node) {
 
 Reduction RedundancyElimination::TryReuseBoundsCheckForFirstInput(Node* node) {
   DCHECK(node->opcode() == IrOpcode::kSpeculativeNumberAdd ||
-         node->opcode() == IrOpcode::kSpeculativeNumberSubtract);
+         node->opcode() == IrOpcode::kSpeculativeNumberSubtract ||
+         node->opcode() == IrOpcode::kSpeculativeSafeIntegerAdd ||
+         node->opcode() == IrOpcode::kSpeculativeSafeIntegerSubtract);
 
   DCHECK_EQ(1, node->op()->EffectInputCount());
   DCHECK_EQ(1, node->op()->EffectOutputCount());

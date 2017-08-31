@@ -33,6 +33,7 @@
 #include "src/debug/debug.h"
 #include "src/disasm.h"
 #include "src/disassembler.h"
+#include "src/frames-inl.h"
 #include "src/macro-assembler.h"
 #include "test/cctest/cctest.h"
 
@@ -1306,17 +1307,27 @@ TEST(ctc1_cfc1_disasm) {
 
 TEST(madd_msub_maddf_msubf) {
   SET_UP();
-  if (kArchVariant == kMips64r2) {
-    COMPARE(madd_s(f4, f6, f8, f10), "4cca4120       madd.s  f4, f6, f8, f10");
-    COMPARE(madd_d(f4, f6, f8, f10), "4cca4121       madd.d  f4, f6, f8, f10");
-    COMPARE(msub_s(f4, f6, f8, f10), "4cca4128       msub.s  f4, f6, f8, f10");
-    COMPARE(msub_d(f4, f6, f8, f10), "4cca4129       msub.d  f4, f6, f8, f10");
-  }
   if (kArchVariant == kMips64r6) {
     COMPARE(maddf_s(f4, f8, f10), "460a4118       maddf.s  f4, f8, f10");
     COMPARE(maddf_d(f4, f8, f10), "462a4118       maddf.d  f4, f8, f10");
     COMPARE(msubf_s(f4, f8, f10), "460a4119       msubf.s  f4, f8, f10");
     COMPARE(msubf_d(f4, f8, f10), "462a4119       msubf.d  f4, f8, f10");
+  }
+  VERIFY_RUN();
+}
+
+TEST(atomic_load_store) {
+  SET_UP();
+  if (kArchVariant == kMips64r6) {
+    COMPARE(ll(v0, MemOperand(v1, -1)), "7c62ffb6       ll     v0, -1(v1)");
+    COMPARE(sc(v0, MemOperand(v1, 1)), "7c6200a6       sc     v0, 1(v1)");
+    COMPARE(lld(v0, MemOperand(v1, -1)), "7c62ffb7       lld     v0, -1(v1)");
+    COMPARE(scd(v0, MemOperand(v1, 1)), "7c6200a7       scd     v0, 1(v1)");
+  } else {
+    COMPARE(ll(v0, MemOperand(v1, -1)), "c062ffff       ll     v0, -1(v1)");
+    COMPARE(sc(v0, MemOperand(v1, 1)), "e0620001       sc     v0, 1(v1)");
+    COMPARE(lld(v0, MemOperand(v1, -1)), "d062ffff       lld     v0, -1(v1)");
+    COMPARE(scd(v0, MemOperand(v1, 1)), "f0620001       scd     v0, 1(v1)");
   }
   VERIFY_RUN();
 }
@@ -1332,14 +1343,16 @@ TEST(MSA_BRANCH) {
                        32767);
     COMPARE_MSA_BRANCH(bnz_d(w3, -32768), "47e38000       bnz.d  w3, -32768",
                        -32768);
-    COMPARE_MSA_BRANCH(bnz_v(w0, 0), "45e00000       bnz.v  w0, 0", 0);
+    COMPARE_MSA_BRANCH(bnz_v(w0, static_cast<int16_t>(0)),
+                       "45e00000       bnz.v  w0, 0", 0);
     COMPARE_MSA_BRANCH(bz_b(w0, 1), "47000001       bz.b  w0, 1", 1);
     COMPARE_MSA_BRANCH(bz_h(w1, -1), "4721ffff       bz.h  w1, -1", -1);
     COMPARE_MSA_BRANCH(bz_w(w2, 32767), "47427fff       bz.w  w2, 32767",
                        32767);
     COMPARE_MSA_BRANCH(bz_d(w3, -32768), "47638000       bz.d  w3, -32768",
                        -32768);
-    COMPARE_MSA_BRANCH(bz_v(w0, 0), "45600000       bz.v  w0, 0", 0);
+    COMPARE_MSA_BRANCH(bz_v(w0, static_cast<int16_t>(0)),
+                       "45600000       bz.v  w0, 0", 0);
   }
   VERIFY_RUN();
 }

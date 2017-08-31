@@ -11,7 +11,6 @@
 #include "src/conversions.h"
 #include "src/handles-inl.h"
 #include "src/isolate.h"
-#include "src/list-inl.h"
 #include "src/objects-inl.h"
 
 namespace v8 {
@@ -153,7 +152,7 @@ Object* FutexEmulation::Wait(Isolate* isolate,
     mutex_.Pointer()->Lock();
 
     if (node->interrupted_) {
-      // An interrupt occured while the mutex_ was unlocked. Don't wait yet.
+      // An interrupt occurred while the mutex_ was unlocked. Don't wait yet.
       continue;
     }
 

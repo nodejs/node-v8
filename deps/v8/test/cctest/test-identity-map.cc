@@ -149,7 +149,7 @@ class IdentityMapTester : public HandleAndZoneScope {
   void SimulateGCByIncrementingSmisBy(int shift) {
     for (int i = 0; i < map.capacity_; i++) {
       if (map.keys_[i]->IsSmi()) {
-        map.keys_[i] = Smi::FromInt(Smi::cast(map.keys_[i])->value() + shift);
+        map.keys_[i] = Smi::FromInt(Smi::ToInt(map.keys_[i]) + shift);
       }
     }
     map.gc_counter_ = -1;
@@ -700,9 +700,9 @@ TEST(CanonicalHandleScope) {
   CanonicalHandleScope outer_canonical(isolate);
 
   // Deduplicate smi handles.
-  List<Handle<Object> > smi_handles;
+  std::vector<Handle<Object>> smi_handles;
   for (int i = 0; i < 100; i++) {
-    smi_handles.Add(Handle<Object>(Smi::FromInt(i), isolate));
+    smi_handles.push_back(Handle<Object>(Smi::FromInt(i), isolate));
   }
   Object** next_handle = isolate->handle_scope_data()->next;
   for (int i = 0; i < 100; i++) {

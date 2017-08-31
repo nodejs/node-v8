@@ -6,7 +6,6 @@
 
 #include "src/factory.h"
 #include "src/isolate.h"
-#include "src/list.h"
 #include "src/objects.h"
 // FIXME(mstarzinger, marja): This is weird, but required because of the missing
 // (disallowed) include: src/factory.h -> src/objects-inl.h
@@ -45,18 +44,20 @@ TEST(CodeCache) {
   HandleScope handle_scope(isolate);
 
   Handle<Map> map =
-      factory->NewMap(JS_OBJECT_TYPE, JSObject::kHeaderSize, FAST_ELEMENTS);
+      factory->NewMap(JS_OBJECT_TYPE, JSObject::kHeaderSize, PACKED_ELEMENTS);
 
   // This number should be large enough to cause the code cache to use its
   // hash table storage format.
   static const int kEntries = 150;
 
   // Prepare name/code pairs.
-  List<Handle<Name>> names(kEntries);
-  List<Handle<Code>> codes(kEntries);
+  std::vector<Handle<Name>> names;
+  std::vector<Handle<Code>> codes;
+  names.reserve(kEntries);
+  codes.reserve(kEntries);
   for (int i = 0; i < kEntries; i++) {
-    names.Add(isolate->factory()->NewSymbol());
-    codes.Add(GetDummyCode(isolate));
+    names.push_back(isolate->factory()->NewSymbol());
+    codes.push_back(GetDummyCode(isolate));
   }
   Handle<Name> bad_name = isolate->factory()->NewSymbol();
   Code::Flags flags = Code::ComputeFlags(Code::LOAD_IC, kNoExtraICState);

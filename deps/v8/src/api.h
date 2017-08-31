@@ -112,7 +112,9 @@ class RegisteredExtension {
   V(debug::GeneratorObject, JSGeneratorObject) \
   V(debug::Script, Script)                     \
   V(Promise, JSPromise)                        \
-  V(DynamicImportResult, JSPromise)
+  V(Primitive, Object)                         \
+  V(PrimitiveArray, FixedArray)                \
+  V(ScriptOrModule, Script)
 
 class Utils {
  public:
@@ -186,8 +188,6 @@ class Utils {
       v8::internal::Handle<v8::internal::Object> obj);
   static inline Local<Promise> PromiseToLocal(
       v8::internal::Handle<v8::internal::JSObject> obj);
-  static inline Local<DynamicImportResult> PromiseToDynamicImportResult(
-      v8::internal::Handle<v8::internal::JSPromise> obj);
   static inline Local<StackTrace> StackTraceToLocal(
       v8::internal::Handle<v8::internal::FixedArray> obj);
   static inline Local<StackFrame> StackFrameToLocal(
@@ -212,6 +212,12 @@ class Utils {
       v8::internal::Handle<v8::internal::JSWeakMap> obj);
   static inline Local<Function> CallableToLocal(
       v8::internal::Handle<v8::internal::JSReceiver> obj);
+  static inline Local<Primitive> ToLocalPrimitive(
+      v8::internal::Handle<v8::internal::Object> obj);
+  static inline Local<PrimitiveArray> ToLocal(
+      v8::internal::Handle<v8::internal::FixedArray> obj);
+  static inline Local<ScriptOrModule> ScriptOrModuleToLocal(
+      v8::internal::Handle<v8::internal::Script> obj);
 
 #define DECLARE_OPEN_HANDLE(From, To) \
   static inline v8::internal::Handle<v8::internal::To> \
@@ -320,7 +326,6 @@ MAKE_TO_LOCAL(SignatureToLocal, FunctionTemplateInfo, Signature)
 MAKE_TO_LOCAL(AccessorSignatureToLocal, FunctionTemplateInfo, AccessorSignature)
 MAKE_TO_LOCAL(MessageToLocal, Object, Message)
 MAKE_TO_LOCAL(PromiseToLocal, JSObject, Promise)
-MAKE_TO_LOCAL(PromiseToDynamicImportResult, JSPromise, DynamicImportResult)
 MAKE_TO_LOCAL(StackTraceToLocal, FixedArray, StackTrace)
 MAKE_TO_LOCAL(StackFrameToLocal, StackFrameInfo, StackFrame)
 MAKE_TO_LOCAL(NumberToLocal, Object, Number)
@@ -329,6 +334,9 @@ MAKE_TO_LOCAL(Uint32ToLocal, Object, Uint32)
 MAKE_TO_LOCAL(ExternalToLocal, JSObject, External)
 MAKE_TO_LOCAL(NativeWeakMapToLocal, JSWeakMap, NativeWeakMap)
 MAKE_TO_LOCAL(CallableToLocal, JSReceiver, Function)
+MAKE_TO_LOCAL(ToLocalPrimitive, Object, Primitive)
+MAKE_TO_LOCAL(ToLocal, FixedArray, PrimitiveArray)
+MAKE_TO_LOCAL(ScriptOrModuleToLocal, Script, ScriptOrModule)
 
 #undef MAKE_TO_LOCAL_TYPED_ARRAY
 #undef MAKE_TO_LOCAL

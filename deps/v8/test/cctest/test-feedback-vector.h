@@ -6,7 +6,7 @@
 #define V8_TEST_FEEDBACK_VECTOR_H_
 
 #include "src/objects.h"
-
+#include "src/objects/shared-function-info.h"
 
 namespace v8 {
 namespace internal {
@@ -17,7 +17,7 @@ class FeedbackVectorHelper {
  public:
   explicit FeedbackVectorHelper(Handle<FeedbackVector> vector)
       : vector_(vector) {
-    int slot_count = vector->slot_count();
+    int slot_count = vector->length();
     slots_.reserve(slot_count);
     FeedbackMetadataIterator iter(vector->metadata());
     while (iter.HasNext()) {

@@ -109,7 +109,6 @@ bool ParseBoolean(const char* string) {
     return false;
   } else {
     UNREACHABLE();
-    return false;
   }
 }
 
@@ -303,7 +302,6 @@ void ProgramOptions::PrintHeader(std::ostream& stream) const {  // NOLINT
 
 V8InitializationScope::V8InitializationScope(const char* exec_path)
     : platform_(v8::platform::CreateDefaultPlatform()) {
-  i::FLAG_ignition = true;
   i::FLAG_always_opt = false;
   i::FLAG_allow_natives_syntax = true;
 
@@ -434,7 +432,9 @@ bool WriteExpectationsFile(const std::vector<std::string>& snippet_list,
 }
 
 void PrintMessage(v8::Local<v8::Message> message, v8::Local<v8::Value>) {
-  std::cerr << "INFO: " << *v8::String::Utf8Value(message->Get()) << '\n';
+  std::cerr << "INFO: "
+            << *v8::String::Utf8Value(v8::Isolate::GetCurrent(), message->Get())
+            << '\n';
 }
 
 void DiscardMessage(v8::Local<v8::Message>, v8::Local<v8::Value>) {}

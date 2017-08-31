@@ -33,6 +33,7 @@
 #include "src/debug/debug.h"
 #include "src/disasm.h"
 #include "src/disassembler.h"
+#include "src/frames-inl.h"
 #include "src/macro-assembler.h"
 #include "test/cctest/cctest.h"
 
@@ -1120,6 +1121,18 @@ TEST(madd_msub_maddf_msubf) {
   VERIFY_RUN();
 }
 
+TEST(atomic_load_store) {
+  SET_UP();
+  if (IsMipsArchVariant(kMips32r6)) {
+    COMPARE(ll(v0, MemOperand(v1, -1)), "7c62ffb6       ll     v0, -1(v1)");
+    COMPARE(sc(v0, MemOperand(v1, 1)), "7c6200a6       sc     v0, 1(v1)");
+  } else {
+    COMPARE(ll(v0, MemOperand(v1, -1)), "c062ffff       ll     v0, -1(v1)");
+    COMPARE(sc(v0, MemOperand(v1, 1)), "e0620001       sc     v0, 1(v1)");
+  }
+  VERIFY_RUN();
+}
+
 TEST(MSA_BRANCH) {
   SET_UP();
   if (IsMipsArchVariant(kMips32r6) && CpuFeatures::IsSupported(MIPS_SIMD)) {
@@ -1131,14 +1144,16 @@ TEST(MSA_BRANCH) {
                        32767);
     COMPARE_MSA_BRANCH(bnz_d(w3, -32768), "47e38000       bnz.d  w3, -32768",
                        -32768);
-    COMPARE_MSA_BRANCH(bnz_v(w0, 0), "45e00000       bnz.v  w0, 0", 0);
+    COMPARE_MSA_BRANCH(bnz_v(w0, static_cast<int16_t>(0)),
+                       "45e00000       bnz.v  w0, 0", 0);
     COMPARE_MSA_BRANCH(bz_b(w0, 1), "47000001       bz.b  w0, 1", 1);
     COMPARE_MSA_BRANCH(bz_h(w1, -1), "4721ffff       bz.h  w1, -1", -1);
     COMPARE_MSA_BRANCH(bz_w(w2, 32767), "47427fff       bz.w  w2, 32767",
                        32767);
     COMPARE_MSA_BRANCH(bz_d(w3, -32768), "47638000       bz.d  w3, -32768",
                        -32768);
-    COMPARE_MSA_BRANCH(bz_v(w0, 0), "45600000       bz.v  w0, 0", 0);
+    COMPARE_MSA_BRANCH(bz_v(w0, static_cast<int16_t>(0)),
+                       "45600000       bz.v  w0, 0", 0);
   }
   VERIFY_RUN();
 }

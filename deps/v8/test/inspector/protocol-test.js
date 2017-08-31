@@ -129,7 +129,7 @@ InspectorTest.ContextGroup = class {
     return new InspectorTest.Session(this);
   }
 
-  setupInjectedScriptEnvironment(debug) {
+  setupInjectedScriptEnvironment(session) {
     let scriptSource = '';
     // First define all getters on Object.prototype.
     let injectedScriptSource = utils.read('src/inspector/injected-script-source.js');
@@ -141,8 +141,13 @@ InspectorTest.ContextGroup = class {
     }
     scriptSource += `(function installSettersAndGetters() {
         let defineProperty = Object.defineProperty;
-        let ObjectPrototype = Object.prototype;\n`;
-    scriptSource += Array.from(getters).map(getter => `
+        let ObjectPrototype = Object.prototype;
+        let ArrayPrototype = Array.prototype;
+        defineProperty(ArrayPrototype, 0, {
+          set() { debugger; throw 42; }, get() { debugger; throw 42; },
+          __proto__: null
+        });`,
+        scriptSource += Array.from(getters).map(getter => `
         defineProperty(ObjectPrototype, '${getter}', {
           set() { debugger; throw 42; }, get() { debugger; throw 42; },
           __proto__: null
@@ -150,13 +155,12 @@ InspectorTest.ContextGroup = class {
         `).join('\n') + '})();';
     this.addScript(scriptSource);
 
-    if (debug) {
+    if (session) {
       InspectorTest.log('WARNING: setupInjectedScriptEnvironment with debug flag for debugging only and should not be landed.');
       InspectorTest.log('WARNING: run test with --expose-inspector-scripts flag to get more details.');
       InspectorTest.log('WARNING: you can additionally comment rjsmin in xxd.py to get unminified injected-script-source.js.');
-      var session = InspectorTest._sessions.next().vale;
       session.setupScriptMap();
-      sesison.Protocol.Debugger.enable();
+      session.Protocol.Debugger.enable();
       session.Protocol.Debugger.onPaused(message => {
         let callFrames = message.params.callFrames;
         session.logSourceLocations(callFrames.map(frame => frame.location));
@@ -186,6 +190,10 @@ InspectorTest.Session = class {
     this.id = utils.connectSession(this.contextGroup.id, state, this._dispatchMessage.bind(this));
   }
 
+  async addInspectedObject(serializable) {
+    return this.Protocol.Runtime.evaluate({expression: `inspector.addInspectedObject(${this.id}, ${JSON.stringify(serializable)})`});
+  }
+
   sendRawCommand(requestId, command, handler) {
     if (InspectorTest._dumpInspectorProtocolMessages)
       utils.print("frontend: " + command);
@@ -209,14 +217,14 @@ InspectorTest.Session = class {
     }
   }
 
-  logSourceLocation(location) {
+  logSourceLocation(location, forceSourceRequest) {
     var scriptId = location.scriptId;
     if (!this._scriptMap || !this._scriptMap.has(scriptId)) {
       InspectorTest.log("setupScriptMap should be called before Protocol.Debugger.enable.");
       InspectorTest.completeTest();
     }
     var script = this._scriptMap.get(scriptId);
-    if (!script.scriptSource) {
+    if (!script.scriptSource || forceSourceRequest) {
       return this.Protocol.Debugger.getScriptSource({ scriptId })
           .then(message => script.scriptSource = message.result.scriptSource)
           .then(dumpSourceWithLocation);
@@ -237,6 +245,36 @@ InspectorTest.Session = class {
   logSourceLocations(locations) {
     if (locations.length == 0) return Promise.resolve();
     return this.logSourceLocation(locations[0]).then(() => this.logSourceLocations(locations.splice(1)));
+  }
+
+  async logBreakLocations(inputLocations) {
+    let locations = inputLocations.slice();
+    let scriptId = locations[0].scriptId;
+    let script = this._scriptMap.get(scriptId);
+    if (!script.scriptSource) {
+      let message = await this.Protocol.Debugger.getScriptSource({scriptId});
+      script.scriptSource = message.result.scriptSource;
+    }
+    let lines = script.scriptSource.split('\n');
+    locations = locations.sort((loc1, loc2) => {
+      if (loc2.lineNumber !== loc1.lineNumber) return loc2.lineNumber - loc1.lineNumber;
+      return loc2.columnNumber - loc1.columnNumber;
+    });
+    for (let location of locations) {
+      let line = lines[location.lineNumber];
+      line = line.slice(0, location.columnNumber) + locationMark(location.type) + line.slice(location.columnNumber);
+      lines[location.lineNumber] = line;
+    }
+    lines = lines.filter(line => line.indexOf('//# sourceURL=') === -1);
+    InspectorTest.log(lines.join('\n') + '\n');
+    return inputLocations;
+
+    function locationMark(type) {
+      if (type === 'return') return '|R|';
+      if (type === 'call') return '|C|';
+      if (type === 'debuggerStatement') return '|D|';
+      return '|_|';
+    }
   }
 
   logAsyncStackTrace(asyncStackTrace) {
