@@ -4677,12 +4677,6 @@ void Init(int* argc,
   }
 #endif
 
-  // Unconditionally force typed arrays to allocate outside the v8 heap. This
-  // is to prevent memory pointers from being moved around that are returned by
-  // Buffer::Data().
-  const char no_typed_array_heap[] = "--typed_array_max_size_in_heap=0";
-  V8::SetFlagsFromString(no_typed_array_heap, sizeof(no_typed_array_heap) - 1);
-
   // We should set node_is_initialized here instead of in node::Start,
   // otherwise embedders using node::Init to initialize everything will not be
   // able to set it and native modules will not load for them.
