@@ -85,6 +85,10 @@ Reduction TypedOptimization::Reduce(Node* node) {
       return ReduceCheckString(node);
     case IrOpcode::kCheckSeqString:
       return ReduceCheckSeqString(node);
+    case IrOpcode::kCheckEqualsInternalizedString:
+      return ReduceCheckEqualsInternalizedString(node);
+    case IrOpcode::kCheckEqualsSymbol:
+      return ReduceCheckEqualsSymbol(node);
     case IrOpcode::kLoadField:
       return ReduceLoadField(node);
     case IrOpcode::kNumberCeil:
@@ -101,6 +105,10 @@ Reduction TypedOptimization::Reduce(Node* node) {
       return ReduceReferenceEqual(node);
     case IrOpcode::kSelect:
       return ReduceSelect(node);
+    case IrOpcode::kTypeOf:
+      return ReduceTypeOf(node);
+    case IrOpcode::kToBoolean:
+      return ReduceToBoolean(node);
     case IrOpcode::kSpeculativeToNumber:
       return ReduceSpeculativeToNumber(node);
     default:
@@ -194,6 +202,28 @@ Reduction TypedOptimization::ReduceCheckSeqString(Node* node) {
     ReplaceWithValue(node, input);
     return Replace(input);
   }
+  return NoChange();
+}
+
+Reduction TypedOptimization::ReduceCheckEqualsInternalizedString(Node* node) {
+  Node* const exp = NodeProperties::GetValueInput(node, 0);
+  Type* const exp_type = NodeProperties::GetType(exp);
+  Node* const val = NodeProperties::GetValueInput(node, 1);
+  Type* const val_type = NodeProperties::GetType(val);
+  Node* const effect = NodeProperties::GetEffectInput(node);
+  if (val_type->Is(exp_type)) return Replace(effect);
+  // TODO(turbofan): Should we also try to optimize the
+  // non-internalized String case for {val} here?
+  return NoChange();
+}
+
+Reduction TypedOptimization::ReduceCheckEqualsSymbol(Node* node) {
+  Node* const exp = NodeProperties::GetValueInput(node, 0);
+  Type* const exp_type = NodeProperties::GetType(exp);
+  Node* const val = NodeProperties::GetValueInput(node, 1);
+  Type* const val_type = NodeProperties::GetType(val);
+  Node* const effect = NodeProperties::GetEffectInput(node);
+  if (val_type->Is(exp_type)) return Replace(effect);
   return NoChange();
 }
 
@@ -357,6 +387,78 @@ Reduction TypedOptimization::ReduceSpeculativeToNumber(Node* node) {
     // SpeculativeToNumber(x:number) => x
     ReplaceWithValue(node, input);
     return Replace(input);
+  }
+  return NoChange();
+}
+
+Reduction TypedOptimization::ReduceTypeOf(Node* node) {
+  Node* const input = node->InputAt(0);
+  Type* const type = NodeProperties::GetType(input);
+  Factory* const f = factory();
+  if (type->Is(Type::Boolean())) {
+    return Replace(jsgraph()->Constant(f->boolean_string()));
+  } else if (type->Is(Type::Number())) {
+    return Replace(jsgraph()->Constant(f->number_string()));
+  } else if (type->Is(Type::String())) {
+    return Replace(jsgraph()->Constant(f->string_string()));
+  } else if (type->Is(Type::Symbol())) {
+    return Replace(jsgraph()->Constant(f->symbol_string()));
+  } else if (type->Is(Type::OtherUndetectableOrUndefined())) {
+    return Replace(jsgraph()->Constant(f->undefined_string()));
+  } else if (type->Is(Type::NonCallableOrNull())) {
+    return Replace(jsgraph()->Constant(f->object_string()));
+  } else if (type->Is(Type::Function())) {
+    return Replace(jsgraph()->Constant(f->function_string()));
+  } else if (type->IsHeapConstant()) {
+    return Replace(jsgraph()->Constant(
+        Object::TypeOf(isolate(), type->AsHeapConstant()->Value())));
+  }
+
+  return NoChange();
+}
+
+Reduction TypedOptimization::ReduceToBoolean(Node* node) {
+  Node* const input = node->InputAt(0);
+  Type* const input_type = NodeProperties::GetType(input);
+  if (input_type->Is(Type::Boolean())) {
+    // ToBoolean(x:boolean) => x
+    return Replace(input);
+  } else if (input_type->Is(Type::OrderedNumber())) {
+    // SToBoolean(x:ordered-number) => BooleanNot(NumberEqual(x,#0))
+    node->ReplaceInput(0, graph()->NewNode(simplified()->NumberEqual(), input,
+                                           jsgraph()->ZeroConstant()));
+    node->TrimInputCount(1);
+    NodeProperties::ChangeOp(node, simplified()->BooleanNot());
+    return Changed(node);
+  } else if (input_type->Is(Type::Number())) {
+    // ToBoolean(x:number) => NumberToBoolean(x)
+    node->TrimInputCount(1);
+    NodeProperties::ChangeOp(node, simplified()->NumberToBoolean());
+    return Changed(node);
+  } else if (input_type->Is(Type::DetectableReceiverOrNull())) {
+    // ToBoolean(x:detectable receiver \/ null)
+    //   => BooleanNot(ReferenceEqual(x,#null))
+    node->ReplaceInput(0, graph()->NewNode(simplified()->ReferenceEqual(),
+                                           input, jsgraph()->NullConstant()));
+    node->TrimInputCount(1);
+    NodeProperties::ChangeOp(node, simplified()->BooleanNot());
+    return Changed(node);
+  } else if (input_type->Is(Type::ReceiverOrNullOrUndefined())) {
+    // ToBoolean(x:receiver \/ null \/ undefined)
+    //   => BooleanNot(ObjectIsUndetectable(x))
+    node->ReplaceInput(
+        0, graph()->NewNode(simplified()->ObjectIsUndetectable(), input));
+    node->TrimInputCount(1);
+    NodeProperties::ChangeOp(node, simplified()->BooleanNot());
+    return Changed(node);
+  } else if (input_type->Is(Type::String())) {
+    // ToBoolean(x:string) => BooleanNot(ReferenceEqual(x,""))
+    node->ReplaceInput(0,
+                       graph()->NewNode(simplified()->ReferenceEqual(), input,
+                                        jsgraph()->EmptyStringConstant()));
+    node->TrimInputCount(1);
+    NodeProperties::ChangeOp(node, simplified()->BooleanNot());
+    return Changed(node);
   }
   return NoChange();
 }

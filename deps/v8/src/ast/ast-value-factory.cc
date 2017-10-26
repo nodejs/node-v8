@@ -168,6 +168,17 @@ void AstConsString::Internalize(Isolate* isolate) {
   set_string(tmp);
 }
 
+AstValue::AstValue(double n) : next_(nullptr) {
+  int int_value;
+  if (DoubleToSmiInteger(n, &int_value)) {
+    type_ = SMI;
+    smi_ = int_value;
+  } else {
+    type_ = NUMBER;
+    number_ = n;
+  }
+}
+
 bool AstValue::IsPropertyName() const {
   if (type_ == STRING) {
     uint32_t index;
@@ -180,7 +191,7 @@ bool AstValue::IsPropertyName() const {
 bool AstValue::BooleanValue() const {
   switch (type_) {
     case STRING:
-      DCHECK(string_ != NULL);
+      DCHECK_NOT_NULL(string_);
       return !string_->IsEmpty();
     case SYMBOL:
       UNREACHABLE();
@@ -189,6 +200,17 @@ bool AstValue::BooleanValue() const {
       return DoubleToBoolean(number_);
     case SMI:
       return smi_ != 0;
+    case BIGINT: {
+      size_t length = strlen(bigint_buffer_);
+      DCHECK_GT(length, 0);
+      if (length == 1 && bigint_buffer_[0] == '0') return false;
+      // Skip over any radix prefix; BigInts with length > 1 only
+      // begin with zero if they include a radix.
+      for (size_t i = (bigint_buffer_[0] == '0') ? 2 : 0; i < length; ++i) {
+        if (bigint_buffer_[i] != '0') return true;
+      }
+      return false;
+    }
     case BOOLEAN:
       return bool_;
     case NULL_TYPE:
@@ -223,6 +245,11 @@ void AstValue::Internalize(Isolate* isolate) {
     case SMI:
       set_value(handle(Smi::FromInt(smi_), isolate));
       break;
+    case BIGINT:
+      // TODO(adamk): Don't check-fail on conversion failure; instead
+      // check for errors during parsing and throw at that point.
+      set_value(BigIntLiteral(isolate, bigint_buffer_).ToHandleChecked());
+      break;
     case BOOLEAN:
       if (bool_) {
         set_value(isolate->factory()->true_value());
@@ -240,6 +267,31 @@ void AstValue::Internalize(Isolate* isolate) {
       set_value(isolate->factory()->undefined_value());
       break;
   }
+}
+
+AstStringConstants::AstStringConstants(Isolate* isolate, uint32_t hash_seed)
+    : zone_(isolate->allocator(), ZONE_NAME),
+      string_table_(AstRawString::Compare),
+      hash_seed_(hash_seed) {
+  DCHECK(ThreadId::Current().Equals(isolate->thread_id()));
+#define F(name, str)                                                       \
+  {                                                                        \
+    const char* data = str;                                                \
+    Vector<const uint8_t> literal(reinterpret_cast<const uint8_t*>(data),  \
+                                  static_cast<int>(strlen(data)));         \
+    uint32_t hash_field = StringHasher::HashSequentialString<uint8_t>(     \
+        literal.start(), literal.length(), hash_seed_);                    \
+    name##_string_ = new (&zone_) AstRawString(true, literal, hash_field); \
+    /* The Handle returned by the factory is located on the roots */       \
+    /* array, not on the temporary HandleScope, so this is safe.  */       \
+    name##_string_->set_string(isolate->factory()->name##_string());       \
+    base::HashMap::Entry* entry =                                          \
+        string_table_.InsertNew(name##_string_, name##_string_->Hash());   \
+    DCHECK_NULL(entry->value);                                             \
+    entry->value = reinterpret_cast<void*>(1);                             \
+  }
+  AST_STRING_CONSTANTS(F)
+#undef F
 }
 
 AstRawString* AstValueFactory::GetOneByteStringInternal(
@@ -268,7 +320,7 @@ AstRawString* AstValueFactory::GetTwoByteStringInternal(
 
 
 const AstRawString* AstValueFactory::GetString(Handle<String> literal) {
-  AstRawString* result = NULL;
+  AstRawString* result = nullptr;
   DisallowHeapAllocation no_gc;
   String::FlatContent content = literal->GetFlatContent();
   if (content.IsOneByte()) {
@@ -344,6 +396,11 @@ const AstValue* AstValueFactory::NewSmi(uint32_t number) {
 
   AstValue* value = new (zone_) AstValue(AstValue::SMI, number);
   if (cacheable_smi) smis_[number] = value;
+  return AddValue(value);
+}
+
+const AstValue* AstValueFactory::NewBigInt(const char* number) {
+  AstValue* value = new (zone_) AstValue(number);
   return AddValue(value);
 }
 

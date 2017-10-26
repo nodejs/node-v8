@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "src/compilation-dependencies.h"
+#include "src/feedback-vector.h"
 #include "src/frames.h"
 #include "src/globals.h"
 #include "src/handles.h"
@@ -39,29 +40,28 @@ class V8_EXPORT_PRIVATE CompilationInfo final {
     kIsEval = 1 << 0,
     kIsNative = 1 << 1,
     kSerializing = 1 << 2,
-    kAccessorInliningEnabled = 1 << 3,
-    kFunctionContextSpecializing = 1 << 4,
-    kInliningEnabled = 1 << 5,
-    kDisableFutureOptimization = 1 << 6,
-    kSplittingEnabled = 1 << 7,
-    kSourcePositionsEnabled = 1 << 8,
-    kBailoutOnUninitialized = 1 << 9,
-    kLoopPeelingEnabled = 1 << 10,
+    kCollectTypeProfile = 1 << 3,
+    kAccessorInliningEnabled = 1 << 4,
+    kFunctionContextSpecializing = 1 << 5,
+    kInliningEnabled = 1 << 6,
+    kDisableFutureOptimization = 1 << 7,
+    kSplittingEnabled = 1 << 8,
+    kSourcePositionsEnabled = 1 << 9,
+    kBailoutOnUninitialized = 1 << 10,
+    kLoopPeelingEnabled = 1 << 11,
   };
 
   // Construct a compilation info for unoptimized compilation.
   CompilationInfo(Zone* zone, Isolate* isolate, ParseInfo* parse_info,
                   FunctionLiteral* literal);
   // Construct a compilation info for optimized compilation.
-  CompilationInfo(Zone* zone, Isolate* isolate, Handle<Script> script,
+  CompilationInfo(Zone* zone, Isolate* isolate,
                   Handle<SharedFunctionInfo> shared,
                   Handle<JSFunction> closure);
   // Construct a compilation info for stub compilation (or testing).
   CompilationInfo(Vector<const char> debug_name, Isolate* isolate, Zone* zone,
-                  Code::Flags code_flags);
+                  Code::Kind code_kind);
   ~CompilationInfo();
-
-  Handle<Script> script() const { return script_; }
 
   FunctionLiteral* literal() const { return literal_; }
   void set_literal(FunctionLiteral* literal) {
@@ -87,7 +87,7 @@ class V8_EXPORT_PRIVATE CompilationInfo final {
   bool has_shared_info() const { return !shared_info().is_null(); }
   Handle<JSFunction> closure() const { return closure_; }
   Handle<Code> code() const { return code_; }
-  Code::Flags code_flags() const { return code_flags_; }
+  Code::Kind code_kind() const { return code_kind_; }
   BailoutId osr_offset() const { return osr_offset_; }
   JavaScriptFrame* osr_frame() const { return osr_frame_; }
   int num_parameters() const;
@@ -115,6 +115,9 @@ class V8_EXPORT_PRIVATE CompilationInfo final {
 
   void MarkAsNative() { SetFlag(kIsNative); }
   bool is_native() const { return GetFlag(kIsNative); }
+
+  void MarkAsCollectTypeProfile() { SetFlag(kCollectTypeProfile); }
+  bool collect_type_profile() const { return GetFlag(kCollectTypeProfile); }
 
   // Flags used by optimized compilation.
 
@@ -161,6 +164,8 @@ class V8_EXPORT_PRIVATE CompilationInfo final {
     asm_wasm_data_ = asm_wasm_data;
   }
 
+  FeedbackVectorSpec* feedback_vector_spec() { return &feedback_vector_spec_; }
+
   bool has_context() const;
   Context* context() const;
 
@@ -173,18 +178,12 @@ class V8_EXPORT_PRIVATE CompilationInfo final {
   // Accessors for the different compilation modes.
   bool IsOptimizing() const { return mode_ == OPTIMIZE; }
   bool IsStub() const { return mode_ == STUB; }
-  bool IsWasm() const { return output_code_kind() == Code::WASM_FUNCTION; }
+  bool IsWasm() const { return code_kind() == Code::WASM_FUNCTION; }
   void SetOptimizingForOsr(BailoutId osr_offset, JavaScriptFrame* osr_frame) {
     DCHECK(IsOptimizing());
     osr_offset_ = osr_offset;
     osr_frame_ = osr_frame;
   }
-
-  // Deoptimization support.
-  bool ShouldEnsureSpaceForLazyDeopt() { return !IsStub(); }
-
-  // Determines whether or not to insert a self-optimization header.
-  bool ShouldSelfOptimize();
 
   void set_deferred_handles(std::shared_ptr<DeferredHandles> deferred_handles);
   void set_deferred_handles(DeferredHandles* deferred_handles);
@@ -195,28 +194,18 @@ class V8_EXPORT_PRIVATE CompilationInfo final {
   void ReopenHandlesInNewHandleScope();
 
   void AbortOptimization(BailoutReason reason) {
-    DCHECK(reason != kNoReason);
+    DCHECK_NE(reason, kNoReason);
     if (bailout_reason_ == kNoReason) bailout_reason_ = reason;
     SetFlag(kDisableFutureOptimization);
   }
 
   void RetryOptimization(BailoutReason reason) {
-    DCHECK(reason != kNoReason);
+    DCHECK_NE(reason, kNoReason);
     if (GetFlag(kDisableFutureOptimization)) return;
     bailout_reason_ = reason;
   }
 
   BailoutReason bailout_reason() const { return bailout_reason_; }
-
-  int prologue_offset() const {
-    DCHECK_NE(Code::kPrologueOffsetNotSet, prologue_offset_);
-    return prologue_offset_;
-  }
-
-  void set_prologue_offset(int prologue_offset) {
-    DCHECK_EQ(Code::kPrologueOffsetNotSet, prologue_offset_);
-    prologue_offset_ = prologue_offset;
-  }
 
   CompilationDependencies* dependencies() { return &dependencies_; }
 
@@ -247,7 +236,7 @@ class V8_EXPORT_PRIVATE CompilationInfo final {
         : shared_info(inlined_shared_info) {
       position.position = pos;
       // initialized when generating the deoptimization literals
-      position.inlined_function_id = DeoptimizationInputData::kNotInlinedIndex;
+      position.inlined_function_id = DeoptimizationData::kNotInlinedIndex;
     }
 
     void RegisterInlinedFunctionId(size_t inlined_function_id) {
@@ -263,8 +252,6 @@ class V8_EXPORT_PRIVATE CompilationInfo final {
                          SourcePosition pos);
 
   std::unique_ptr<char[]> GetDebugName() const;
-
-  Code::Kind output_code_kind() const;
 
   StackFrame::Type GetOutputStackFrameType() const;
 
@@ -284,9 +271,8 @@ class V8_EXPORT_PRIVATE CompilationInfo final {
   // OPTIMIZE is optimized code generated by the Hydrogen-based backend.
   enum Mode { BASE, OPTIMIZE, STUB };
 
-  CompilationInfo(Handle<Script> script, Vector<const char> debug_name,
-                  Code::Flags code_flags, Mode mode, Isolate* isolate,
-                  Zone* zone);
+  CompilationInfo(Vector<const char> debug_name, Code::Kind code_kind,
+                  Mode mode, Isolate* isolate, Zone* zone);
 
   void SetMode(Mode mode) { mode_ = mode; }
 
@@ -299,13 +285,12 @@ class V8_EXPORT_PRIVATE CompilationInfo final {
   bool GetFlag(Flag flag) const { return (flags_ & flag) != 0; }
 
   Isolate* isolate_;
-  Handle<Script> script_;
   FunctionLiteral* literal_;
   SourceRangeMap* source_range_map_;  // Used when block coverage is enabled.
 
   unsigned flags_;
 
-  Code::Flags code_flags_;
+  Code::Kind code_kind_;
 
   Handle<SharedFunctionInfo> shared_info_;
 
@@ -326,6 +311,9 @@ class V8_EXPORT_PRIVATE CompilationInfo final {
   // Holds the asm_wasm array generated by the asmjs compiler.
   Handle<FixedArray> asm_wasm_data_;
 
+  // Holds the feedback vector spec generated during compilation
+  FeedbackVectorSpec feedback_vector_spec_;
+
   // The zone from which the compilation pipeline working on this
   // CompilationInfo allocates.
   Zone* zone_;
@@ -336,8 +324,6 @@ class V8_EXPORT_PRIVATE CompilationInfo final {
   CompilationDependencies dependencies_;
 
   BailoutReason bailout_reason_;
-
-  int prologue_offset_;
 
   InlinedFunctionList inlined_functions_;
 

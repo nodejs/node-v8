@@ -63,7 +63,7 @@ class ContinuationSourceRanges : public AstNodeSourceRanges {
       : continuation_position_(continuation_position) {}
 
   SourceRange GetRange(SourceRangeKind kind) {
-    DCHECK(kind == SourceRangeKind::kContinuation);
+    DCHECK_EQ(kind, SourceRangeKind::kContinuation);
     return SourceRange::OpenEnded(continuation_position_);
   }
 
@@ -83,7 +83,7 @@ class CaseClauseSourceRanges final : public AstNodeSourceRanges {
       : body_range_(body_range) {}
 
   SourceRange GetRange(SourceRangeKind kind) {
-    DCHECK(kind == SourceRangeKind::kBody);
+    DCHECK_EQ(kind, SourceRangeKind::kBody);
     return body_range_;
   }
 
@@ -230,7 +230,7 @@ class SourceRangeMap final : public ZoneObject {
  public:
   explicit SourceRangeMap(Zone* zone) : map_(zone) {}
 
-  AstNodeSourceRanges* Find(AstNode* node) {
+  AstNodeSourceRanges* Find(ZoneObject* node) {
     auto it = map_.find(node);
     if (it == map_.end()) return nullptr;
     return it->second;
@@ -246,7 +246,7 @@ class SourceRangeMap final : public ZoneObject {
 #undef DEFINE_MAP_INSERT
 
  private:
-  ZoneMap<AstNode*, AstNodeSourceRanges*> map_;
+  ZoneMap<ZoneObject*, AstNodeSourceRanges*> map_;
 };
 
 }  // namespace internal

@@ -272,8 +272,8 @@ std::unique_ptr<InjectedScript> InjectedScript::create(
   // The function is expected
   // to create and configure InjectedScript instance that is going to be used by
   // the inspector.
-  String16 injectedScriptSource(
-      reinterpret_cast<const char*>(InjectedScriptSource_js),
+  StringView injectedScriptSource(
+      reinterpret_cast<const uint8_t*>(InjectedScriptSource_js),
       sizeof(InjectedScriptSource_js));
   v8::Local<v8::Value> value;
   if (!inspectedContext->inspector()
@@ -388,43 +388,6 @@ Response InjectedScript::wrapObject(
       protocol::Runtime::RemoteObject::fromValue(protocolValue.get(), &errors);
   if (!result->get()) return Response::Error(errors.errors());
   return Response::OK();
-}
-
-Response InjectedScript::wrapObjectProperty(v8::Local<v8::Object> object,
-                                            v8::Local<v8::Name> key,
-                                            const String16& groupName,
-                                            bool forceValueType,
-                                            bool generatePreview) const {
-  v8::Local<v8::Value> property;
-  v8::Local<v8::Context> context = m_context->context();
-  if (!object->Get(context, key).ToLocal(&property))
-    return Response::InternalError();
-  v8::Local<v8::Value> wrappedProperty;
-  Response response = wrapValue(property, groupName, forceValueType,
-                                generatePreview, &wrappedProperty);
-  if (!response.isSuccess()) return response;
-  v8::Maybe<bool> success =
-      createDataProperty(context, object, key, wrappedProperty);
-  if (success.IsNothing() || !success.FromJust())
-    return Response::InternalError();
-  return Response::OK();
-}
-
-Response InjectedScript::wrapPropertyInArray(v8::Local<v8::Array> array,
-                                             v8::Local<v8::String> property,
-                                             const String16& groupName,
-                                             bool forceValueType,
-                                             bool generatePreview) const {
-  V8FunctionCall function(m_context->inspector(), m_context->context(),
-                          v8Value(), "wrapPropertyInArray");
-  function.appendArgument(array);
-  function.appendArgument(property);
-  function.appendArgument(groupName);
-  function.appendArgument(forceValueType);
-  function.appendArgument(generatePreview);
-  bool hadException = false;
-  function.call(hadException);
-  return hadException ? Response::InternalError() : Response::OK();
 }
 
 Response InjectedScript::wrapValue(v8::Local<v8::Value> value,

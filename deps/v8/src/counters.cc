@@ -16,9 +16,9 @@ namespace v8 {
 namespace internal {
 
 StatsTable::StatsTable(Counters* counters)
-    : lookup_function_(NULL),
-      create_histogram_function_(NULL),
-      add_histogram_sample_function_(NULL) {}
+    : lookup_function_(nullptr),
+      create_histogram_function_(nullptr),
+      add_histogram_sample_function_(nullptr) {}
 
 void StatsTable::SetCounterFunction(CounterLookupCallback f) {
   lookup_function_ = f;
@@ -420,8 +420,7 @@ void RuntimeCallTimer::Snapshot() {
   Resume(now);
 }
 
-RuntimeCallStats::RuntimeCallStats()
-    : in_use_(false), thread_id_(ThreadId::Current()) {
+RuntimeCallStats::RuntimeCallStats() : in_use_(false) {
   static const char* const kNames[] = {
 #define CALL_BUILTIN_COUNTER(name) "GC_" #name,
       FOR_EACH_GC_COUNTER(CALL_BUILTIN_COUNTER)  //
@@ -477,20 +476,29 @@ const int RuntimeCallStats::counters_count =
 // static
 void RuntimeCallStats::Enter(RuntimeCallStats* stats, RuntimeCallTimer* timer,
                              CounterId counter_id) {
-  DCHECK(ThreadId::Current().Equals(stats->thread_id()));
+  CHECK(stats->IsCalledOnTheSameThread());
   RuntimeCallCounter* counter = &(stats->*counter_id);
-  DCHECK(counter->name() != nullptr);
-  timer->Start(counter, stats->current_timer_.Value());
+  DCHECK_NOT_NULL(counter->name());
+  timer->Start(counter, stats->current_timer());
   stats->current_timer_.SetValue(timer);
   stats->current_counter_.SetValue(counter);
 }
 
 // static
 void RuntimeCallStats::Leave(RuntimeCallStats* stats, RuntimeCallTimer* timer) {
-  DCHECK(ThreadId::Current().Equals(stats->thread_id()));
-  CHECK(stats->current_timer_.Value() == timer);
+  CHECK(stats->IsCalledOnTheSameThread());
+  RuntimeCallTimer* stack_top = stats->current_timer();
+  if (stack_top == nullptr) return;  // Missing timer is a result of Reset().
+  if (stack_top != timer) {
+    // The branch is added to catch a crash crbug.com/760649
+    EmbeddedVector<char, 200> text;
+    SNPrintF(text, "ERROR: Leaving counter '%s', stack top '%s'.\n",
+             timer->name(), stack_top->name());
+    USE(text);
+    CHECK(false);
+  }
   stats->current_timer_.SetValue(timer->Stop());
-  RuntimeCallTimer* cur_timer = stats->current_timer_.Value();
+  RuntimeCallTimer* cur_timer = stats->current_timer();
   stats->current_counter_.SetValue(cur_timer ? cur_timer->counter() : nullptr);
 }
 
@@ -512,6 +520,13 @@ void RuntimeCallStats::CorrectCurrentCounterId(RuntimeCallStats* stats,
   RuntimeCallCounter* counter = &(stats->*counter_id);
   timer->set_counter(counter);
   stats->current_counter_.SetValue(counter);
+}
+
+bool RuntimeCallStats::IsCalledOnTheSameThread() {
+  if (!thread_id_.Equals(ThreadId::Invalid()))
+    return thread_id_.Equals(ThreadId::Current());
+  thread_id_ = ThreadId::Current();
+  return true;
 }
 
 void RuntimeCallStats::Print(std::ostream& os) {

@@ -20,12 +20,12 @@ namespace {
 void DisposeCompilationJob(CompilationJob* job, bool restore_function_code) {
   if (restore_function_code) {
     Handle<JSFunction> function = job->compilation_info()->closure();
-    function->ReplaceCode(function->shared()->code());
+    function->set_code(function->shared()->code());
     if (function->IsInOptimizationQueue()) {
       function->ClearOptimizationMarker();
     }
-    // TODO(mvstanton): We can't call ensureliterals here due to allocation,
-    // but we probably shouldn't call ReplaceCode either, as this
+    // TODO(mvstanton): We can't call EnsureLiterals here due to allocation,
+    // but we probably shouldn't call set_code either, as this
     // sometimes runs on the worker thread!
     // JSFunction::EnsureLiterals(function);
   }
@@ -92,7 +92,7 @@ OptimizingCompileDispatcher::~OptimizingCompileDispatcher() {
 
 CompilationJob* OptimizingCompileDispatcher::NextInput(bool check_if_flushing) {
   base::LockGuard<base::Mutex> access_input_queue_(&input_queue_mutex_);
-  if (input_queue_length_ == 0) return NULL;
+  if (input_queue_length_ == 0) return nullptr;
   CompilationJob* job = input_queue_[InputQueueIndex(0)];
   DCHECK_NOT_NULL(job);
   input_queue_shift_ = InputQueueIndex(1);
@@ -101,7 +101,7 @@ CompilationJob* OptimizingCompileDispatcher::NextInput(bool check_if_flushing) {
     if (static_cast<ModeFlag>(base::Acquire_Load(&mode_)) == FLUSH) {
       AllowHandleDereference allow_handle_dereference;
       DisposeCompilationJob(job, true);
-      return NULL;
+      return nullptr;
     }
   }
   return job;
@@ -124,7 +124,7 @@ void OptimizingCompileDispatcher::CompileNext(CompilationJob* job) {
 
 void OptimizingCompileDispatcher::FlushOutputQueue(bool restore_function_code) {
   for (;;) {
-    CompilationJob* job = NULL;
+    CompilationJob* job = nullptr;
     {
       base::LockGuard<base::Mutex> access_output_queue_(&output_queue_mutex_);
       if (output_queue_.empty()) return;
@@ -189,7 +189,7 @@ void OptimizingCompileDispatcher::InstallOptimizedFunctions() {
   HandleScope handle_scope(isolate_);
 
   for (;;) {
-    CompilationJob* job = NULL;
+    CompilationJob* job = nullptr;
     {
       base::LockGuard<base::Mutex> access_output_queue_(&output_queue_mutex_);
       if (output_queue_.empty()) return;

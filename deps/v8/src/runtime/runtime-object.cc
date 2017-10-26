@@ -9,6 +9,7 @@
 #include "src/debug/debug.h"
 #include "src/isolate-inl.h"
 #include "src/messages.h"
+#include "src/objects/property-descriptor-object.h"
 #include "src/property-descriptor.h"
 #include "src/runtime/runtime.h"
 
@@ -293,7 +294,7 @@ RUNTIME_FUNCTION(Runtime_ObjectHasOwnProperty) {
 
     Maybe<bool> result =
         JSReceiver::HasOwnProperty(Handle<JSProxy>::cast(object), key);
-    if (!result.IsJust()) return isolate->heap()->exception();
+    if (result.IsNothing()) return isolate->heap()->exception();
     return isolate->heap()->ToBoolean(result.FromJust());
 
   } else if (object->IsString()) {
@@ -408,9 +409,8 @@ RUNTIME_FUNCTION(Runtime_InternalSetPrototype) {
       CHECK_EQ(*function_map, function->map());
     }
   }
-  MAYBE_RETURN(
-      JSReceiver::SetPrototype(obj, prototype, false, Object::THROW_ON_ERROR),
-      isolate->heap()->exception());
+  MAYBE_RETURN(JSReceiver::SetPrototype(obj, prototype, false, kThrowOnError),
+               isolate->heap()->exception());
   return *obj;
 }
 
@@ -466,8 +466,8 @@ RUNTIME_FUNCTION(Runtime_AddNamedProperty) {
   DCHECK(!name->ToArrayIndex(&index));
   LookupIterator it(object, name, object, LookupIterator::OWN_SKIP_INTERCEPTOR);
   Maybe<PropertyAttributes> maybe = JSReceiver::GetPropertyAttributes(&it);
-  if (!maybe.IsJust()) return isolate->heap()->exception();
-  CHECK(!it.IsFound());
+  if (maybe.IsNothing()) return isolate->heap()->exception();
+  DCHECK(!it.IsFound());
 #endif
 
   RETURN_RESULT_OR_FAILURE(isolate, JSObject::SetOwnPropertyIgnoreAttributes(
@@ -492,12 +492,12 @@ RUNTIME_FUNCTION(Runtime_AddElement) {
   LookupIterator it(isolate, object, index, object,
                     LookupIterator::OWN_SKIP_INTERCEPTOR);
   Maybe<PropertyAttributes> maybe = JSReceiver::GetPropertyAttributes(&it);
-  if (!maybe.IsJust()) return isolate->heap()->exception();
-  CHECK(!it.IsFound());
+  if (maybe.IsNothing()) return isolate->heap()->exception();
+  DCHECK(!it.IsFound());
 
   if (object->IsJSArray()) {
     Handle<JSArray> array = Handle<JSArray>::cast(object);
-    CHECK(!JSArray::WouldChangeReadOnlyLength(array, index));
+    DCHECK(!JSArray::WouldChangeReadOnlyLength(array, index));
   }
 #endif
 
@@ -597,7 +597,7 @@ RUNTIME_FUNCTION(Runtime_HasProperty) {
 
   // Lookup the {name} on {receiver}.
   Maybe<bool> maybe = JSReceiver::HasProperty(receiver, name);
-  if (!maybe.IsJust()) return isolate->heap()->exception();
+  if (maybe.IsNothing()) return isolate->heap()->exception();
   return isolate->heap()->ToBoolean(maybe.FromJust());
 }
 
@@ -681,7 +681,7 @@ RUNTIME_FUNCTION(Runtime_LoadMutableDouble) {
   DCHECK_EQ(2, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSObject, object, 0);
   CONVERT_ARG_HANDLE_CHECKED(Smi, index, 1);
-  CHECK((index->value() & 1) == 1);
+  CHECK_EQ(index->value() & 1, 1);
   FieldIndex field_index =
       FieldIndex::ForLoadByFieldIndex(object->map(), index->value());
   if (field_index.is_inobject()) {
@@ -798,9 +798,9 @@ RUNTIME_FUNCTION(Runtime_DefineDataPropertyInLiteral) {
       isolate, object, name, object, LookupIterator::OWN);
   // Cannot fail since this should only be called when
   // creating an object literal.
-  CHECK(JSObject::DefineOwnPropertyIgnoreAttributes(&it, value, attrs,
-                                                    Object::DONT_THROW)
-            .IsJust());
+  CHECK(
+      JSObject::DefineOwnPropertyIgnoreAttributes(&it, value, attrs, kDontThrow)
+          .IsJust());
   return *object;
 }
 
@@ -811,12 +811,14 @@ RUNTIME_FUNCTION(Runtime_CollectTypeProfile) {
   CONVERT_ARG_HANDLE_CHECKED(Object, value, 1);
   CONVERT_ARG_HANDLE_CHECKED(FeedbackVector, vector, 2);
 
-  DCHECK(FLAG_type_profile);
-
   Handle<String> type = Object::TypeOf(isolate, value);
   if (value->IsJSReceiver()) {
     Handle<JSReceiver> object = Handle<JSReceiver>::cast(value);
     type = JSReceiver::GetConstructorName(object);
+  } else if (value->IsNull(isolate)) {
+    // typeof(null) is object. But it's more user-friendly to annotate
+    // null as type "null".
+    type = Handle<String>(isolate->heap()->null_string());
   }
 
   DCHECK(vector->metadata()->HasTypeProfileSlot());
@@ -1006,7 +1008,7 @@ RUNTIME_FUNCTION(Runtime_DefineMethodsInternal) {
     }
 
     Maybe<bool> success = JSReceiver::DefineOwnProperty(
-        isolate, target, key, &descriptor, Object::DONT_THROW);
+        isolate, target, key, &descriptor, kDontThrow);
     CHECK(success.FromJust());
   }
   return isolate->heap()->undefined_value();
@@ -1035,14 +1037,11 @@ RUNTIME_FUNCTION(Runtime_DefineSetterPropertyUnchecked) {
   return isolate->heap()->undefined_value();
 }
 
-
 RUNTIME_FUNCTION(Runtime_ToObject) {
-  HandleScope scope(isolate);
-  DCHECK_EQ(1, args.length());
-  CONVERT_ARG_HANDLE_CHECKED(Object, object, 0);
-  RETURN_RESULT_OR_FAILURE(isolate, Object::ToObject(isolate, object));
+  // Runtime call is implemented in InterpreterIntrinsics and lowered in
+  // JSIntrinsicLowering.
+  UNREACHABLE();
 }
-
 
 RUNTIME_FUNCTION(Runtime_ToPrimitive) {
   HandleScope scope(isolate);
@@ -1067,6 +1066,12 @@ RUNTIME_FUNCTION(Runtime_ToNumber) {
   RETURN_RESULT_OR_FAILURE(isolate, Object::ToNumber(input));
 }
 
+RUNTIME_FUNCTION(Runtime_ToNumeric) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(1, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(Object, input, 0);
+  RETURN_RESULT_OR_FAILURE(isolate, Object::ToNumeric(input));
+}
 
 RUNTIME_FUNCTION(Runtime_ToInteger) {
   HandleScope scope(isolate);
@@ -1117,32 +1122,6 @@ RUNTIME_FUNCTION(Runtime_SameValueZero) {
   return isolate->heap()->ToBoolean(x->SameValueZero(y));
 }
 
-
-// TODO(bmeurer): Kill this special wrapper and use TF compatible LessThan,
-// GreaterThan, etc. which return true or false.
-RUNTIME_FUNCTION(Runtime_Compare) {
-  HandleScope scope(isolate);
-  DCHECK_EQ(3, args.length());
-  CONVERT_ARG_HANDLE_CHECKED(Object, x, 0);
-  CONVERT_ARG_HANDLE_CHECKED(Object, y, 1);
-  CONVERT_ARG_HANDLE_CHECKED(Object, ncr, 2);
-  Maybe<ComparisonResult> result = Object::Compare(x, y);
-  if (result.IsJust()) {
-    switch (result.FromJust()) {
-      case ComparisonResult::kLessThan:
-        return Smi::FromInt(LESS);
-      case ComparisonResult::kEqual:
-        return Smi::FromInt(EQUAL);
-      case ComparisonResult::kGreaterThan:
-        return Smi::FromInt(GREATER);
-      case ComparisonResult::kUndefined:
-        return *ncr;
-    }
-    UNREACHABLE();
-  }
-  return isolate->heap()->exception();
-}
-
 RUNTIME_FUNCTION(Runtime_HasInPrototypeChain) {
   HandleScope scope(isolate);
   DCHECK_EQ(2, args.length());
@@ -1175,9 +1154,8 @@ RUNTIME_FUNCTION(Runtime_CreateDataProperty) {
   LookupIterator it = LookupIterator::PropertyOrElement(
       isolate, o, key, &success, LookupIterator::OWN);
   if (!success) return isolate->heap()->exception();
-  MAYBE_RETURN(
-      JSReceiver::CreateDataProperty(&it, value, Object::THROW_ON_ERROR),
-      isolate->heap()->exception());
+  MAYBE_RETURN(JSReceiver::CreateDataProperty(&it, value, kThrowOnError),
+               isolate->heap()->exception());
   return *value;
 }
 
@@ -1196,6 +1174,22 @@ RUNTIME_FUNCTION(Runtime_IterableToListCanBeElided) {
   if (!IsFastNumberElementsKind(kind)) return isolate->heap()->ToBoolean(false);
 
   return isolate->heap()->ToBoolean(!obj->IterationHasObservableEffects());
+}
+
+RUNTIME_FUNCTION(Runtime_GetOwnPropertyDescriptor) {
+  HandleScope scope(isolate);
+
+  DCHECK_EQ(2, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(JSReceiver, object, 0);
+  CONVERT_ARG_HANDLE_CHECKED(Name, name, 1);
+
+  PropertyDescriptor desc;
+  Maybe<bool> found =
+      JSReceiver::GetOwnPropertyDescriptor(isolate, object, name, &desc);
+  MAYBE_RETURN(found, isolate->heap()->exception());
+
+  if (!found.FromJust()) return isolate->heap()->undefined_value();
+  return *desc.ToPropertyDescriptorObject(isolate);
 }
 
 }  // namespace internal

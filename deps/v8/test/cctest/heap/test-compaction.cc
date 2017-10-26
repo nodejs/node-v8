@@ -5,13 +5,7 @@
 #include "src/factory.h"
 #include "src/heap/mark-compact.h"
 #include "src/isolate.h"
-// FIXME(mstarzinger, marja): This is weird, but required because of the missing
-// (disallowed) include: src/factory.h -> src/objects-inl.h
 #include "src/objects-inl.h"
-// FIXME(mstarzinger, marja): This is weird, but required because of the missing
-// (disallowed) include: src/feedback-vector.h ->
-// src/feedback-vector-inl.h
-#include "src/feedback-vector-inl.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/heap/heap-tester.h"
 #include "test/cctest/heap/heap-utils.h"
@@ -353,7 +347,7 @@ HEAP_TEST(CompactionPartiallyAbortedPageWithStoreBufferEntries) {
       Address broken_address = holder->address() + 2 * kPointerSize + 1;
       // Convert it to a vector to create a string from it.
       Vector<const uint8_t> string_to_broken_addresss(
-          reinterpret_cast<const uint8_t*>(&broken_address), 8);
+          reinterpret_cast<const uint8_t*>(&broken_address), kPointerSize);
 
       Handle<String> string;
       do {

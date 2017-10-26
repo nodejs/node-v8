@@ -52,7 +52,7 @@ BUILTIN(ObjectPrototypePropertyIsEnumerable) {
       isolate, object, JSReceiver::ToObject(isolate, args.receiver()));
   Maybe<PropertyAttributes> maybe =
       JSReceiver::GetOwnPropertyAttributes(object, name);
-  if (!maybe.IsJust()) return isolate->heap()->exception();
+  if (maybe.IsNothing()) return isolate->heap()->exception();
   if (maybe.FromJust() == ABSENT) return isolate->heap()->false_value();
   return isolate->heap()->ToBoolean((maybe.FromJust() & DONT_ENUM) == 0);
 }
@@ -118,8 +118,8 @@ Object* ObjectDefineAccessor(Isolate* isolate, Handle<Object> object,
   // throwing an exception.
   Maybe<bool> success = JSReceiver::DefineOwnProperty(
       isolate, receiver, name, &desc,
-      FLAG_harmony_strict_legacy_accessor_builtins ? Object::THROW_ON_ERROR
-                                                   : Object::DONT_THROW);
+      FLAG_harmony_strict_legacy_accessor_builtins ? kThrowOnError
+                                                   : kDontThrow);
   MAYBE_RETURN(success, isolate->heap()->exception());
   if (!success.FromJust()) {
     isolate->CountUsage(v8::Isolate::kDefineGetterOrSetterWouldThrow);
@@ -242,7 +242,7 @@ BUILTIN(ObjectFreeze) {
   Handle<Object> object = args.atOrUndefined(isolate, 1);
   if (object->IsJSReceiver()) {
     MAYBE_RETURN(JSReceiver::SetIntegrityLevel(Handle<JSReceiver>::cast(object),
-                                               FROZEN, Object::THROW_ON_ERROR),
+                                               FROZEN, kThrowOnError),
                  isolate->heap()->exception());
   }
   return *object;
@@ -287,9 +287,8 @@ BUILTIN(ObjectSetPrototypeOf) {
 
   // 4. Let status be ? O.[[SetPrototypeOf]](proto).
   // 5. If status is false, throw a TypeError exception.
-  MAYBE_RETURN(
-      JSReceiver::SetPrototype(receiver, proto, true, Object::THROW_ON_ERROR),
-      isolate->heap()->exception());
+  MAYBE_RETURN(JSReceiver::SetPrototype(receiver, proto, true, kThrowOnError),
+               isolate->heap()->exception());
 
   // 6. Return O.
   return *receiver;
@@ -332,35 +331,11 @@ BUILTIN(ObjectPrototypeSetProto) {
 
   // 4. Let status be ? O.[[SetPrototypeOf]](proto).
   // 5. If status is false, throw a TypeError exception.
-  MAYBE_RETURN(
-      JSReceiver::SetPrototype(receiver, proto, true, Object::THROW_ON_ERROR),
-      isolate->heap()->exception());
+  MAYBE_RETURN(JSReceiver::SetPrototype(receiver, proto, true, kThrowOnError),
+               isolate->heap()->exception());
 
   // Return undefined.
   return isolate->heap()->undefined_value();
-}
-
-// ES6 section 19.1.2.6 Object.getOwnPropertyDescriptor ( O, P )
-BUILTIN(ObjectGetOwnPropertyDescriptor) {
-  HandleScope scope(isolate);
-  // 1. Let obj be ? ToObject(O).
-  Handle<Object> object = args.atOrUndefined(isolate, 1);
-  Handle<JSReceiver> receiver;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, receiver,
-                                     Object::ToObject(isolate, object));
-  // 2. Let key be ? ToPropertyKey(P).
-  Handle<Object> property = args.atOrUndefined(isolate, 2);
-  Handle<Name> key;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, key,
-                                     Object::ToName(isolate, property));
-  // 3. Let desc be ? obj.[[GetOwnProperty]](key).
-  PropertyDescriptor desc;
-  Maybe<bool> found =
-      JSReceiver::GetOwnPropertyDescriptor(isolate, receiver, key, &desc);
-  MAYBE_RETURN(found, isolate->heap()->exception());
-  // 4. Return FromPropertyDescriptor(desc).
-  if (!found.FromJust()) return isolate->heap()->undefined_value();
-  return *desc.ToObject(isolate);
 }
 
 namespace {
@@ -390,15 +365,6 @@ BUILTIN(ObjectGetOwnPropertyNames) {
 // ES6 section 19.1.2.8 Object.getOwnPropertySymbols ( O )
 BUILTIN(ObjectGetOwnPropertySymbols) {
   return GetOwnPropertyKeys(isolate, args, SKIP_STRINGS);
-}
-
-// ES#sec-object.is Object.is ( value1, value2 )
-BUILTIN(ObjectIs) {
-  SealHandleScope shs(isolate);
-  DCHECK_EQ(3, args.length());
-  Handle<Object> value1 = args.at(1);
-  Handle<Object> value2 = args.at(2);
-  return isolate->heap()->ToBoolean(value1->SameValue(*value2));
 }
 
 // ES6 section 19.1.2.11 Object.isExtensible ( O )
@@ -491,8 +457,8 @@ BUILTIN(ObjectGetOwnPropertyDescriptors) {
 
     LookupIterator it = LookupIterator::PropertyOrElement(
         isolate, descriptors, key, descriptors, LookupIterator::OWN);
-    Maybe<bool> success = JSReceiver::CreateDataProperty(&it, from_descriptor,
-                                                         Object::DONT_THROW);
+    Maybe<bool> success =
+        JSReceiver::CreateDataProperty(&it, from_descriptor, kDontThrow);
     CHECK(success.FromJust());
   }
 
@@ -505,7 +471,7 @@ BUILTIN(ObjectPreventExtensions) {
   Handle<Object> object = args.atOrUndefined(isolate, 1);
   if (object->IsJSReceiver()) {
     MAYBE_RETURN(JSReceiver::PreventExtensions(Handle<JSReceiver>::cast(object),
-                                               Object::THROW_ON_ERROR),
+                                               kThrowOnError),
                  isolate->heap()->exception());
   }
   return *object;
@@ -517,7 +483,7 @@ BUILTIN(ObjectSeal) {
   Handle<Object> object = args.atOrUndefined(isolate, 1);
   if (object->IsJSReceiver()) {
     MAYBE_RETURN(JSReceiver::SetIntegrityLevel(Handle<JSReceiver>::cast(object),
-                                               SEALED, Object::THROW_ON_ERROR),
+                                               SEALED, kThrowOnError),
                  isolate->heap()->exception());
   }
   return *object;

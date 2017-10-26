@@ -13,7 +13,6 @@
 #include "src/base/macros.h"
 #include "src/builtins/builtins.h"
 #include "src/interpreter/bytecodes.h"
-#include "src/parsing/token.h"
 #include "src/runtime/runtime.h"
 
 namespace v8 {
@@ -36,9 +35,6 @@ class Interpreter {
  public:
   explicit Interpreter(Isolate* isolate);
   virtual ~Interpreter() {}
-
-  // Returns the interrupt budget which should be used for the profiler counter.
-  static int InterruptBudget();
 
   // Creates a compilation job which will generate bytecode for |literal|.
   static CompilationJob* NewCompilationJob(ParseInfo* parse_info,
@@ -64,8 +60,8 @@ class Interpreter {
     return reinterpret_cast<Address>(bytecode_dispatch_counters_table_.get());
   }
 
-  // TODO(ignition): Tune code size multiplier.
-  static const int kCodeSizeMultiplier = 24;
+  // The interrupt budget which should be used for the profiler counter.
+  static const int kInterruptBudget = 144 * KB;
 
  private:
   friend class SetupInterpreter;

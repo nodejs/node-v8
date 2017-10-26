@@ -16,7 +16,8 @@ namespace internal {
 static size_t CountTotalHolesSize(Heap* heap) {
   size_t holes_size = 0;
   OldSpaces spaces(heap);
-  for (OldSpace* space = spaces.next(); space != NULL; space = spaces.next()) {
+  for (OldSpace* space = spaces.next(); space != nullptr;
+       space = spaces.next()) {
     DCHECK_GE(holes_size + space->Waste() + space->Available(), holes_size);
     holes_size += space->Waste() + space->Available();
   }
@@ -234,7 +235,7 @@ void GCTracer::Stop(GarbageCollector collector) {
     return;
   }
 
-  DCHECK(start_counter_ >= 0);
+  DCHECK_LE(0, start_counter_);
   DCHECK((collector == SCAVENGER && current_.type == Event::SCAVENGER) ||
          (collector == MINOR_MARK_COMPACTOR &&
           current_.type == Event::MINOR_MARK_COMPACTOR) ||
@@ -462,8 +463,8 @@ void GCTracer::PrintNVP() const {
           "scavenge=%.2f "
           "scavenge.roots=%.2f "
           "scavenge.weak=%.2f "
-          "scavenge.weak_global_handles.identify=%.2f"
-          "scavenge.weak_global_handles.process=%.2f"
+          "scavenge.weak_global_handles.identify=%.2f "
+          "scavenge.weak_global_handles.process=%.2f "
           "scavenge.parallel=%.2f "
           "incremental.steps_count=%d "
           "incremental.steps_took=%.1f "
@@ -490,6 +491,8 @@ void GCTracer::PrintNVP() const {
           "promotion_rate=%.1f%% "
           "semi_space_copy_rate=%.1f%% "
           "new_space_allocation_throughput=%.1f "
+          "unmapper_chunks=%d "
+          "unmapper_delayed_chunks=%d "
           "context_disposal_rate=%.1f\n",
           duration, spent_in_mutator, current_.TypeName(true),
           current_.reduce_memory, current_.scopes[Scope::HEAP_PROLOGUE],
@@ -520,6 +523,8 @@ void GCTracer::PrintNVP() const {
           AverageSurvivalRatio(), heap_->promotion_rate_,
           heap_->semi_space_copied_rate_,
           NewSpaceAllocationThroughputInBytesPerMillisecond(),
+          heap_->memory_allocator()->unmapper()->NumberOfChunks(),
+          heap_->memory_allocator()->unmapper()->NumberOfDelayedChunks(),
           ContextDisposalRateInMilliseconds());
       break;
     case Event::MINOR_MARK_COMPACTOR:
@@ -604,6 +609,7 @@ void GCTracer::PrintNVP() const {
           "mark=%.1f "
           "mark.finish_incremental=%.1f "
           "mark.roots=%.1f "
+          "mark.main=%.1f "
           "mark.weak_closure=%.1f "
           "mark.weak_closure.ephemeral=%.1f "
           "mark.weak_closure.weak_handles=%.1f "
@@ -654,6 +660,8 @@ void GCTracer::PrintNVP() const {
           "promotion_rate=%.1f%% "
           "semi_space_copy_rate=%.1f%% "
           "new_space_allocation_throughput=%.1f "
+          "unmapper_chunks=%d "
+          "unmapper_delayed_chunks=%d "
           "context_disposal_rate=%.1f "
           "compaction_speed=%.f\n",
           duration, spent_in_mutator, current_.TypeName(true),
@@ -688,6 +696,7 @@ void GCTracer::PrintNVP() const {
           current_.scopes[Scope::MC_FINISH], current_.scopes[Scope::MC_MARK],
           current_.scopes[Scope::MC_MARK_FINISH_INCREMENTAL],
           current_.scopes[Scope::MC_MARK_ROOTS],
+          current_.scopes[Scope::MC_MARK_MAIN],
           current_.scopes[Scope::MC_MARK_WEAK_CLOSURE],
           current_.scopes[Scope::MC_MARK_WEAK_CLOSURE_EPHEMERAL],
           current_.scopes[Scope::MC_MARK_WEAK_CLOSURE_WEAK_HANDLES],
@@ -731,6 +740,8 @@ void GCTracer::PrintNVP() const {
           AverageSurvivalRatio(), heap_->promotion_rate_,
           heap_->semi_space_copied_rate_,
           NewSpaceAllocationThroughputInBytesPerMillisecond(),
+          heap_->memory_allocator()->unmapper()->NumberOfChunks(),
+          heap_->memory_allocator()->unmapper()->NumberOfDelayedChunks(),
           ContextDisposalRateInMilliseconds(),
           CompactionSpeedInBytesPerMillisecond());
       break;

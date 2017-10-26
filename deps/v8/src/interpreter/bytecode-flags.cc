@@ -43,7 +43,7 @@ uint8_t CreateClosureFlags::Encode(bool pretenure, bool is_function_scope) {
 // static
 TestTypeOfFlags::LiteralFlag TestTypeOfFlags::GetFlagForLiteral(
     const AstStringConstants* ast_constants, Literal* literal) {
-  const AstRawString* raw_literal = literal->raw_value()->AsString();
+  const AstRawString* raw_literal = literal->AsRawString();
   if (raw_literal == ast_constants->number_string()) {
     return LiteralFlag::kNumber;
   } else if (raw_literal == ast_constants->string_string()) {
@@ -78,7 +78,7 @@ TestTypeOfFlags::LiteralFlag TestTypeOfFlags::Decode(uint8_t raw_flag) {
 uint8_t StoreLookupSlotFlags::Encode(LanguageMode language_mode,
                                      LookupHoistingMode lookup_hoisting_mode) {
   DCHECK_IMPLIES(lookup_hoisting_mode == LookupHoistingMode::kLegacySloppy,
-                 language_mode == SLOPPY);
+                 language_mode == LanguageMode::kSloppy);
   return LanguageModeBit::encode(language_mode) |
          LookupHoistingModeBit::encode(static_cast<bool>(lookup_hoisting_mode));
 }

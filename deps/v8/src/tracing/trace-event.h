@@ -423,7 +423,7 @@ static V8_INLINE uint64_t AddTraceEventImpl(
     arg_convertables[1].reset(reinterpret_cast<ConvertableToTraceFormat*>(
         static_cast<intptr_t>(arg_values[1])));
   }
-  DCHECK(num_args <= 2);
+  DCHECK_LE(num_args, 2);
   v8::TracingController* controller =
       v8::internal::tracing::TraceEventHelper::GetTracingController();
   return controller->AddTraceEvent(phase, category_group_enabled, name, scope,
@@ -537,7 +537,7 @@ static V8_INLINE uint64_t AddTraceEvent(
 class ScopedTracer {
  public:
   // Note: members of data_ intentionally left uninitialized. See Initialize.
-  ScopedTracer() : p_data_(NULL) {}
+  ScopedTracer() : p_data_(nullptr) {}
 
   ~ScopedTracer() {
     if (p_data_ && *data_.category_group_enabled)

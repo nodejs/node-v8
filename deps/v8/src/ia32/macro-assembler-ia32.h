@@ -8,25 +8,26 @@
 #include "src/assembler.h"
 #include "src/bailout-reason.h"
 #include "src/globals.h"
+#include "src/ia32/assembler-ia32.h"
 
 namespace v8 {
 namespace internal {
 
 // Give alias names to registers for calling conventions.
-const Register kReturnRegister0 = {Register::kCode_eax};
-const Register kReturnRegister1 = {Register::kCode_edx};
-const Register kReturnRegister2 = {Register::kCode_edi};
-const Register kJSFunctionRegister = {Register::kCode_edi};
-const Register kContextRegister = {Register::kCode_esi};
-const Register kAllocateSizeRegister = {Register::kCode_edx};
-const Register kInterpreterAccumulatorRegister = {Register::kCode_eax};
-const Register kInterpreterBytecodeOffsetRegister = {Register::kCode_ecx};
-const Register kInterpreterBytecodeArrayRegister = {Register::kCode_edi};
-const Register kInterpreterDispatchTableRegister = {Register::kCode_esi};
-const Register kJavaScriptCallArgCountRegister = {Register::kCode_eax};
-const Register kJavaScriptCallNewTargetRegister = {Register::kCode_edx};
-const Register kRuntimeCallFunctionRegister = {Register::kCode_ebx};
-const Register kRuntimeCallArgCountRegister = {Register::kCode_eax};
+constexpr Register kReturnRegister0 = eax;
+constexpr Register kReturnRegister1 = edx;
+constexpr Register kReturnRegister2 = edi;
+constexpr Register kJSFunctionRegister = edi;
+constexpr Register kContextRegister = esi;
+constexpr Register kAllocateSizeRegister = edx;
+constexpr Register kInterpreterAccumulatorRegister = eax;
+constexpr Register kInterpreterBytecodeOffsetRegister = ecx;
+constexpr Register kInterpreterBytecodeArrayRegister = edi;
+constexpr Register kInterpreterDispatchTableRegister = esi;
+constexpr Register kJavaScriptCallArgCountRegister = eax;
+constexpr Register kJavaScriptCallNewTargetRegister = edx;
+constexpr Register kRuntimeCallFunctionRegister = ebx;
+constexpr Register kRuntimeCallArgCountRegister = eax;
 
 // Convenience for platform-independent signatures.  We do not normally
 // distinguish memory operands from other operands on ia32.
@@ -34,14 +35,8 @@ typedef Operand MemOperand;
 
 enum RememberedSetAction { EMIT_REMEMBERED_SET, OMIT_REMEMBERED_SET };
 enum SmiCheck { INLINE_SMI_CHECK, OMIT_SMI_CHECK };
-enum PointersToHereCheck {
-  kPointersToHereMaybeInteresting,
-  kPointersToHereAreAlwaysInteresting
-};
 
 enum RegisterValueType { REGISTER_VALUE_IS_SMI, REGISTER_VALUE_IS_INT32 };
-
-enum class ReturnAddressState { kOnStack, kNotOnStack };
 
 #ifdef DEBUG
 bool AreAliased(Register reg1, Register reg2, Register reg3 = no_reg,
@@ -53,13 +48,7 @@ bool AreAliased(Register reg1, Register reg2, Register reg3 = no_reg,
 class TurboAssembler : public Assembler {
  public:
   TurboAssembler(Isolate* isolate, void* buffer, int buffer_size,
-                 CodeObjectRequired create_code_object)
-      : Assembler(isolate, buffer, buffer_size), isolate_(isolate) {
-    if (create_code_object == CodeObjectRequired::kYes) {
-      code_object_ =
-          Handle<HeapObject>::New(isolate->heap()->undefined_value(), isolate);
-    }
-  }
+                 CodeObjectRequired create_code_object);
 
   void set_has_frame(bool value) { has_frame_ = value; }
   bool has_frame() const { return has_frame_; }
@@ -149,18 +138,17 @@ class TurboAssembler : public Assembler {
 
   void SmiUntag(Register reg) { sar(reg, kSmiTagSize); }
 
-  // Removes current frame and its arguments from the stack preserving
-  // the arguments and a return address pushed to the stack for the next call.
-  // |ra_state| defines whether return address is already pushed to stack or
-  // not. Both |callee_args_count| and |caller_args_count_reg| do not include
-  // receiver. |callee_args_count| is not modified, |caller_args_count_reg|
-  // is trashed. |number_of_temp_values_after_return_address| specifies
-  // the number of words pushed to the stack after the return address. This is
-  // to allow "allocation" of scratch registers that this function requires
-  // by saving their values on the stack.
+  // Removes current frame and its arguments from the stack preserving the
+  // arguments and a return address pushed to the stack for the next call. Both
+  // |callee_args_count| and |caller_args_count_reg| do not include receiver.
+  // |callee_args_count| is not modified, |caller_args_count_reg| is trashed.
+  // |number_of_temp_values_after_return_address| specifies the number of words
+  // pushed to the stack after the return address. This is to allow "allocation"
+  // of scratch registers that this function requires by saving their values on
+  // the stack.
   void PrepareForTailCall(const ParameterCount& callee_args_count,
                           Register caller_args_count_reg, Register scratch0,
-                          Register scratch1, ReturnAddressState ra_state,
+                          Register scratch1,
                           int number_of_temp_values_after_return_address);
 
   // Before calling a C-function from generated code, align arguments on stack.
@@ -285,10 +273,7 @@ class TurboAssembler : public Assembler {
 
   void Cvtui2ss(XMMRegister dst, Register src, Register tmp);
 
-  void SlowTruncateToIDelayed(Zone* zone, Register result_reg,
-                              Register input_reg,
-                              int offset = HeapNumber::kValueOffset -
-                                           kHeapObjectTag);
+  void SlowTruncateToIDelayed(Zone* zone, Register result_reg);
 
   void Push(Register src) { push(src); }
   void Push(const Operand& src) { push(src); }
@@ -296,15 +281,35 @@ class TurboAssembler : public Assembler {
   void Push(Handle<HeapObject> handle) { push(Immediate(handle)); }
   void Push(Smi* smi) { Push(Immediate(smi)); }
 
-  // These functions do not arrange the registers in any particular order so
-  // they are not useful for calls that can cause a GC.  The caller can
-  // exclude up to 3 registers that do not need to be saved and restored.
-  void PushCallerSaved(SaveFPRegsMode fp_mode, Register exclusion1 = no_reg,
-                       Register exclusion2 = no_reg,
-                       Register exclusion3 = no_reg);
-  void PopCallerSaved(SaveFPRegsMode fp_mode, Register exclusion1 = no_reg,
+  void SaveRegisters(RegList registers);
+  void RestoreRegisters(RegList registers);
+
+  void CallRecordWriteStub(Register object, Register address,
+                           RememberedSetAction remembered_set_action,
+                           SaveFPRegsMode fp_mode);
+
+  // Calculate how much stack space (in bytes) are required to store caller
+  // registers excluding those specified in the arguments.
+  int RequiredStackSizeForCallerSaved(SaveFPRegsMode fp_mode,
+                                      Register exclusion1 = no_reg,
+                                      Register exclusion2 = no_reg,
+                                      Register exclusion3 = no_reg) const;
+
+  // PushCallerSaved and PopCallerSaved do not arrange the registers in any
+  // particular order so they are not useful for calls that can cause a GC.
+  // The caller can exclude up to 3 registers that do not need to be saved and
+  // restored.
+
+  // Push caller saved registers on the stack, and return the number of bytes
+  // stack pointer is adjusted.
+  int PushCallerSaved(SaveFPRegsMode fp_mode, Register exclusion1 = no_reg,
                       Register exclusion2 = no_reg,
                       Register exclusion3 = no_reg);
+  // Restore caller saved registers from the stack, and return the number of
+  // bytes stack pointer is adjusted.
+  int PopCallerSaved(SaveFPRegsMode fp_mode, Register exclusion1 = no_reg,
+                     Register exclusion2 = no_reg,
+                     Register exclusion3 = no_reg);
 
  private:
   bool has_frame_ = false;
@@ -367,19 +372,12 @@ class MacroAssembler : public TurboAssembler {
 
   // ---------------------------------------------------------------------------
   // GC Support
-  enum RememberedSetFinalAction { kReturnAtEnd, kFallThroughAtEnd };
-
   // Record in the remembered set the fact that we have a pointer to new space
   // at the address pointed to by the addr register.  Only works if addr is not
   // in new space.
   void RememberedSetHelper(Register object,  // Used for debug code.
                            Register addr, Register scratch,
-                           SaveFPRegsMode save_fp,
-                           RememberedSetFinalAction and_then);
-
-  void CheckPageFlagForMap(
-      Handle<Map> map, int mask, Condition cc, Label* condition_met,
-      Label::Distance condition_met_distance = Label::kFar);
+                           SaveFPRegsMode save_fp);
 
   // Check if object is in new space.  Jumps if the object is not in new space.
   // The register scratch can be object itself, but scratch will be clobbered.
@@ -418,23 +416,7 @@ class MacroAssembler : public TurboAssembler {
       Register object, int offset, Register value, Register scratch,
       SaveFPRegsMode save_fp,
       RememberedSetAction remembered_set_action = EMIT_REMEMBERED_SET,
-      SmiCheck smi_check = INLINE_SMI_CHECK,
-      PointersToHereCheck pointers_to_here_check_for_value =
-          kPointersToHereMaybeInteresting);
-
-  // As above, but the offset has the tag presubtracted.  For use with
-  // Operand(reg, off).
-  void RecordWriteContextSlot(
-      Register context, int offset, Register value, Register scratch,
-      SaveFPRegsMode save_fp,
-      RememberedSetAction remembered_set_action = EMIT_REMEMBERED_SET,
-      SmiCheck smi_check = INLINE_SMI_CHECK,
-      PointersToHereCheck pointers_to_here_check_for_value =
-          kPointersToHereMaybeInteresting) {
-    RecordWriteField(context, offset + kHeapObjectTag, value, scratch, save_fp,
-                     remembered_set_action, smi_check,
-                     pointers_to_here_check_for_value);
-  }
+      SmiCheck smi_check = INLINE_SMI_CHECK);
 
   // Notify the garbage collector that we wrote a pointer into a fixed array.
   // |array| is the array being stored into, |value| is the
@@ -445,9 +427,7 @@ class MacroAssembler : public TurboAssembler {
   void RecordWriteArray(
       Register array, Register value, Register index, SaveFPRegsMode save_fp,
       RememberedSetAction remembered_set_action = EMIT_REMEMBERED_SET,
-      SmiCheck smi_check = INLINE_SMI_CHECK,
-      PointersToHereCheck pointers_to_here_check_for_value =
-          kPointersToHereMaybeInteresting);
+      SmiCheck smi_check = INLINE_SMI_CHECK);
 
   // For page containing |object| mark region covering |address|
   // dirty. |object| is the object being stored into, |value| is the
@@ -457,15 +437,7 @@ class MacroAssembler : public TurboAssembler {
   void RecordWrite(
       Register object, Register address, Register value, SaveFPRegsMode save_fp,
       RememberedSetAction remembered_set_action = EMIT_REMEMBERED_SET,
-      SmiCheck smi_check = INLINE_SMI_CHECK,
-      PointersToHereCheck pointers_to_here_check_for_value =
-          kPointersToHereMaybeInteresting);
-
-  // For page containing |object| mark the region covering the object's map
-  // dirty. |object| is the object being stored into, |map| is the Map object
-  // that was stored.
-  void RecordWriteForMap(Register object, Handle<Map> map, Register scratch1,
-                         Register scratch2, SaveFPRegsMode save_fp);
+      SmiCheck smi_check = INLINE_SMI_CHECK);
 
   // Frame restart support
   void MaybeDropFrames();
@@ -493,22 +465,9 @@ class MacroAssembler : public TurboAssembler {
   // Load the global function with the given index.
   void LoadGlobalFunction(int index, Register function);
 
-  // Load the initial map from the global function. The registers
-  // function and map can be the same.
-  void LoadGlobalFunctionInitialMap(Register function, Register map);
-
   // Push and pop the registers that can hold pointers.
   void PushSafepointRegisters() { pushad(); }
   void PopSafepointRegisters() { popad(); }
-
-  void CmpObject(Register reg, Handle<Object> object) {
-    AllowDeferredHandleDereference heap_object_check;
-    if (object->IsHeapObject()) {
-      cmp(reg, Handle<HeapObject>::cast(object));
-    } else {
-      cmp(reg, Immediate(Smi::cast(*object)));
-    }
-  }
 
   void GetWeakValue(Register value, Handle<WeakCell> cell);
 
@@ -549,16 +508,6 @@ class MacroAssembler : public TurboAssembler {
 
   // Compare instance type for map.
   void CmpInstanceType(Register map, InstanceType type);
-
-  // Compare an object's map with the specified map.
-  void CompareMap(Register obj, Handle<Map> map);
-
-  // Check if the map of an object is equal to a specified map and branch to
-  // label if not. Skip the smi check if not required (object is known to be a
-  // heap object). If mode is ALLOW_ELEMENT_TRANSITION_MAPS, then also match
-  // against maps that are ElementsKind transition maps of the specified map.
-  void CheckMap(Register obj, Handle<Map> map, Label* fail,
-                SmiCheckType smi_check_type);
 
   void DoubleToI(Register result_reg, XMMRegister input_reg,
                  XMMRegister scratch, MinusZeroMode minus_zero_mode,
@@ -641,27 +590,6 @@ class MacroAssembler : public TurboAssembler {
   void PopStackHandler();
 
   // ---------------------------------------------------------------------------
-  // Allocation support
-
-  // Allocate an object in new space or old space. If the given space
-  // is exhausted control continues at the gc_required label. The allocated
-  // object is returned in result and end of the new object is returned in
-  // result_end. The register scratch can be passed as no_reg in which case
-  // an additional object reference will be added to the reloc info. The
-  // returned pointers in result and result_end have not yet been tagged as
-  // heap objects. If result_contains_top_on_entry is true the content of
-  // result is known to be the allocation top on entry (could be result_end
-  // from a previous call). If result_contains_top_on_entry is true scratch
-  // should be no_reg as it is never used.
-  void Allocate(int object_size, Register result, Register result_end,
-                Register scratch, Label* gc_required, AllocationFlags flags);
-
-  // Allocate and initialize a JSValue wrapper with the specified {constructor}
-  // and {value}.
-  void AllocateJSValue(Register result, Register constructor, Register value,
-                       Register scratch, Label* gc_required);
-
-  // ---------------------------------------------------------------------------
   // Support functions.
 
   // Machine code version of Map::GetConstructor().
@@ -735,29 +663,8 @@ class MacroAssembler : public TurboAssembler {
   // ---------------------------------------------------------------------------
   // StatsCounter support
 
-  void SetCounter(StatsCounter* counter, int value);
   void IncrementCounter(StatsCounter* counter, int value);
   void DecrementCounter(StatsCounter* counter, int value);
-  void IncrementCounter(Condition cc, StatsCounter* counter, int value);
-  void DecrementCounter(Condition cc, StatsCounter* counter, int value);
-
-  // ---------------------------------------------------------------------------
-  // String utilities.
-
-  // Checks if both objects are sequential one-byte strings, and jumps to label
-  // if either is not.
-  void JumpIfNotBothSequentialOneByteStrings(
-      Register object1, Register object2, Register scratch1, Register scratch2,
-      Label* on_not_flat_one_byte_strings);
-
-  // Checks if the given register or operand is a unique name
-  void JumpIfNotUniqueNameInstanceType(Register reg, Label* not_unique_name,
-                                       Label::Distance distance = Label::kFar) {
-    JumpIfNotUniqueNameInstanceType(Operand(reg), not_unique_name, distance);
-  }
-
-  void JumpIfNotUniqueNameInstanceType(Operand operand, Label* not_unique_name,
-                                       Label::Distance distance = Label::kFar);
 
   static int SafepointRegisterStackIndex(Register reg) {
     return SafepointRegisterStackIndex(reg.code());
@@ -778,13 +685,6 @@ class MacroAssembler : public TurboAssembler {
 
   void LeaveExitFrameEpilogue(bool restore_context);
 
-  // Allocation support helpers.
-  void LoadAllocationTopHelper(Register result, Register scratch,
-                               AllocationFlags flags);
-
-  void UpdateAllocationTopHelper(Register result_end, Register scratch,
-                                 AllocationFlags flags);
-
   // Helper for implementing JumpIfNotInNewSpace and JumpIfInNewSpace.
   void InNewSpace(Register object, Register scratch, Condition cc,
                   Label* condition_met,
@@ -803,25 +703,6 @@ class MacroAssembler : public TurboAssembler {
   // Needs access to SafepointRegisterStackIndex for compiled frame
   // traversal.
   friend class StandardFrame;
-};
-
-// The code patcher is used to patch (typically) small parts of code e.g. for
-// debugging and other types of instrumentation. When using the code patcher
-// the exact number of bytes specified must be emitted. Is not legal to emit
-// relocation information. If any of these constraints are violated it causes
-// an assertion.
-class CodePatcher {
- public:
-  CodePatcher(Isolate* isolate, byte* address, int size);
-  ~CodePatcher();
-
-  // Macro assembler to emit code.
-  MacroAssembler* masm() { return &masm_; }
-
- private:
-  byte* address_;        // The address of the code being patched.
-  int size_;             // Number of bytes of the expected patch size.
-  MacroAssembler masm_;  // Macro assembler used to generate the code.
 };
 
 // -----------------------------------------------------------------------------

@@ -92,7 +92,7 @@ class BaseDictionaryShape : public BaseShape<Key> {
   template <typename Dictionary>
   static inline PropertyDetails DetailsAt(Dictionary* dict, int entry) {
     STATIC_ASSERT(Dictionary::kEntrySize == 3);
-    DCHECK(entry >= 0);  // Not found is -1, which is not caught by get().
+    DCHECK_GE(entry, 0);  // Not found is -1, which is not caught by get().
     return PropertyDetails(Smi::cast(dict->get(
         Dictionary::EntryToIndex(entry) + Dictionary::kEntryDetailsIndex)));
   }
@@ -138,14 +138,16 @@ class BaseNameDictionary : public Dictionary<Derived, Shape> {
     return Smi::ToInt(this->get(kNextEnumerationIndexIndex));
   }
 
-  void SetHash(int masked_hash) {
-    DCHECK_EQ(masked_hash & JSReceiver::kHashMask, masked_hash);
-    this->set(kObjectHashIndex, Smi::FromInt(masked_hash));
+  void SetHash(int hash) {
+    DCHECK(PropertyArray::HashField::is_valid(hash));
+    this->set(kObjectHashIndex, Smi::FromInt(hash));
   }
 
   int Hash() const {
     Object* hash_obj = this->get(kObjectHashIndex);
-    return Smi::ToInt(hash_obj);
+    int hash = Smi::ToInt(hash_obj);
+    DCHECK(PropertyArray::HashField::is_valid(hash));
+    return hash;
   }
 
   // Creates a new dictionary.
@@ -217,7 +219,7 @@ class GlobalDictionary
   inline void SetEntry(int entry, Object* key, Object* value,
                        PropertyDetails details);
   inline Name* NameAt(int entry);
-  void ValueAtPut(int entry, Object* value) { set(EntryToIndex(entry), value); }
+  inline void ValueAtPut(int entry, Object* value);
 };
 
 class NumberDictionaryShape : public BaseDictionaryShape<uint32_t> {

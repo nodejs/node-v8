@@ -18,44 +18,45 @@ template <typename Callback>
 void LocalArrayBufferTracker::Process(Callback callback) {
   JSArrayBuffer* new_buffer = nullptr;
   JSArrayBuffer* old_buffer = nullptr;
-  size_t freed_memory = 0;
-  size_t retained_size = 0;
+  size_t new_retained_size = 0;
+  size_t moved_size = 0;
   for (TrackingData::iterator it = array_buffers_.begin();
        it != array_buffers_.end();) {
     old_buffer = reinterpret_cast<JSArrayBuffer*>(*it);
-    const size_t length = old_buffer->allocation_length();
     const CallbackResult result = callback(old_buffer, &new_buffer);
     if (result == kKeepEntry) {
-      retained_size += length;
+      new_retained_size += NumberToSize(old_buffer->byte_length());
       ++it;
     } else if (result == kUpdateEntry) {
       DCHECK_NOT_NULL(new_buffer);
       Page* target_page = Page::FromAddress(new_buffer->address());
       {
-        base::LockGuard<base::RecursiveMutex> guard(target_page->mutex());
+        base::LockGuard<base::Mutex> guard(target_page->mutex());
         LocalArrayBufferTracker* tracker = target_page->local_tracker();
         if (tracker == nullptr) {
           target_page->AllocateLocalTracker();
           tracker = target_page->local_tracker();
         }
         DCHECK_NOT_NULL(tracker);
-        DCHECK_EQ(length, new_buffer->allocation_length());
-        tracker->Add(new_buffer, length);
+        const size_t size = NumberToSize(new_buffer->byte_length());
+        moved_size += size;
+        tracker->Add(new_buffer, size);
       }
       it = array_buffers_.erase(it);
     } else if (result == kRemoveEntry) {
-      freed_memory += length;
+      // Size of freed memory is computed to avoid looking at dead objects.
       old_buffer->FreeBackingStore();
       it = array_buffers_.erase(it);
     } else {
       UNREACHABLE();
     }
   }
-  retained_size_ = retained_size;
+  const size_t freed_memory = retained_size_ - new_retained_size - moved_size;
   if (freed_memory > 0) {
     heap_->update_external_memory_concurrently_freed(
         static_cast<intptr_t>(freed_memory));
   }
+  retained_size_ = new_retained_size;
 }
 
 void ArrayBufferTracker::FreeDeadInNewSpace(Heap* heap) {
@@ -110,7 +111,7 @@ bool ArrayBufferTracker::ProcessBuffers(Page* page, ProcessingMode mode) {
 bool ArrayBufferTracker::IsTracked(JSArrayBuffer* buffer) {
   Page* page = Page::FromAddress(buffer->address());
   {
-    base::LockGuard<base::RecursiveMutex> guard(page->mutex());
+    base::LockGuard<base::Mutex> guard(page->mutex());
     LocalArrayBufferTracker* tracker = page->local_tracker();
     if (tracker == nullptr) return false;
     return tracker->IsTracked(buffer);

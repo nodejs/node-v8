@@ -159,24 +159,25 @@ static MaybeHandle<Object> DefineClass(Isolate* isolate,
 
   if (!constructor_parent.is_null()) {
     MAYBE_RETURN_NULL(JSObject::SetPrototype(constructor, constructor_parent,
-                                             false, Object::THROW_ON_ERROR));
+                                             false, kThrowOnError));
   }
 
   JSObject::AddProperty(prototype, isolate->factory()->constructor_string(),
                         constructor, DONT_ENUM);
 
   // Install private properties that are used to construct the FunctionToString.
-  RETURN_ON_EXCEPTION(
-      isolate,
-      Object::SetProperty(
-          constructor, isolate->factory()->class_start_position_symbol(),
-          handle(Smi::FromInt(start_position), isolate), STRICT),
-      Object);
-  RETURN_ON_EXCEPTION(
-      isolate, Object::SetProperty(
-                   constructor, isolate->factory()->class_end_position_symbol(),
-                   handle(Smi::FromInt(end_position), isolate), STRICT),
-      Object);
+  {
+    Handle<Smi> start(Smi::FromInt(start_position), isolate);
+    Handle<Smi> end(Smi::FromInt(end_position), isolate);
+    Handle<Tuple2> class_positions =
+        isolate->factory()->NewTuple2(start, end, NOT_TENURED);
+    RETURN_ON_EXCEPTION(
+        isolate,
+        Object::SetProperty(constructor,
+                            isolate->factory()->class_positions_symbol(),
+                            class_positions, LanguageMode::kStrict),
+        Object);
+  }
 
   // Caller already has access to constructor, so return the prototype.
   return prototype;
@@ -376,8 +377,9 @@ RUNTIME_FUNCTION(Runtime_StoreToSuper_Strict) {
   CONVERT_ARG_HANDLE_CHECKED(Name, name, 2);
   CONVERT_ARG_HANDLE_CHECKED(Object, value, 3);
 
-  RETURN_RESULT_OR_FAILURE(isolate, StoreToSuper(isolate, home_object, receiver,
-                                                 name, value, STRICT));
+  RETURN_RESULT_OR_FAILURE(
+      isolate, StoreToSuper(isolate, home_object, receiver, name, value,
+                            LanguageMode::kStrict));
 }
 
 
@@ -389,8 +391,9 @@ RUNTIME_FUNCTION(Runtime_StoreToSuper_Sloppy) {
   CONVERT_ARG_HANDLE_CHECKED(Name, name, 2);
   CONVERT_ARG_HANDLE_CHECKED(Object, value, 3);
 
-  RETURN_RESULT_OR_FAILURE(isolate, StoreToSuper(isolate, home_object, receiver,
-                                                 name, value, SLOPPY));
+  RETURN_RESULT_OR_FAILURE(
+      isolate, StoreToSuper(isolate, home_object, receiver, name, value,
+                            LanguageMode::kSloppy));
 }
 
 static MaybeHandle<Object> StoreKeyedToSuper(
@@ -424,8 +427,8 @@ RUNTIME_FUNCTION(Runtime_StoreKeyedToSuper_Strict) {
   CONVERT_ARG_HANDLE_CHECKED(Object, value, 3);
 
   RETURN_RESULT_OR_FAILURE(
-      isolate,
-      StoreKeyedToSuper(isolate, home_object, receiver, key, value, STRICT));
+      isolate, StoreKeyedToSuper(isolate, home_object, receiver, key, value,
+                                 LanguageMode::kStrict));
 }
 
 
@@ -438,8 +441,8 @@ RUNTIME_FUNCTION(Runtime_StoreKeyedToSuper_Sloppy) {
   CONVERT_ARG_HANDLE_CHECKED(Object, value, 3);
 
   RETURN_RESULT_OR_FAILURE(
-      isolate,
-      StoreKeyedToSuper(isolate, home_object, receiver, key, value, SLOPPY));
+      isolate, StoreKeyedToSuper(isolate, home_object, receiver, key, value,
+                                 LanguageMode::kSloppy));
 }
 
 

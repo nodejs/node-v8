@@ -63,13 +63,8 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   // place them into the current basic block. They don't perform control flow,
   // hence will not switch the current basic block.
 
-  Node* NullConstant() {
-    return HeapConstant(isolate()->factory()->null_value());
-  }
-
-  Node* UndefinedConstant() {
-    return HeapConstant(isolate()->factory()->undefined_value());
-  }
+  Node* NullConstant();
+  Node* UndefinedConstant();
 
   // Constants.
   Node* PointerConstant(void* value) {
@@ -766,9 +761,9 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
                        Node* function, Node* arg0);
   // Call to a C function with one argument, while saving/restoring caller
   // registers.
-  Node* CallCFunction1WithCallerSavedRegisters(MachineType return_type,
-                                               MachineType arg0_type,
-                                               Node* function, Node* arg0);
+  Node* CallCFunction1WithCallerSavedRegisters(
+      MachineType return_type, MachineType arg0_type, Node* function,
+      Node* arg0, SaveFPRegsMode mode = kSaveFPRegs);
   // Call to a C function with two arguments.
   Node* CallCFunction2(MachineType return_type, MachineType arg0_type,
                        MachineType arg1_type, Node* function, Node* arg0,
@@ -779,12 +774,10 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
                        Node* function, Node* arg0, Node* arg1, Node* arg2);
   // Call to a C function with three arguments, while saving/restoring caller
   // registers.
-  Node* CallCFunction3WithCallerSavedRegisters(MachineType return_type,
-                                               MachineType arg0_type,
-                                               MachineType arg1_type,
-                                               MachineType arg2_type,
-                                               Node* function, Node* arg0,
-                                               Node* arg1, Node* arg2);
+  Node* CallCFunction3WithCallerSavedRegisters(
+      MachineType return_type, MachineType arg0_type, MachineType arg1_type,
+      MachineType arg2_type, Node* function, Node* arg0, Node* arg1, Node* arg2,
+      SaveFPRegsMode mode = kSaveFPRegs);
   // Call to a C function with six arguments.
   Node* CallCFunction6(MachineType return_type, MachineType arg0_type,
                        MachineType arg1_type, MachineType arg2_type,

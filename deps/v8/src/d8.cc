@@ -41,6 +41,10 @@
 #include "src/utils.h"
 #include "src/v8.h"
 
+#if defined(LEAK_SANITIZER)
+#include <sanitizer/lsan_interface.h>
+#endif
+
 #if !defined(_WIN32) && !defined(_WIN64)
 #include <unistd.h>  // NOLINT
 #else
@@ -120,7 +124,7 @@ class ShellArrayBufferAllocator : public ArrayBufferAllocatorBase {
     }
 #endif
     void* data = AllocateUninitialized(length);
-    return data == NULL ? data : memset(data, 0, length);
+    return data == nullptr ? data : memset(data, 0, length);
   }
   void* AllocateUninitialized(size_t length) override {
 #if USE_VM
@@ -138,7 +142,7 @@ class ShellArrayBufferAllocator : public ArrayBufferAllocatorBase {
   void Free(void* data, size_t length) override {
 #if USE_VM
     if (RoundToPageSize(&length)) {
-      base::VirtualMemory::ReleaseRegion(data, length);
+      base::OS::ReleaseRegion(data, length);
       return;
     }
 #endif
@@ -156,11 +160,14 @@ class ShellArrayBufferAllocator : public ArrayBufferAllocatorBase {
   }
 #if USE_VM
   void* VirtualMemoryAllocate(size_t length) {
-    void* data = base::VirtualMemory::ReserveRegion(length, nullptr);
-    if (data && !base::VirtualMemory::CommitRegion(data, length, false)) {
-      base::VirtualMemory::ReleaseRegion(data, length);
+    void* data = base::OS::ReserveRegion(length, nullptr);
+    if (data && !base::OS::CommitRegion(data, length, false)) {
+      base::OS::ReleaseRegion(data, length);
       return nullptr;
     }
+#if defined(LEAK_SANITIZER)
+    __lsan_register_root_region(data, length);
+#endif
     MSAN_MEMORY_IS_INITIALIZED(data, length);
     return data;
   }
@@ -177,7 +184,7 @@ class MockArrayBufferAllocator : public ArrayBufferAllocatorBase {
   void* Allocate(size_t length) override {
     const size_t actual_length = get_actual_length(length);
     void* data = AllocateUninitialized(actual_length);
-    return data == NULL ? data : memset(data, 0, actual_length);
+    return data == nullptr ? data : memset(data, 0, actual_length);
   }
   void* AllocateUninitialized(size_t length) override {
     return malloc(get_actual_length(length));
@@ -228,6 +235,10 @@ class PredictablePlatform : public Platform {
     return synthetic_time_in_sec_ += 0.00001;
   }
 
+  double CurrentClockTimeMillis() override {
+    return MonotonicallyIncreasingTime() * base::Time::kMillisecondsPerSecond;
+  }
+
   v8::TracingController* GetTracingController() override {
     return platform_->GetTracingController();
   }
@@ -241,8 +252,7 @@ class PredictablePlatform : public Platform {
   DISALLOW_COPY_AND_ASSIGN(PredictablePlatform);
 };
 
-
-v8::Platform* g_platform = NULL;
+v8::Platform* g_platform = nullptr;
 
 v8::Platform* GetDefaultPlatform() {
   return i::FLAG_verify_predictable
@@ -259,14 +269,14 @@ static Local<Value> Throw(Isolate* isolate, const char* message) {
 Worker* GetWorkerFromInternalField(Isolate* isolate, Local<Object> object) {
   if (object->InternalFieldCount() != 1) {
     Throw(isolate, "this is not a Worker");
-    return NULL;
+    return nullptr;
   }
 
   Worker* worker =
       static_cast<Worker*>(object->GetAlignedPointerFromInternalField(0));
-  if (worker == NULL) {
+  if (worker == nullptr) {
     Throw(isolate, "Worker is defunct because main thread is terminating");
-    return NULL;
+    return nullptr;
   }
 
   return worker;
@@ -390,13 +400,13 @@ static platform::tracing::TraceConfig* CreateTraceConfigFromJSON(
 
 class PerIsolateData {
  public:
-  explicit PerIsolateData(Isolate* isolate) : isolate_(isolate), realms_(NULL) {
-    HandleScope scope(isolate);
+  explicit PerIsolateData(Isolate* isolate)
+      : isolate_(isolate), realms_(nullptr) {
     isolate->SetData(0, this);
   }
 
   ~PerIsolateData() {
-    isolate_->SetData(0, NULL);  // Not really needed, just to be sure...
+    isolate_->SetData(0, nullptr);  // Not really needed, just to be sure...
   }
 
   inline static PerIsolateData* Get(Isolate* isolate) {
@@ -411,6 +421,25 @@ class PerIsolateData {
     PerIsolateData* data_;
   };
 
+  inline void SetTimeout(Local<Function> callback, Local<Context> context) {
+    set_timeout_callbacks_.emplace(isolate_, callback);
+    set_timeout_contexts_.emplace(isolate_, context);
+  }
+
+  inline MaybeLocal<Function> GetTimeoutCallback() {
+    if (set_timeout_callbacks_.empty()) return MaybeLocal<Function>();
+    Local<Function> result = set_timeout_callbacks_.front().Get(isolate_);
+    set_timeout_callbacks_.pop();
+    return result;
+  }
+
+  inline MaybeLocal<Context> GetTimeoutContext() {
+    if (set_timeout_contexts_.empty()) return MaybeLocal<Context>();
+    Local<Context> result = set_timeout_contexts_.front().Get(isolate_);
+    set_timeout_contexts_.pop();
+    return result;
+  }
+
  private:
   friend class Shell;
   friend class RealmScope;
@@ -420,6 +449,8 @@ class PerIsolateData {
   int realm_switch_;
   Global<Context>* realms_;
   Global<Value> realm_shared_;
+  std::queue<Global<Function>> set_timeout_callbacks_;
+  std::queue<Global<Context>> set_timeout_contexts_;
 
   int RealmIndexOrThrow(const v8::FunctionCallbackInfo<v8::Value>& args,
                         int arg_offset);
@@ -442,7 +473,7 @@ class ExternalOwningOneByteStringResource
 };
 
 CounterMap* Shell::counter_map_;
-base::OS::MemoryMappedFile* Shell::counters_file_ = NULL;
+base::OS::MemoryMappedFile* Shell::counters_file_ = nullptr;
 CounterCollection Shell::local_counters_;
 CounterCollection* Shell::counters_ = &local_counters_;
 base::LazyMutex Shell::context_mutex_;
@@ -475,7 +506,7 @@ ScriptCompiler::CachedData* CompileForCachedData(
   uint16_t* source_buffer = new uint16_t[source_length];
   source->Write(source_buffer, 0, source_length);
   int name_length = 0;
-  uint16_t* name_buffer = NULL;
+  uint16_t* name_buffer = nullptr;
   if (name->IsString()) {
     Local<String> name_string = Local<String>::Cast(name);
     name_length = name_string->Length();
@@ -487,7 +518,9 @@ ScriptCompiler::CachedData* CompileForCachedData(
   Isolate* temp_isolate = Isolate::New(create_params);
   temp_isolate->SetHostImportModuleDynamicallyCallback(
       Shell::HostImportModuleDynamically);
-  ScriptCompiler::CachedData* result = NULL;
+  temp_isolate->SetHostInitializeImportMetaObjectCallback(
+      Shell::HostInitializeImportMetaObject);
+  ScriptCompiler::CachedData* result = nullptr;
   {
     Isolate::Scope isolate_scope(temp_isolate);
     HandleScope handle_scope(temp_isolate);
@@ -545,10 +578,10 @@ MaybeLocal<Script> Shell::CompileString(
   } else {
     DCHECK(false);  // A new compile option?
   }
-  if (data == NULL) compile_options = ScriptCompiler::kNoCompileOptions;
+  if (data == nullptr) compile_options = ScriptCompiler::kNoCompileOptions;
   MaybeLocal<Script> result =
       ScriptCompiler::Compile(context, &cached_source, compile_options);
-  CHECK(data == NULL || !data->rejected);
+  CHECK(data == nullptr || !data->rejected);
   return result;
 }
 
@@ -628,7 +661,7 @@ std::string GetWorkingDirectory() {
   char system_buffer[MAX_PATH];
   // TODO(adamk): Support Unicode paths.
   DWORD len = GetCurrentDirectoryA(MAX_PATH, system_buffer);
-  CHECK(len > 0);
+  CHECK_GT(len, 0);
   return system_buffer;
 #else
   char curdir[PATH_MAX];
@@ -681,13 +714,13 @@ class ModuleEmbedderData {
 
  public:
   explicit ModuleEmbedderData(Isolate* isolate)
-      : module_to_directory_map(10, ModuleGlobalHash(isolate)) {}
+      : module_to_specifier_map(10, ModuleGlobalHash(isolate)) {}
 
   // Map from normalized module specifier to Module.
   std::unordered_map<std::string, Global<Module>> specifier_to_module_map;
-  // Map from Module to the directory that Module was loaded from.
+  // Map from Module to its URL as defined in the ScriptOrigin
   std::unordered_map<Global<Module>, std::string, ModuleGlobalHash>
-      module_to_directory_map;
+      module_to_specifier_map;
 };
 
 enum {
@@ -715,11 +748,11 @@ MaybeLocal<Module> ResolveModuleCallback(Local<Context> context,
                                          Local<Module> referrer) {
   Isolate* isolate = context->GetIsolate();
   ModuleEmbedderData* d = GetModuleDataFromContext(context);
-  auto dir_name_it =
-      d->module_to_directory_map.find(Global<Module>(isolate, referrer));
-  CHECK(dir_name_it != d->module_to_directory_map.end());
-  std::string absolute_path =
-      NormalizePath(ToSTLString(isolate, specifier), dir_name_it->second);
+  auto specifier_it =
+      d->module_to_specifier_map.find(Global<Module>(isolate, referrer));
+  CHECK(specifier_it != d->module_to_specifier_map.end());
+  std::string absolute_path = NormalizePath(ToSTLString(isolate, specifier),
+                                            DirName(specifier_it->second));
   auto module_it = d->specifier_to_module_map.find(absolute_path);
   CHECK(module_it != d->specifier_to_module_map.end());
   return module_it->second.Get(isolate);
@@ -752,11 +785,11 @@ MaybeLocal<Module> Shell::FetchModuleTree(Local<Context> context,
   CHECK(d->specifier_to_module_map
             .insert(std::make_pair(file_name, Global<Module>(isolate, module)))
             .second);
+  CHECK(d->module_to_specifier_map
+            .insert(std::make_pair(Global<Module>(isolate, module), file_name))
+            .second);
 
   std::string dir_name = DirName(file_name);
-  CHECK(d->module_to_directory_map
-            .insert(std::make_pair(Global<Module>(isolate, module), dir_name))
-            .second);
 
   for (int i = 0, length = module->GetModuleRequestsLength(); i < length; ++i) {
     Local<String> name = module->GetModuleRequest(i);
@@ -793,20 +826,42 @@ struct DynamicImportData {
 }  // namespace
 
 MaybeLocal<Promise> Shell::HostImportModuleDynamically(
-    Local<Context> context, Local<String> referrer, Local<String> specifier) {
+    Local<Context> context, Local<ScriptOrModule> referrer,
+    Local<String> specifier) {
   Isolate* isolate = context->GetIsolate();
 
   MaybeLocal<Promise::Resolver> maybe_resolver =
       Promise::Resolver::New(context);
   Local<Promise::Resolver> resolver;
   if (maybe_resolver.ToLocal(&resolver)) {
-    DynamicImportData* data =
-        new DynamicImportData(isolate, referrer, specifier, resolver);
+    DynamicImportData* data = new DynamicImportData(
+        isolate, Local<String>::Cast(referrer->GetResourceName()), specifier,
+        resolver);
     isolate->EnqueueMicrotask(Shell::DoHostImportModuleDynamically, data);
     return resolver->GetPromise();
   }
 
   return MaybeLocal<Promise>();
+}
+
+void Shell::HostInitializeImportMetaObject(Local<Context> context,
+                                           Local<Module> module,
+                                           Local<Object> meta) {
+  Isolate* isolate = context->GetIsolate();
+  HandleScope handle_scope(isolate);
+
+  ModuleEmbedderData* d = GetModuleDataFromContext(context);
+  auto specifier_it =
+      d->module_to_specifier_map.find(Global<Module>(isolate, module));
+  CHECK(specifier_it != d->module_to_specifier_map.end());
+
+  Local<String> url_key =
+      String::NewFromUtf8(isolate, "url", NewStringType::kNormal)
+          .ToLocalChecked();
+  Local<String> url = String::NewFromUtf8(isolate, specifier_it->second.c_str(),
+                                          NewStringType::kNormal)
+                          .ToLocalChecked();
+  meta->CreateDataProperty(context, url_key, url).ToChecked();
 }
 
 void Shell::DoHostImportModuleDynamically(void* import_data) {
@@ -1026,7 +1081,7 @@ MaybeLocal<Context> Shell::CreateRealm(
   }
   Local<ObjectTemplate> global_template = CreateGlobalTemplate(isolate);
   Local<Context> context =
-      Context::New(isolate, NULL, global_template, global_object);
+      Context::New(isolate, nullptr, global_template, global_object);
   DCHECK(!try_catch.HasCaught());
   if (context.IsEmpty()) return MaybeLocal<Context>();
   InitializeModuleEmbedderData(context);
@@ -1207,7 +1262,7 @@ void Shell::Write(const v8::FunctionCallbackInfo<v8::Value>& args) {
 
 void Shell::Read(const v8::FunctionCallbackInfo<v8::Value>& args) {
   String::Utf8Value file(args.GetIsolate(), args[0]);
-  if (*file == NULL) {
+  if (*file == nullptr) {
     Throw(args.GetIsolate(), "Error loading file");
     return;
   }
@@ -1237,9 +1292,9 @@ Local<String> Shell::ReadFromStdin(Isolate* isolate) {
     // Continue reading if the line ends with an escape '\\' or the line has
     // not been fully read into the buffer yet (does not end with '\n').
     // If fgets gets an error, just give up.
-    char* input = NULL;
+    char* input = nullptr;
     input = fgets(buffer, kBufferSize, stdin);
-    if (input == NULL) return Local<String>();
+    if (input == nullptr) return Local<String>();
     length = static_cast<int>(strlen(buffer));
     if (length == 0) {
       return accumulator;
@@ -1268,7 +1323,7 @@ void Shell::Load(const v8::FunctionCallbackInfo<v8::Value>& args) {
   for (int i = 0; i < args.Length(); i++) {
     HandleScope handle_scope(args.GetIsolate());
     String::Utf8Value file(args.GetIsolate(), args[i]);
-    if (*file == NULL) {
+    if (*file == nullptr) {
       Throw(args.GetIsolate(), "Error loading file");
       return;
     }
@@ -1288,6 +1343,14 @@ void Shell::Load(const v8::FunctionCallbackInfo<v8::Value>& args) {
   }
 }
 
+void Shell::SetTimeout(const v8::FunctionCallbackInfo<v8::Value>& args) {
+  Isolate* isolate = args.GetIsolate();
+  args.GetReturnValue().Set(v8::Number::New(isolate, 0));
+  if (args.Length() == 0 || !args[0]->IsFunction()) return;
+  Local<Function> callback = Local<Function>::Cast(args[0]);
+  Local<Context> context = isolate->GetCurrentContext();
+  PerIsolateData::Get(isolate)->SetTimeout(callback, context);
+}
 
 void Shell::WorkerNew(const v8::FunctionCallbackInfo<v8::Value>& args) {
   Isolate* isolate = args.GetIsolate();
@@ -1309,10 +1372,10 @@ void Shell::WorkerNew(const v8::FunctionCallbackInfo<v8::Value>& args) {
       return;
     }
 
-    // Initialize the embedder field to NULL; if we return early without
+    // Initialize the embedder field to nullptr; if we return early without
     // creating a new Worker (because the main thread is terminating) we can
     // early-out from the instance calls.
-    args.Holder()->SetAlignedPointerInInternalField(0, NULL);
+    args.Holder()->SetAlignedPointerInInternalField(0, nullptr);
 
     if (!allow_new_workers_) return;
 
@@ -1504,7 +1567,7 @@ CounterCollection::CounterCollection() {
 
 
 Counter* CounterCollection::GetNextCounter() {
-  if (counters_in_use_ == kMaxCounters) return NULL;
+  if (counters_in_use_ == kMaxCounters) return nullptr;
   return &counters_[counters_in_use_++];
 }
 
@@ -1512,9 +1575,9 @@ Counter* CounterCollection::GetNextCounter() {
 void Shell::MapCounters(v8::Isolate* isolate, const char* name) {
   counters_file_ = base::OS::MemoryMappedFile::create(
       name, sizeof(CounterCollection), &local_counters_);
-  void* memory = (counters_file_ == NULL) ?
-      NULL : counters_file_->memory();
-  if (memory == NULL) {
+  void* memory =
+      (counters_file_ == nullptr) ? nullptr : counters_file_->memory();
+  if (memory == nullptr) {
     printf("Could not map counters file %s\n", name);
     Exit(1);
   }
@@ -1539,9 +1602,9 @@ int CounterMap::Hash(const char* name) {
 Counter* Shell::GetCounter(const char* name, bool is_histogram) {
   Counter* counter = counter_map_->Lookup(name);
 
-  if (counter == NULL) {
+  if (counter == nullptr) {
     counter = counters_->GetNextCounter();
-    if (counter != NULL) {
+    if (counter != nullptr) {
       counter_map_->Set(name, counter);
       counter->Bind(name, is_histogram);
     }
@@ -1555,10 +1618,10 @@ Counter* Shell::GetCounter(const char* name, bool is_histogram) {
 int* Shell::LookupCounter(const char* name) {
   Counter* counter = GetCounter(name, false);
 
-  if (counter != NULL) {
+  if (counter != nullptr) {
     return counter->ptr();
   } else {
-    return NULL;
+    return nullptr;
   }
 }
 
@@ -1639,6 +1702,10 @@ Local<ObjectTemplate> Shell::CreateGlobalTemplate(Isolate* isolate) {
       String::NewFromUtf8(isolate, "load", NewStringType::kNormal)
           .ToLocalChecked(),
       FunctionTemplate::New(isolate, Load));
+  global_template->Set(
+      String::NewFromUtf8(isolate, "setTimeout", NewStringType::kNormal)
+          .ToLocalChecked(),
+      FunctionTemplate::New(isolate, SetTimeout));
   // Some Emscripten-generated code tries to call 'quit', which in turn would
   // call C's exit(). This would lead to memory leaks, because there is no way
   // we can terminate cleanly then, so we need a way to hide 'quit'.
@@ -1826,7 +1893,7 @@ Local<Context> Shell::CreateEvaluationContext(Isolate* isolate) {
   // Initialize the global objects
   Local<ObjectTemplate> global_template = CreateGlobalTemplate(isolate);
   EscapableHandleScope handle_scope(isolate);
-  Local<Context> context = Context::New(isolate, NULL, global_template);
+  Local<Context> context = Context::New(isolate, nullptr, global_template);
   DCHECK(!context.IsEmpty());
   InitializeModuleEmbedderData(context);
   Context::Scope scope(context);
@@ -2037,17 +2104,17 @@ static FILE* FOpen(const char* path, const char* mode) {
   if (fopen_s(&result, path, mode) == 0) {
     return result;
   } else {
-    return NULL;
+    return nullptr;
   }
 #else
   FILE* file = fopen(path, mode);
-  if (file == NULL) return NULL;
+  if (file == nullptr) return nullptr;
   struct stat file_stat;
-  if (fstat(fileno(file), &file_stat) != 0) return NULL;
+  if (fstat(fileno(file), &file_stat) != 0) return nullptr;
   bool is_regular_file = ((file_stat.st_mode & S_IFREG) != 0);
   if (is_regular_file) return file;
   fclose(file);
-  return NULL;
+  return nullptr;
 #endif
 }
 
@@ -2057,7 +2124,7 @@ static char* ReadChars(const char* name, int* size_out) {
   }
 
   FILE* file = FOpen(name, "rb");
-  if (file == NULL) return NULL;
+  if (file == nullptr) return nullptr;
 
   fseek(file, 0, SEEK_END);
   size_t size = ftell(file);
@@ -2099,18 +2166,19 @@ static void ReadBufferWeakCallback(
 
 
 void Shell::ReadBuffer(const v8::FunctionCallbackInfo<v8::Value>& args) {
-  DCHECK(sizeof(char) == sizeof(uint8_t));  // NOLINT
+  static_assert(sizeof(char) == sizeof(uint8_t),
+                "char and uint8_t should both have 1 byte");
   Isolate* isolate = args.GetIsolate();
   String::Utf8Value filename(isolate, args[0]);
   int length;
-  if (*filename == NULL) {
+  if (*filename == nullptr) {
     Throw(isolate, "Error loading file");
     return;
   }
 
   DataAndPersistent* data = new DataAndPersistent;
   data->data = reinterpret_cast<uint8_t*>(ReadChars(*filename, &length));
-  if (data->data == NULL) {
+  if (data->data == nullptr) {
     delete data;
     Throw(isolate, "Error reading file");
     return;
@@ -2130,7 +2198,7 @@ void Shell::ReadBuffer(const v8::FunctionCallbackInfo<v8::Value>& args) {
 Local<String> Shell::ReadFile(Isolate* isolate, const char* name) {
   int size = 0;
   char* chars = ReadChars(name, &size);
-  if (chars == NULL) return Local<String>();
+  if (chars == nullptr) return Local<String>();
   Local<String> result;
   if (i::FLAG_use_external_strings && internal::String::IsAscii(chars, size)) {
     String::ExternalOneByteStringResource* resource =
@@ -2192,7 +2260,7 @@ class InspectorFrontend final : public v8_inspector::V8Inspector::Channel {
   void Send(const v8_inspector::StringView& string) {
     v8::Isolate::AllowJavascriptExecutionScope allow_script(isolate_);
     int length = static_cast<int>(string.length());
-    DCHECK(length < v8::String::kMaxLength);
+    DCHECK_LT(length, v8::String::kMaxLength);
     Local<String> message =
         (string.is8Bit()
              ? v8::String::NewFromOneByte(
@@ -2227,7 +2295,7 @@ class InspectorFrontend final : public v8_inspector::V8Inspector::Channel {
                                     v8::NewStringType::kNormal)
                 .ToLocalChecked();
         Local<Value> value = exception->Get(context, key).ToLocalChecked();
-        CHECK(value->StrictEquals(expected));
+        DCHECK(value->StrictEquals(expected));
       }
 #endif
     }
@@ -2305,7 +2373,7 @@ class InspectorClient : public v8_inspector::V8InspectorClient {
 
 SourceGroup::~SourceGroup() {
   delete thread_;
-  thread_ = NULL;
+  thread_ = nullptr;
 }
 
 
@@ -2383,6 +2451,8 @@ void SourceGroup::ExecuteInThread() {
   Isolate* isolate = Isolate::New(create_params);
   isolate->SetHostImportModuleDynamicallyCallback(
       Shell::HostImportModuleDynamically);
+  isolate->SetHostInitializeImportMetaObjectCallback(
+      Shell::HostInitializeImportMetaObject);
 
   Shell::EnsureEventLoopInitialized(isolate);
   D8Console console(isolate);
@@ -2391,9 +2461,9 @@ void SourceGroup::ExecuteInThread() {
     next_semaphore_.Wait();
     {
       Isolate::Scope iscope(isolate);
+      PerIsolateData data(isolate);
       {
         HandleScope scope(isolate);
-        PerIsolateData data(isolate);
         Local<Context> context = Shell::CreateEvaluationContext(isolate);
         {
           Context::Scope cscope(context);
@@ -2415,7 +2485,7 @@ void SourceGroup::ExecuteInThread() {
 
 
 void SourceGroup::StartExecuteInThread() {
-  if (thread_ == NULL) {
+  if (thread_ == nullptr) {
     thread_ = new IsolateThread(this);
     thread_->Start();
   }
@@ -2424,13 +2494,13 @@ void SourceGroup::StartExecuteInThread() {
 
 
 void SourceGroup::WaitForThread() {
-  if (thread_ == NULL) return;
+  if (thread_ == nullptr) return;
   done_semaphore_.Wait();
 }
 
 
 void SourceGroup::JoinThread() {
-  if (thread_ == NULL) return;
+  if (thread_ == nullptr) return;
   thread_->Join();
 }
 
@@ -2465,20 +2535,18 @@ void SerializationDataQueue::Clear() {
   data_.clear();
 }
 
-
 Worker::Worker()
     : in_semaphore_(0),
       out_semaphore_(0),
-      thread_(NULL),
-      script_(NULL),
+      thread_(nullptr),
+      script_(nullptr),
       running_(false) {}
-
 
 Worker::~Worker() {
   delete thread_;
-  thread_ = NULL;
+  thread_ = nullptr;
   delete[] script_;
-  script_ = NULL;
+  script_ = nullptr;
   in_queue_.Clear();
   out_queue_.Clear();
 }
@@ -2510,9 +2578,9 @@ std::unique_ptr<SerializationData> Worker::GetMessage() {
 
 void Worker::Terminate() {
   base::Relaxed_Store(&running_, false);
-  // Post NULL to wake the Worker thread message loop, and tell it to stop
+  // Post nullptr to wake the Worker thread message loop, and tell it to stop
   // running.
-  PostMessage(NULL);
+  PostMessage(nullptr);
 }
 
 
@@ -2528,6 +2596,8 @@ void Worker::ExecuteInThread() {
   Isolate* isolate = Isolate::New(create_params);
   isolate->SetHostImportModuleDynamicallyCallback(
       Shell::HostImportModuleDynamically);
+  isolate->SetHostInitializeImportMetaObjectCallback(
+      Shell::HostInitializeImportMetaObject);
   D8Console console(isolate);
   debug::SetConsoleDelegate(isolate, &console);
   {
@@ -2597,8 +2667,8 @@ void Worker::ExecuteInThread() {
   }
   isolate->Dispose();
 
-  // Post NULL to wake the thread waiting on GetMessage() if there is one.
-  out_queue_.Enqueue(NULL);
+  // Post nullptr to wake the thread waiting on GetMessage() if there is one.
+  out_queue_.Enqueue(nullptr);
   out_semaphore_.Signal();
 }
 
@@ -2636,17 +2706,17 @@ bool Shell::SetOptions(int argc, char* argv[]) {
   for (int i = 0; i < argc; i++) {
     if (strcmp(argv[i], "--stress-opt") == 0) {
       options.stress_opt = true;
-      argv[i] = NULL;
+      argv[i] = nullptr;
     } else if (strcmp(argv[i], "--nostress-opt") == 0 ||
                strcmp(argv[i], "--no-stress-opt") == 0) {
       options.stress_opt = false;
-      argv[i] = NULL;
+      argv[i] = nullptr;
     } else if (strcmp(argv[i], "--stress-deopt") == 0) {
       options.stress_deopt = true;
-      argv[i] = NULL;
+      argv[i] = nullptr;
     } else if (strcmp(argv[i], "--mock-arraybuffer-allocator") == 0) {
       options.mock_arraybuffer_allocator = true;
-      argv[i] = NULL;
+      argv[i] = nullptr;
     } else if (strcmp(argv[i], "--noalways-opt") == 0 ||
                strcmp(argv[i], "--no-always-opt") == 0) {
       // No support for stressing if we can't use --always-opt.
@@ -2654,28 +2724,28 @@ bool Shell::SetOptions(int argc, char* argv[]) {
       options.stress_deopt = false;
     } else if (strcmp(argv[i], "--logfile-per-isolate") == 0) {
       logfile_per_isolate = true;
-      argv[i] = NULL;
+      argv[i] = nullptr;
     } else if (strcmp(argv[i], "--shell") == 0) {
       options.interactive_shell = true;
-      argv[i] = NULL;
+      argv[i] = nullptr;
     } else if (strcmp(argv[i], "--test") == 0) {
       options.test_shell = true;
-      argv[i] = NULL;
+      argv[i] = nullptr;
     } else if (strcmp(argv[i], "--notest") == 0 ||
                strcmp(argv[i], "--no-test") == 0) {
       options.test_shell = false;
-      argv[i] = NULL;
+      argv[i] = nullptr;
     } else if (strcmp(argv[i], "--send-idle-notification") == 0) {
       options.send_idle_notification = true;
-      argv[i] = NULL;
+      argv[i] = nullptr;
     } else if (strcmp(argv[i], "--invoke-weak-callbacks") == 0) {
       options.invoke_weak_callbacks = true;
       // TODO(jochen) See issue 3351
       options.send_idle_notification = true;
-      argv[i] = NULL;
+      argv[i] = nullptr;
     } else if (strcmp(argv[i], "--omit-quit") == 0) {
       options.omit_quit = true;
-      argv[i] = NULL;
+      argv[i] = nullptr;
     } else if (strcmp(argv[i], "-f") == 0) {
       // Ignore any -f flags for compatibility with other stand-alone
       // JavaScript engines.
@@ -2684,17 +2754,17 @@ bool Shell::SetOptions(int argc, char* argv[]) {
       options.num_isolates++;
     } else if (strcmp(argv[i], "--throws") == 0) {
       options.expected_to_throw = true;
-      argv[i] = NULL;
+      argv[i] = nullptr;
     } else if (strncmp(argv[i], "--icu-data-file=", 16) == 0) {
       options.icu_data_file = argv[i] + 16;
-      argv[i] = NULL;
+      argv[i] = nullptr;
 #ifdef V8_USE_EXTERNAL_STARTUP_DATA
     } else if (strncmp(argv[i], "--natives_blob=", 15) == 0) {
       options.natives_blob = argv[i] + 15;
-      argv[i] = NULL;
+      argv[i] = nullptr;
     } else if (strncmp(argv[i], "--snapshot_blob=", 16) == 0) {
       options.snapshot_blob = argv[i] + 16;
-      argv[i] = NULL;
+      argv[i] = nullptr;
 #endif  // V8_USE_EXTERNAL_STARTUP_DATA
     } else if (strcmp(argv[i], "--cache") == 0 ||
                strncmp(argv[i], "--cache=", 8) == 0) {
@@ -2709,30 +2779,30 @@ bool Shell::SetOptions(int argc, char* argv[]) {
         printf("Unknown option to --cache.\n");
         return false;
       }
-      argv[i] = NULL;
+      argv[i] = nullptr;
     } else if (strcmp(argv[i], "--enable-tracing") == 0) {
       options.trace_enabled = true;
-      argv[i] = NULL;
+      argv[i] = nullptr;
     } else if (strncmp(argv[i], "--trace-config=", 15) == 0) {
       options.trace_config = argv[i] + 15;
-      argv[i] = NULL;
+      argv[i] = nullptr;
     } else if (strcmp(argv[i], "--enable-inspector") == 0) {
       options.enable_inspector = true;
-      argv[i] = NULL;
+      argv[i] = nullptr;
     } else if (strncmp(argv[i], "--lcov=", 7) == 0) {
       options.lcov_file = argv[i] + 7;
-      argv[i] = NULL;
+      argv[i] = nullptr;
     } else if (strcmp(argv[i], "--disable-in-process-stack-traces") == 0) {
       options.disable_in_process_stack_traces = true;
-      argv[i] = NULL;
+      argv[i] = nullptr;
 #ifdef V8_OS_POSIX
     } else if (strncmp(argv[i], "--read-from-tcp-port=", 21) == 0) {
       options.read_from_tcp_port = atoi(argv[i] + 21);
-      argv[i] = NULL;
+      argv[i] = nullptr;
 #endif  // V8_OS_POSIX
     } else if (strcmp(argv[i], "--enable-os-system") == 0) {
       options.enable_os_system = true;
-      argv[i] = NULL;
+      argv[i] = nullptr;
     }
   }
 
@@ -2776,10 +2846,7 @@ int Shell::RunMain(Isolate* isolate, int argc, char* argv[], bool last_run) {
   {
     EnsureEventLoopInitialized(isolate);
     if (options.lcov_file) {
-      debug::Coverage::Mode mode = i::FLAG_block_coverage
-                                       ? debug::Coverage::kBlockCount
-                                       : debug::Coverage::kPreciseCount;
-      debug::Coverage::SelectMode(isolate, mode);
+      debug::Coverage::SelectMode(isolate, debug::Coverage::kBlockCount);
     }
     HandleScope scope(isolate);
     Local<Context> context = CreateEvaluationContext(isolate);
@@ -2842,39 +2909,48 @@ void Shell::SetWaitUntilDone(Isolate* isolate, bool value) {
   }
 }
 
-bool Shell::IsWaitUntilDone(Isolate* isolate) {
-  base::LockGuard<base::Mutex> guard(isolate_status_lock_.Pointer());
-  DCHECK_GT(isolate_status_.count(isolate), 0);
-  return isolate_status_[isolate];
+namespace {
+void ProcessMessages(Isolate* isolate,
+                     std::function<platform::MessageLoopBehavior()> behavior) {
+  Platform* platform = GetDefaultPlatform();
+  while (true) {
+    while (v8::platform::PumpMessageLoop(platform, isolate, behavior())) {
+      isolate->RunMicrotasks();
+    }
+    if (platform->IdleTasksEnabled(isolate)) {
+      v8::platform::RunIdleTasks(platform, isolate,
+                                 50.0 / base::Time::kMillisecondsPerSecond);
+    }
+    HandleScope handle_scope(isolate);
+    PerIsolateData* data = PerIsolateData::Get(isolate);
+    Local<Function> callback;
+    if (!data->GetTimeoutCallback().ToLocal(&callback)) break;
+    Local<Context> context;
+    if (!data->GetTimeoutContext().ToLocal(&context)) break;
+    TryCatch try_catch(isolate);
+    try_catch.SetVerbose(true);
+    Context::Scope context_scope(context);
+    if (callback->Call(context, Undefined(isolate), 0, nullptr).IsEmpty()) {
+      Shell::ReportException(isolate, &try_catch);
+      return;
+    }
+  }
 }
+}  // anonymous namespace
 
 void Shell::CompleteMessageLoop(Isolate* isolate) {
-  Platform* platform = GetDefaultPlatform();
-  while (v8::platform::PumpMessageLoop(
-      platform, isolate,
-      Shell::IsWaitUntilDone(isolate)
-          ? platform::MessageLoopBehavior::kWaitForWork
-          : platform::MessageLoopBehavior::kDoNotWait)) {
-    isolate->RunMicrotasks();
-  }
-  if (platform->IdleTasksEnabled(isolate)) {
-    v8::platform::RunIdleTasks(platform, isolate,
-                               50.0 / base::Time::kMillisecondsPerSecond);
-  }
+  ProcessMessages(isolate, [isolate]() {
+    base::LockGuard<base::Mutex> guard(isolate_status_lock_.Pointer());
+    DCHECK_GT(isolate_status_.count(isolate), 0);
+    return isolate_status_[isolate]
+               ? platform::MessageLoopBehavior::kWaitForWork
+               : platform::MessageLoopBehavior::kDoNotWait;
+  });
 }
 
 void Shell::EmptyMessageQueues(Isolate* isolate) {
-  Platform* platform = GetDefaultPlatform();
-  // Pump the message loop until it is empty.
-  while (v8::platform::PumpMessageLoop(
-      platform, isolate, platform::MessageLoopBehavior::kDoNotWait)) {
-    isolate->RunMicrotasks();
-  }
-  // Run the idle tasks.
-  if (platform->IdleTasksEnabled(isolate)) {
-    v8::platform::RunIdleTasks(platform, isolate,
-                               50.0 / base::Time::kMillisecondsPerSecond);
-  }
+  ProcessMessages(isolate,
+                  []() { return platform::MessageLoopBehavior::kDoNotWait; });
 }
 
 class Serializer : public ValueSerializer::Delegate {
@@ -2919,7 +2995,7 @@ class Serializer : public ValueSerializer::Delegate {
 
   Maybe<uint32_t> GetSharedArrayBufferId(
       Isolate* isolate, Local<SharedArrayBuffer> shared_array_buffer) override {
-    DCHECK(data_ != nullptr);
+    DCHECK_NOT_NULL(data_);
     for (size_t index = 0; index < shared_array_buffers_.size(); ++index) {
       if (shared_array_buffers_[index] == shared_array_buffer) {
         return Just<uint32_t>(static_cast<uint32_t>(index));
@@ -3192,6 +3268,8 @@ int Shell::Main(int argc, char* argv[]) {
   Isolate* isolate = Isolate::New(create_params);
   isolate->SetHostImportModuleDynamicallyCallback(
       Shell::HostImportModuleDynamically);
+  isolate->SetHostInitializeImportMetaObjectCallback(
+      Shell::HostInitializeImportMetaObject);
 
   D8Console console(isolate);
   {

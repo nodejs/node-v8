@@ -9,29 +9,6 @@ namespace v8 {
 namespace internal {
 
 
-class StringHelper : public AllStatic {
- public:
-  // Compares two flat one-byte strings and returns result in x0.
-  static void GenerateCompareFlatOneByteStrings(
-      MacroAssembler* masm, Register left, Register right, Register scratch1,
-      Register scratch2, Register scratch3, Register scratch4);
-
-  // Compare two flat one-byte strings for equality and returns result in x0.
-  static void GenerateFlatOneByteStringEquals(MacroAssembler* masm,
-                                              Register left, Register right,
-                                              Register scratch1,
-                                              Register scratch2,
-                                              Register scratch3);
-
- private:
-  static void GenerateOneByteCharsCompareLoop(
-      MacroAssembler* masm, Register left, Register right, Register length,
-      Register scratch1, Register scratch2, Label* chars_not_equal);
-
-  DISALLOW_IMPLICIT_CONSTRUCTORS(StringHelper);
-};
-
-
 class RecordWriteStub: public PlatformCodeStub {
  public:
   // Stub to record the write of 'value' at 'address' in 'object'.
@@ -68,69 +45,9 @@ class RecordWriteStub: public PlatformCodeStub {
 
   bool SometimesSetsUpAFrame() override { return false; }
 
-  static Mode GetMode(Code* stub) {
-    // Find the mode depending on the first two instructions.
-    Instruction* instr1 =
-      reinterpret_cast<Instruction*>(stub->instruction_start());
-    Instruction* instr2 = instr1->following();
+  static Mode GetMode(Code* stub);
 
-    if (instr1->IsUncondBranchImm()) {
-      DCHECK(instr2->IsPCRelAddressing() && (instr2->Rd() == xzr.code()));
-      return INCREMENTAL;
-    }
-
-    DCHECK(instr1->IsPCRelAddressing() && (instr1->Rd() == xzr.code()));
-
-    if (instr2->IsUncondBranchImm()) {
-      return INCREMENTAL_COMPACTION;
-    }
-
-    DCHECK(instr2->IsPCRelAddressing());
-
-    return STORE_BUFFER_ONLY;
-  }
-
-  // We patch the two first instructions of the stub back and forth between an
-  // adr and branch when we start and stop incremental heap marking.
-  // The branch is
-  //   b label
-  // The adr is
-  //   adr xzr label
-  // so effectively a nop.
-  static void Patch(Code* stub, Mode mode) {
-    // We are going to patch the two first instructions of the stub.
-    PatchingAssembler patcher(stub->GetIsolate(), stub->instruction_start(), 2);
-    Instruction* instr1 = patcher.InstructionAt(0);
-    Instruction* instr2 = patcher.InstructionAt(kInstructionSize);
-    // Instructions must be either 'adr' or 'b'.
-    DCHECK(instr1->IsPCRelAddressing() || instr1->IsUncondBranchImm());
-    DCHECK(instr2->IsPCRelAddressing() || instr2->IsUncondBranchImm());
-    // Retrieve the offsets to the labels.
-    auto offset_to_incremental_noncompacting =
-        static_cast<int32_t>(instr1->ImmPCOffset());
-    auto offset_to_incremental_compacting =
-        static_cast<int32_t>(instr2->ImmPCOffset());
-
-    switch (mode) {
-      case STORE_BUFFER_ONLY:
-        DCHECK(GetMode(stub) == INCREMENTAL ||
-               GetMode(stub) == INCREMENTAL_COMPACTION);
-        patcher.adr(xzr, offset_to_incremental_noncompacting);
-        patcher.adr(xzr, offset_to_incremental_compacting);
-        break;
-      case INCREMENTAL:
-        DCHECK(GetMode(stub) == STORE_BUFFER_ONLY);
-        patcher.b(offset_to_incremental_noncompacting >> kInstructionSizeLog2);
-        patcher.adr(xzr, offset_to_incremental_compacting);
-        break;
-      case INCREMENTAL_COMPACTION:
-        DCHECK(GetMode(stub) == STORE_BUFFER_ONLY);
-        patcher.adr(xzr, offset_to_incremental_noncompacting);
-        patcher.b(offset_to_incremental_compacting >> kInstructionSizeLog2);
-        break;
-    }
-    DCHECK(GetMode(stub) == mode);
-  }
+  static void Patch(Code* stub, Mode mode);
 
   DEFINE_NULL_CALL_INTERFACE_DESCRIPTOR();
 
@@ -181,8 +98,8 @@ class RecordWriteStub: public PlatformCodeStub {
     Register object_;
     Register address_;
     Register scratch0_;
-    Register scratch1_;
-    Register scratch2_;
+    Register scratch1_ = NoReg;
+    Register scratch2_ = NoReg;
     CPURegList saved_regs_;
     CPURegList saved_fp_regs_;
 
@@ -275,12 +192,8 @@ class DirectCEntryStub: public PlatformCodeStub {
 
 class NameDictionaryLookupStub: public PlatformCodeStub {
  public:
-  enum LookupMode { POSITIVE_LOOKUP, NEGATIVE_LOOKUP };
-
-  NameDictionaryLookupStub(Isolate* isolate, LookupMode mode)
-      : PlatformCodeStub(isolate) {
-    minor_key_ = LookupModeBits::encode(mode);
-  }
+  explicit NameDictionaryLookupStub(Isolate* isolate)
+      : PlatformCodeStub(isolate) {}
 
   static void GenerateNegativeLookup(MacroAssembler* masm,
                                      Label* miss,
@@ -303,10 +216,6 @@ class NameDictionaryLookupStub: public PlatformCodeStub {
   static const int kElementsStartOffset =
       NameDictionary::kHeaderSize +
       NameDictionary::kElementsStartIndex * kPointerSize;
-
-  LookupMode mode() const { return LookupModeBits::decode(minor_key_); }
-
-  class LookupModeBits: public BitField<LookupMode, 0, 1> {};
 
   DEFINE_NULL_CALL_INTERFACE_DESCRIPTOR();
   DEFINE_PLATFORM_CODE_STUB(NameDictionaryLookup, PlatformCodeStub);

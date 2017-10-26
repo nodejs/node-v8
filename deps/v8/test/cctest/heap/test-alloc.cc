@@ -84,8 +84,8 @@ AllocationResult HeapTester::AllocateAfterFailures() {
   // Test that we can allocate in old pointer space and code space.
   heap::SimulateFullSpace(heap->code_space());
   heap->AllocateFixedArray(100, TENURED).ToObjectChecked();
-  heap->CopyCode(CcTest::i_isolate()->builtins()->builtin(
-      Builtins::kIllegal)).ToObjectChecked();
+  Code* illegal = CcTest::i_isolate()->builtins()->builtin(Builtins::kIllegal);
+  heap->CopyCode(illegal, illegal->code_data_container()).ToObjectChecked();
 
   // Return success.
   return heap->true_value();
@@ -145,12 +145,12 @@ TEST(StressJS) {
   // Force the creation of an initial map and set the code to
   // something empty.
   factory->NewJSObject(function);
-  function->ReplaceCode(CcTest::i_isolate()->builtins()->builtin(
-      Builtins::kEmptyFunction));
+  function->set_code(
+      CcTest::i_isolate()->builtins()->builtin(Builtins::kEmptyFunction));
   // Patch the map to have an accessor for "get".
   Handle<Map> map(function->initial_map());
   Handle<DescriptorArray> instance_descriptors(map->instance_descriptors());
-  CHECK(instance_descriptors->IsEmpty());
+  CHECK_EQ(0, instance_descriptors->number_of_descriptors());
 
   PropertyAttributes attrs = NONE;
   Handle<AccessorInfo> foreign = TestAccessorInfo(isolate, attrs);
@@ -236,7 +236,7 @@ TEST(CodeRange) {
       Address base = code_range.AllocateRawMemory(
           requested, requested - (2 * MemoryAllocator::CodePageGuardSize()),
           &allocated);
-      CHECK(base != NULL);
+      CHECK_NOT_NULL(base);
       blocks.emplace_back(base, static_cast<int>(allocated));
       current_allocated += static_cast<int>(allocated);
       total_allocated += static_cast<int>(allocated);

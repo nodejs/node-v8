@@ -54,16 +54,11 @@ from testrunner.local import utils
 # build/header_guard: Our guards have the form "V8_FOO_H_", not "SRC_FOO_H_".
 # build/include_what_you_use: Started giving false positives for variables
 #   named "string" and "map" assuming that you needed to include STL headers.
-# TODO(bmeurer): Fix and re-enable readability/check
-# http://crrev.com/2199323003 relands.
 
 LINT_RULES = """
 -build/header_guard
 -build/include_what_you_use
--build/namespaces
--readability/check
 -readability/fn_size
-+readability/streams
 -runtime/references
 """.split()
 
@@ -228,8 +223,9 @@ class CppLintProcessor(SourceFileProcessor):
               or (name in CppLintProcessor.IGNORE_LINT))
 
   def GetPathsToSearch(self):
-    return ['src', 'include', 'samples', join('test', 'cctest'),
-            join('test', 'unittests'), join('test', 'inspector')]
+    dirs = ['include', 'samples', 'src']
+    test_dirs = ['cctest', 'common', 'fuzzer', 'inspector', 'unittests']
+    return dirs + [join('test', dir) for dir in test_dirs]
 
   def GetCpplintScript(self, prio_path):
     for path in [prio_path] + os.environ["PATH"].split(os.pathsep):
@@ -366,7 +362,6 @@ class SourceProcessor(SourceFileProcessor):
                        'regexp-pcre.js',
                        'resources-123.js',
                        'rjsmin.py',
-                       'script-breakpoint.h',
                        'sqlite.js',
                        'sqlite-change-heap.js',
                        'sqlite-pointer-masking.js',

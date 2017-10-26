@@ -13,18 +13,19 @@
 #include "src/base/compiler-specific.h"
 #include "src/base/platform/mutex.h"
 #include "src/flags.h"
+#include "src/ostreams.h"
 
 namespace v8 {
 namespace internal {
 
 class Logger;
 
+enum class LogSeparator { kSeparator };
+
 // Functions and data for performing output of log messages.
 class Log {
  public:
-  // Performs process-wide initialization.
-  void Initialize(const char* log_file_name);
-
+  Log(Logger* log, const char* log_file_name);
   // Disables logging, but preserves acquired resources.
   void stop() { is_stopped_ = true; }
 
@@ -41,9 +42,7 @@ class Log {
   FILE* Close();
 
   // Returns whether logging is enabled.
-  bool IsEnabled() {
-    return !is_stopped_ && output_handle_ != NULL;
-  }
+  bool IsEnabled() { return !is_stopped_ && output_handle_ != nullptr; }
 
   // Size of buffer used for formatting log messages.
   static const int kMessageBufferSize = 2048;
@@ -68,59 +67,44 @@ class Log {
     // Append string data to the log message.
     void PRINTF_FORMAT(2, 0) AppendVA(const char* format, va_list args);
 
-    // Append a character to the log message.
-    void Append(const char c);
-
-    // Append double quoted string to the log message.
-    void AppendDoubleQuotedString(const char* string);
-
-    // Append a heap string.
-    void Append(String* str);
-
-    // Appends an address.
-    void AppendAddress(Address addr);
-
     void AppendSymbolName(Symbol* symbol);
 
     void AppendDetailed(String* str, bool show_impl_info);
 
-    // Append a portion of a string.
+    // Append and escape a full string.
+    void AppendString(String* source);
+    void AppendString(const char* string);
+
+    // Append and escpae a portion of a string.
+    void AppendStringPart(String* source, int len);
     void AppendStringPart(const char* str, int len);
 
-    // Helpers for appending char, C-string and heap string without
-    // buffering. This is useful for entries that can exceed the 2kB
-    // limit.
-    void AppendUnbufferedChar(char c);
-    void AppendUnbufferedCString(const char* str);
-    void AppendUnbufferedHeapString(String* source);
+    void AppendCharacter(const char character);
 
-    // Write the log message to the log file currently opened.
+    // Delegate insertion to the underlying {log_}.
+    // All appened srings are escaped to maintain one-line log entries.
+    template <typename T>
+    MessageBuilder& operator<<(T value) {
+      log_->os_ << value;
+      return *this;
+    }
+
+    // Finish the current log line an flush the it to the log file.
     void WriteToLogFile();
 
    private:
     Log* log_;
     base::LockGuard<base::Mutex> lock_guard_;
-    int pos_;
   };
 
  private:
-  explicit Log(Logger* logger);
-
-  // Opens stdout for logging.
-  void OpenStdout();
-
-  // Opens file for logging.
-  void OpenFile(const char* name);
-
-  // Opens a temporary file for logging.
-  void OpenTemporaryFile();
+  static FILE* CreateOutputHandle(const char* file_name);
 
   // Implementation of writing to a log file.
   int WriteToFile(const char* msg, int length) {
     DCHECK_NOT_NULL(output_handle_);
-    size_t rv = fwrite(msg, 1, length, output_handle_);
-    DCHECK_EQ(length, rv);
-    USE(rv);
+    os_.write(msg, length);
+    DCHECK(!os_.bad());
     return length;
   }
 
@@ -130,6 +114,7 @@ class Log {
   // When logging is active output_handle_ is used to store a pointer to log
   // destination.  mutex_ should be acquired before using output_handle_.
   FILE* output_handle_;
+  OFStream os_;
 
   // mutex_ is a Mutex used for enforcing exclusive
   // access to the formatting buffer and the log file or log memory buffer.
@@ -137,13 +122,29 @@ class Log {
 
   // Buffer used for formatting log messages. This is a singleton buffer and
   // mutex_ should be acquired before using it.
-  char* message_buffer_;
+  char* format_buffer_;
 
   Logger* logger_;
 
   friend class Logger;
 };
 
+template <>
+Log::MessageBuilder& Log::MessageBuilder::operator<<<LogSeparator>(
+    LogSeparator separator);
+template <>
+Log::MessageBuilder& Log::MessageBuilder::operator<<<void*>(void* pointer);
+template <>
+Log::MessageBuilder& Log::MessageBuilder::operator<<<const char*>(
+    const char* string);
+template <>
+Log::MessageBuilder& Log::MessageBuilder::operator<<<char>(char c);
+template <>
+Log::MessageBuilder& Log::MessageBuilder::operator<<<String*>(String* string);
+template <>
+Log::MessageBuilder& Log::MessageBuilder::operator<<<Symbol*>(Symbol* symbol);
+template <>
+Log::MessageBuilder& Log::MessageBuilder::operator<<<Name*>(Name* name);
 
 }  // namespace internal
 }  // namespace v8

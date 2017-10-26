@@ -11,7 +11,6 @@
 #include "src/field-type.h"
 #include "src/messages.h"
 #include "src/objects-inl.h"
-#include "src/parsing/token.h"
 #include "src/property-descriptor.h"
 #include "src/string-hasher.h"
 #include "src/transitions.h"
@@ -87,7 +86,8 @@ bool JsonParseInternalizer::RecurseAndApply(Handle<JSReceiver> holder,
       isolate_, result, InternalizeJsonProperty(holder, name), false);
   Maybe<bool> change_result = Nothing<bool>();
   if (result->IsUndefined(isolate_)) {
-    change_result = JSReceiver::DeletePropertyOrElement(holder, name, SLOPPY);
+    change_result = JSReceiver::DeletePropertyOrElement(holder, name,
+                                                        LanguageMode::kSloppy);
   } else {
     PropertyDescriptor desc;
     desc.set_value(result);
@@ -95,7 +95,7 @@ bool JsonParseInternalizer::RecurseAndApply(Handle<JSReceiver> holder,
     desc.set_enumerable(true);
     desc.set_writable(true);
     change_result = JSReceiver::DefineOwnProperty(isolate_, holder, name, &desc,
-                                                  Object::DONT_THROW);
+                                                  kDontThrow);
   }
   MAYBE_RETURN(change_result, false);
   return true;

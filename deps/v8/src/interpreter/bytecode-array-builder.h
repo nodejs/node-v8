@@ -36,7 +36,7 @@ class V8_EXPORT_PRIVATE BytecodeArrayBuilder final
  public:
   BytecodeArrayBuilder(
       Isolate* isolate, Zone* zone, int parameter_count, int locals_count,
-      FunctionLiteral* literal = nullptr,
+      FeedbackVectorSpec* feedback_vector_spec = nullptr,
       SourcePositionTableBuilder::RecordingMode source_position_mode =
           SourcePositionTableBuilder::RECORD_SOURCE_POSITIONS);
 
@@ -227,6 +227,11 @@ class V8_EXPORT_PRIVATE BytecodeArrayBuilder final
                                             Register output);
   BytecodeArrayBuilder& CreateEmptyObjectLiteral();
 
+  // Gets or creates the template for a TemplateObjectDescription which will
+  // be inserted at constant pool index |template_object_description_entry|.
+  BytecodeArrayBuilder& GetTemplateObject(
+      size_t template_object_description_entry);
+
   // Push the context in accumulator as the new context, and store in register
   // |context|.
   BytecodeArrayBuilder& PushContext(Register context);
@@ -304,20 +309,22 @@ class V8_EXPORT_PRIVATE BytecodeArrayBuilder final
                                            Register arg,
                                            RegisterList return_pair);
 
-  // Call the JS runtime function with |context_index| and arguments |args|.
+  // Call the JS runtime function with |context_index| and arguments |args|,
+  // with no receiver as it is implicitly set to undefined.
   BytecodeArrayBuilder& CallJSRuntime(int context_index, RegisterList args);
 
   // Operators (register holds the lhs value, accumulator holds the rhs value).
   // Type feedback will be recorded in the |feedback_slot|
   BytecodeArrayBuilder& BinaryOperation(Token::Value binop, Register reg,
                                         int feedback_slot);
+  // Same as above, but lhs in the accumulator and rhs in |literal|.
   BytecodeArrayBuilder& BinaryOperationSmiLiteral(Token::Value binop,
                                                   Smi* literal,
                                                   int feedback_slot);
 
-  // Count Operators (value stored in accumulator).
+  // Unary and Count Operators (value stored in accumulator).
   // Type feedback will be recorded in the |feedback_slot|
-  BytecodeArrayBuilder& CountOperation(Token::Value op, int feedback_slot);
+  BytecodeArrayBuilder& UnaryOperation(Token::Value op, int feedback_slot);
 
   enum class ToBooleanMode {
     kConvertToBoolean,  // Perform ToBoolean conversion on accumulator.
@@ -351,7 +358,10 @@ class V8_EXPORT_PRIVATE BytecodeArrayBuilder final
   // Converts accumulator and stores result in register |out|.
   BytecodeArrayBuilder& ToObject(Register out);
   BytecodeArrayBuilder& ToName(Register out);
-  BytecodeArrayBuilder& ToNumber(Register out, int feedback_slot);
+
+  // Converts accumulator and stores result back in accumulator.
+  BytecodeArrayBuilder& ToNumber(int feedback_slot);
+  BytecodeArrayBuilder& ToNumeric(int feedback_slot);
 
   // Flow Control.
   BytecodeArrayBuilder& Bind(BytecodeLabel* label);
@@ -384,6 +394,7 @@ class V8_EXPORT_PRIVATE BytecodeArrayBuilder final
 
   BytecodeArrayBuilder& Throw();
   BytecodeArrayBuilder& ReThrow();
+  BytecodeArrayBuilder& Abort(BailoutReason reason);
   BytecodeArrayBuilder& Return();
   BytecodeArrayBuilder& ThrowReferenceErrorIfHole(const AstRawString* name);
   BytecodeArrayBuilder& ThrowSuperNotCalledIfHole();
@@ -396,8 +407,9 @@ class V8_EXPORT_PRIVATE BytecodeArrayBuilder final
   BytecodeArrayBuilder& IncBlockCounter(int slot);
 
   // Complex flow control.
-  BytecodeArrayBuilder& ForInPrepare(Register receiver,
-                                     RegisterList cache_info_triple);
+  BytecodeArrayBuilder& ForInEnumerate(Register receiver);
+  BytecodeArrayBuilder& ForInPrepare(RegisterList cache_info_triple,
+                                     int feedback_slot);
   BytecodeArrayBuilder& ForInContinue(Register index, Register cache_length);
   BytecodeArrayBuilder& ForInNext(Register receiver, Register index,
                                   RegisterList cache_type_array_pair,
@@ -447,11 +459,15 @@ class V8_EXPORT_PRIVATE BytecodeArrayBuilder final
   }
 
   void SetExpressionPosition(Expression* expr) {
-    if (expr->position() == kNoSourcePosition) return;
+    SetExpressionPosition(expr->position());
+  }
+
+  void SetExpressionPosition(int position) {
+    if (position == kNoSourcePosition) return;
     if (!latest_source_info_.is_statement()) {
       // Ensure the current expression position is overwritten with the
       // latest value.
-      latest_source_info_.MakeExpressionPosition(expr->position());
+      latest_source_info_.MakeExpressionPosition(position);
     }
   }
 
@@ -498,7 +514,7 @@ class V8_EXPORT_PRIVATE BytecodeArrayBuilder final
   friend class BytecodeNodeBuilder;
 
   const FeedbackVectorSpec* feedback_vector_spec() const {
-    return literal_->feedback_vector_spec();
+    return feedback_vector_spec_;
   }
 
   // Returns the current source position for the given |bytecode|.
@@ -555,7 +571,7 @@ class V8_EXPORT_PRIVATE BytecodeArrayBuilder final
   }
 
   Zone* zone_;
-  FunctionLiteral* literal_;
+  FeedbackVectorSpec* feedback_vector_spec_;
   bool bytecode_generated_;
   ConstantArrayBuilder constant_array_builder_;
   HandlerTableBuilder handler_table_builder_;

@@ -14,12 +14,13 @@
 namespace v8 {
 namespace internal {
 
+class BytecodeArray;
 class CoverageInfo;
 class DebugInfo;
 
 class PreParsedScopeData : public Struct {
  public:
-  DECL_ACCESSORS(scope_data, PodArray<uint32_t>)
+  DECL_ACCESSORS(scope_data, PodArray<uint8_t>)
   DECL_ACCESSORS(child_data, FixedArray)
 
   static const int kScopeDataOffset = Struct::kHeaderSize;
@@ -57,9 +58,6 @@ class SharedFunctionInfo : public HeapObject {
   // as function->shared()->IsInterpreted() because the closure might have been
   // optimized.
   inline bool IsInterpreted() const;
-
-  inline void ReplaceCode(Code* code);
-  inline bool HasBaselineCode() const;
 
   // Set up the link between shared function info and the script. The shared
   // function info is added to the list on the script.
@@ -146,6 +144,7 @@ class SharedFunctionInfo : public HeapObject {
   //  - a FunctionTemplateInfo to make benefit the API [IsApiFunction()].
   //  - a BytecodeArray for the interpreter [HasBytecodeArray()].
   //  - a FixedArray with Asm->Wasm conversion [HasAsmWasmData()].
+  //  - a Smi containing the builtin id [HasLazyDeserializationBuiltinId()]
   DECL_ACCESSORS(function_data, Object)
 
   inline bool IsApiFunction();
@@ -159,6 +158,14 @@ class SharedFunctionInfo : public HeapObject {
   inline FixedArray* asm_wasm_data() const;
   inline void set_asm_wasm_data(FixedArray* data);
   inline void ClearAsmWasmData();
+  // A brief note to clear up possible confusion:
+  // lazy_deserialization_builtin_id corresponds to the auto-generated
+  // Builtins::Name id, while builtin_function_id corresponds to
+  // BuiltinFunctionId (a manually maintained list of 'interesting' functions
+  // mainly used during optimization).
+  inline bool HasLazyDeserializationBuiltinId() const;
+  inline int lazy_deserialization_builtin_id() const;
+  inline void set_lazy_deserialization_builtin_id(int builtin_id);
 
   // [function identifier]: This field holds an additional identifier for the
   // function.
@@ -282,9 +289,6 @@ class SharedFunctionInfo : public HeapObject {
   inline LanguageMode language_mode();
   inline void set_language_mode(LanguageMode language_mode);
 
-  // False if the function definitely does not allocate an arguments object.
-  DECL_BOOLEAN_ACCESSORS(uses_arguments)
-
   // True if the function has any duplicated parameter names.
   DECL_BOOLEAN_ACCESSORS(has_duplicate_parameters)
 
@@ -293,9 +297,6 @@ class SharedFunctionInfo : public HeapObject {
   // null passed as the receiver should not be translated to the
   // global object.
   DECL_BOOLEAN_ACCESSORS(native)
-
-  // Indicate that this function should always be inlined in optimized code.
-  DECL_BOOLEAN_ACCESSORS(force_inline)
 
   // Whether this function was created from a FunctionDeclaration.
   DECL_BOOLEAN_ACCESSORS(is_declaration)
@@ -438,6 +439,7 @@ class SharedFunctionInfo : public HeapObject {
 
   DEFINE_FIELD_OFFSET_CONSTANTS(HeapObject::kHeaderSize,
                                 SHARED_FUNCTION_INFO_FIELDS)
+#undef SHARED_FUNCTION_INFO_FIELDS
 
   static const int kAlignedSize = POINTER_SIZE_ALIGN(kSize);
 
@@ -462,9 +464,7 @@ class SharedFunctionInfo : public HeapObject {
   V(FunctionKindBits, FunctionKind, 10, _) \
   V(HasDuplicateParametersBit, bool, 1, _) \
   V(AllowLazyCompilationBit, bool, 1, _)   \
-  V(UsesArgumentsBit, bool, 1, _)          \
   V(NeedsHomeObjectBit, bool, 1, _)        \
-  V(ForceInlineBit, bool, 1, _)            \
   V(IsDeclarationBit, bool, 1, _)          \
   V(IsAsmWasmBrokenBit, bool, 1, _)        \
   V(FunctionMapIndexBits, int, 5, _)       \
@@ -515,13 +515,6 @@ class SharedFunctionInfo : public HeapObject {
   inline int length() const;
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(SharedFunctionInfo);
-};
-
-// Result of searching in an optimized code map of a SharedFunctionInfo. Note
-// that both {code} and {vector} can be NULL to pass search result status.
-struct CodeAndVector {
-  Code* code;              // Cached optimized code.
-  FeedbackVector* vector;  // Cached feedback vector.
 };
 
 // Printing support.

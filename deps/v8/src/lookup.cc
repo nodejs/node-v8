@@ -48,6 +48,7 @@ LookupIterator LookupIterator::PropertyOrElement(Isolate* isolate,
                                                  Handle<Object> key,
                                                  bool* success,
                                                  Configuration configuration) {
+  // TODO(mslekova): come up with better way to avoid duplication
   uint32_t index = 0;
   if (key->ToArrayIndex(&index)) {
     *success = true;
@@ -223,7 +224,7 @@ Handle<JSReceiver> LookupIterator::GetRootForNonJSReceiver(
       handle(receiver->GetPrototypeChainRootMap(isolate)->prototype(), isolate);
   if (root->IsNull(isolate)) {
     unsigned int magic = 0xbbbbbbbb;
-    isolate->PushStackTraceAndDie(magic, *receiver, NULL, magic);
+    isolate->PushStackTraceAndDie(magic, *receiver, nullptr, magic);
   }
   return Handle<JSReceiver>::cast(root);
 }
@@ -392,7 +393,7 @@ void LookupIterator::ReconfigureDataProperty(Handle<Object> value,
       PropertyDetails original_details =
           dictionary->DetailsAt(dictionary_entry());
       int enumeration_index = original_details.dictionary_index();
-      DCHECK(enumeration_index > 0);
+      DCHECK_GT(enumeration_index, 0);
       details = details.set_index(enumeration_index);
       dictionary->SetEntry(dictionary_entry(), *name(), *value, details);
       property_details_ = details;
@@ -693,7 +694,7 @@ bool LookupIterator::HolderIsReceiverOrHiddenPrototype() const {
 
 
 Handle<Object> LookupIterator::FetchValue() const {
-  Object* result = NULL;
+  Object* result = nullptr;
   if (IsElement()) {
     Handle<JSObject> holder = GetHolder<JSObject>();
     ElementsAccessor* accessor = holder->GetElementsAccessor();
@@ -879,8 +880,8 @@ bool LookupIterator::SkipInterceptor(JSObject* holder) {
 
 JSReceiver* LookupIterator::NextHolder(Map* map) {
   DisallowHeapAllocation no_gc;
-  if (map->prototype() == heap()->null_value()) return NULL;
-  if (!check_prototype_chain() && !map->has_hidden_prototype()) return NULL;
+  if (map->prototype() == heap()->null_value()) return nullptr;
+  if (!check_prototype_chain() && !map->has_hidden_prototype()) return nullptr;
   return JSReceiver::cast(map->prototype());
 }
 

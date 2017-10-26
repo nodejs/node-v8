@@ -50,7 +50,6 @@ class V8_EXPORT_PRIVATE JSTypedLowering final
   Reduction ReduceJSStoreModule(Node* node);
   Reduction ReduceJSEqual(Node* node);
   Reduction ReduceJSStrictEqual(Node* node);
-  Reduction ReduceJSToBoolean(Node* node);
   Reduction ReduceJSToInteger(Node* node);
   Reduction ReduceJSToLength(Node* node);
   Reduction ReduceJSToName(Node* node);
@@ -65,12 +64,12 @@ class V8_EXPORT_PRIVATE JSTypedLowering final
   Reduction ReduceJSCallForwardVarargs(Node* node);
   Reduction ReduceJSCall(Node* node);
   Reduction ReduceJSForInNext(Node* node);
+  Reduction ReduceJSForInPrepare(Node* node);
   Reduction ReduceJSLoadMessage(Node* node);
   Reduction ReduceJSStoreMessage(Node* node);
   Reduction ReduceJSGeneratorStore(Node* node);
   Reduction ReduceJSGeneratorRestoreContinuation(Node* node);
   Reduction ReduceJSGeneratorRestoreRegister(Node* node);
-  Reduction ReduceJSTypeOf(Node* node);
   Reduction ReduceNumberBinop(Node* node);
   Reduction ReduceInt32Binop(Node* node);
   Reduction ReduceUI32Shift(Node* node, Signedness signedness);

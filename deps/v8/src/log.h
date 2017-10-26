@@ -14,6 +14,7 @@
 #include "src/base/platform/platform.h"
 #include "src/code-events.h"
 #include "src/isolate.h"
+#include "src/log-utils.h"
 #include "src/objects.h"
 
 namespace v8 {
@@ -93,7 +94,10 @@ class Ticker;
 
 class Logger : public CodeEventListener {
  public:
-  enum StartEnd { START = 0, END = 1 };
+  enum StartEnd { START = 0, END = 1, STAMP = 2 };
+
+  // The separator is used to write an unescaped "," into the log.
+  static const LogSeparator kNext = LogSeparator::kSeparator;
 
   // Acquires resources for logging if the right flags are set.
   bool SetUp(Isolate* isolate);
@@ -169,8 +173,6 @@ class Logger : public CodeEventListener {
   void CodeCreateEvent(CodeEventListener::LogEventsAndTags tag,
                        AbstractCode* code, SharedFunctionInfo* shared,
                        Name* source, int line, int column);
-  void CodeCreateEvent(CodeEventListener::LogEventsAndTags tag,
-                       AbstractCode* code, int args_count);
   // Emits a code deoptimization event.
   void CodeDisableOptEvent(AbstractCode* code, SharedFunctionInfo* shared);
   void CodeMovingGCEvent();
@@ -189,9 +191,8 @@ class Logger : public CodeEventListener {
   void CodeDeoptEvent(Code* code, DeoptKind kind, Address pc,
                       int fp_to_sp_delta);
 
-  void ICEvent(const char* type, bool keyed, const Address pc, int line,
-               int column, Map* map, Object* key, char old_state,
-               char new_state, const char* modifier,
+  void ICEvent(const char* type, bool keyed, Map* map, Object* key,
+               char old_state, char new_state, const char* modifier,
                const char* slow_stub_reason);
 
   // ==== Events logged by --log-gc. ====
@@ -213,7 +214,7 @@ class Logger : public CodeEventListener {
 
   void CurrentTimeEvent();
 
-  void TimerEvent(StartEnd se, const char* name);
+  V8_EXPORT_PRIVATE void TimerEvent(StartEnd se, const char* name);
 
   static void EnterExternal(Isolate* isolate);
   static void LeaveExternal(Isolate* isolate);
@@ -228,7 +229,7 @@ class Logger : public CodeEventListener {
   }
 
   bool is_logging_code_events() {
-    return is_logging() || jit_logger_ != NULL;
+    return is_logging() || jit_logger_ != nullptr;
   }
 
   // Stop collection of profiling data.
@@ -253,6 +254,9 @@ class Logger : public CodeEventListener {
   // Callback from Log, stops profiling in case of insufficient resources.
   void LogFailure();
 
+  // Used for logging stubs found in the snapshot.
+  void LogCodeObject(Object* code_object);
+
  private:
   explicit Logger(Isolate* isolate);
   ~Logger();
@@ -269,17 +273,12 @@ class Logger : public CodeEventListener {
   void MoveEventInternal(CodeEventListener::LogEventsAndTags event,
                          Address from, Address to);
 
-  // Used for logging stubs found in the snapshot.
-  void LogCodeObject(Object* code_object);
-
   // Helper method. It resets name_buffer_ and add tag name into it.
   void InitNameBuffer(CodeEventListener::LogEventsAndTags tag);
 
   // Emits a profiler tick event. Used by the profiler thread.
   void TickEvent(TickSample* sample, bool overflow);
   void RuntimeCallTimerEvent();
-
-  PRINTF_FORMAT(2, 3) void ApiEvent(const char* format, ...);
 
   // Logs a StringEvent regardless of whether FLAG_log is true.
   void UncheckedStringEvent(const char* name, const char* value);
@@ -317,7 +316,6 @@ class Logger : public CodeEventListener {
   LowLevelLogger* ll_logger_;
   JitLogger* jit_logger_;
   std::unique_ptr<ProfilerListener> profiler_listener_;
-  List<CodeEventListener*> listeners_;
   std::set<int> logged_source_code_;
   uint32_t next_source_info_id_ = 0;
 
@@ -341,11 +339,13 @@ class Logger : public CodeEventListener {
   V(Execute, true)              \
   V(External, true)
 
-#define V(TimerName, expose)                                                  \
-  class TimerEvent##TimerName : public AllStatic {                            \
-   public:                                                                    \
-    static const char* name(void* unused = NULL) { return "V8." #TimerName; } \
-    static bool expose_to_api() { return expose; }                            \
+#define V(TimerName, expose)                          \
+  class TimerEvent##TimerName : public AllStatic {    \
+   public:                                            \
+    static const char* name(void* unused = nullptr) { \
+      return "V8." #TimerName;                        \
+    }                                                 \
+    static bool expose_to_api() { return expose; }    \
   };
 TIMER_EVENTS_LIST(V)
 #undef V
@@ -374,8 +374,6 @@ class CodeEventLogger : public CodeEventListener {
                        const char* comment) override;
   void CodeCreateEvent(LogEventsAndTags tag, AbstractCode* code,
                        Name* name) override;
-  void CodeCreateEvent(LogEventsAndTags tag, AbstractCode* code,
-                       int args_count) override;
   void CodeCreateEvent(LogEventsAndTags tag, AbstractCode* code,
                        SharedFunctionInfo* shared, Name* name) override;
   void CodeCreateEvent(LogEventsAndTags tag, AbstractCode* code,

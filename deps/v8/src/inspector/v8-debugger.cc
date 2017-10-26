@@ -6,7 +6,6 @@
 
 #include "src/inspector/inspected-context.h"
 #include "src/inspector/protocol/Protocol.h"
-#include "src/inspector/script-breakpoint.h"
 #include "src/inspector/string-util.h"
 #include "src/inspector/v8-debugger-agent-impl.h"
 #include "src/inspector/v8-inspector-impl.h"
@@ -563,9 +562,6 @@ std::shared_ptr<AsyncStackTrace> V8Debugger::currentAsyncCreation() {
 v8::MaybeLocal<v8::Value> V8Debugger::getTargetScopes(
     v8::Local<v8::Context> context, v8::Local<v8::Value> value,
     ScopeTargetKind kind) {
-  if (!enabled()) {
-    UNREACHABLE();
-  }
   v8::Local<v8::Value> scopesValue;
   std::unique_ptr<v8::debug::ScopeIterator> iterator;
   switch (kind) {
@@ -582,7 +578,7 @@ v8::MaybeLocal<v8::Value> V8Debugger::getTargetScopes(
           m_isolate, v8::Local<v8::Object>::Cast(value));
       break;
   }
-
+  if (!iterator) return v8::MaybeLocal<v8::Value>();
   v8::Local<v8::Array> result = v8::Array::New(m_isolate);
   if (!result->SetPrototype(context, v8::Null(m_isolate)).FromMaybe(false)) {
     return v8::MaybeLocal<v8::Value>();
@@ -664,7 +660,6 @@ v8::MaybeLocal<v8::Array> V8Debugger::internalProperties(
           toV8StringInternalized(m_isolate, "[[GeneratorLocation]]"));
       createDataProperty(context, properties, properties->Length(), location);
     }
-    if (!enabled()) return properties;
     v8::Local<v8::Value> scopes;
     if (generatorScopes(context, value).ToLocal(&scopes)) {
       createDataProperty(context, properties, properties->Length(),
@@ -672,7 +667,6 @@ v8::MaybeLocal<v8::Array> V8Debugger::internalProperties(
       createDataProperty(context, properties, properties->Length(), scopes);
     }
   }
-  if (!enabled()) return properties;
   if (value->IsFunction()) {
     v8::Local<v8::Function> function = value.As<v8::Function>();
     v8::Local<v8::Value> boundFunction = function->GetBoundFunction();
@@ -726,6 +720,8 @@ void V8Debugger::setAsyncCallStackDepth(V8DebuggerAgentImpl* agent, int depth) {
   if (m_maxAsyncCallStackDepth == maxAsyncCallStackDepth) return;
   // TODO(dgozman): ideally, this should be per context group.
   m_maxAsyncCallStackDepth = maxAsyncCallStackDepth;
+  m_inspector->client()->maxAsyncCallStackDepthChanged(
+      m_maxAsyncCallStackDepth);
   if (!maxAsyncCallStackDepth) allAsyncTasksCanceled();
 }
 

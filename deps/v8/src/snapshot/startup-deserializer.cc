@@ -4,8 +4,10 @@
 
 #include "src/snapshot/startup-deserializer.h"
 
+#include "src/api.h"
 #include "src/assembler-inl.h"
 #include "src/heap/heap-inl.h"
+#include "src/snapshot/builtin-deserializer.h"
 #include "src/snapshot/snapshot.h"
 
 namespace v8 {
@@ -13,12 +15,18 @@ namespace internal {
 
 void StartupDeserializer::DeserializeInto(Isolate* isolate) {
   Initialize(isolate);
-  if (!ReserveSpace()) V8::FatalProcessOutOfMemory("StartupDeserializer");
+
+  BuiltinDeserializer builtin_deserializer(isolate, builtin_data_);
+
+  if (!DefaultDeserializerAllocator::ReserveSpace(this,
+                                                  &builtin_deserializer)) {
+    V8::FatalProcessOutOfMemory("StartupDeserializer");
+  }
 
   // No active threads.
   DCHECK_NULL(isolate->thread_manager()->FirstThreadStateInUse());
   // No active handles.
-  DCHECK(isolate->handle_scope_implementer()->blocks()->is_empty());
+  DCHECK(isolate->handle_scope_implementer()->blocks()->empty());
   // Partial snapshot cache is not yet populated.
   DCHECK(isolate->partial_snapshot_cache()->empty());
   // Builtins are not yet created.
@@ -26,14 +34,22 @@ void StartupDeserializer::DeserializeInto(Isolate* isolate) {
 
   {
     DisallowHeapAllocation no_gc;
+
     isolate->heap()->IterateStrongRoots(this, VISIT_ONLY_STRONG_ROOT_LIST);
     isolate->heap()->IterateSmiRoots(this);
     isolate->heap()->IterateStrongRoots(this, VISIT_ONLY_STRONG);
     isolate->heap()->RepairFreeListsAfterDeserialization();
     isolate->heap()->IterateWeakRoots(this, VISIT_ALL);
     DeserializeDeferredObjects();
-    FlushICacheForNewIsolate();
     RestoreExternalReferenceRedirectors(accessor_infos());
+
+    // Deserialize eager builtins from the builtin snapshot. Note that deferred
+    // objects must have been deserialized prior to this.
+    builtin_deserializer.DeserializeEagerBuiltins();
+
+    // Flush the instruction cache for the entire code-space. Must happen after
+    // builtins deserialization.
+    FlushICacheForNewIsolate();
   }
 
   isolate->heap()->set_native_contexts_list(isolate->heap()->undefined_value());
@@ -78,7 +94,7 @@ void StartupDeserializer::PrintDisassembledCodeObjects() {
     CodeTracer::Scope tracing_scope(isolate()->GetCodeTracer());
     OFStream os(tracing_scope.file());
 
-    for (HeapObject* obj = iterator.next(); obj != NULL;
+    for (HeapObject* obj = iterator.next(); obj != nullptr;
          obj = iterator.next()) {
       if (obj->IsCode()) {
         Code::cast(obj)->Disassemble(nullptr, os);

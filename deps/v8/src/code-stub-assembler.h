@@ -31,6 +31,8 @@ enum class PrimitiveType { kBoolean, kNumber, kString, kSymbol };
   V(EmptyPropertyDictionary, empty_property_dictionary,                  \
     EmptyPropertyDictionary)                                             \
   V(EmptyFixedArray, empty_fixed_array, EmptyFixedArray)                 \
+  V(EmptySlowElementDictionary, empty_slow_element_dictionary,           \
+    EmptySlowElementDictionary)                                          \
   V(empty_string, empty_string, EmptyString)                             \
   V(EmptyWeakCell, empty_weak_cell, EmptyWeakCell)                       \
   V(FalseValue, false_value, False)                                      \
@@ -71,10 +73,10 @@ enum class PrimitiveType { kBoolean, kNumber, kString, kSymbol };
 class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
  public:
   using Node = compiler::Node;
-  template <class A>
-  using TNode = compiler::TNode<A>;
-  template <class A>
-  using SloppyTNode = compiler::SloppyTNode<A>;
+  template <class T>
+  using TNode = compiler::TNode<T>;
+  template <class T>
+  using SloppyTNode = compiler::SloppyTNode<T>;
 
   CodeStubAssembler(compiler::CodeAssemblerState* state);
 
@@ -175,7 +177,9 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
 
   Node* IntPtrOrSmiConstant(int value, ParameterMode mode);
 
-  bool IsIntPtrOrSmiConstantZero(Node* test);
+  bool IsIntPtrOrSmiConstantZero(Node* test, ParameterMode mode);
+  bool TryGetIntPtrOrSmiConstantValue(Node* maybe_constant, int* value,
+                                      ParameterMode mode);
 
   // Round the 32bits payload of the provided word up to the next power of two.
   Node* IntPtrRoundUpToPowerOfTwo32(Node* value);
@@ -192,6 +196,10 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   TNode<Float64T> Float64Round(SloppyTNode<Float64T> x);
   TNode<Float64T> Float64RoundToEven(SloppyTNode<Float64T> x);
   TNode<Float64T> Float64Trunc(SloppyTNode<Float64T> x);
+  // Select the minimum of the two provided Number values.
+  TNode<Object> NumberMax(SloppyTNode<Object> left, SloppyTNode<Object> right);
+  // Select the minimum of the two provided Number values.
+  TNode<Object> NumberMin(SloppyTNode<Object> left, SloppyTNode<Object> right);
 
   // Tag a Word as a Smi value.
   TNode<Smi> SmiTag(SloppyTNode<IntPtrT> value);
@@ -272,8 +280,12 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   // Smi | HeapNumber operations.
   Node* NumberInc(Node* value);
   Node* NumberDec(Node* value);
+  Node* NumberAdd(Node* a, Node* b);
+  Node* NumberSub(Node* a, Node* b);
   void GotoIfNotNumber(Node* value, Label* is_not_number);
   void GotoIfNumber(Node* value, Label* is_number);
+
+  Node* BitwiseOp(Node* left32, Node* right32, Operation bitwise_op);
 
   // Allocate an object of the given size.
   Node* AllocateInNewSpace(Node* size, AllocationFlags flags = kNone);
@@ -362,6 +374,8 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   TNode<BoolT> WordIsWordAligned(SloppyTNode<WordT> word);
   TNode<BoolT> WordIsPowerOfTwo(SloppyTNode<IntPtrT> value);
 
+  Node* IsNotTheHole(Node* value) { return Word32BinaryNot(IsTheHole(value)); }
+
 #if DEBUG
   void Bind(Label* label, AssemblerDebugInfo debug_info);
 #else
@@ -392,10 +406,10 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   void BranchIfJSReceiver(Node* object, Label* if_true, Label* if_false);
   void BranchIfJSObject(Node* object, Label* if_true, Label* if_false);
 
-  enum class FastJSArrayAccessMode { INBOUNDS_READ, ANY_ACCESS };
-  void BranchIfFastJSArray(Node* object, Node* context,
-                           FastJSArrayAccessMode mode, Label* if_true,
+  void BranchIfFastJSArray(Node* object, Node* context, Label* if_true,
                            Label* if_false);
+  void BranchIfFastJSArrayForCopy(Node* object, Node* context, Label* if_true,
+                                  Label* if_false);
 
   // Load value from current frame by given offset in bytes.
   Node* LoadFromFrame(int offset, MachineType rep = MachineType::AnyTagged());
@@ -409,6 +423,19 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   // Load a field from an object on the heap.
   Node* LoadObjectField(SloppyTNode<HeapObject> object, int offset,
                         MachineType rep);
+  template <class T, typename std::enable_if<
+                         std::is_convertible<TNode<T>, TNode<Object>>::value,
+                         int>::type = 0>
+  TNode<T> LoadObjectField(TNode<HeapObject> object, int offset) {
+    return CAST(LoadObjectField(object, offset, MachineTypeOf<T>::value));
+  }
+  template <class T, typename std::enable_if<
+                         std::is_convertible<TNode<T>, TNode<UntaggedT>>::value,
+                         int>::type = 0>
+  TNode<T> LoadObjectField(TNode<HeapObject> object, int offset) {
+    return UncheckedCast<T>(
+        LoadObjectField(object, offset, MachineTypeOf<T>::value));
+  }
   TNode<Object> LoadObjectField(SloppyTNode<HeapObject> object, int offset) {
     return UncheckedCast<Object>(
         LoadObjectField(object, offset, MachineType::AnyTagged()));
@@ -446,9 +473,6 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   // Load the properties backing store of a JSObject.
   TNode<HeapObject> LoadSlowProperties(SloppyTNode<JSObject> object);
   TNode<HeapObject> LoadFastProperties(SloppyTNode<JSObject> object);
-  // Load the hash from the backing store of a JSObject.
-  TNode<Int32T> LoadHashForJSObject(SloppyTNode<JSObject> jsobject,
-                                    SloppyTNode<Int32T> instance_type);
   // Load the elements backing store of a JSObject.
   TNode<FixedArrayBase> LoadElements(SloppyTNode<JSObject> object);
   // Load the length of a JSArray instance.
@@ -486,6 +510,8 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   TNode<IntPtrT> LoadMapConstructorFunctionIndex(SloppyTNode<Map> map);
   // Load the constructor of a Map (equivalent to Map::GetConstructor()).
   TNode<Object> LoadMapConstructor(SloppyTNode<Map> map);
+  // Load the EnumLength of a Map.
+  Node* LoadMapEnumLength(SloppyTNode<Map> map);
 
   // This is only used on a newly allocated PropertyArray which
   // doesn't have an existing hash.
@@ -496,14 +522,15 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   TNode<BoolT> IsDictionaryMap(SloppyTNode<Map> map);
 
   // Load the hash field of a name as an uint32 value.
-  Node* LoadNameHashField(Node* name);
+  TNode<Uint32T> LoadNameHashField(SloppyTNode<Name> name);
   // Load the hash value of a name as an uint32 value.
   // If {if_hash_not_computed} label is specified then it also checks if
   // hash is actually computed.
-  Node* LoadNameHash(Node* name, Label* if_hash_not_computed = nullptr);
+  TNode<Uint32T> LoadNameHash(SloppyTNode<Name> name,
+                              Label* if_hash_not_computed = nullptr);
 
   // Load length field of a String object.
-  Node* LoadStringLength(Node* object);
+  TNode<Smi> LoadStringLength(SloppyTNode<String> object);
   // Loads a pointer to the sequential String char array.
   Node* PointerToSeqStringData(Node* seq_string);
   // Load value field of a JSValue object.
@@ -551,22 +578,39 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
       ParameterMode parameter_mode = INTPTR_PARAMETERS);
 
   // Context manipulation
-  Node* LoadContextElement(Node* context, int slot_index);
-  Node* LoadContextElement(Node* context, Node* slot_index);
-  Node* StoreContextElement(Node* context, int slot_index, Node* value);
-  Node* StoreContextElement(Node* context, Node* slot_index, Node* value);
-  Node* StoreContextElementNoWriteBarrier(Node* context, int slot_index,
-                                          Node* value);
-  Node* LoadNativeContext(Node* context);
+  TNode<Object> LoadContextElement(SloppyTNode<Context> context,
+                                   int slot_index);
+  TNode<Object> LoadContextElement(SloppyTNode<Context> context,
+                                   SloppyTNode<IntPtrT> slot_index);
+  void StoreContextElement(SloppyTNode<Context> context, int slot_index,
+                           SloppyTNode<Object> value);
+  void StoreContextElement(SloppyTNode<Context> context,
+                           SloppyTNode<IntPtrT> slot_index,
+                           SloppyTNode<Object> value);
+  void StoreContextElementNoWriteBarrier(SloppyTNode<Context> context,
+                                         int slot_index,
+                                         SloppyTNode<Object> value);
+  TNode<Context> LoadNativeContext(SloppyTNode<Context> context);
+  // Calling this is only valid if there's a module context in the chain.
+  TNode<Context> LoadModuleContext(SloppyTNode<Context> context);
 
-  Node* LoadJSArrayElementsMap(ElementsKind kind, Node* native_context);
-  Node* LoadJSArrayElementsMap(Node* kind, Node* native_context);
+  void GotoIfContextElementEqual(Node* value, Node* native_context,
+                                 int slot_index, Label* if_equal) {
+    GotoIf(WordEqual(value, LoadContextElement(native_context, slot_index)),
+           if_equal);
+  }
+
+  TNode<Map> LoadJSArrayElementsMap(ElementsKind kind,
+                                    SloppyTNode<Context> native_context);
+  TNode<Map> LoadJSArrayElementsMap(SloppyTNode<Int32T> kind,
+                                    SloppyTNode<Context> native_context);
 
   // Load the "prototype" property of a JSFunction.
   Node* LoadJSFunctionPrototype(Node* function, Label* if_bailout);
 
   // Store the floating point value of a HeapNumber.
-  Node* StoreHeapNumberValue(Node* object, Node* value);
+  void StoreHeapNumberValue(SloppyTNode<HeapNumber> object,
+                            SloppyTNode<Float64T> value);
   // Store a field to an object on the heap.
   Node* StoreObjectField(Node* object, int offset, Node* value);
   Node* StoreObjectField(Node* object, Node* offset, Node* value);
@@ -642,9 +686,10 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
                        WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
 
   // Allocate a HeapNumber without initializing its value.
-  Node* AllocateHeapNumber(MutableMode mode = IMMUTABLE);
+  TNode<HeapNumber> AllocateHeapNumber(MutableMode mode = IMMUTABLE);
   // Allocate a HeapNumber with a specific value.
-  Node* AllocateHeapNumberWithValue(Node* value, MutableMode mode = IMMUTABLE);
+  TNode<HeapNumber> AllocateHeapNumberWithValue(SloppyTNode<Float64T> value,
+                                                MutableMode mode = IMMUTABLE);
   // Allocate a SeqOneByteString with the given length.
   Node* AllocateSeqOneByteString(int length, AllocationFlags flags = kNone);
   Node* AllocateSeqOneByteString(Node* context, Node* length,
@@ -684,6 +729,9 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   Node* AllocateNameDictionaryWithCapacity(Node* capacity);
   Node* CopyNameDictionary(Node* dictionary, Label* large_object_fallback);
 
+  Node* AllocateStruct(Node* map, AllocationFlags flags = kNone);
+  void InitializeStructBody(Node* object, Node* map, Node* size,
+                            int start_offset = Struct::kHeaderSize);
   Node* AllocateJSObjectFromMap(Node* map, Node* properties = nullptr,
                                 Node* elements = nullptr,
                                 AllocationFlags flags = kNone);
@@ -696,8 +744,7 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
                               int start_offset = JSObject::kHeaderSize);
 
   // Allocate a JSArray without elements and initialize the header fields.
-  Node* AllocateUninitializedJSArrayWithoutElements(ElementsKind kind,
-                                                    Node* array_map,
+  Node* AllocateUninitializedJSArrayWithoutElements(Node* array_map,
                                                     Node* length,
                                                     Node* allocation_site);
   // Allocate and return a JSArray with initialized header fields and its
@@ -712,9 +759,19 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
                         Node* length, Node* allocation_site = nullptr,
                         ParameterMode capacity_mode = INTPTR_PARAMETERS);
 
+  Node* CloneFastJSArray(Node* context, Node* array,
+                         ParameterMode mode = INTPTR_PARAMETERS,
+                         Node* allocation_site = nullptr);
+
+  Node* ExtractFastJSArray(Node* context, Node* array, Node* begin, Node* count,
+                           ParameterMode mode = INTPTR_PARAMETERS,
+                           Node* capacity = nullptr,
+                           Node* allocation_site = nullptr);
+
   Node* AllocateFixedArray(ElementsKind kind, Node* capacity,
                            ParameterMode mode = INTPTR_PARAMETERS,
-                           AllocationFlags flags = kNone);
+                           AllocationFlags flags = kNone,
+                           Node* fixed_array_map = nullptr);
 
   Node* AllocatePropertyArray(Node* capacity,
                               ParameterMode mode = INTPTR_PARAMETERS,
@@ -750,17 +807,90 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
       ElementsKind kind, Node* from_array, Node* to_array, Node* length,
       WriteBarrierMode barrier_mode = UPDATE_WRITE_BARRIER,
       ParameterMode mode = INTPTR_PARAMETERS) {
-    CopyFixedArrayElements(kind, from_array, kind, to_array, length, length,
+    CopyFixedArrayElements(kind, from_array, kind, to_array,
+                           IntPtrOrSmiConstant(0, mode), length, length,
                            barrier_mode, mode);
   }
 
-  // Copies |element_count| elements from |from_array| to |to_array| of
-  // |capacity| size respecting both array's elements kinds.
+  // Copies |element_count| elements from |from_array| starting from element
+  // zero to |to_array| of |capacity| size respecting both array's elements
+  // kinds.
   void CopyFixedArrayElements(
       ElementsKind from_kind, Node* from_array, ElementsKind to_kind,
       Node* to_array, Node* element_count, Node* capacity,
       WriteBarrierMode barrier_mode = UPDATE_WRITE_BARRIER,
+      ParameterMode mode = INTPTR_PARAMETERS) {
+    CopyFixedArrayElements(from_kind, from_array, to_kind, to_array,
+                           IntPtrOrSmiConstant(0, mode), element_count,
+                           capacity, barrier_mode, mode);
+  }
+
+  // Copies |element_count| elements from |from_array| starting from element
+  // |first_element| to |to_array| of |capacity| size respecting both array's
+  // elements kinds.
+  void CopyFixedArrayElements(
+      ElementsKind from_kind, Node* from_array, ElementsKind to_kind,
+      Node* to_array, Node* first_element, Node* element_count, Node* capacity,
+      WriteBarrierMode barrier_mode = UPDATE_WRITE_BARRIER,
       ParameterMode mode = INTPTR_PARAMETERS);
+
+  enum class ExtractFixedArrayFlag {
+    kFixedArrays = 1,
+    kFixedDoubleArrays = 2,
+    kDontCopyCOW = 4,
+    kNewSpaceAllocationOnly = 8,
+    kAllFixedArrays = kFixedArrays | kFixedDoubleArrays,
+    kAllFixedArraysDontCopyCOW = kAllFixedArrays | kDontCopyCOW
+  };
+
+  typedef base::Flags<ExtractFixedArrayFlag> ExtractFixedArrayFlags;
+
+  // Copy a portion of an existing FixedArray or FixedDoubleArray into a new
+  // FixedArray, including special appropriate handling for empty arrays and COW
+  // arrays.
+  //
+  // * |source| is either a FixedArray or FixedDoubleArray from which to copy
+  // elements.
+  // * |first| is the starting element index to copy from, if nullptr is passed
+  // then index zero is used by default.
+  // * |count| is the number of elements to copy out of the source array
+  // starting from and including the element indexed by |start|. If |count| is
+  // nullptr, then all of the elements from |start| to the end of |source| are
+  // copied.
+  // * |capacity| determines the size of the allocated result array, with
+  // |capacity| >= |count|. If |capacity| is nullptr, then |count| is used as
+  // the destination array's capacity.
+  // * |extract_flags| determines whether FixedArrays, FixedDoubleArrays or both
+  // are detected and copied. Although it's always correct to pass
+  // kAllFixedArrays, the generated code is more compact and efficient if the
+  // caller can specify whether only FixedArrays or FixedDoubleArrays will be
+  // passed as the |source| parameter.
+  // * |parameter_mode| determines the parameter mode of |first|, |count| and
+  // |capacity|.
+  Node* ExtractFixedArray(Node* source, Node* first, Node* count = nullptr,
+                          Node* capacity = nullptr,
+                          ExtractFixedArrayFlags extract_flags =
+                              ExtractFixedArrayFlag::kAllFixedArrays,
+                          ParameterMode parameter_mode = INTPTR_PARAMETERS);
+
+  // Copy the entire contents of a FixedArray or FixedDoubleArray to a new
+  // array, including special appropriate handling for empty arrays and COW
+  // arrays.
+  //
+  // * |source| is either a FixedArray or FixedDoubleArray from which to copy
+  // elements.
+  // * |extract_flags| determines whether FixedArrays, FixedDoubleArrays or both
+  // are detected and copied. Although it's always correct to pass
+  // kAllFixedArrays, the generated code is more compact and efficient if the
+  // caller can specify whether only FixedArrays or FixedDoubleArrays will be
+  // passed as the |source| parameter.
+  Node* CloneFixedArray(Node* source,
+                        ExtractFixedArrayFlags flags =
+                            ExtractFixedArrayFlag::kAllFixedArraysDontCopyCOW) {
+    ParameterMode mode = OptimalParameterMode();
+    return ExtractFixedArray(source, IntPtrOrSmiConstant(0, mode), nullptr,
+                             nullptr, flags, mode);
+  }
 
   // Copies |character_count| elements from |from_string| to |to_string|
   // starting at the |from_index|'th character. |from_string| and |to_string|
@@ -821,15 +951,28 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   Node* TryTaggedToFloat64(Node* value, Label* if_valueisnotnumber);
   Node* TruncateTaggedToFloat64(Node* context, Node* value);
   Node* TruncateTaggedToWord32(Node* context, Node* value);
+  void TaggedToWord32OrBigInt(Node* context, Node* value, Label* if_number,
+                              Variable* var_word32, Label* if_bigint,
+                              Variable* var_bigint);
+  void TaggedToWord32OrBigIntWithFeedback(
+      Node* context, Node* value, Label* if_number, Variable* var_word32,
+      Label* if_bigint, Variable* var_bigint, Variable* var_feedback);
+
   // Truncate the floating point value of a HeapNumber to an Int32.
   Node* TruncateHeapNumberValueToWord32(Node* object);
 
   // Conversions.
-  Node* ChangeFloat64ToTagged(Node* value);
-  Node* ChangeInt32ToTagged(Node* value);
-  Node* ChangeUint32ToTagged(Node* value);
-  Node* ChangeNumberToFloat64(Node* value);
-  Node* ChangeNumberToIntPtr(Node* value);
+  TNode<Number> ChangeFloat64ToTagged(SloppyTNode<Float64T> value);
+  TNode<Number> ChangeInt32ToTagged(SloppyTNode<Int32T> value);
+  TNode<Number> ChangeUint32ToTagged(SloppyTNode<Uint32T> value);
+  TNode<Float64T> ChangeNumberToFloat64(SloppyTNode<Number> value);
+  TNode<UintPtrT> ChangeNonnegativeNumberToUintPtr(SloppyTNode<Number> value);
+
+  void TaggedToNumeric(Node* context, Node* value, Label* done,
+                       Variable* var_numeric);
+  void TaggedToNumericWithFeedback(Node* context, Node* value, Label* done,
+                                   Variable* var_numeric,
+                                   Variable* var_feedback);
 
   Node* TimesPointerSize(Node* value);
 
@@ -852,6 +995,11 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   Node* ThrowIfNotInstanceType(Node* context, Node* value,
                                InstanceType instance_type,
                                char const* method_name);
+  // Throws a TypeError for {method_name} if {value} is not a JSReceiver.
+  // Returns the {value}'s map.
+  Node* ThrowIfNotJSReceiver(Node* context, Node* value,
+                             MessageTemplate::Template msg_template,
+                             const char* method_name = nullptr);
   void ThrowTypeError(Node* context, MessageTemplate::Template message,
                       char const* arg0 = nullptr, char const* arg1 = nullptr);
   void ThrowTypeError(Node* context, MessageTemplate::Template message,
@@ -865,6 +1013,7 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   Node* IsAccessorPair(Node* object);
   Node* IsAllocationSite(Node* object);
   Node* IsAnyHeapNumber(Node* object);
+  Node* IsArrayIteratorInstanceType(Node* instance_type);
   Node* IsBoolean(Node* object);
   Node* IsExtensibleMap(Node* map);
   Node* IsCallableMap(Node* map);
@@ -873,6 +1022,7 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   Node* IsConsStringInstanceType(Node* instance_type);
   Node* IsConstructorMap(Node* map);
   Node* IsConstructor(Node* object);
+  Node* IsFunctionWithPrototypeSlotMap(Node* map);
   Node* IsDeprecatedMap(Node* map);
   Node* IsDictionary(Node* object);
   Node* IsExternalStringInstanceType(Node* instance_type);
@@ -903,6 +1053,7 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   Node* IsJSReceiverMap(Node* map);
   Node* IsJSReceiver(Node* object);
   Node* IsNullOrJSReceiver(Node* object);
+  Node* IsNullOrUndefined(Node* object);
   Node* IsJSRegExp(Node* object);
   Node* IsJSTypedArray(Node* object);
   Node* IsJSValueInstanceType(Node* instance_type);
@@ -928,24 +1079,37 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   Node* IsString(Node* object);
   Node* IsSymbolInstanceType(Node* instance_type);
   Node* IsSymbol(Node* object);
+  Node* IsBigIntInstanceType(Node* instance_type);
+  Node* IsBigInt(Node* object);
   Node* IsUnseededNumberDictionary(Node* object);
   Node* IsWeakCell(Node* object);
   Node* IsUndetectableMap(Node* map);
   Node* IsArrayProtectorCellInvalid();
+  Node* IsSpeciesProtectorCellInvalid();
+  Node* IsPrototypeInitialArrayPrototype(Node* context, Node* map);
 
   // True iff |object| is a Smi or a HeapNumber.
   Node* IsNumber(Node* object);
+  // True iff |object| is a Smi or a HeapNumber or a BigInt.
+  Node* IsNumeric(Node* object);
 
   // True iff |number| is either a Smi, or a HeapNumber whose value is not
   // within Smi range.
   Node* IsNumberNormalized(Node* number);
   Node* IsNumberPositive(Node* number);
+  // True iff {number} is a positive number and a valid array index in the range
+  // [0, 2^32-1).
+  Node* IsNumberArrayIndex(Node* number);
 
   // ElementsKind helpers:
   Node* IsFastElementsKind(Node* elements_kind);
   Node* IsHoleyFastElementsKind(Node* elements_kind);
   Node* IsElementsKindGreaterThan(Node* target_kind,
                                   ElementsKind reference_kind);
+
+  Node* FixedArraySizeDoesntFitInNewSpace(
+      Node* element_count, int base_size = FixedArray::kHeaderSize,
+      ParameterMode mode = INTPTR_PARAMETERS);
 
   // String helpers.
   // Load a character from a String (might flatten a ConsString).
@@ -988,19 +1152,25 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
 
   // Type conversion helpers.
   // Convert a String to a Number.
-  Node* StringToNumber(Node* context, Node* input);
+  TNode<Number> StringToNumber(SloppyTNode<Context> context,
+                               SloppyTNode<String> input);
   Node* NumberToString(Node* context, Node* input);
   // Convert an object to a name.
   Node* ToName(Node* context, Node* input);
   // Convert a Non-Number object to a Number.
-  Node* NonNumberToNumber(Node* context, Node* input);
+  TNode<Number> NonNumberToNumber(SloppyTNode<Context> context,
+                                  SloppyTNode<HeapObject> input);
+  // Convert a Non-Number object to a Numeric.
+  TNode<Numeric> NonNumberToNumeric(SloppyTNode<Context> context,
+                                    SloppyTNode<HeapObject> input);
   // Convert any object to a Number.
-  Node* ToNumber(Node* context, Node* input);
+  TNode<Number> ToNumber(SloppyTNode<Context> context,
+                         SloppyTNode<Object> input);
 
   // Converts |input| to one of 2^32 integer values in the range 0 through
   // 2^32-1, inclusive.
   // ES#sec-touint32
-  TNode<Object> ToUint32(SloppyTNode<Context> context,
+  TNode<Number> ToUint32(SloppyTNode<Context> context,
                          SloppyTNode<Object> input);
 
   // Convert any object to a String.
@@ -1026,7 +1196,7 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   Node* ToLength_Inline(Node* const context, Node* const input);
 
   // Convert any object to an Integer.
-  TNode<Object> ToInteger(SloppyTNode<Context> context,
+  TNode<Number> ToInteger(SloppyTNode<Context> context,
                           SloppyTNode<Object> input,
                           ToIntegerTruncationMode mode = kNoTruncation);
 
@@ -1085,6 +1255,12 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   TNode<BoolT> IsSetWord32(SloppyTNode<Word32T> word32, uint32_t mask) {
     return Word32NotEqual(Word32And(word32, Int32Constant(mask)),
                           Int32Constant(0));
+  }
+
+  // Returns true if none of the mask's bits in given |word32| are set.
+  TNode<BoolT> IsNotSetWord32(SloppyTNode<Word32T> word32, uint32_t mask) {
+    return Word32Equal(Word32And(word32, Int32Constant(mask)),
+                       Int32Constant(0));
   }
 
   // Returns true if any of the |T|'s bits in given |word| are set.
@@ -1299,6 +1475,9 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
                          Node* unique_name, Label* if_found,
                          Label* if_not_found, Label* if_bailout);
 
+  // Operating mode for TryGetOwnProperty and CallGetterIfAccessor
+  // kReturnAccessorPair is used when we're only getting the property descriptor
+  enum GetOwnPropertyMode { kCallJSGetter, kReturnAccessorPair };
   // Tries to get {object}'s own {unique_name} property value. If the property
   // is an accessor then it also calls a getter. If the property is a double
   // field it re-wraps value in an immutable heap number.
@@ -1310,7 +1489,8 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
                          Node* instance_type, Node* unique_name,
                          Label* if_found, Variable* var_value,
                          Variable* var_details, Variable* var_raw_value,
-                         Label* if_not_found, Label* if_bailout);
+                         Label* if_not_found, Label* if_bailout,
+                         GetOwnPropertyMode mode);
 
   Node* GetProperty(Node* context, Node* receiver, Handle<Name> name) {
     return GetProperty(context, receiver, HeapConstant(name));
@@ -1407,8 +1587,7 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   Node* LoadFeedbackVector(Node* closure);
 
   // Update the type feedback vector.
-  void UpdateFeedback(Node* feedback, Node* feedback_vector, Node* slot_id,
-                      Node* function);
+  void UpdateFeedback(Node* feedback, Node* feedback_vector, Node* slot_id);
 
   // Combine the new feedback with the existing_feedback.
   void CombineFeedback(Variable* existing_feedback, Node* feedback);
@@ -1539,22 +1718,19 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   void InitializeFieldsWithRoot(Node* object, Node* start_offset,
                                 Node* end_offset, Heap::RootListIndex root);
 
-  enum RelationalComparisonMode {
-    kLessThan,
-    kLessThanOrEqual,
-    kGreaterThan,
-    kGreaterThanOrEqual
-  };
-
-  Node* RelationalComparison(RelationalComparisonMode mode, Node* lhs,
-                             Node* rhs, Node* context,
+  Node* RelationalComparison(Operation op, Node* lhs, Node* rhs, Node* context,
                              Variable* var_type_feedback = nullptr);
 
-  void BranchIfNumericRelationalComparison(RelationalComparisonMode mode,
-                                           Node* lhs, Node* rhs, Label* if_true,
-                                           Label* if_false);
+  void BranchIfNumericRelationalComparison(Operation op, Node* lhs, Node* rhs,
+                                           Label* if_true, Label* if_false);
 
-  void GotoUnlessNumberLessThan(Node* lhs, Node* rhs, Label* if_false);
+  void BranchIfAccessorPair(Node* value, Label* if_accessor_pair,
+                            Label* if_not_accessor_pair) {
+    GotoIf(TaggedIsSmi(value), if_not_accessor_pair);
+    Branch(IsAccessorPair(value), if_accessor_pair, if_not_accessor_pair);
+  }
+
+  void GotoIfNumericGreaterThanOrEqual(Node* lhs, Node* rhs, Label* if_false);
 
   Node* Equal(Node* lhs, Node* rhs, Node* context,
               Variable* var_type_feedback = nullptr);
@@ -1565,9 +1741,7 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   // ECMA#sec-samevalue
   // Similar to StrictEqual except that NaNs are treated as equal and minus zero
   // differs from positive zero.
-  // Unlike Equal and StrictEqual, returns a value suitable for use in Branch
-  // instructions, e.g. Branch(SameValue(...), &label).
-  Node* SameValue(Node* lhs, Node* rhs);
+  void BranchIfSameValue(Node* lhs, Node* rhs, Label* if_true, Label* if_false);
 
   enum HasPropertyLookupMode { kHasProperty, kForInHasProperty };
 
@@ -1608,6 +1782,11 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   Node* MarkerIsNotFrameType(Node* marker_or_function,
                              StackFrame::Type frame_type);
 
+  // for..in helpers
+  void CheckPrototypeEnumCache(Node* receiver, Node* receiver_map,
+                               Label* if_fast, Label* if_slow);
+  Node* CheckEnumCache(Node* receiver, Label* if_empty, Label* if_runtime);
+
   // Support for printf-style debugging
   void Print(const char* s);
   void Print(const char* prefix, Node* tagged_value);
@@ -1645,7 +1824,8 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
   Node* DescriptorArrayGetKey(Node* descriptors, Node* descriptor_number);
 
   Node* CallGetterIfAccessor(Node* value, Node* details, Node* context,
-                             Node* receiver, Label* if_bailout);
+                             Node* receiver, Label* if_bailout,
+                             GetOwnPropertyMode mode = kCallJSGetter);
 
   Node* TryToIntptr(Node* key, Label* miss);
 
@@ -1666,8 +1846,8 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
                     Node* top_address, Node* limit_address);
   // Allocate and return a JSArray of given total size in bytes with header
   // fields initialized.
-  Node* AllocateUninitializedJSArray(ElementsKind kind, Node* array_map,
-                                     Node* length, Node* allocation_site,
+  Node* AllocateUninitializedJSArray(Node* array_map, Node* length,
+                                     Node* allocation_site,
                                      Node* size_in_bytes);
 
   Node* SmiShiftBitsConstant();
@@ -1699,15 +1879,30 @@ class V8_EXPORT_PRIVATE CodeStubAssembler : public compiler::CodeAssembler {
                                      Node* character_count);
 
   static const int kElementLoopUnrollThreshold = 8;
+
+  Node* NonNumberToNumberOrNumeric(Node* context, Node* input,
+                                   Object::Conversion mode);
+
+  enum class Feedback { kCollect, kNone };
+  template <Feedback feedback>
+  void TaggedToNumeric(Node* context, Node* value, Label* done,
+                       Variable* var_numeric, Variable* var_feedback = nullptr);
+
+  template <Feedback feedback, Object::Conversion conversion>
+  void TaggedToWord32OrBigIntImpl(Node* context, Node* value, Label* if_number,
+                                  Variable* var_word32,
+                                  Label* if_bigint = nullptr,
+                                  Variable* var_bigint = nullptr,
+                                  Variable* var_feedback = nullptr);
 };
 
 class CodeStubArguments {
  public:
   typedef compiler::Node Node;
-  template <class A>
-  using TNode = compiler::TNode<A>;
-  template <class A>
-  using SloppyTNode = compiler::SloppyTNode<A>;
+  template <class T>
+  using TNode = compiler::TNode<T>;
+  template <class T>
+  using SloppyTNode = compiler::SloppyTNode<T>;
   enum ReceiverMode { kHasReceiver, kNoReceiver };
 
   // |argc| is an intptr value which specifies the number of arguments passed

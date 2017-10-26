@@ -16,7 +16,6 @@ namespace compiler {
 // Forward declarations.
 class CommonOperatorBuilder;
 
-
 // Propagates {Dead} control through the graph and thereby removes dead code.
 // Note that this does not include trimming dead uses from the graph, and it
 // also does not include detecting dead code by any other means than seeing a

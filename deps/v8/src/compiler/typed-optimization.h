@@ -41,6 +41,8 @@ class V8_EXPORT_PRIVATE TypedOptimization final
   Reduction ReduceCheckNumber(Node* node);
   Reduction ReduceCheckString(Node* node);
   Reduction ReduceCheckSeqString(Node* node);
+  Reduction ReduceCheckEqualsInternalizedString(Node* node);
+  Reduction ReduceCheckEqualsSymbol(Node* node);
   Reduction ReduceLoadField(Node* node);
   Reduction ReduceNumberFloor(Node* node);
   Reduction ReduceNumberRoundop(Node* node);
@@ -50,6 +52,8 @@ class V8_EXPORT_PRIVATE TypedOptimization final
   Reduction ReduceSelect(Node* node);
   Reduction ReduceSpeculativeToNumber(Node* node);
   Reduction ReduceCheckNotTaggedHole(Node* node);
+  Reduction ReduceTypeOf(Node* node);
+  Reduction ReduceToBoolean(Node* node);
 
   CompilationDependencies* dependencies() const { return dependencies_; }
   Factory* factory() const;

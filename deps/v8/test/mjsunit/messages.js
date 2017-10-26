@@ -70,12 +70,32 @@ test(function() {
 
 // kCalledOnNullOrUndefined
 test(function() {
-  Array.prototype.shift.call(null);
-}, "Array.prototype.shift called on null or undefined", TypeError);
-
-test(function() {
   String.prototype.includes.call(null);
 }, "String.prototype.includes called on null or undefined", TypeError);
+
+test(function() {
+  String.prototype.match.call(null);
+}, "String.prototype.match called on null or undefined", TypeError);
+
+test(function() {
+  String.prototype.search.call(null);
+}, "String.prototype.search called on null or undefined", TypeError);
+
+test(function() {
+  Array.prototype.shift.call(null);
+}, "Cannot convert undefined or null to object", TypeError);
+
+test(function() {
+  String.prototype.trim.call(null);
+}, "String.prototype.trim called on null or undefined", TypeError);
+
+test(function() {
+  String.prototype.trimLeft.call(null);
+}, "String.prototype.trimLeft called on null or undefined", TypeError);
+
+test(function() {
+  String.prototype.trimRight.call(null);
+}, "String.prototype.trimRight called on null or undefined", TypeError);
 
 // kCannotFreezeArrayBufferView
 test(function() {
@@ -427,6 +447,19 @@ test(function() {
 test(function() {
   new Uint16Array(-1);
 }, "Invalid typed array length: -1", RangeError);
+
+// kThrowInvalidStringLength
+test(function() {
+  "a".padEnd(1 << 30);
+}, "Invalid string length", RangeError);
+
+test(function() {
+  "a".padStart(1 << 30);
+}, "Invalid string length", RangeError);
+
+test(function() {
+  "a".repeat(1 << 30);
+}, "Invalid string length", RangeError);
 
 // kNormalizationForm
 test(function() {

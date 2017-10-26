@@ -9,6 +9,7 @@
 // Do not include anything from src/compiler here!
 #include "src/globals.h"
 #include "src/objects.h"
+#include "src/objects/code.h"
 #include "src/zone/zone-containers.h"
 
 namespace v8 {
@@ -55,7 +56,7 @@ class Pipeline : public AllStatic {
   static Handle<Code> GenerateCodeForCodeStub(Isolate* isolate,
                                               CallDescriptor* call_descriptor,
                                               Graph* graph, Schedule* schedule,
-                                              Code::Flags flags,
+                                              Code::Kind kind,
                                               const char* debug_name,
                                               JumpOptimizationInfo* jump_opt);
 

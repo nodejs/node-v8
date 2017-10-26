@@ -7,12 +7,11 @@
 #include "src/base/bits.h"
 #include "src/base/division-by-constant.h"
 #include "src/base/ieee754.h"
-#include "src/codegen.h"
 #include "src/compiler/diamond.h"
 #include "src/compiler/graph.h"
 #include "src/compiler/js-graph.h"
 #include "src/compiler/node-matchers.h"
-#include "src/objects-inl.h"
+#include "src/conversions-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -465,7 +464,7 @@ Reduction MachineOperatorReducer::Reduce(Node* node) {
         return Replace(m.left().node());
       }
       if (m.IsFoldable()) {  // K % K => K
-        return ReplaceFloat64(modulo(m.left().Value(), m.right().Value()));
+        return ReplaceFloat64(Modulo(m.left().Value(), m.right().Value()));
       }
       break;
     }

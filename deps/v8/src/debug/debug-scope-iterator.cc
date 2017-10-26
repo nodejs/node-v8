@@ -4,20 +4,24 @@
 
 #include "src/debug/debug-scope-iterator.h"
 
+#include "src/api.h"
 #include "src/debug/debug.h"
 #include "src/debug/liveedit.h"
 #include "src/frames-inl.h"
 #include "src/isolate.h"
-#include "src/wasm/wasm-objects.h"
+#include "src/wasm/wasm-objects-inl.h"
 
 namespace v8 {
 
 std::unique_ptr<debug::ScopeIterator> debug::ScopeIterator::CreateForFunction(
     v8::Isolate* v8_isolate, v8::Local<v8::Function> v8_func) {
+  internal::Handle<internal::JSFunction> func =
+      internal::Handle<internal::JSFunction>::cast(Utils::OpenHandle(*v8_func));
+  // Blink has function objects with callable map, JS_SPECIAL_API_OBJECT_TYPE
+  // but without context on heap.
+  if (!func->has_context()) return nullptr;
   return std::unique_ptr<debug::ScopeIterator>(new internal::DebugScopeIterator(
-      reinterpret_cast<internal::Isolate*>(v8_isolate),
-      internal::Handle<internal::JSFunction>::cast(
-          Utils::OpenHandle(*v8_func))));
+      reinterpret_cast<internal::Isolate*>(v8_isolate), func));
 }
 
 std::unique_ptr<debug::ScopeIterator>
@@ -26,7 +30,6 @@ debug::ScopeIterator::CreateForGeneratorObject(
   internal::Handle<internal::Object> generator =
       Utils::OpenHandle(*v8_generator);
   DCHECK(generator->IsJSGeneratorObject());
-
   return std::unique_ptr<debug::ScopeIterator>(new internal::DebugScopeIterator(
       reinterpret_cast<internal::Isolate*>(v8_isolate),
       internal::Handle<internal::JSGeneratorObject>::cast(generator)));

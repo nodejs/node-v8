@@ -69,8 +69,6 @@ Reduction JSIntrinsicLowering::Reduce(Node* node) {
       return ReduceIsJSReceiver(node);
     case Runtime::kInlineIsSmi:
       return ReduceIsSmi(node);
-    case Runtime::kInlineSubString:
-      return ReduceSubString(node);
     case Runtime::kInlineToInteger:
       return ReduceToInteger(node);
     case Runtime::kInlineToLength:
@@ -98,8 +96,6 @@ Reduction JSIntrinsicLowering::Reduce(Node* node) {
     case Runtime::kInlineTypedArrayGetLength:
       return ReduceArrayBufferViewField(node,
                                         AccessBuilder::ForJSTypedArrayLength());
-    case Runtime::kInlineTypedArrayMaxSizeInHeap:
-      return ReduceTypedArrayMaxSizeInHeap(node);
     case Runtime::kInlineTheHole:
       return ReduceTheHole(node);
     case Runtime::kInlineClassOf:
@@ -243,13 +239,16 @@ Reduction JSIntrinsicLowering::ReduceIsInstanceType(
   Node* vtrue = jsgraph()->FalseConstant();
 
   Node* if_false = graph()->NewNode(common()->IfFalse(), branch);
-  Node* efalse = graph()->NewNode(
-      simplified()->LoadField(AccessBuilder::ForMapInstanceType()),
+  Node* efalse = effect;
+  Node* map = efalse =
       graph()->NewNode(simplified()->LoadField(AccessBuilder::ForMap()), value,
-                       effect, if_false),
-      effect, if_false);
-  Node* vfalse = graph()->NewNode(simplified()->NumberEqual(), efalse,
-                                  jsgraph()->Constant(instance_type));
+                       efalse, if_false);
+  Node* map_instance_type = efalse = graph()->NewNode(
+      simplified()->LoadField(AccessBuilder::ForMapInstanceType()), map, efalse,
+      if_false);
+  Node* vfalse =
+      graph()->NewNode(simplified()->NumberEqual(), map_instance_type,
+                       jsgraph()->Constant(instance_type));
 
   Node* merge = graph()->NewNode(common()->Merge(2), if_true, if_false);
 
@@ -282,11 +281,6 @@ Reduction JSIntrinsicLowering::Change(Node* node, const Operator* op) {
   NodeProperties::ChangeOp(node, op);
   return Changed(node);
 }
-
-Reduction JSIntrinsicLowering::ReduceSubString(Node* node) {
-  return Change(node, CodeFactory::SubString(isolate()), 3);
-}
-
 
 Reduction JSIntrinsicLowering::ReduceToInteger(Node* node) {
   NodeProperties::ChangeOp(node, javascript()->ToInteger());
@@ -383,12 +377,6 @@ Reduction JSIntrinsicLowering::ReduceMaxSmi(Node* node) {
   return Replace(value);
 }
 
-Reduction JSIntrinsicLowering::ReduceTypedArrayMaxSizeInHeap(Node* node) {
-  Node* value = jsgraph()->Constant(FLAG_typed_array_max_size_in_heap);
-  ReplaceWithValue(node, value);
-  return Replace(value);
-}
-
 Reduction JSIntrinsicLowering::ReduceTheHole(Node* node) {
   Node* value = jsgraph()->TheHoleConstant();
   ReplaceWithValue(node, value);
@@ -397,8 +385,11 @@ Reduction JSIntrinsicLowering::ReduceTheHole(Node* node) {
 
 Reduction JSIntrinsicLowering::ReduceClassOf(Node* node) {
   RelaxEffectsAndControls(node);
+  // The ClassOf operator has a single value input and control input.
+  Node* control_input = NodeProperties::GetControlInput(node, 0);
   node->TrimInputCount(2);
-  NodeProperties::ChangeOp(node, javascript()->ClassOf());
+  node->ReplaceInput(1, control_input);
+  NodeProperties::ChangeOp(node, simplified()->ClassOf());
   return Changed(node);
 }
 

@@ -33,9 +33,7 @@ void ConversionBuiltinsAssembler::Generate_NonPrimitiveToPrimitive(
 
   // Check if {exotic_to_prim} is neither null nor undefined.
   Label ordinary_to_primitive(this);
-  GotoIf(WordEqual(exotic_to_prim, NullConstant()), &ordinary_to_primitive);
-  GotoIf(WordEqual(exotic_to_prim, UndefinedConstant()),
-         &ordinary_to_primitive);
+  GotoIf(IsNullOrUndefined(exotic_to_prim), &ordinary_to_primitive);
   {
     // Invoke the {exotic_to_prim} method on the {input} with a string
     // representation of the {hint}.
@@ -119,6 +117,22 @@ TF_BUILTIN(NonNumberToNumber, CodeStubAssembler) {
   Node* input = Parameter(Descriptor::kArgument);
 
   Return(NonNumberToNumber(context, input));
+}
+
+TF_BUILTIN(NonNumberToNumeric, CodeStubAssembler) {
+  Node* context = Parameter(Descriptor::kContext);
+  Node* input = Parameter(Descriptor::kArgument);
+
+  Return(NonNumberToNumeric(context, input));
+}
+
+TF_BUILTIN(ToNumeric, CodeStubAssembler) {
+  Node* context = Parameter(Descriptor::kContext);
+  Node* input = Parameter(Descriptor::kArgument);
+
+  Return(Select(IsNumber(input), [=] { return input; },
+                [=] { return NonNumberToNumeric(context, input); },
+                MachineRepresentation::kTagged));
 }
 
 // ES6 section 7.1.3 ToNumber ( argument )
@@ -215,10 +229,10 @@ TF_BUILTIN(ToBoolean, CodeStubAssembler) {
   BranchIfToBooleanIsTrue(value, &return_true, &return_false);
 
   BIND(&return_true);
-  Return(BooleanConstant(true));
+  Return(TrueConstant());
 
   BIND(&return_false);
-  Return(BooleanConstant(false));
+  Return(FalseConstant());
 }
 
 // ES6 section 7.1.2 ToBoolean ( argument )
@@ -231,10 +245,10 @@ TF_BUILTIN(ToBooleanLazyDeoptContinuation, CodeStubAssembler) {
   BranchIfToBooleanIsTrue(value, &return_true, &return_false);
 
   BIND(&return_true);
-  Return(BooleanConstant(true));
+  Return(TrueConstant());
 
   BIND(&return_false);
-  Return(BooleanConstant(false));
+  Return(FalseConstant());
 }
 
 TF_BUILTIN(ToLength, CodeStubAssembler) {
@@ -312,7 +326,7 @@ TF_BUILTIN(ToInteger, CodeStubAssembler) {
 
 // ES6 section 7.1.13 ToObject (argument)
 TF_BUILTIN(ToObject, CodeStubAssembler) {
-  Label if_number(this, Label::kDeferred), if_notsmi(this), if_jsreceiver(this),
+  Label if_smi(this, Label::kDeferred), if_jsreceiver(this),
       if_noconstructor(this, Label::kDeferred), if_wrapjsvalue(this);
 
   Node* context = Parameter(Descriptor::kContext);
@@ -321,13 +335,9 @@ TF_BUILTIN(ToObject, CodeStubAssembler) {
   VARIABLE(constructor_function_index_var,
            MachineType::PointerRepresentation());
 
-  Branch(TaggedIsSmi(object), &if_number, &if_notsmi);
+  GotoIf(TaggedIsSmi(object), &if_smi);
 
-  BIND(&if_notsmi);
   Node* map = LoadMap(object);
-
-  GotoIf(IsHeapNumberMap(map), &if_number);
-
   Node* instance_type = LoadMapInstanceType(map);
   GotoIf(IsJSReceiverInstanceType(instance_type), &if_jsreceiver);
 
@@ -338,7 +348,7 @@ TF_BUILTIN(ToObject, CodeStubAssembler) {
   constructor_function_index_var.Bind(constructor_function_index);
   Goto(&if_wrapjsvalue);
 
-  BIND(&if_number);
+  BIND(&if_smi);
   constructor_function_index_var.Bind(
       IntPtrConstant(Context::NUMBER_FUNCTION_INDEX));
   Goto(&if_wrapjsvalue);

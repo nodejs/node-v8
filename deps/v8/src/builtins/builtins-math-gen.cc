@@ -6,6 +6,7 @@
 #include "src/builtins/builtins.h"
 #include "src/code-factory.h"
 #include "src/code-stub-assembler.h"
+#include "src/zone/zone-list-inl.h"  // TODO(mstarzinger): Temporary cycle breaker.
 
 namespace v8 {
 namespace internal {
@@ -52,7 +53,7 @@ TF_BUILTIN(MathAbs, CodeStubAssembler) {
     BIND(&if_xissmi);
     {
       Label if_overflow(this, Label::kDeferred), if_notoverflow(this);
-      Node* pair = NULL;
+      Node* pair = nullptr;
 
       // check if support abs function
       if (IsIntPtrAbsWithOverflowSupported()) {

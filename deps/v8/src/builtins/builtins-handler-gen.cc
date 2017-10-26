@@ -13,6 +13,13 @@
 namespace v8 {
 namespace internal {
 
+TF_BUILTIN(LoadIC_StringLength, CodeStubAssembler) {
+  Node* value = Parameter(Descriptor::kReceiver);
+  Node* string = LoadJSValueValue(value);
+  Node* result = LoadStringLength(string);
+  Return(result);
+}
+
 TF_BUILTIN(KeyedLoadIC_IndexedString, CodeStubAssembler) {
   Node* receiver = Parameter(Descriptor::kReceiver);
   Node* index = Parameter(Descriptor::kName);
@@ -56,22 +63,12 @@ TF_BUILTIN(KeyedLoadIC_Slow, CodeStubAssembler) {
 
 void Builtins::Generate_KeyedStoreIC_Megamorphic(
     compiler::CodeAssemblerState* state) {
-  KeyedStoreGenericGenerator::Generate(state, SLOPPY);
-}
-
-void Builtins::Generate_KeyedStoreIC_Megamorphic_Strict(
-    compiler::CodeAssemblerState* state) {
-  KeyedStoreGenericGenerator::Generate(state, STRICT);
+  KeyedStoreGenericGenerator::Generate(state);
 }
 
 void Builtins::Generate_StoreIC_Uninitialized(
     compiler::CodeAssemblerState* state) {
-  StoreICUninitializedGenerator::Generate(state, SLOPPY);
-}
-
-void Builtins::Generate_StoreICStrict_Uninitialized(
-    compiler::CodeAssemblerState* state) {
-  StoreICUninitializedGenerator::Generate(state, STRICT);
+  StoreICUninitializedGenerator::Generate(state);
 }
 
 TF_BUILTIN(KeyedStoreIC_Miss, CodeStubAssembler) {
@@ -168,6 +165,20 @@ TF_BUILTIN(StoreIC_Miss, CodeStubAssembler) {
 
 void Builtins::Generate_StoreIC_Setter_ForDeopt(MacroAssembler* masm) {
   NamedStoreHandlerCompiler::GenerateStoreViaSetterForDeopt(masm);
+}
+
+TF_BUILTIN(StoreGlobalIC_Slow, CodeStubAssembler) {
+  Node* receiver = Parameter(Descriptor::kReceiver);
+  Node* name = Parameter(Descriptor::kName);
+  Node* value = Parameter(Descriptor::kValue);
+  Node* slot = Parameter(Descriptor::kSlot);
+  Node* vector = Parameter(Descriptor::kVector);
+  Node* context = Parameter(Descriptor::kContext);
+
+  // The slow case calls into the runtime to complete the store without causing
+  // an IC miss that would otherwise cause a transition to the generic stub.
+  TailCallRuntime(Runtime::kStoreGlobalIC_Slow, context, value, slot, vector,
+                  receiver, name);
 }
 
 }  // namespace internal

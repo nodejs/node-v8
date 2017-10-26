@@ -170,6 +170,8 @@ namespace compiler {
                                   kHole) \
   V(NumberOrString,               kNumber | kString) \
   V(NumberOrUndefined,            kNumber | kUndefined) \
+  V(NumberOrUndefinedOrNullOrBoolean,  \
+                                  kNumber | kNullOrUndefined | kBoolean) \
   V(PlainPrimitive,               kNumberOrString | kBoolean | \
                                   kNullOrUndefined) \
   V(Primitive,                    kSymbol | kPlainPrimitive) \
@@ -608,7 +610,7 @@ class V8_EXPORT_PRIVATE Type {
   double Max();
 
   // Extracts a range from the type: if the type is a range or a union
-  // containing a range, that range is returned; otherwise, NULL is returned.
+  // containing a range, that range is returned; otherwise, nullptr is returned.
   Type* GetRange();
 
   static bool IsInteger(i::Object* x);

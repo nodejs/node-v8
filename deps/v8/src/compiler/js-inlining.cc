@@ -277,6 +277,7 @@ bool NeedsConvertReceiver(Node* receiver, Node* effect) {
     case IrOpcode::kJSCreate:
     case IrOpcode::kJSCreateArguments:
     case IrOpcode::kJSCreateArray:
+    case IrOpcode::kJSCreateBoundFunction:
     case IrOpcode::kJSCreateClosure:
     case IrOpcode::kJSCreateIterResultObject:
     case IrOpcode::kJSCreateKeyValueArray:
@@ -430,6 +431,10 @@ Reduction JSInliner::Reduce(Node* node) {
   return ReduceJSCall(node);
 }
 
+Handle<Context> JSInliner::native_context() const {
+  return handle(info_->context()->native_context());
+}
+
 Reduction JSInliner::ReduceJSCall(Node* node) {
   DCHECK(IrOpcode::IsInlineeOpcode(node->opcode()));
   Handle<SharedFunctionInfo> shared_info;
@@ -541,7 +546,8 @@ Reduction JSInliner::ReduceJSCall(Node* node) {
     }
     BytecodeGraphBuilder graph_builder(
         zone(), shared_info, feedback_vector, BailoutId::None(), jsgraph(),
-        call.frequency(), source_positions_, inlining_id, flags, false);
+        call.frequency(), source_positions_, native_context(), inlining_id,
+        flags, false);
     graph_builder.CreateGraph();
 
     // Extract the inlinee start/end nodes.

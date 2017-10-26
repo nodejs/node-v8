@@ -43,7 +43,7 @@ SafepointTable::SafepointTable(Code* code) {
   entry_size_ = Memory::uint32_at(header + kEntrySizeOffset);
   pc_and_deoptimization_indexes_ = header + kHeaderSize;
   entries_ = pc_and_deoptimization_indexes_ + (length_ * kFixedEntrySize);
-  DCHECK(entry_size_ > 0);
+  DCHECK_GT(entry_size_, 0);
   STATIC_ASSERT(SafepointEntry::DeoptimizationIndexField::kMax ==
                 Safepoint::kNoDeoptimizationIndex);
 }
@@ -124,7 +124,7 @@ Safepoint SafepointTableBuilder::DefineSafepoint(
     Safepoint::Kind kind,
     int arguments,
     Safepoint::DeoptMode deopt_mode) {
-  DCHECK(arguments >= 0);
+  DCHECK_GE(arguments, 0);
   DeoptimizationInfo info;
   info.pc = assembler->pc_offset();
   info.arguments = arguments;
@@ -137,9 +137,9 @@ Safepoint SafepointTableBuilder::DefineSafepoint(
   }
   indexes_.Add(new(zone_) ZoneList<int>(8, zone_), zone_);
   registers_.Add((kind & Safepoint::kWithRegisters)
-      ? new(zone_) ZoneList<int>(4, zone_)
-      : NULL,
-      zone_);
+                     ? new (zone_) ZoneList<int>(4, zone_)
+                     : nullptr,
+                 zone_);
   return Safepoint(indexes_.last(), registers_.last());
 }
 
@@ -164,7 +164,7 @@ int SafepointTableBuilder::UpdateDeoptimizationInfo(int pc, int trampoline,
       break;
     }
   }
-  CHECK(index >= 0);
+  CHECK_GE(index, 0);
   DCHECK(index < deoptimization_info_.length());
   deoptimization_info_[index].trampoline = trampoline;
   return index;
@@ -208,7 +208,7 @@ void SafepointTableBuilder::Emit(Assembler* assembler, int bits_per_entry) {
 
     // Run through the registers (if any).
     DCHECK(IsAligned(kNumSafepointRegisters, kBitsPerByte));
-    if (registers == NULL) {
+    if (registers == nullptr) {
       const int num_reg_bytes = kNumSafepointRegisters >> kBitsPerByteLog2;
       for (int j = 0; j < num_reg_bytes; j++) {
         bits[j] = SafepointTable::kNoRegisters;

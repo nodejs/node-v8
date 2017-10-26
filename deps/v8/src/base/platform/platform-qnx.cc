@@ -89,99 +89,46 @@ TimezoneCache* OS::CreateTimezoneCache() {
   return new PosixDefaultTimezoneCache();
 }
 
-void* OS::Allocate(const size_t requested, size_t* allocated,
-                   OS::MemoryPermission access, void* hint) {
-  const size_t msize = RoundUp(requested, AllocateAlignment());
-  int prot = GetProtectionFromMemoryPermission(access);
-  void* mbase = mmap(hint, msize, prot, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  if (mbase == MAP_FAILED) return NULL;
-  *allocated = msize;
-  return mbase;
-}
-
-
-std::vector<OS::SharedLibraryAddress> OS::GetSharedLibraryAddresses() {
-  std::vector<SharedLibraryAddress> result;
-  procfs_mapinfo *mapinfos = NULL, *mapinfo;
-  int proc_fd, num, i;
-
-  struct {
-    procfs_debuginfo info;
-    char buff[PATH_MAX];
-  } map;
-
-  char buf[PATH_MAX + 1];
-  snprintf(buf, PATH_MAX + 1, "/proc/%d/as", getpid());
-
-  if ((proc_fd = open(buf, O_RDONLY)) == -1) {
-    close(proc_fd);
-    return result;
-  }
-
-  /* Get the number of map entries.  */
-  if (devctl(proc_fd, DCMD_PROC_MAPINFO, NULL, 0, &num) != EOK) {
-    close(proc_fd);
-    return result;
-  }
-
-  mapinfos = reinterpret_cast<procfs_mapinfo *>(
-      malloc(num * sizeof(procfs_mapinfo)));
-  if (mapinfos == NULL) {
-    close(proc_fd);
-    return result;
-  }
-
-  /* Fill the map entries.  */
-  if (devctl(proc_fd, DCMD_PROC_PAGEDATA,
-      mapinfos, num * sizeof(procfs_mapinfo), &num) != EOK) {
-    free(mapinfos);
-    close(proc_fd);
-    return result;
-  }
-
-  for (i = 0; i < num; i++) {
-    mapinfo = mapinfos + i;
-    if (mapinfo->flags & MAP_ELF) {
-      map.info.vaddr = mapinfo->vaddr;
-      if (devctl(proc_fd, DCMD_PROC_MAPDEBUG, &map, sizeof(map), 0) != EOK) {
-        continue;
-      }
-      result.push_back(SharedLibraryAddress(
-          map.info.path, mapinfo->vaddr, mapinfo->vaddr + mapinfo->size));
-    }
-  }
-  free(mapinfos);
-  close(proc_fd);
-  return result;
-}
-
-
-void OS::SignalCodeMovingGC() {
-}
-
-
 // Constants used for mmap.
 static const int kMmapFd = -1;
 static const int kMmapFdOffset = 0;
 
+void* OS::Allocate(const size_t requested, size_t* allocated,
+                   OS::MemoryPermission access, void* hint) {
+  const size_t msize = RoundUp(requested, AllocateAlignment());
+  int prot = GetProtectionFromMemoryPermission(access);
+  void* mbase = mmap(hint, msize, prot, MAP_PRIVATE | MAP_ANONYMOUS, kMmapFd,
+                     kMmapFdOffset);
+  if (mbase == MAP_FAILED) return nullptr;
+  *allocated = msize;
+  return mbase;
+}
 
-VirtualMemory::VirtualMemory() : address_(NULL), size_(0) { }
+// static
+void* OS::ReserveRegion(size_t size, void* hint) {
+  void* result =
+      mmap(hint, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_LAZY,
+           kMmapFd, kMmapFdOffset);
 
-VirtualMemory::VirtualMemory(size_t size, void* hint)
-    : address_(ReserveRegion(size, hint)), size_(size) {}
+  if (result == MAP_FAILED) return nullptr;
 
-VirtualMemory::VirtualMemory(size_t size, size_t alignment, void* hint)
-    : address_(NULL), size_(0) {
-  DCHECK((alignment % OS::AllocateAlignment()) == 0);
+  return result;
+}
+
+// static
+void* OS::ReserveAlignedRegion(size_t size, size_t alignment, void* hint,
+                               size_t* allocated) {
+  DCHECK_EQ(alignment % OS::AllocateAlignment(), 0);
   hint = AlignedAddress(hint, alignment);
   size_t request_size = RoundUp(size + alignment,
                                 static_cast<intptr_t>(OS::AllocateAlignment()));
-  void* reservation =
-      mmap(hint, request_size, PROT_NONE,
-           MAP_PRIVATE | MAP_ANONYMOUS | MAP_LAZY, kMmapFd, kMmapFdOffset);
-  if (reservation == MAP_FAILED) return;
+  void* result = ReserveRegion(request_size, hint);
+  if (result == nullptr) {
+    *allocated = 0;
+    return nullptr;
+  }
 
-  uint8_t* base = static_cast<uint8_t*>(reservation);
+  uint8_t* base = static_cast<uint8_t*>(result);
   uint8_t* aligned_base = RoundUp(base, alignment);
   DCHECK_LE(base, aligned_base);
 
@@ -203,58 +150,15 @@ VirtualMemory::VirtualMemory(size_t size, size_t alignment, void* hint)
 
   DCHECK(aligned_size == request_size);
 
-  address_ = static_cast<void*>(aligned_base);
-  size_ = aligned_size;
+  *allocated = aligned_size;
+  return static_cast<void*>(aligned_base);
 }
 
-
-VirtualMemory::~VirtualMemory() {
-  if (IsReserved()) {
-    bool result = ReleaseRegion(address(), size());
-    DCHECK(result);
-    USE(result);
-  }
-}
-
-void VirtualMemory::Reset() {
-  address_ = NULL;
-  size_ = 0;
-}
-
-
-bool VirtualMemory::Commit(void* address, size_t size, bool is_executable) {
-  return CommitRegion(address, size, is_executable);
-}
-
-
-bool VirtualMemory::Uncommit(void* address, size_t size) {
-  return UncommitRegion(address, size);
-}
-
-
-bool VirtualMemory::Guard(void* address) {
-  OS::Guard(address, OS::CommitPageSize());
-  return true;
-}
-
-void* VirtualMemory::ReserveRegion(size_t size, void* hint) {
-  void* result =
-      mmap(hint, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_LAZY,
-           kMmapFd, kMmapFdOffset);
-
-  if (result == MAP_FAILED) return NULL;
-
-  return result;
-}
-
-
-bool VirtualMemory::CommitRegion(void* base, size_t size, bool is_executable) {
+// static
+bool OS::CommitRegion(void* address, size_t size, bool is_executable) {
   int prot = PROT_READ | PROT_WRITE | (is_executable ? PROT_EXEC : 0);
-  if (MAP_FAILED == mmap(base,
-                         size,
-                         prot,
-                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
-                         kMmapFd,
+  if (MAP_FAILED == mmap(address, size, prot,
+                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, kMmapFd,
                          kMmapFdOffset)) {
     return false;
   }
@@ -262,25 +166,82 @@ bool VirtualMemory::CommitRegion(void* base, size_t size, bool is_executable) {
   return true;
 }
 
-
-bool VirtualMemory::UncommitRegion(void* base, size_t size) {
-  return mmap(base,
-              size,
-              PROT_NONE,
-              MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_LAZY,
-              kMmapFd,
+// static
+bool OS::UncommitRegion(void* address, size_t size) {
+  return mmap(address, size, PROT_NONE,
+              MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_LAZY, kMmapFd,
               kMmapFdOffset) != MAP_FAILED;
 }
 
-
-bool VirtualMemory::ReleaseRegion(void* base, size_t size) {
-  return munmap(base, size) == 0;
+// static
+bool OS::ReleaseRegion(void* address, size_t size) {
+  return munmap(address, size) == 0;
 }
 
-
-bool VirtualMemory::HasLazyCommits() {
-  return false;
+// static
+bool OS::ReleasePartialRegion(void* address, size_t size) {
+  return munmap(address, size) == 0;
 }
+
+// static
+bool OS::HasLazyCommits() { return false; }
+
+std::vector<OS::SharedLibraryAddress> OS::GetSharedLibraryAddresses() {
+  std::vector<SharedLibraryAddress> result;
+  procfs_mapinfo *mapinfos = nullptr, *mapinfo;
+  int proc_fd, num, i;
+
+  struct {
+    procfs_debuginfo info;
+    char buff[PATH_MAX];
+  } map;
+
+  char buf[PATH_MAX + 1];
+  snprintf(buf, PATH_MAX + 1, "/proc/%d/as", getpid());
+
+  if ((proc_fd = open(buf, O_RDONLY)) == -1) {
+    close(proc_fd);
+    return result;
+  }
+
+  /* Get the number of map entries.  */
+  if (devctl(proc_fd, DCMD_PROC_MAPINFO, nullptr, 0, &num) != EOK) {
+    close(proc_fd);
+    return result;
+  }
+
+  mapinfos =
+      reinterpret_cast<procfs_mapinfo*>(malloc(num * sizeof(procfs_mapinfo)));
+  if (mapinfos == nullptr) {
+    close(proc_fd);
+    return result;
+  }
+
+  /* Fill the map entries.  */
+  if (devctl(proc_fd, DCMD_PROC_PAGEDATA, mapinfos,
+             num * sizeof(procfs_mapinfo), &num) != EOK) {
+    free(mapinfos);
+    close(proc_fd);
+    return result;
+  }
+
+  for (i = 0; i < num; i++) {
+    mapinfo = mapinfos + i;
+    if (mapinfo->flags & MAP_ELF) {
+      map.info.vaddr = mapinfo->vaddr;
+      if (devctl(proc_fd, DCMD_PROC_MAPDEBUG, &map, sizeof(map), 0) != EOK) {
+        continue;
+      }
+      result.push_back(SharedLibraryAddress(map.info.path, mapinfo->vaddr,
+                                            mapinfo->vaddr + mapinfo->size));
+    }
+  }
+  free(mapinfos);
+  close(proc_fd);
+  return result;
+}
+
+void OS::SignalCodeMovingGC() {}
 
 }  // namespace base
 }  // namespace v8

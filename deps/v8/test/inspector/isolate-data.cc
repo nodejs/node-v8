@@ -359,7 +359,7 @@ void IsolateData::SetCurrentTimeMS(double time) {
 
 double IsolateData::currentTimeMS() {
   if (current_time_set_) return current_time_;
-  return v8::base::OS::TimeCurrentMillis();
+  return v8::internal::V8::GetCurrentPlatform()->CurrentClockTimeMillis();
 }
 
 void IsolateData::SetMemoryInfo(v8::Local<v8::Value> memory_info) {
@@ -368,6 +368,10 @@ void IsolateData::SetMemoryInfo(v8::Local<v8::Value> memory_info) {
 
 void IsolateData::SetLogConsoleApiMessageCalls(bool log) {
   log_console_api_message_calls_ = log;
+}
+
+void IsolateData::SetLogMaxAsyncCallStackDepthChanged(bool log) {
+  log_max_async_call_stack_depth_changed_ = log;
 }
 
 v8::MaybeLocal<v8::Value> IsolateData::memoryInfo(v8::Isolate* isolate,
@@ -395,4 +399,9 @@ void IsolateData::consoleAPIMessage(int contextGroupId,
   fprintf(stdout, ":%d:%d)", lineNumber, columnNumber);
   Print(isolate_, stack->toString()->string());
   fprintf(stdout, "\n");
+}
+
+void IsolateData::maxAsyncCallStackDepthChanged(int depth) {
+  if (!log_max_async_call_stack_depth_changed_) return;
+  fprintf(stdout, "maxAsyncCallStackDepthChanged: %d\n", depth);
 }

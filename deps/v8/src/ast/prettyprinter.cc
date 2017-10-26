@@ -126,16 +126,10 @@ void CallPrinter::VisitWithStatement(WithStatement* node) {
 
 void CallPrinter::VisitSwitchStatement(SwitchStatement* node) {
   Find(node->tag());
-  ZoneList<CaseClause*>* cases = node->cases();
-  for (int i = 0; i < cases->length(); i++) Find(cases->at(i));
-}
-
-
-void CallPrinter::VisitCaseClause(CaseClause* clause) {
-  if (!clause->is_default()) {
-    Find(clause->label());
+  for (CaseClause* clause : *node->cases()) {
+    if (!clause->is_default()) Find(clause->label());
+    FindStatements(clause->statements());
   }
-  FindStatements(clause->statements());
 }
 
 
@@ -152,11 +146,11 @@ void CallPrinter::VisitWhileStatement(WhileStatement* node) {
 
 
 void CallPrinter::VisitForStatement(ForStatement* node) {
-  if (node->init() != NULL) {
+  if (node->init() != nullptr) {
     Find(node->init());
   }
-  if (node->cond() != NULL) Find(node->cond());
-  if (node->next() != NULL) Find(node->next());
+  if (node->cond() != nullptr) Find(node->cond());
+  if (node->next() != nullptr) Find(node->next());
   Find(node->body());
 }
 
@@ -204,6 +198,12 @@ void CallPrinter::VisitClassLiteral(ClassLiteral* node) {
   }
 }
 
+void CallPrinter::VisitInitializeClassFieldsStatement(
+    InitializeClassFieldsStatement* node) {
+  for (int i = 0; i < node->fields()->length(); i++) {
+    Find(node->fields()->at(i)->value());
+  }
+}
 
 void CallPrinter::VisitNativeFunctionLiteral(NativeFunctionLiteral* node) {}
 
@@ -285,7 +285,7 @@ void CallPrinter::VisitThrow(Throw* node) { Find(node->exception()); }
 void CallPrinter::VisitProperty(Property* node) {
   Expression* key = node->key();
   Literal* literal = key->AsLiteral();
-  if (literal != NULL && literal->value()->IsInternalizedString()) {
+  if (literal != nullptr && literal->value()->IsInternalizedString()) {
     Find(node->obj(), true);
     Print(".");
     PrintLiteral(literal->value(), false);
@@ -383,6 +383,17 @@ void CallPrinter::VisitBinaryOperation(BinaryOperation* node) {
   Print(")");
 }
 
+void CallPrinter::VisitNaryOperation(NaryOperation* node) {
+  Print("(");
+  Find(node->first(), true);
+  for (size_t i = 0; i < node->subsequent_length(); ++i) {
+    Print(" ");
+    Print(Token::String(node->op()));
+    Print(" ");
+    Find(node->subsequent(i), true);
+  }
+  Print(")");
+}
 
 void CallPrinter::VisitCompareOperation(CompareOperation* node) {
   Print("(");
@@ -423,6 +434,8 @@ void CallPrinter::VisitGetIterator(GetIterator* node) {
   }
 }
 
+void CallPrinter::VisitGetTemplateObject(GetTemplateObject* node) {}
+
 void CallPrinter::VisitImportCallExpression(ImportCallExpression* node) {
   Print("ImportCall(");
   Find(node->argument(), true);
@@ -446,7 +459,7 @@ void CallPrinter::VisitRewritableExpression(RewritableExpression* node) {
 
 
 void CallPrinter::FindStatements(ZoneList<Statement*>* statements) {
-  if (statements == NULL) return;
+  if (statements == nullptr) return;
   for (int i = 0; i < statements->length(); i++) {
     Find(statements->at(i));
   }
@@ -492,16 +505,6 @@ void CallPrinter::PrintLiteral(const AstRawString* value, bool quote) {
 
 #ifdef DEBUG
 
-// A helper for ast nodes that use FeedbackSlots.
-static int FormatSlotNode(Vector<char>* buf, Expression* node,
-                          const char* node_name, FeedbackSlot slot) {
-  int pos = SNPrintF(*buf, "%s", node_name);
-  if (!slot.IsInvalid()) {
-    pos += SNPrintF(*buf + pos, " Slot(%d)", slot.ToInt());
-  }
-  return pos;
-}
-
 const char* AstPrinter::Print(AstNode* node) {
   Init();
   Visit(node);
@@ -510,7 +513,7 @@ const char* AstPrinter::Print(AstNode* node) {
 
 void AstPrinter::Init() {
   if (size_ == 0) {
-    DCHECK(output_ == NULL);
+    DCHECK_NULL(output_);
     const int initial_size = 256;
     output_ = NewArray<char>(initial_size);
     size_ = initial_size;
@@ -546,7 +549,7 @@ void AstPrinter::Print(const char* format, ...) {
 }
 
 void AstPrinter::PrintLabels(ZoneList<const AstRawString*>* labels) {
-  if (labels != NULL) {
+  if (labels != nullptr) {
     for (int i = 0; i < labels->length(); i++) {
       PrintLiteral(labels->at(i), false);
       Print(": ");
@@ -648,7 +651,7 @@ AstPrinter::AstPrinter(Isolate* isolate)
 }
 
 AstPrinter::~AstPrinter() {
-  DCHECK(indent_ == 0);
+  DCHECK_EQ(indent_, 0);
   DeleteArray(output_);
 }
 
@@ -673,7 +676,7 @@ void AstPrinter::PrintLiteralIndented(const char* info,
 void AstPrinter::PrintLiteralWithModeIndented(const char* info,
                                               Variable* var,
                                               Handle<Object> value) {
-  if (var == NULL) {
+  if (var == nullptr) {
     PrintLiteralIndented(info, value, true);
   } else {
     EmbeddedVector<char, 256> buf;
@@ -687,7 +690,7 @@ void AstPrinter::PrintLiteralWithModeIndented(const char* info,
 
 
 void AstPrinter::PrintLabelsIndented(ZoneList<const AstRawString*>* labels) {
-  if (labels == NULL || labels->length() == 0) return;
+  if (labels == nullptr || labels->length() == 0) return;
   PrintIndented("LABELS ");
   PrintLabels(labels);
   Print("\n");
@@ -837,20 +840,15 @@ void AstPrinter::VisitSwitchStatement(SwitchStatement* node) {
   IndentedScope indent(this, "SWITCH", node->position());
   PrintLabelsIndented(node->labels());
   PrintIndentedVisit("TAG", node->tag());
-  for (int i = 0; i < node->cases()->length(); i++) {
-    Visit(node->cases()->at(i));
-  }
-}
-
-
-void AstPrinter::VisitCaseClause(CaseClause* clause) {
-  if (clause->is_default()) {
-    IndentedScope indent(this, "DEFAULT", clause->position());
-    PrintStatements(clause->statements());
-  } else {
-    IndentedScope indent(this, "CASE", clause->position());
-    Visit(clause->label());
-    PrintStatements(clause->statements());
+  for (CaseClause* clause : *node->cases()) {
+    if (clause->is_default()) {
+      IndentedScope indent(this, "DEFAULT");
+      PrintStatements(clause->statements());
+    } else {
+      IndentedScope indent(this, "CASE");
+      Visit(clause->label());
+      PrintStatements(clause->statements());
+    }
   }
 }
 
@@ -970,6 +968,12 @@ void AstPrinter::VisitClassLiteral(ClassLiteral* node) {
   PrintClassProperties(node->properties());
 }
 
+void AstPrinter::VisitInitializeClassFieldsStatement(
+    InitializeClassFieldsStatement* node) {
+  IndentedScope indent(this, "INITIALIZE CLASS FIELDS", node->position());
+  PrintClassProperties(node->fields());
+}
+
 void AstPrinter::PrintClassProperties(
     ZoneList<ClassLiteral::Property*>* properties) {
   for (int i = 0; i < properties->length(); i++) {
@@ -1027,11 +1031,9 @@ void AstPrinter::VisitLiteral(Literal* node) {
 
 void AstPrinter::VisitRegExpLiteral(RegExpLiteral* node) {
   IndentedScope indent(this, "REGEXP LITERAL", node->position());
-  EmbeddedVector<char, 128> buf;
-  SNPrintF(buf, "literal_slot = %d\n", node->literal_slot().ToInt());
-  PrintIndented(buf.start());
   PrintLiteralIndented("PATTERN", node->pattern(), false);
   int i = 0;
+  EmbeddedVector<char, 128> buf;
   if (node->flags() & RegExp::kGlobal) buf[i++] = 'g';
   if (node->flags() & RegExp::kIgnoreCase) buf[i++] = 'i';
   if (node->flags() & RegExp::kMultiline) buf[i++] = 'm';
@@ -1046,9 +1048,6 @@ void AstPrinter::VisitRegExpLiteral(RegExpLiteral* node) {
 
 void AstPrinter::VisitObjectLiteral(ObjectLiteral* node) {
   IndentedScope indent(this, "OBJ LITERAL", node->position());
-  EmbeddedVector<char, 128> buf;
-  SNPrintF(buf, "literal_slot = %d\n", node->literal_slot().ToInt());
-  PrintIndented(buf.start());
   PrintObjectProperties(node->properties());
 }
 
@@ -1091,10 +1090,6 @@ void AstPrinter::PrintObjectProperties(
 
 void AstPrinter::VisitArrayLiteral(ArrayLiteral* node) {
   IndentedScope indent(this, "ARRAY LITERAL", node->position());
-
-  EmbeddedVector<char, 128> buf;
-  SNPrintF(buf, "literal_slot = %d\n", node->literal_slot().ToInt());
-  PrintIndented(buf.start());
   if (node->values()->length() > 0) {
     IndentedScope indent(this, "VALUES", node->position());
     for (int i = 0; i < node->values()->length(); i++) {
@@ -1106,8 +1101,7 @@ void AstPrinter::VisitArrayLiteral(ArrayLiteral* node) {
 
 void AstPrinter::VisitVariableProxy(VariableProxy* node) {
   EmbeddedVector<char, 128> buf;
-  int pos =
-      FormatSlotNode(&buf, node, "VAR PROXY", node->VariableFeedbackSlot());
+  int pos = SNPrintF(buf, "VAR PROXY");
 
   if (!node->is_resolved()) {
     SNPrintF(buf + pos, " unresolved");
@@ -1178,12 +1172,12 @@ void AstPrinter::VisitThrow(Throw* node) {
 
 void AstPrinter::VisitProperty(Property* node) {
   EmbeddedVector<char, 128> buf;
-  FormatSlotNode(&buf, node, "PROPERTY", node->PropertyFeedbackSlot());
+  SNPrintF(buf, "PROPERTY");
   IndentedScope indent(this, buf.start(), node->position());
 
   Visit(node->obj());
   Literal* literal = node->key()->AsLiteral();
-  if (literal != NULL && literal->value()->IsInternalizedString()) {
+  if (literal != nullptr && literal->value()->IsInternalizedString()) {
     PrintLiteralIndented("NAME", literal->value(), false);
   } else {
     PrintIndentedVisit("KEY", node->key());
@@ -1193,7 +1187,7 @@ void AstPrinter::VisitProperty(Property* node) {
 
 void AstPrinter::VisitCall(Call* node) {
   EmbeddedVector<char, 128> buf;
-  FormatSlotNode(&buf, node, "CALL", node->CallFeedbackICSlot());
+  SNPrintF(buf, "CALL");
   IndentedScope indent(this, buf.start());
 
   Visit(node->expression());
@@ -1238,6 +1232,13 @@ void AstPrinter::VisitBinaryOperation(BinaryOperation* node) {
   Visit(node->right());
 }
 
+void AstPrinter::VisitNaryOperation(NaryOperation* node) {
+  IndentedScope indent(this, Token::Name(node->op()), node->position());
+  Visit(node->first());
+  for (size_t i = 0; i < node->subsequent_length(); ++i) {
+    Visit(node->subsequent(i));
+  }
+}
 
 void AstPrinter::VisitCompareOperation(CompareOperation* node) {
   IndentedScope indent(this, Token::Name(node->op()), node->position());
@@ -1259,6 +1260,10 @@ void AstPrinter::VisitEmptyParentheses(EmptyParentheses* node) {
 void AstPrinter::VisitGetIterator(GetIterator* node) {
   IndentedScope indent(this, "GET-ITERATOR", node->position());
   Visit(node->iterable());
+}
+
+void AstPrinter::VisitGetTemplateObject(GetTemplateObject* node) {
+  IndentedScope indent(this, "GET-TEMPLATE-OBJECT", node->position());
 }
 
 void AstPrinter::VisitImportCallExpression(ImportCallExpression* node) {

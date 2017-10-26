@@ -4,6 +4,8 @@
 
 #include "src/regexp/regexp-parser.h"
 
+#include <vector>
+
 #include "src/char-predicates-inl.h"
 #include "src/factory.h"
 #include "src/isolate.h"
@@ -24,9 +26,9 @@ RegExpParser::RegExpParser(FlatStringReader* in, Handle<String>* error,
     : isolate_(isolate),
       zone_(zone),
       error_(error),
-      captures_(NULL),
-      named_captures_(NULL),
-      named_back_references_(NULL),
+      captures_(nullptr),
+      named_captures_(nullptr),
+      named_back_references_(nullptr),
       in_(in),
       current_(kEndMarker),
       dotall_(flags & JSRegExp::kDotAll),
@@ -137,7 +139,7 @@ bool RegExpParser::IsSyntaxCharacterOrSlash(uc32 c) {
 
 
 RegExpTree* RegExpParser::ReportError(Vector<const char> message) {
-  if (failed_) return NULL;  // Do not overwrite any existing error.
+  if (failed_) return nullptr;  // Do not overwrite any existing error.
   failed_ = true;
   *error_ = isolate()
                 ->factory()
@@ -146,14 +148,12 @@ RegExpTree* RegExpParser::ReportError(Vector<const char> message) {
   // Zip to the end to make sure the no more input is read.
   current_ = kEndMarker;
   next_pos_ = in()->length();
-  return NULL;
+  return nullptr;
 }
 
-
-#define CHECK_FAILED /**/); \
-  if (failed_) return NULL; \
+#define CHECK_FAILED /**/);    \
+  if (failed_) return nullptr; \
   ((void)0
-
 
 // Pattern ::
 //   Disjunction
@@ -182,8 +182,8 @@ RegExpTree* RegExpParser::ParsePattern() {
 //   Atom Quantifier
 RegExpTree* RegExpParser::ParseDisjunction() {
   // Used to store current state while parsing subexpressions.
-  RegExpParserState initial_state(NULL, INITIAL, RegExpLookaround::LOOKAHEAD, 0,
-                                  nullptr, ignore_case(), unicode(), zone());
+  RegExpParserState initial_state(nullptr, INITIAL, RegExpLookaround::LOOKAHEAD,
+                                  0, nullptr, ignore_case(), unicode(), zone());
   RegExpParserState* state = &initial_state;
   // Cache the builder in a local variable for quick access.
   RegExpBuilder* builder = initial_state.builder();
@@ -830,7 +830,7 @@ bool RegExpParser::CreateNamedCaptureAtIndex(const ZoneVector<uc16>* name,
   }
 
   RegExpCapture* capture = GetCapture(index);
-  DCHECK(capture->name() == nullptr);
+  DCHECK_NULL(capture->name());
 
   capture->set_name(name);
   named_captures_->Add(capture, zone());
@@ -907,7 +907,7 @@ RegExpCapture* RegExpParser::GetCapture(int index) {
   int know_captures =
       is_scanned_for_captures_ ? capture_count_ : captures_started_;
   DCHECK(index <= know_captures);
-  if (captures_ == NULL) {
+  if (captures_ == nullptr) {
     captures_ = new (zone()) ZoneList<RegExpCapture*>(know_captures, zone());
   }
   while (captures_->length() < know_captures) {
@@ -946,7 +946,7 @@ bool RegExpParser::HasNamedCaptures() {
 }
 
 bool RegExpParser::RegExpParserState::IsInsideCaptureGroup(int index) {
-  for (RegExpParserState* s = this; s != NULL; s = s->previous_state()) {
+  for (RegExpParserState* s = this; s != nullptr; s = s->previous_state()) {
     if (s->group_type() != CAPTURE) continue;
     // Return true if we found the matching capture index.
     if (index == s->capture_index()) return true;
@@ -959,7 +959,7 @@ bool RegExpParser::RegExpParserState::IsInsideCaptureGroup(int index) {
 bool RegExpParser::RegExpParserState::IsInsideCaptureGroup(
     const ZoneVector<uc16>* name) {
   DCHECK_NOT_NULL(name);
-  for (RegExpParserState* s = this; s != NULL; s = s->previous_state()) {
+  for (RegExpParserState* s = this; s != nullptr; s = s->previous_state()) {
     if (s->capture_name() == nullptr) continue;
     if (*s->capture_name() == *name) return true;
   }
@@ -1113,11 +1113,12 @@ namespace {
 
 bool IsExactPropertyAlias(const char* property_name, UProperty property) {
   const char* short_name = u_getPropertyName(property, U_SHORT_PROPERTY_NAME);
-  if (short_name != NULL && strcmp(property_name, short_name) == 0) return true;
+  if (short_name != nullptr && strcmp(property_name, short_name) == 0)
+    return true;
   for (int i = 0;; i++) {
     const char* long_name = u_getPropertyName(
         property, static_cast<UPropertyNameChoice>(U_LONG_PROPERTY_NAME + i));
-    if (long_name == NULL) break;
+    if (long_name == nullptr) break;
     if (strcmp(property_name, long_name) == 0) return true;
   }
   return false;
@@ -1127,14 +1128,14 @@ bool IsExactPropertyValueAlias(const char* property_value_name,
                                UProperty property, int32_t property_value) {
   const char* short_name =
       u_getPropertyValueName(property, property_value, U_SHORT_PROPERTY_NAME);
-  if (short_name != NULL && strcmp(property_value_name, short_name) == 0) {
+  if (short_name != nullptr && strcmp(property_value_name, short_name) == 0) {
     return true;
   }
   for (int i = 0;; i++) {
     const char* long_name = u_getPropertyValueName(
         property, property_value,
         static_cast<UPropertyNameChoice>(U_LONG_PROPERTY_NAME + i));
-    if (long_name == NULL) break;
+    if (long_name == nullptr) break;
     if (strcmp(property_value_name, long_name) == 0) return true;
   }
   return false;
@@ -1276,30 +1277,30 @@ bool RegExpParser::ParsePropertyClass(ZoneList<CharacterRange>* result,
   //   and 'value' is interpreted as one of the available property value names.
   // - Aliases in PropertyAlias.txt and PropertyValueAlias.txt can be used.
   // - Loose matching is not applied.
-  List<char> first_part;
-  List<char> second_part;
+  std::vector<char> first_part;
+  std::vector<char> second_part;
   if (current() == '{') {
     // Parse \p{[PropertyName=]PropertyNameValue}
     for (Advance(); current() != '}' && current() != '='; Advance()) {
       if (!has_next()) return false;
-      first_part.Add(static_cast<char>(current()));
+      first_part.push_back(static_cast<char>(current()));
     }
     if (current() == '=') {
       for (Advance(); current() != '}'; Advance()) {
         if (!has_next()) return false;
-        second_part.Add(static_cast<char>(current()));
+        second_part.push_back(static_cast<char>(current()));
       }
-      second_part.Add(0);  // null-terminate string.
+      second_part.push_back(0);  // null-terminate string.
     }
   } else {
     return false;
   }
   Advance();
-  first_part.Add(0);  // null-terminate string.
+  first_part.push_back(0);  // null-terminate string.
 
-  if (second_part.is_empty()) {
+  if (second_part.empty()) {
     // First attempt to interpret as general category property value name.
-    const char* name = first_part.ToConstVector().start();
+    const char* name = first_part.data();
     if (LookupPropertyValueName(UCHAR_GENERAL_CATEGORY_MASK, name, negate,
                                 result, zone())) {
       return true;
@@ -1317,8 +1318,8 @@ bool RegExpParser::ParsePropertyClass(ZoneList<CharacterRange>* result,
   } else {
     // Both property name and value name are specified. Attempt to interpret
     // the property name as enumerated property.
-    const char* property_name = first_part.ToConstVector().start();
-    const char* value_name = second_part.ToConstVector().start();
+    const char* property_name = first_part.data();
+    const char* value_name = second_part.data();
     UProperty property = u_getPropertyEnum(property_name);
     if (!IsExactPropertyAlias(property_name, property)) return false;
     if (property == UCHAR_GENERAL_CATEGORY) {
@@ -1362,7 +1363,7 @@ bool RegExpParser::ParseUnlimitedLengthHexNumber(int max_value, uc32* value) {
 
 
 uc32 RegExpParser::ParseClassCharacterEscape() {
-  DCHECK(current() == '\\');
+  DCHECK_EQ('\\', current());
   DCHECK(has_next() && !IsSpecialClassEscape(Next()));
   Advance();
   switch (current()) {
@@ -1597,14 +1598,14 @@ RegExpTree* RegExpParser::ParseCharacterClass() {
 bool RegExpParser::ParseRegExp(Isolate* isolate, Zone* zone,
                                FlatStringReader* input, JSRegExp::Flags flags,
                                RegExpCompileData* result) {
-  DCHECK(result != NULL);
+  DCHECK(result != nullptr);
   RegExpParser parser(input, &result->error, flags, isolate, zone);
   RegExpTree* tree = parser.ParsePattern();
   if (parser.failed()) {
-    DCHECK(tree == NULL);
+    DCHECK(tree == nullptr);
     DCHECK(!result->error.is_null());
   } else {
-    DCHECK(tree != NULL);
+    DCHECK(tree != nullptr);
     DCHECK(result->error.is_null());
     if (FLAG_trace_regexp_parser) {
       OFStream os(stdout);
@@ -1626,7 +1627,7 @@ RegExpBuilder::RegExpBuilder(Zone* zone, bool ignore_case, bool unicode)
       pending_empty_(false),
       ignore_case_(ignore_case),
       unicode_(unicode),
-      characters_(NULL),
+      characters_(nullptr),
       pending_surrogate_(kNoPendingSurrogate),
       terms_(),
       alternatives_()
@@ -1684,9 +1685,9 @@ void RegExpBuilder::FlushPendingSurrogate() {
 void RegExpBuilder::FlushCharacters() {
   FlushPendingSurrogate();
   pending_empty_ = false;
-  if (characters_ != NULL) {
+  if (characters_ != nullptr) {
     RegExpTree* atom = new (zone()) RegExpAtom(characters_->ToConstVector());
-    characters_ = NULL;
+    characters_ = nullptr;
     text_.Add(atom, zone());
     LAST(ADD_ATOM);
   }
@@ -1715,7 +1716,7 @@ void RegExpBuilder::AddCharacter(uc16 c) {
   if (NeedsDesugaringForIgnoreCase(c)) {
     AddCharacterClassForDesugaring(c);
   } else {
-    if (characters_ == NULL) {
+    if (characters_ == nullptr) {
       characters_ = new (zone()) ZoneList<uc16>(4, zone());
     }
     characters_->Add(c, zone());
@@ -1872,7 +1873,7 @@ bool RegExpBuilder::AddQuantifierToAtom(
     return true;
   }
   RegExpTree* atom;
-  if (characters_ != NULL) {
+  if (characters_ != nullptr) {
     DCHECK(last_added_ == ADD_CHAR);
     // Last atom was character.
     Vector<const uc16> char_vector = characters_->ToConstVector();
@@ -1882,7 +1883,7 @@ bool RegExpBuilder::AddQuantifierToAtom(
       text_.Add(new (zone()) RegExpAtom(prefix), zone());
       char_vector = char_vector.SubVector(num_chars - 1, num_chars);
     }
-    characters_ = NULL;
+    characters_ = nullptr;
     atom = new (zone()) RegExpAtom(char_vector);
     FlushText();
   } else if (text_.length() > 0) {

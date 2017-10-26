@@ -51,7 +51,7 @@ RUNTIME_FUNCTION(Runtime_GetPropertyWithReceiver) {
 
   DCHECK_EQ(3, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSReceiver, holder, 0);
-  CONVERT_ARG_HANDLE_CHECKED(Name, name, 1);
+  CONVERT_ARG_HANDLE_CHECKED(Object, name, 1);
   CONVERT_ARG_HANDLE_CHECKED(Object, receiver, 2);
 
   bool success;
@@ -64,16 +64,38 @@ RUNTIME_FUNCTION(Runtime_GetPropertyWithReceiver) {
   RETURN_RESULT_OR_FAILURE(isolate, Object::GetProperty(&it));
 }
 
-RUNTIME_FUNCTION(Runtime_CheckProxyGetTrapResult) {
+RUNTIME_FUNCTION(Runtime_SetPropertyWithReceiver) {
   HandleScope scope(isolate);
 
-  DCHECK_EQ(3, args.length());
+  DCHECK_EQ(5, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(JSReceiver, holder, 0);
+  CONVERT_ARG_HANDLE_CHECKED(Object, name, 1);
+  CONVERT_ARG_HANDLE_CHECKED(Object, value, 2);
+  CONVERT_ARG_HANDLE_CHECKED(Object, receiver, 3);
+  CONVERT_LANGUAGE_MODE_ARG_CHECKED(language_mode, 4);
+
+  bool success;
+  LookupIterator it = LookupIterator::PropertyOrElement(isolate, receiver, name,
+                                                        &success, holder);
+
+  Maybe<bool> result = Object::SetSuperProperty(
+      &it, value, language_mode, Object::MAY_BE_STORE_FROM_KEYED);
+  MAYBE_RETURN(result, isolate->heap()->exception());
+  return *isolate->factory()->ToBoolean(result.FromJust());
+}
+
+RUNTIME_FUNCTION(Runtime_CheckProxyGetSetTrapResult) {
+  HandleScope scope(isolate);
+
+  DCHECK_EQ(4, args.length());
   CONVERT_ARG_HANDLE_CHECKED(Name, name, 0);
   CONVERT_ARG_HANDLE_CHECKED(JSReceiver, target, 1);
   CONVERT_ARG_HANDLE_CHECKED(Object, trap_result, 2);
+  CONVERT_NUMBER_CHECKED(int64_t, access_kind, Int64, args[3]);
 
-  RETURN_RESULT_OR_FAILURE(
-      isolate, JSProxy::CheckGetTrapResult(isolate, name, target, trap_result));
+  RETURN_RESULT_OR_FAILURE(isolate, JSProxy::CheckGetSetTrapResult(
+                                        isolate, name, target, trap_result,
+                                        JSProxy::AccessKind(access_kind)));
 }
 
 RUNTIME_FUNCTION(Runtime_CheckProxyHasTrap) {
@@ -83,10 +105,9 @@ RUNTIME_FUNCTION(Runtime_CheckProxyHasTrap) {
   CONVERT_ARG_HANDLE_CHECKED(Name, name, 0);
   CONVERT_ARG_HANDLE_CHECKED(JSReceiver, target, 1);
 
-  RETURN_ON_SCHEDULED_EXCEPTION_VALUE(
-      isolate, JSProxy::CheckHasTrap(isolate, name, target),
-      *isolate->factory()->undefined_value());
-  return *isolate->factory()->undefined_value();
+  Maybe<bool> result = JSProxy::CheckHasTrap(isolate, name, target);
+  if (!result.IsJust()) return isolate->heap()->exception();
+  return isolate->heap()->ToBoolean(result.FromJust());
 }
 
 }  // namespace internal

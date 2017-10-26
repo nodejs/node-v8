@@ -33,9 +33,10 @@
 #include "include/libplatform/libplatform.h"
 #include "include/v8-platform.h"
 #include "src/debug/debug-interface.h"
+#include "src/factory.h"
 #include "src/flags.h"
 #include "src/isolate.h"
-#include "src/objects-inl.h"
+#include "src/objects.h"
 #include "src/utils.h"
 #include "src/v8.h"
 #include "src/zone/accounting-allocator.h"
@@ -113,7 +114,7 @@ class CcTest {
   bool enabled() { return enabled_; }
 
   static v8::Isolate* isolate() {
-    CHECK(isolate_ != NULL);
+    CHECK_NOT_NULL(isolate_);
     v8::base::Relaxed_Store(&isolate_used_, 1);
     return isolate_;
   }
@@ -245,7 +246,7 @@ class RegisterThreadedTest {
  public:
   explicit RegisterThreadedTest(CcTest::TestFunction* callback,
                                 const char* name)
-      : fuzzer_(NULL), callback_(callback), name_(name) {
+      : fuzzer_(nullptr), callback_(callback), name_(name) {
     prev_ = first_;
     first_ = this;
     count_++;
@@ -675,6 +676,10 @@ class TestPlatform : public v8::Platform {
 
   double MonotonicallyIncreasingTime() override {
     return old_platform_->MonotonicallyIncreasingTime();
+  }
+
+  double CurrentClockTimeMillis() override {
+    return old_platform_->CurrentClockTimeMillis();
   }
 
   void CallIdleOnForegroundThread(v8::Isolate* isolate,

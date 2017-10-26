@@ -22,9 +22,14 @@ void CallInterfaceDescriptor::DefaultInitializePlatformSpecific(
 
 void RecordWriteDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
-  // TODO(albertnetymk): Use default for now; should call
-  // RestrictAllocatableRegisters like src/x64/interface-descriptors-x64.cc
-  DefaultInitializePlatformSpecific(data, kParameterCount);
+  const Register default_stub_registers[] = {r2, r3, r4, r5, r6};
+
+  data->RestrictAllocatableRegisters(default_stub_registers,
+                                     arraysize(default_stub_registers));
+
+  CHECK_LE(static_cast<size_t>(kParameterCount),
+           arraysize(default_stub_registers));
+  data->InitializePlatformSpecific(kParameterCount, default_stub_registers);
 }
 
 const Register FastNewFunctionContextDescriptor::FunctionRegister() {
@@ -51,9 +56,6 @@ const Register StoreTransitionDescriptor::SlotRegister() { return r6; }
 const Register StoreTransitionDescriptor::VectorRegister() { return r5; }
 const Register StoreTransitionDescriptor::MapRegister() { return r7; }
 
-const Register StringCompareDescriptor::LeftRegister() { return r3; }
-const Register StringCompareDescriptor::RightRegister() { return r2; }
-
 const Register ApiGetterDescriptor::HolderRegister() { return r2; }
 const Register ApiGetterDescriptor::CallbackRegister() { return r5; }
 
@@ -78,24 +80,6 @@ const Register TypeConversionDescriptor::ArgumentRegister() { return r2; }
 void TypeofDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   Register registers[] = {r5};
-  data->InitializePlatformSpecific(arraysize(registers), registers);
-}
-
-void FastCloneRegExpDescriptor::InitializePlatformSpecific(
-    CallInterfaceDescriptorData* data) {
-  Register registers[] = {r5, r4, r3, r2};
-  data->InitializePlatformSpecific(arraysize(registers), registers);
-}
-
-void FastCloneShallowArrayDescriptor::InitializePlatformSpecific(
-    CallInterfaceDescriptorData* data) {
-  Register registers[] = {r5, r4, r3};
-  data->InitializePlatformSpecific(arraysize(registers), registers);
-}
-
-void FastCloneShallowObjectDescriptor::InitializePlatformSpecific(
-    CallInterfaceDescriptorData* data) {
-  Register registers[] = {r5, r4, r3, r2};
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }
 
@@ -223,7 +207,7 @@ void ArrayConstructorDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   // kTarget, kNewTarget, kActualArgumentsCount, kAllocationSite
   Register registers[] = {r3, r5, r2, r4};
-  data->InitializePlatformSpecific(arraysize(registers), registers, NULL);
+  data->InitializePlatformSpecific(arraysize(registers), registers, nullptr);
 }
 
 void ArrayNoArgumentConstructorDescriptor::InitializePlatformSpecific(
@@ -243,7 +227,7 @@ void ArraySingleArgumentConstructorDescriptor::InitializePlatformSpecific(
   // r3 -- function
   // r4 -- allocation site with elements kind
   Register registers[] = {r3, r4, r2};
-  data->InitializePlatformSpecific(arraysize(registers), registers, NULL);
+  data->InitializePlatformSpecific(arraysize(registers), registers, nullptr);
 }
 
 void ArrayNArgumentsConstructorDescriptor::InitializePlatformSpecific(

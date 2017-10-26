@@ -46,8 +46,7 @@ class IA32OperandGenerator final : public OperandGenerator {
       case kIA32Sub:
       case kIA32Cmp:
       case kIA32Test:
-        return rep == MachineRepresentation::kWord32 ||
-               rep == MachineRepresentation::kTagged;
+        return rep == MachineRepresentation::kWord32 || IsAnyTagged(rep);
       case kIA32Cmp16:
       case kIA32Test16:
         return rep == MachineRepresentation::kWord16;
@@ -1166,7 +1165,7 @@ void VisitCompareWithMemoryOperand(InstructionSelector* selector,
                                    InstructionCode opcode, Node* left,
                                    InstructionOperand right,
                                    FlagsContinuation* cont) {
-  DCHECK(left->opcode() == IrOpcode::kLoad);
+  DCHECK_EQ(IrOpcode::kLoad, left->opcode());
   IA32OperandGenerator g(selector);
   size_t input_count = 0;
   InstructionOperand inputs[6];

@@ -26,7 +26,8 @@ class BytecodeArrayBuilderTest : public TestWithIsolateAndZone {
 using ToBooleanMode = BytecodeArrayBuilder::ToBooleanMode;
 
 TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
-  BytecodeArrayBuilder builder(isolate(), zone(), 1, 131);
+  FeedbackVectorSpec feedback_spec(zone());
+  BytecodeArrayBuilder builder(isolate(), zone(), 1, 131, &feedback_spec);
   Factory* factory = isolate()->factory();
   AstValueFactory ast_factory(zone(), isolate()->ast_string_constants(),
                               isolate()->heap()->HashSeed());
@@ -56,8 +57,7 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
       .StoreAccumulatorInRegister(reg)
       .LoadLiteral(Smi::FromInt(10000000))
       .StoreAccumulatorInRegister(reg)
-      .LoadLiteral(
-          ast_factory.NewString(ast_factory.GetOneByteString("A constant")))
+      .LoadLiteral(ast_factory.GetOneByteString("A constant"))
       .StoreAccumulatorInRegister(reg)
       .LoadUndefined()
       .StoreAccumulatorInRegister(reg)
@@ -81,12 +81,36 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
   builder.MoveRegister(reg, other);
   builder.MoveRegister(reg, wide);
 
+  FeedbackSlot load_global_slot =
+      feedback_spec.AddLoadGlobalICSlot(NOT_INSIDE_TYPEOF);
+  FeedbackSlot load_global_typeof_slot =
+      feedback_spec.AddLoadGlobalICSlot(INSIDE_TYPEOF);
+  FeedbackSlot sloppy_store_global_slot =
+      feedback_spec.AddStoreGlobalICSlot(LanguageMode::kSloppy);
+  FeedbackSlot strict_store_global_slot =
+      feedback_spec.AddStoreGlobalICSlot(LanguageMode::kStrict);
+  FeedbackSlot load_slot = feedback_spec.AddLoadICSlot();
+  FeedbackSlot keyed_load_slot = feedback_spec.AddKeyedLoadICSlot();
+  FeedbackSlot sloppy_store_slot =
+      feedback_spec.AddStoreICSlot(LanguageMode::kSloppy);
+  FeedbackSlot strict_store_slot =
+      feedback_spec.AddStoreICSlot(LanguageMode::kStrict);
+  FeedbackSlot sloppy_keyed_store_slot =
+      feedback_spec.AddKeyedStoreICSlot(LanguageMode::kSloppy);
+  FeedbackSlot strict_keyed_store_slot =
+      feedback_spec.AddKeyedStoreICSlot(LanguageMode::kStrict);
+  FeedbackSlot store_own_slot = feedback_spec.AddStoreOwnICSlot();
+
   // Emit global load / store operations.
   const AstRawString* name = ast_factory.GetOneByteString("var_name");
-  builder.LoadGlobal(name, 1, TypeofMode::NOT_INSIDE_TYPEOF)
-      .LoadGlobal(name, 1, TypeofMode::INSIDE_TYPEOF)
-      .StoreGlobal(name, 1, LanguageMode::SLOPPY)
-      .StoreGlobal(name, 1, LanguageMode::STRICT);
+  builder
+      .LoadGlobal(name, load_global_slot.ToInt(), TypeofMode::NOT_INSIDE_TYPEOF)
+      .LoadGlobal(name, load_global_typeof_slot.ToInt(),
+                  TypeofMode::INSIDE_TYPEOF)
+      .StoreGlobal(name, sloppy_store_global_slot.ToInt(),
+                   LanguageMode::kSloppy)
+      .StoreGlobal(name, strict_store_global_slot.ToInt(),
+                   LanguageMode::kStrict);
 
   // Emit context operations.
   builder.PushContext(reg)
@@ -106,21 +130,26 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
       .StoreContextSlot(Register::current_context(), 3, 0);
 
   // Emit load / store property operations.
-  builder.LoadNamedProperty(reg, name, 0)
-      .LoadKeyedProperty(reg, 0)
-      .StoreNamedProperty(reg, name, 0, LanguageMode::SLOPPY)
-      .StoreKeyedProperty(reg, reg, 0, LanguageMode::SLOPPY)
-      .StoreNamedProperty(reg, name, 0, LanguageMode::STRICT)
-      .StoreKeyedProperty(reg, reg, 0, LanguageMode::STRICT)
-      .StoreNamedOwnProperty(reg, name, 0);
+  builder.LoadNamedProperty(reg, name, load_slot.ToInt())
+      .LoadKeyedProperty(reg, keyed_load_slot.ToInt())
+      .StoreNamedProperty(reg, name, sloppy_store_slot.ToInt(),
+                          LanguageMode::kSloppy)
+      .StoreKeyedProperty(reg, reg, sloppy_keyed_store_slot.ToInt(),
+                          LanguageMode::kSloppy)
+      .StoreNamedProperty(reg, name, strict_store_slot.ToInt(),
+                          LanguageMode::kStrict)
+      .StoreKeyedProperty(reg, reg, strict_keyed_store_slot.ToInt(),
+                          LanguageMode::kStrict)
+      .StoreNamedOwnProperty(reg, name, store_own_slot.ToInt());
 
   // Emit load / store lookup slots.
   builder.LoadLookupSlot(name, TypeofMode::NOT_INSIDE_TYPEOF)
       .LoadLookupSlot(name, TypeofMode::INSIDE_TYPEOF)
-      .StoreLookupSlot(name, LanguageMode::SLOPPY, LookupHoistingMode::kNormal)
-      .StoreLookupSlot(name, LanguageMode::SLOPPY,
+      .StoreLookupSlot(name, LanguageMode::kSloppy, LookupHoistingMode::kNormal)
+      .StoreLookupSlot(name, LanguageMode::kSloppy,
                        LookupHoistingMode::kLegacySloppy)
-      .StoreLookupSlot(name, LanguageMode::STRICT, LookupHoistingMode::kNormal);
+      .StoreLookupSlot(name, LanguageMode::kStrict,
+                       LookupHoistingMode::kNormal);
 
   // Emit load / store lookup slots with context fast paths.
   builder.LoadLookupContextSlot(name, TypeofMode::NOT_INSIDE_TYPEOF, 1, 0)
@@ -144,6 +173,9 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
   builder.CreateRegExpLiteral(ast_factory.GetOneByteString("a"), 0, 0);
   builder.CreateArrayLiteral(0, 0, 0);
   builder.CreateObjectLiteral(0, 0, 0, reg);
+
+  // Emit tagged template operations.
+  builder.GetTemplateObject(0);
 
   // Call operations.
   builder.CallAnyReceiver(reg, reg_list, 1)
@@ -190,9 +222,12 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
       .BinaryOperationSmiLiteral(Token::Value::SAR, Smi::FromInt(42), 2)
       .BinaryOperationSmiLiteral(Token::Value::SHR, Smi::FromInt(42), 2);
 
-  // Emit count operatior invocations
-  builder.CountOperation(Token::Value::ADD, 1)
-      .CountOperation(Token::Value::SUB, 1);
+  // Emit unary and count operator invocations.
+  builder.UnaryOperation(Token::Value::INC, 1)
+      .UnaryOperation(Token::Value::DEC, 1)
+      .UnaryOperation(Token::Value::ADD, 1)
+      .UnaryOperation(Token::Value::SUB, 1)
+      .UnaryOperation(Token::Value::BIT_NOT, 1);
 
   // Emit unary operator invocations.
   builder.LogicalNot(ToBooleanMode::kConvertToBoolean)
@@ -200,7 +235,7 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
       .TypeOf();
 
   // Emit delete
-  builder.Delete(reg, LanguageMode::SLOPPY).Delete(reg, LanguageMode::STRICT);
+  builder.Delete(reg, LanguageMode::kSloppy).Delete(reg, LanguageMode::kStrict);
 
   // Emit construct.
   builder.Construct(reg, reg_list, 1).ConstructWithSpread(reg, reg_list, 1);
@@ -214,14 +249,14 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
       .CompareOperation(Token::Value::LTE, reg, 5)
       .CompareOperation(Token::Value::GTE, reg, 6)
       .CompareTypeOf(TestTypeOfFlags::LiteralFlag::kNumber)
-      .CompareOperation(Token::Value::INSTANCEOF, reg)
+      .CompareOperation(Token::Value::INSTANCEOF, reg, 7)
       .CompareOperation(Token::Value::IN, reg)
       .CompareUndetectable()
       .CompareUndefined()
       .CompareNull();
 
   // Emit conversion operator invocations.
-  builder.ToNumber(reg, 1).ToObject(reg).ToName(reg);
+  builder.ToNumber(1).ToNumeric(1).ToObject(reg).ToName(reg);
 
   // Emit GetSuperConstructor.
   builder.GetSuperConstructor(reg);
@@ -295,7 +330,8 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
   BytecodeLabel after_rethrow;
   builder.ReThrow().Bind(&after_rethrow);
 
-  builder.ForInPrepare(reg, triple)
+  builder.ForInEnumerate(reg)
+      .ForInPrepare(triple, 1)
       .ForInContinue(reg, reg)
       .ForInNext(reg, reg, pair, 1)
       .ForInStep(reg);
@@ -308,25 +344,6 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
   builder.LoadLiteral(Smi::FromInt(20000000));
   const AstRawString* wide_name = ast_factory.GetOneByteString("var_wide_name");
 
-  // Emit wide global load / store operations.
-  builder.LoadGlobal(name, 1024, TypeofMode::NOT_INSIDE_TYPEOF)
-      .LoadGlobal(name, 1024, TypeofMode::INSIDE_TYPEOF)
-      .LoadGlobal(name, 1024, TypeofMode::INSIDE_TYPEOF)
-      .StoreGlobal(name, 1024, LanguageMode::SLOPPY)
-      .StoreGlobal(wide_name, 1, LanguageMode::STRICT);
-
-  // Emit extra wide global load.
-  builder.LoadGlobal(name, 1024 * 1024, TypeofMode::NOT_INSIDE_TYPEOF);
-
-  // Emit wide load / store property operations.
-  builder.LoadNamedProperty(reg, wide_name, 0)
-      .LoadKeyedProperty(reg, 2056)
-      .StoreNamedProperty(reg, wide_name, 0, LanguageMode::SLOPPY)
-      .StoreKeyedProperty(reg, reg, 2056, LanguageMode::SLOPPY)
-      .StoreNamedProperty(reg, wide_name, 0, LanguageMode::STRICT)
-      .StoreKeyedProperty(reg, reg, 2056, LanguageMode::STRICT)
-      .StoreNamedOwnProperty(reg, wide_name, 0);
-
   builder.StoreDataPropertyInLiteral(reg, reg,
                                      DataPropertyInLiteralFlag::kNoFlags, 0);
 
@@ -337,11 +354,11 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
   // Emit wide load / store lookup slots.
   builder.LoadLookupSlot(wide_name, TypeofMode::NOT_INSIDE_TYPEOF)
       .LoadLookupSlot(wide_name, TypeofMode::INSIDE_TYPEOF)
-      .StoreLookupSlot(wide_name, LanguageMode::SLOPPY,
+      .StoreLookupSlot(wide_name, LanguageMode::kSloppy,
                        LookupHoistingMode::kNormal)
-      .StoreLookupSlot(wide_name, LanguageMode::SLOPPY,
+      .StoreLookupSlot(wide_name, LanguageMode::kSloppy,
                        LookupHoistingMode::kLegacySloppy)
-      .StoreLookupSlot(wide_name, LanguageMode::STRICT,
+      .StoreLookupSlot(wide_name, LanguageMode::kStrict,
                        LookupHoistingMode::kNormal);
 
   // CreateClosureWide
@@ -373,6 +390,12 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
 
   // Emit debugger bytecode.
   builder.Debugger();
+
+  // Emit abort bytecode.
+  {
+    BytecodeLabel after;
+    builder.Abort(kGenerator).Bind(&after);
+  }
 
   // Insert dummy ops to force longer jumps.
   for (int i = 0; i < 256; i++) {
@@ -420,11 +443,9 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
   // Insert entry for illegal bytecode as this is never willingly emitted.
   scorecard[Bytecodes::ToByte(Bytecode::kIllegal)] = 1;
 
-  if (!FLAG_type_profile) {
-    // Bytecode for CollectTypeProfile is only emitted when
-    // Type Information for DevTools is turned on.
-    scorecard[Bytecodes::ToByte(Bytecode::kCollectTypeProfile)] = 1;
-  }
+  // Bytecode for CollectTypeProfile is only emitted when
+  // Type Information for DevTools is turned on.
+  scorecard[Bytecodes::ToByte(Bytecode::kCollectTypeProfile)] = 1;
 
   // Check return occurs at the end and only once in the BytecodeArray.
   CHECK_EQ(final_bytecode, Bytecode::kReturn);
@@ -495,10 +516,9 @@ TEST_F(BytecodeArrayBuilderTest, Constants) {
 
   const AstValue* heap_num_1 = ast_factory.NewNumber(3.14);
   const AstValue* heap_num_2 = ast_factory.NewNumber(5.2);
-  const AstValue* string =
-      ast_factory.NewString(ast_factory.GetOneByteString("foo"));
-  const AstValue* string_copy =
-      ast_factory.NewString(ast_factory.GetOneByteString("foo"));
+  const AstValue* heap_num_2_copy = ast_factory.NewNumber(5.2);
+  const AstRawString* string = ast_factory.GetOneByteString("foo");
+  const AstRawString* string_copy = ast_factory.GetOneByteString("foo");
 
   builder.LoadLiteral(heap_num_1)
       .LoadLiteral(heap_num_2)
@@ -506,12 +526,13 @@ TEST_F(BytecodeArrayBuilderTest, Constants) {
       .LoadLiteral(heap_num_1)
       .LoadLiteral(heap_num_1)
       .LoadLiteral(string_copy)
+      .LoadLiteral(heap_num_2_copy)
       .Return();
 
   ast_factory.Internalize(isolate());
   Handle<BytecodeArray> array = builder.ToBytecodeArray(isolate());
-  // Should only have one entry for each identical constant.
-  CHECK_EQ(array->constant_pool()->length(), 3);
+  // Should only have one entry for each identical string constant.
+  EXPECT_EQ(4, array->constant_pool()->length());
 }
 
 TEST_F(BytecodeArrayBuilderTest, ForwardJumps) {

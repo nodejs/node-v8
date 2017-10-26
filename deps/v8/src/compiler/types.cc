@@ -236,7 +236,6 @@ Type::bitset BitsetType::Lub(i::Map* map) {
 
     case JS_WEAK_MAP_TYPE:
     case JS_WEAK_SET_TYPE:
-    case JS_PROMISE_CAPABILITY_TYPE:
     case JS_PROMISE_TYPE:
     case WASM_MODULE_TYPE:
     case WASM_INSTANCE_TYPE:
@@ -276,6 +275,7 @@ Type::bitset BitsetType::Lub(i::Map* map) {
     case MODULE_TYPE:
     case MODULE_INFO_ENTRY_TYPE:
     case CELL_TYPE:
+    case BIGINT_TYPE:
       return kOtherInternal;
 
     // Remaining instance types are unsupported for now. If any of them do
@@ -305,6 +305,7 @@ Type::bitset BitsetType::Lub(i::Map* map) {
     case TUPLE3_TYPE:
     case CONTEXT_EXTENSION_TYPE:
     case ASYNC_GENERATOR_REQUEST_TYPE:
+    case CODE_DATA_CONTAINER_TYPE:
       UNREACHABLE();
   }
   UNREACHABLE();
@@ -560,14 +561,14 @@ bool Type::Maybe(Type* that) {
   return this->SimplyEquals(that);
 }
 
-// Return the range in [this], or [NULL].
+// Return the range in [this], or [nullptr].
 Type* Type::GetRange() {
   DisallowHeapAllocation no_allocation;
   if (this->IsRange()) return this;
   if (this->IsUnion() && this->AsUnion()->Get(1)->IsRange()) {
     return this->AsUnion()->Get(1);
   }
-  return NULL;
+  return nullptr;
 }
 
 bool UnionType::Wellformed() {
@@ -580,7 +581,7 @@ bool UnionType::Wellformed() {
   // 5. No element (except the bitset) is a subtype of any other.
   // 6. If there is a range, then the bitset type does not contain
   //    plain number bits.
-  DCHECK(this->Length() >= 2);       // (1)
+  DCHECK_LE(2, this->Length());      // (1)
   DCHECK(this->Get(0)->IsBitset());  // (2a)
 
   for (int i = 0; i < this->Length(); ++i) {
@@ -851,15 +852,15 @@ Type* Type::Union(Type* type1, Type* type2, Zone* zone) {
   Type* range = None();
   Type* range1 = type1->GetRange();
   Type* range2 = type2->GetRange();
-  if (range1 != NULL && range2 != NULL) {
+  if (range1 != nullptr && range2 != nullptr) {
     RangeType::Limits lims =
         RangeType::Limits::Union(RangeType::Limits(range1->AsRange()),
                                  RangeType::Limits(range2->AsRange()));
     Type* union_range = RangeType::New(lims, zone);
     range = NormalizeRangeAndBitset(union_range, &new_bitset, zone);
-  } else if (range1 != NULL) {
+  } else if (range1 != nullptr) {
     range = NormalizeRangeAndBitset(range1, &new_bitset, zone);
-  } else if (range2 != NULL) {
+  } else if (range2 != nullptr) {
     range = NormalizeRangeAndBitset(range2, &new_bitset, zone);
   }
   Type* bits = BitsetType::New(new_bitset);
@@ -890,7 +891,7 @@ int Type::AddToUnion(Type* type, UnionType* result, int size, Zone* zone) {
 
 Type* Type::NormalizeUnion(Type* union_type, int size, Zone* zone) {
   UnionType* unioned = union_type->AsUnion();
-  DCHECK(size >= 1);
+  DCHECK_LE(1, size);
   DCHECK(unioned->Get(0)->IsBitset());
   // If the union has just one element, return it.
   if (size == 1) {
@@ -937,7 +938,7 @@ const char* BitsetType::Name(bitset bits) {
 #undef RETURN_NAMED_TYPE
 
     default:
-      return NULL;
+      return nullptr;
   }
 }
 
@@ -945,7 +946,7 @@ void BitsetType::Print(std::ostream& os,  // NOLINT
                        bitset bits) {
   DisallowHeapAllocation no_allocation;
   const char* name = Name(bits);
-  if (name != NULL) {
+  if (name != nullptr) {
     os << name;
     return;
   }
@@ -970,7 +971,7 @@ void BitsetType::Print(std::ostream& os,  // NOLINT
       bits -= subset;
     }
   }
-  DCHECK(bits == 0);
+  DCHECK_EQ(0, bits);
   os << ")";
 }
 

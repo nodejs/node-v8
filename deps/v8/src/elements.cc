@@ -615,6 +615,16 @@ class ElementsAccessorBase : public ElementsAccessor {
                                           filter) != kMaxUInt32;
   }
 
+  bool HasEntry(JSObject* holder, uint32_t entry) final {
+    return Subclass::HasEntryImpl(holder->GetIsolate(), holder->elements(),
+                                  entry);
+  }
+
+  static bool HasEntryImpl(Isolate* isolate, FixedArrayBase* backing_store,
+                           uint32_t entry) {
+    UNIMPLEMENTED();
+  }
+
   bool HasAccessors(JSObject* holder) final {
     return Subclass::HasAccessorsImpl(holder, holder->elements());
   }
@@ -1010,13 +1020,14 @@ class ElementsAccessorBase : public ElementsAccessor {
   }
 
   Object* CopyElements(Handle<JSReceiver> source, Handle<JSObject> destination,
-                       size_t length) final {
-    return Subclass::CopyElementsHandleImpl(source, destination, length);
+                       size_t length, uint32_t offset) final {
+    return Subclass::CopyElementsHandleImpl(source, destination, length,
+                                            offset);
   }
 
   static Object* CopyElementsHandleImpl(Handle<JSReceiver> source,
                                         Handle<JSObject> destination,
-                                        size_t length) {
+                                        size_t length, uint32_t offset) {
     UNREACHABLE();
   }
 
@@ -1317,13 +1328,15 @@ class ElementsAccessorBase : public ElementsAccessor {
     return Subclass::GetDetailsImpl(holder, entry);
   }
 
-  Handle<FixedArray> CreateListFromArray(Isolate* isolate,
-                                         Handle<JSArray> array) final {
-    return Subclass::CreateListFromArrayImpl(isolate, array);
+  Handle<FixedArray> CreateListFromArrayLike(Isolate* isolate,
+                                             Handle<JSObject> object,
+                                             uint32_t length) final {
+    return Subclass::CreateListFromArrayLikeImpl(isolate, object, length);
   };
 
-  static Handle<FixedArray> CreateListFromArrayImpl(Isolate* isolate,
-                                                    Handle<JSArray> array) {
+  static Handle<FixedArray> CreateListFromArrayLikeImpl(Isolate* isolate,
+                                                        Handle<JSObject> object,
+                                                        uint32_t length) {
     UNREACHABLE();
   }
 
@@ -1416,6 +1429,37 @@ class DictionaryElementsAccessor
     UNREACHABLE();
   }
 
+  static Handle<JSObject> SliceImpl(Handle<JSObject> receiver, uint32_t start,
+                                    uint32_t end) {
+    Isolate* isolate = receiver->GetIsolate();
+    uint32_t result_length = end < start ? 0u : end - start;
+
+    // Result must also be a dictionary.
+    Handle<JSArray> result_array =
+        isolate->factory()->NewJSArray(0, HOLEY_ELEMENTS);
+    JSObject::NormalizeElements(result_array);
+    result_array->set_length(Smi::FromInt(result_length));
+    Handle<SeededNumberDictionary> source_dict(
+        SeededNumberDictionary::cast(receiver->elements()));
+    int entry_count = source_dict->Capacity();
+    for (int i = 0; i < entry_count; i++) {
+      Object* key = source_dict->KeyAt(i);
+      if (!key->IsUndefined(isolate)) {
+        uint64_t key_value = NumberToInt64(key);
+        if (key_value >= start && key_value < end) {
+          Handle<SeededNumberDictionary> dest_dict(
+              SeededNumberDictionary::cast(result_array->elements()));
+          Handle<Object> value(source_dict->ValueAt(i), isolate);
+          PropertyDetails details = source_dict->DetailsAt(i);
+          PropertyAttributes attr = details.attributes();
+          AddImpl(result_array, static_cast<uint32_t>(key_value), value, attr,
+                  0);
+        }
+      }
+    }
+
+    return result_array;
+  }
 
   static void DeleteImpl(Handle<JSObject> obj, uint32_t entry) {
     Handle<SeededNumberDictionary> dict(
@@ -2366,14 +2410,13 @@ class FastElementsAccessor : public ElementsAccessorBase<Subclass, KindTraits> {
     }
   }
 
-  static Handle<FixedArray> CreateListFromArrayImpl(Isolate* isolate,
-                                                    Handle<JSArray> array) {
-    uint32_t length = 0;
-    array->length()->ToArrayLength(&length);
+  static Handle<FixedArray> CreateListFromArrayLikeImpl(Isolate* isolate,
+                                                        Handle<JSObject> object,
+                                                        uint32_t length) {
     Handle<FixedArray> result = isolate->factory()->NewFixedArray(length);
-    Handle<FixedArrayBase> elements(array->elements(), isolate);
+    Handle<FixedArrayBase> elements(object->elements(), isolate);
     for (uint32_t i = 0; i < length; i++) {
-      if (!Subclass::HasElementImpl(isolate, *array, i, *elements)) continue;
+      if (!Subclass::HasElementImpl(isolate, *object, i, *elements)) continue;
       Handle<Object> value;
       value = Subclass::GetImpl(isolate, *elements, i);
       if (value->IsName()) {
@@ -2438,7 +2481,7 @@ class FastElementsAccessor : public ElementsAccessorBase<Subclass, KindTraits> {
     }
     Handle<FixedArrayBase> backing_store(receiver->elements(), isolate);
     uint32_t length = static_cast<uint32_t>(Smi::ToInt(receiver->length()));
-    DCHECK(length > 0);
+    DCHECK_GT(length, 0);
     int new_length = length - 1;
     int remove_index = remove_position == AT_START ? 0 : new_length;
     Handle<Object> result =
@@ -2460,7 +2503,7 @@ class FastElementsAccessor : public ElementsAccessorBase<Subclass, KindTraits> {
                                Arguments* args, uint32_t add_size,
                                Where add_position) {
     uint32_t length = Smi::ToInt(receiver->length());
-    DCHECK(0 < add_size);
+    DCHECK_LT(0, add_size);
     uint32_t elms_len = backing_store->length();
     // Check we do not overflow the new_length.
     DCHECK(add_size <= static_cast<uint32_t>(Smi::kMaxValue - length));
@@ -3084,6 +3127,20 @@ class TypedElementsAccessor
     std::reverse(data, data + len);
   }
 
+  static Handle<FixedArray> CreateListFromArrayLikeImpl(Isolate* isolate,
+                                                        Handle<JSObject> object,
+                                                        uint32_t length) {
+    DCHECK(!WasNeutered(*object));
+    DCHECK(object->IsJSTypedArray());
+    Handle<FixedArray> result = isolate->factory()->NewFixedArray(length);
+    Handle<BackingStore> elements(BackingStore::cast(object->elements()));
+    for (uint32_t i = 0; i < length; i++) {
+      Handle<Object> value = AccessorClass::GetImpl(isolate, *elements, i);
+      result->set(i, *value);
+    }
+    return result;
+  }
+
   static Handle<JSObject> SliceWithResultImpl(Handle<JSObject> receiver,
                                               uint32_t start, uint32_t end,
                                               Handle<JSObject> result) {
@@ -3143,18 +3200,19 @@ class TypedElementsAccessor
 
   template <typename SourceTraits>
   static void CopyBetweenBackingStores(FixedTypedArrayBase* source,
-                                       BackingStore* dest, size_t length) {
+                                       BackingStore* dest, size_t length,
+                                       uint32_t offset) {
     FixedTypedArray<SourceTraits>* source_fta =
         FixedTypedArray<SourceTraits>::cast(source);
     for (uint32_t i = 0; i < length; i++) {
       typename SourceTraits::ElementType elem = source_fta->get_scalar(i);
-      dest->set(i, dest->from(elem));
+      dest->set(offset + i, dest->from(elem));
     }
   }
 
   static void CopyElementsHandleFromTypedArray(Handle<JSTypedArray> source,
                                                Handle<JSTypedArray> destination,
-                                               size_t length) {
+                                               size_t length, uint32_t offset) {
     // The source is a typed array, so we know we don't need to do ToNumber
     // side-effects, as the source elements will always be a number or
     // undefined.
@@ -3165,6 +3223,7 @@ class TypedElementsAccessor
     Handle<BackingStore> destination_elements(
         BackingStore::cast(destination->elements()));
 
+    DCHECK_LE(offset + source->length(), destination->length());
     DCHECK_GE(destination->length(), source->length());
     DCHECK(source->length()->IsSmi());
     DCHECK_EQ(Smi::FromInt(static_cast<int>(length)), source->length());
@@ -3194,15 +3253,16 @@ class TypedElementsAccessor
     // which have special conversion operations.
     if (same_type || (same_size && both_are_simple)) {
       size_t element_size = source->element_size();
-      std::memcpy(dest_data, source_data, length * element_size);
+      std::memcpy(dest_data + offset * element_size, source_data,
+                  length * element_size);
     } else {
       // We use scalar accessors below to avoid boxing/unboxing, so there are
       // no allocations.
       switch (source->GetElementsKind()) {
-#define TYPED_ARRAY_CASE(Type, type, TYPE, ctype, size)   \
-  case TYPE##_ELEMENTS:                                   \
-    CopyBetweenBackingStores<Type##ArrayTraits>(          \
-        *source_elements, *destination_elements, length); \
+#define TYPED_ARRAY_CASE(Type, type, TYPE, ctype, size)           \
+  case TYPE##_ELEMENTS:                                           \
+    CopyBetweenBackingStores<Type##ArrayTraits>(                  \
+        *source_elements, *destination_elements, length, offset); \
     break;
         TYPED_ARRAYS(TYPED_ARRAY_CASE)
         default:
@@ -3229,7 +3289,7 @@ class TypedElementsAccessor
 
   static bool TryCopyElementsHandleFastNumber(Handle<JSArray> source,
                                               Handle<JSTypedArray> destination,
-                                              size_t length) {
+                                              size_t length, uint32_t offset) {
     Isolate* isolate = source->GetIsolate();
     DisallowHeapAllocation no_gc;
     DisallowJavascriptExecution no_js(isolate);
@@ -3254,19 +3314,19 @@ class TypedElementsAccessor
         Object* elem = source_store->get(i);
         DCHECK(elem->IsSmi());
         int int_value = Smi::ToInt(elem);
-        dest->set(i, dest->from(int_value));
+        dest->set(offset + i, dest->from(int_value));
       }
       return true;
     } else if (kind == HOLEY_SMI_ELEMENTS) {
       FixedArray* source_store = FixedArray::cast(source->elements());
       for (uint32_t i = 0; i < length; i++) {
         if (source_store->is_the_hole(isolate, i)) {
-          dest->SetValue(i, undefined);
+          dest->SetValue(offset + i, undefined);
         } else {
           Object* elem = source_store->get(i);
           DCHECK(elem->IsSmi());
           int int_value = Smi::ToInt(elem);
-          dest->set(i, dest->from(int_value));
+          dest->set(offset + i, dest->from(int_value));
         }
       }
       return true;
@@ -3280,7 +3340,7 @@ class TypedElementsAccessor
         // Use the from_double conversion for this specific TypedArray type,
         // rather than relying on C++ to convert elem.
         double elem = source_store->get_scalar(i);
-        dest->set(i, dest->from(elem));
+        dest->set(offset + i, dest->from(elem));
       }
       return true;
     } else if (kind == HOLEY_DOUBLE_ELEMENTS) {
@@ -3288,10 +3348,10 @@ class TypedElementsAccessor
           FixedDoubleArray::cast(source->elements());
       for (uint32_t i = 0; i < length; i++) {
         if (source_store->is_the_hole(i)) {
-          dest->SetValue(i, undefined);
+          dest->SetValue(offset + i, undefined);
         } else {
           double elem = source_store->get_scalar(i);
-          dest->set(i, dest->from(elem));
+          dest->set(offset + i, dest->from(elem));
         }
       }
       return true;
@@ -3301,7 +3361,7 @@ class TypedElementsAccessor
 
   static Object* CopyElementsHandleSlow(Handle<JSReceiver> source,
                                         Handle<JSTypedArray> destination,
-                                        size_t length) {
+                                        size_t length, uint32_t offset) {
     Isolate* isolate = source->GetIsolate();
     Handle<BackingStore> destination_elements(
         BackingStore::cast(destination->elements()));
@@ -3311,13 +3371,21 @@ class TypedElementsAccessor
       ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, elem,
                                          Object::GetProperty(&it));
       ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, elem, Object::ToNumber(elem));
-      // We don't need to check for buffer neutering here, because the
-      // source cannot be a TypedArray.
+
+      if (V8_UNLIKELY(destination->WasNeutered())) {
+        const char* op = "set";
+        const MessageTemplate::Template message =
+            MessageTemplate::kDetachedOperation;
+        Handle<String> operation =
+            isolate->factory()->NewStringFromAsciiChecked(op);
+        THROW_NEW_ERROR_RETURN_FAILURE(isolate,
+                                       NewTypeError(message, operation));
+      }
       // The spec says we store the length, then get each element, so we don't
       // need to check changes to length.
-      destination_elements->SetValue(i, *elem);
+      destination_elements->SetValue(offset + i, *elem);
     }
-    return Smi::kZero;
+    return *isolate->factory()->undefined_value();
   }
 
   // This doesn't guarantee that the destination array will be completely
@@ -3325,28 +3393,33 @@ class TypedElementsAccessor
   // that is required.
   static Object* CopyElementsHandleImpl(Handle<JSReceiver> source,
                                         Handle<JSObject> destination,
-                                        size_t length) {
+                                        size_t length, uint32_t offset) {
+    Isolate* isolate = destination->GetIsolate();
     Handle<JSTypedArray> destination_ta =
         Handle<JSTypedArray>::cast(destination);
+    DCHECK_LE(offset + length, destination_ta->length_value());
+
+    if (length == 0) return *isolate->factory()->undefined_value();
 
     // All conversions from TypedArrays can be done without allocation.
     if (source->IsJSTypedArray()) {
       Handle<JSTypedArray> source_ta = Handle<JSTypedArray>::cast(source);
-      CopyElementsHandleFromTypedArray(source_ta, destination_ta, length);
-      return Smi::kZero;
+      CopyElementsHandleFromTypedArray(source_ta, destination_ta, length,
+                                       offset);
+      return *isolate->factory()->undefined_value();
     }
 
     // Fast cases for packed numbers kinds where we don't need to allocate.
     if (source->IsJSArray()) {
       Handle<JSArray> source_array = Handle<JSArray>::cast(source);
-      if (TryCopyElementsHandleFastNumber(source_array, destination_ta,
-                                          length)) {
-        return Smi::kZero;
+      if (TryCopyElementsHandleFastNumber(source_array, destination_ta, length,
+                                          offset)) {
+        return *isolate->factory()->undefined_value();
       }
     }
     // Final generic case that handles prototype chain lookups, getters, proxies
     // and observable side effects via valueOf, etc.
-    return CopyElementsHandleSlow(source, destination_ta, length);
+    return CopyElementsHandleSlow(source, destination_ta, length, offset);
   }
 };
 
@@ -3699,6 +3772,29 @@ class SloppyArgumentsElementsAccessor
     }
     return Just<int64_t>(-1);
   }
+
+  static Handle<JSObject> SliceImpl(Handle<JSObject> receiver, uint32_t start,
+                                    uint32_t end) {
+    Isolate* isolate = receiver->GetIsolate();
+    uint32_t result_len = end < start ? 0u : end - start;
+    Handle<JSArray> result_array =
+        isolate->factory()->NewJSArray(HOLEY_ELEMENTS, result_len, result_len);
+    DisallowHeapAllocation no_gc;
+    FixedArray* elements = FixedArray::cast(result_array->elements());
+    FixedArray* parameters = FixedArray::cast(receiver->elements());
+    uint32_t insertion_index = 0;
+    for (uint32_t i = start; i < end; i++) {
+      uint32_t entry = GetEntryForIndexImpl(isolate, *receiver, parameters, i,
+                                            ALL_PROPERTIES);
+      if (entry != kMaxUInt32 && HasEntryImpl(isolate, parameters, entry)) {
+        elements->set(insertion_index, *GetImpl(isolate, parameters, entry));
+      } else {
+        elements->set_the_hole(isolate, insertion_index);
+      }
+      insertion_index++;
+    }
+    return result_array;
+  }
 };
 
 
@@ -3822,29 +3918,6 @@ class FastSloppyArgumentsElementsAccessor
                                          FixedArrayBase* store) {
     SloppyArgumentsElements* elements = SloppyArgumentsElements::cast(store);
     return Handle<FixedArray>(elements->arguments(), isolate);
-  }
-
-  static Handle<JSObject> SliceImpl(Handle<JSObject> receiver, uint32_t start,
-                                    uint32_t end) {
-    Isolate* isolate = receiver->GetIsolate();
-    uint32_t result_len = end < start ? 0u : end - start;
-    Handle<JSArray> result_array =
-        isolate->factory()->NewJSArray(HOLEY_ELEMENTS, result_len, result_len);
-    DisallowHeapAllocation no_gc;
-    FixedArray* elements = FixedArray::cast(result_array->elements());
-    FixedArray* parameters = FixedArray::cast(receiver->elements());
-    uint32_t insertion_index = 0;
-    for (uint32_t i = start; i < end; i++) {
-      uint32_t entry = GetEntryForIndexImpl(isolate, *receiver, parameters, i,
-                                            ALL_PROPERTIES);
-      if (entry != kMaxUInt32 && HasEntryImpl(isolate, parameters, entry)) {
-        elements->set(insertion_index, *GetImpl(isolate, parameters, entry));
-      } else {
-        elements->set_the_hole(isolate, insertion_index);
-      }
-      insertion_index++;
-    }
-    return result_array;
   }
 
   static Handle<SeededNumberDictionary> NormalizeImpl(
@@ -4156,7 +4229,7 @@ class SlowStringWrapperElementsAccessor
 void CheckArrayAbuse(Handle<JSObject> obj, const char* op, uint32_t index,
                      bool allow_appending) {
   DisallowHeapAllocation no_allocation;
-  Object* raw_length = NULL;
+  Object* raw_length = nullptr;
   const char* elements_type = "array";
   if (obj->IsJSArray()) {
     JSArray* array = JSArray::cast(*obj);
@@ -4298,11 +4371,11 @@ void ElementsAccessor::InitializeOncePerProcess() {
 
 
 void ElementsAccessor::TearDown() {
-  if (elements_accessors_ == NULL) return;
+  if (elements_accessors_ == nullptr) return;
 #define ACCESSOR_DELETE(Class, Kind, Store) delete elements_accessors_[Kind];
   ELEMENTS_LIST(ACCESSOR_DELETE)
 #undef ACCESSOR_DELETE
-  elements_accessors_ = NULL;
+  elements_accessors_ = nullptr;
 }
 
 Handle<JSArray> ElementsAccessor::Concat(Isolate* isolate, Arguments* args,
@@ -4357,6 +4430,6 @@ Handle<JSArray> ElementsAccessor::Concat(Isolate* isolate, Arguments* args,
   return result_array;
 }
 
-ElementsAccessor** ElementsAccessor::elements_accessors_ = NULL;
+ElementsAccessor** ElementsAccessor::elements_accessors_ = nullptr;
 }  // namespace internal
 }  // namespace v8

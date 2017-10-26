@@ -25,6 +25,8 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+// Flags: --allow-natives-syntax
+
 // ArrayBuffer
 
 function TestByteLength(param, expectedByteLength) {
@@ -609,6 +611,31 @@ function TestTypedArraySet() {
   a101[0] = 42;
   b101.set(a101);
   assertArrayPrefix([42], b101);
+
+  // Detached array buffer when accessing a source element
+  var a111 = new Int8Array(100);
+  var evilarr = new Array(100);
+  var detached = false;
+  evilarr[1] = {
+    [Symbol.toPrimitive]() {
+      %ArrayBufferNeuter(a111.buffer);
+      detached = true;
+      return 1;
+    }
+  };
+  assertThrows(() => a111.set(evilarr), TypeError);
+  assertEquals(true, detached);
+
+  // Check if the target is a typed array before converting offset to integer
+  var tmp = {
+    [Symbol.toPrimitive]() {
+      assertUnreachable("Parameter should not be processed when " +
+                        "array.[[ViewedArrayBuffer]] is neutered.");
+      return 1;
+    }
+  };
+  assertThrows(() => Int8Array.prototype.set.call(1, tmp), TypeError);
+  assertThrows(() => Int8Array.prototype.set.call([], tmp), TypeError);
 }
 
 TestTypedArraySet();
@@ -885,3 +912,12 @@ for(i = 0; i < typedArrayConstructors.length; i++) {
                  e.message);
   }
 })();
+
+// Regression test 761654
+assertThrows(function LargeSourceArray() {
+  let v0 = {};
+  v0.length =  2 ** 32; // too large for uint32
+  let a = new Int8Array();
+
+  a.set(v0);
+});

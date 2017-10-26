@@ -209,29 +209,13 @@ class AstValue : public ZoneObject {
     return Smi::FromInt(smi_);
   }
 
-  bool ToUint32(uint32_t* value) const {
-    if (IsSmi()) {
-      int num = smi_;
-      if (num < 0) return false;
-      *value = static_cast<uint32_t>(num);
-      return true;
-    }
-    if (IsHeapNumber()) {
-      return DoubleToUint32IfEqualToSelf(number_, value);
-    }
-    return false;
-  }
-
-  bool EqualsString(const AstRawString* string) const {
-    return type_ == STRING && string_ == string;
-  }
-
   bool IsPropertyName() const;
 
-  bool BooleanValue() const;
+  V8_EXPORT_PRIVATE bool BooleanValue() const;
 
   bool IsSmi() const { return type_ == SMI; }
   bool IsHeapNumber() const { return type_ == NUMBER; }
+  bool IsBigInt() const { return type_ == BIGINT; }
   bool IsFalse() const { return type_ == BOOLEAN && !bool_; }
   bool IsTrue() const { return type_ == BOOLEAN && bool_; }
   bool IsUndefined() const { return type_ == UNDEFINED; }
@@ -260,6 +244,7 @@ class AstValue : public ZoneObject {
     SYMBOL,
     NUMBER,
     SMI,
+    BIGINT,
     BOOLEAN,
     NULL_TYPE,
     UNDEFINED,
@@ -274,20 +259,15 @@ class AstValue : public ZoneObject {
     symbol_ = symbol;
   }
 
-  explicit AstValue(double n) : next_(nullptr) {
-    int int_value;
-    if (DoubleToSmiInteger(n, &int_value)) {
-      type_ = SMI;
-      smi_ = int_value;
-    } else {
-      type_ = NUMBER;
-      number_ = n;
-    }
-  }
+  explicit AstValue(double n);
 
   AstValue(Type t, int i) : type_(t), next_(nullptr) {
     DCHECK(type_ == SMI);
     smi_ = i;
+  }
+
+  explicit AstValue(const char* n) : type_(BIGINT), next_(nullptr) {
+    bigint_buffer_ = n;
   }
 
   explicit AstValue(bool b) : type_(BOOLEAN), next_(nullptr) { bool_ = b; }
@@ -312,11 +292,12 @@ class AstValue : public ZoneObject {
     int smi_;
     bool bool_;
     AstSymbol symbol_;
+    const char* bigint_buffer_;
   };
 };
 
 // For generating constants.
-#define STRING_CONSTANTS(F)                     \
+#define AST_STRING_CONSTANTS(F)                 \
   F(anonymous_function, "(anonymous function)") \
   F(arguments, "arguments")                     \
   F(async, "async")                             \
@@ -361,34 +342,11 @@ class AstValue : public ZoneObject {
 
 class AstStringConstants final {
  public:
-  AstStringConstants(Isolate* isolate, uint32_t hash_seed)
-      : zone_(isolate->allocator(), ZONE_NAME),
-        string_table_(AstRawString::Compare),
-        hash_seed_(hash_seed) {
-    DCHECK(ThreadId::Current().Equals(isolate->thread_id()));
-#define F(name, str)                                                       \
-  {                                                                        \
-    const char* data = str;                                                \
-    Vector<const uint8_t> literal(reinterpret_cast<const uint8_t*>(data),  \
-                                  static_cast<int>(strlen(data)));         \
-    uint32_t hash_field = StringHasher::HashSequentialString<uint8_t>(     \
-        literal.start(), literal.length(), hash_seed_);                    \
-    name##_string_ = new (&zone_) AstRawString(true, literal, hash_field); \
-    /* The Handle returned by the factory is located on the roots */       \
-    /* array, not on the temporary HandleScope, so this is safe.  */       \
-    name##_string_->set_string(isolate->factory()->name##_string());       \
-    base::HashMap::Entry* entry =                                          \
-        string_table_.InsertNew(name##_string_, name##_string_->Hash());   \
-    DCHECK_NULL(entry->value);                                             \
-    entry->value = reinterpret_cast<void*>(1);                             \
-  }
-    STRING_CONSTANTS(F)
-#undef F
-  }
+  AstStringConstants(Isolate* isolate, uint32_t hash_seed);
 
 #define F(name, str) \
   const AstRawString* name##_string() const { return name##_string_; }
-  STRING_CONSTANTS(F)
+  AST_STRING_CONSTANTS(F)
 #undef F
 
   uint32_t hash_seed() const { return hash_seed_; }
@@ -402,18 +360,11 @@ class AstStringConstants final {
   uint32_t hash_seed_;
 
 #define F(name, str) AstRawString* name##_string_;
-  STRING_CONSTANTS(F)
+  AST_STRING_CONSTANTS(F)
 #undef F
 
   DISALLOW_COPY_AND_ASSIGN(AstStringConstants);
 };
-
-#define OTHER_CONSTANTS(F) \
-  F(true_value)            \
-  F(false_value)           \
-  F(null_value)            \
-  F(undefined_value)       \
-  F(the_hole_value)
 
 class AstValueFactory {
  public:
@@ -429,9 +380,6 @@ class AstValueFactory {
         empty_cons_string_(nullptr),
         zone_(zone),
         hash_seed_(hash_seed) {
-#define F(name) name##_ = nullptr;
-    OTHER_CONSTANTS(F)
-#undef F
     DCHECK_EQ(hash_seed, string_constants->hash_seed());
     std::fill(smis_, smis_ + arraysize(smis_), nullptr);
     std::fill(one_character_strings_,
@@ -464,7 +412,7 @@ class AstValueFactory {
   const AstRawString* name##_string() const {  \
     return string_constants_->name##_string(); \
   }
-  STRING_CONSTANTS(F)
+  AST_STRING_CONSTANTS(F)
 #undef F
   const AstConsString* empty_cons_string() const { return empty_cons_string_; }
 
@@ -473,8 +421,8 @@ class AstValueFactory {
   const AstValue* NewSymbol(AstSymbol symbol);
   V8_EXPORT_PRIVATE const AstValue* NewNumber(double number);
   const AstValue* NewSmi(uint32_t number);
+  V8_EXPORT_PRIVATE const AstValue* NewBigInt(const char* number);
   const AstValue* NewBoolean(bool b);
-  const AstValue* NewStringList(ZoneList<const AstRawString*>* strings);
   const AstValue* NewNull();
   const AstValue* NewUndefined();
   const AstValue* NewTheHole();
@@ -511,7 +459,7 @@ class AstValueFactory {
   AstRawString* GetString(uint32_t hash, bool is_one_byte,
                           Vector<const byte> literal_bytes);
 
-  // All strings are copied here, one after another (no NULLs inbetween).
+  // All strings are copied here, one after another (no zeroes inbetween).
   base::CustomMatcherHashMap string_table_;
   // For keeping track of all AstValues and AstRawStrings we've created (so that
   // they can be internalized later).
@@ -537,14 +485,13 @@ class AstValueFactory {
 
   uint32_t hash_seed_;
 
-#define F(name) AstValue* name##_;
-  OTHER_CONSTANTS(F)
-#undef F
+  AstValue* true_value_ = nullptr;
+  AstValue* false_value_ = nullptr;
+  AstValue* null_value_ = nullptr;
+  AstValue* undefined_value_ = nullptr;
+  AstValue* the_hole_value_ = nullptr;
 };
 }  // namespace internal
 }  // namespace v8
-
-#undef STRING_CONSTANTS
-#undef OTHER_CONSTANTS
 
 #endif  // V8_AST_AST_VALUE_FACTORY_H_

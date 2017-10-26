@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <limits>
 #include <ostream>
 
 #include "src/base/build_config.h"
@@ -41,21 +42,7 @@
 
 #endif  // V8_OS_WIN
 
-// Unfortunately, the INFINITY macro cannot be used with the '-pedantic'
-// warning flag and certain versions of GCC due to a bug:
-// http://gcc.gnu.org/bugzilla/show_bug.cgi?id=11931
-// For now, we use the more involved template-based version from <limits>, but
-// only when compiling with GCC versions affected by the bug (2.96.x - 4.0.x)
-#if V8_CC_GNU && V8_GNUC_PREREQ(2, 96, 0) && !V8_GNUC_PREREQ(4, 1, 0)
-# include <limits>  // NOLINT
-# define V8_INFINITY std::numeric_limits<double>::infinity()
-#elif V8_LIBC_MSVCRT
-# define V8_INFINITY HUGE_VAL
-#elif V8_OS_AIX
-#define V8_INFINITY (__builtin_inff())
-#else
-# define V8_INFINITY INFINITY
-#endif
+#define V8_INFINITY std::numeric_limits<double>::infinity()
 
 namespace v8 {
 
@@ -325,32 +312,47 @@ template <typename T, class P = FreeStoreAllocationPolicy> class List;
 
 // The Strict Mode (ECMA-262 5th edition, 4.2.2).
 
-enum LanguageMode : uint32_t { SLOPPY, STRICT, LANGUAGE_END };
+enum class LanguageMode : bool { kSloppy, kStrict };
+static const size_t LanguageModeSize = 2;
+
+inline size_t hash_value(LanguageMode mode) {
+  return static_cast<size_t>(mode);
+}
 
 inline std::ostream& operator<<(std::ostream& os, const LanguageMode& mode) {
   switch (mode) {
-    case SLOPPY: return os << "sloppy";
-    case STRICT: return os << "strict";
-    case LANGUAGE_END:
-      UNREACHABLE();
+    case LanguageMode::kSloppy:
+      return os << "sloppy";
+    case LanguageMode::kStrict:
+      return os << "strict";
   }
   UNREACHABLE();
 }
 
 inline bool is_sloppy(LanguageMode language_mode) {
-  return language_mode == SLOPPY;
+  return language_mode == LanguageMode::kSloppy;
 }
 
 inline bool is_strict(LanguageMode language_mode) {
-  return language_mode != SLOPPY;
+  return language_mode != LanguageMode::kSloppy;
 }
 
 inline bool is_valid_language_mode(int language_mode) {
-  return language_mode == SLOPPY || language_mode == STRICT;
+  return language_mode == static_cast<int>(LanguageMode::kSloppy) ||
+         language_mode == static_cast<int>(LanguageMode::kStrict);
 }
 
 inline LanguageMode construct_language_mode(bool strict_bit) {
   return static_cast<LanguageMode>(strict_bit);
+}
+
+// Return kStrict if either of the language modes is kStrict, or kSloppy
+// otherwise.
+inline LanguageMode stricter_language_mode(LanguageMode mode1,
+                                           LanguageMode mode2) {
+  STATIC_ASSERT(LanguageModeSize == 2);
+  return static_cast<LanguageMode>(static_cast<int>(mode1) |
+                                   static_cast<int>(mode2));
 }
 
 enum TypeofMode : int { INSIDE_TYPEOF, NOT_INSIDE_TYPEOF };
@@ -712,6 +714,8 @@ enum InlineCacheState {
 enum WhereToStart { kStartAtReceiver, kStartAtPrototype };
 
 enum ResultSentinel { kNotFound = -1, kUnsupported = -2 };
+
+enum ShouldThrow { kThrowOnError, kDontThrow };
 
 // The Store Buffer (GC).
 typedef enum {
@@ -1256,6 +1260,7 @@ inline uint32_t ObjectHash(Address address) {
 // to a more generic type when we combine feedback.
 // kSignedSmall -> kSignedSmallInputs -> kNumber  -> kNumberOrOddball -> kAny
 //                                                   kString          -> kAny
+// kBigInt -> kAny
 // TODO(mythria): Remove kNumber type when crankshaft can handle Oddballs
 // similar to Numbers. We don't need kNumber feedback for Turbofan. Extra
 // information about Number might reduce few instructions but causes more
@@ -1270,7 +1275,8 @@ class BinaryOperationFeedback {
     kNumber = 0x7,
     kNumberOrOddball = 0xF,
     kString = 0x10,
-    kAny = 0x3F
+    kBigInt = 0x20,
+    kAny = 0x7F
   };
 };
 
@@ -1296,6 +1302,54 @@ class CompareOperationFeedback {
     kAny = 0xff
   };
 };
+
+enum class Operation {
+  // Binary operations.
+  kAdd,
+  kSubtract,
+  kMultiply,
+  kDivide,
+  kModulus,
+  kBitwiseAnd,
+  kBitwiseOr,
+  kBitwiseXor,
+  kShiftLeft,
+  kShiftRight,
+  kShiftRightLogical,
+  // Unary operations.
+  kBitwiseNot,
+  kNegate,
+  kIncrement,
+  kDecrement,
+  // Compare operations.
+  kEqual,
+  kStrictEqual,
+  kLessThan,
+  kLessThanOrEqual,
+  kGreaterThan,
+  kGreaterThanOrEqual,
+};
+
+// Type feedback is encoded in such a way that, we can combine the feedback
+// at different points by performing an 'OR' operation. Type feedback moves
+// to a more generic type when we combine feedback.
+// kNone -> kEnumCacheKeysAndIndices -> kEnumCacheKeys -> kAny
+class ForInFeedback {
+ public:
+  enum {
+    kNone = 0x0,
+    kEnumCacheKeysAndIndices = 0x1,
+    kEnumCacheKeys = 0x3,
+    kAny = 0x7
+  };
+};
+STATIC_ASSERT((ForInFeedback::kNone |
+               ForInFeedback::kEnumCacheKeysAndIndices) ==
+              ForInFeedback::kEnumCacheKeysAndIndices);
+STATIC_ASSERT((ForInFeedback::kEnumCacheKeysAndIndices |
+               ForInFeedback::kEnumCacheKeys) == ForInFeedback::kEnumCacheKeys);
+STATIC_ASSERT((ForInFeedback::kEnumCacheKeys | ForInFeedback::kAny) ==
+              ForInFeedback::kAny);
 
 enum class UnicodeEncoding : uint8_t {
   // Different unicode encodings in a |word32|:
@@ -1416,10 +1470,6 @@ enum IsolateAddressId {
 
 }  // namespace internal
 }  // namespace v8
-
-// Used by js-builtin-reducer to identify whether ReduceArrayIterator() is
-// reducing a JSArray method, or a JSTypedArray method.
-enum class ArrayIteratorKind { kArray, kTypedArray };
 
 namespace i = v8::internal;
 

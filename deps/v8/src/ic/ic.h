@@ -5,6 +5,8 @@
 #ifndef V8_IC_H_
 #define V8_IC_H_
 
+#include <vector>
+
 #include "src/factory.h"
 #include "src/feedback-vector.h"
 #include "src/macro-assembler.h"
@@ -34,7 +36,7 @@ class IC {
 
   // Construct the IC structure with the given number of extra
   // JavaScript frames on the stack.
-  IC(FrameDepth depth, Isolate* isolate, FeedbackNexus* nexus = NULL);
+  IC(FrameDepth depth, Isolate* isolate, FeedbackNexus* nexus = nullptr);
   virtual ~IC() {}
 
   State state() const { return state_; }
@@ -58,10 +60,6 @@ class IC {
            IsKeyedStoreIC();
   }
 
-  // The ICs that don't pass slot and vector through the stack have to
-  // save/restore them in the dispatcher.
-  static bool ShouldPushPopSlotAndVector(Code::Kind kind);
-
   static inline bool IsHandler(Object* object);
 
   // Nofity the IC system that a feedback has changed.
@@ -74,7 +72,6 @@ class IC {
 
   void set_slow_stub_reason(const char* reason) { slow_stub_reason_ = reason; }
 
-  Address GetAbstractPC(int* line, int* column) const;
   Isolate* isolate() const { return isolate_; }
 
   // Get the caller function object.
@@ -85,6 +82,11 @@ class IC {
                                               Address address);
 
   bool is_vector_set() { return vector_set_; }
+  bool vector_needs_update() {
+    return (!vector_set_ &&
+            (state() != MEGAMORPHIC ||
+             Smi::ToInt(nexus()->GetFeedbackExtra()) != ELEMENT));
+  }
 
   // Configure for most states.
   void ConfigureVectorState(IC::State new_state, Handle<Object> key);
@@ -93,7 +95,7 @@ class IC {
                             Handle<Object> handler);
   // Configure the vector for POLYMORPHIC.
   void ConfigureVectorState(Handle<Name> name, MapHandles const& maps,
-                            List<Handle<Object>>* handlers);
+                            ObjectHandles* handlers);
 
   char TransitionMarkFromState(IC::State state);
   void TraceIC(const char* type, Handle<Object> name);
@@ -133,14 +135,7 @@ class IC {
   bool IsStoreOwnIC() const { return IsStoreOwnICKind(kind_); }
   bool IsKeyedStoreIC() const { return IsKeyedStoreICKind(kind_); }
   bool is_keyed() const { return IsKeyedLoadIC() || IsKeyedStoreIC(); }
-  Code::Kind handler_kind() const {
-    if (IsAnyLoad()) return Code::LOAD_IC;
-    DCHECK(IsAnyStore());
-    return Code::STORE_IC;
-  }
   bool ShouldRecomputeHandler(Handle<String> name);
-
-  ExtraICState extra_ic_state() const { return extra_ic_state_; }
 
   Handle<Map> receiver_map() { return receiver_map_; }
   void update_receiver_map(Handle<Object> receiver) {
@@ -160,7 +155,7 @@ class IC {
 
   Map* FirstTargetMap() {
     FindTargetMaps();
-    return !target_maps_.empty() ? *target_maps_[0] : NULL;
+    return !target_maps_.empty() ? *target_maps_[0] : nullptr;
   }
 
   Handle<FeedbackVector> vector() const { return nexus()->vector_handle(); }
@@ -207,7 +202,6 @@ class IC {
   Handle<Map> receiver_map_;
   MaybeHandle<Object> maybe_handler_;
 
-  ExtraICState extra_ic_state_;
   MapHandles target_maps_;
   bool target_maps_set_;
 
@@ -223,7 +217,7 @@ class CallIC : public IC {
  public:
   CallIC(Isolate* isolate, CallICNexus* nexus)
       : IC(EXTRA_CALL_FRAME, isolate, nexus) {
-    DCHECK(nexus != NULL);
+    DCHECK_NOT_NULL(nexus);
   }
 };
 
@@ -232,7 +226,7 @@ class LoadIC : public IC {
  public:
   LoadIC(Isolate* isolate, FeedbackNexus* nexus)
       : IC(NO_EXTRA_FRAME, isolate, nexus) {
-    DCHECK(nexus != NULL);
+    DCHECK_NOT_NULL(nexus);
     DCHECK(IsAnyLoad());
   }
 
@@ -264,19 +258,6 @@ class LoadIC : public IC {
   // Creates a data handler that represents a load of a field by given index.
   static Handle<Smi> SimpleFieldLoad(Isolate* isolate, FieldIndex index);
 
-  // Creates a data handler that represents a prototype chain check followed
-  // by given Smi-handler that encoded a load from the holder.
-  // Can be used only if GetPrototypeCheckCount() returns non negative value.
-  Handle<Object> LoadFromPrototype(Handle<Map> receiver_map,
-                                   Handle<JSReceiver> holder, Handle<Name> name,
-                                   Handle<Smi> smi_handler);
-
-  // Creates a data handler that represents a load of a non-existent property.
-  // {holder} is the object from which the property is loaded. If no holder is
-  // needed (e.g., for "nonexistent"), null_value() may be passed in.
-  Handle<Object> LoadFullChain(Handle<Map> receiver_map, Handle<Object> holder,
-                               Handle<Name> name, Handle<Smi> smi_handler);
-
   friend class IC;
   friend class NamedLoadHandlerCompiler;
 };
@@ -298,7 +279,7 @@ class KeyedLoadIC : public LoadIC {
  public:
   KeyedLoadIC(Isolate* isolate, KeyedLoadICNexus* nexus)
       : LoadIC(isolate, nexus) {
-    DCHECK(nexus != NULL);
+    DCHECK_NOT_NULL(nexus);
   }
 
   MUST_USE_RESULT MaybeHandle<Object> Load(Handle<Object> object,
@@ -314,7 +295,7 @@ class KeyedLoadIC : public LoadIC {
   Handle<Object> LoadElementHandler(Handle<Map> receiver_map);
 
   void LoadElementPolymorphicHandlers(MapHandles* receiver_maps,
-                                      List<Handle<Object>>* handlers);
+                                      ObjectHandles* handlers);
 };
 
 
@@ -339,7 +320,7 @@ class StoreIC : public IC {
 
  protected:
   // Stub accessors.
-  Handle<Code> slow_stub() const {
+  virtual Handle<Code> slow_stub() const {
     // All StoreICs share the same slow stub.
     return BUILTIN_CODE(isolate(), KeyedStoreIC_Slow);
   }
@@ -353,10 +334,6 @@ class StoreIC : public IC {
   Handle<Code> CompileHandler(LookupIterator* lookup) override;
 
  private:
-  Handle<Object> StoreTransition(Handle<Map> receiver_map,
-                                 Handle<JSObject> holder,
-                                 Handle<Map> transition, Handle<Name> name);
-
   friend class IC;
 
   bool created_new_transition_ = false;
@@ -370,6 +347,11 @@ class StoreGlobalIC : public StoreIC {
   MUST_USE_RESULT MaybeHandle<Object> Store(Handle<Object> object,
                                             Handle<Name> name,
                                             Handle<Object> value);
+
+ protected:
+  Handle<Code> slow_stub() const override {
+    return BUILTIN_CODE(isolate(), StoreGlobalIC_Slow);
+  }
 };
 
 enum KeyedStoreCheckMap { kDontCheckMap, kCheckMap };
@@ -403,7 +385,7 @@ class KeyedStoreIC : public StoreIC {
                                      KeyedAccessStoreMode store_mode);
 
   void StoreElementPolymorphicHandlers(MapHandles* receiver_maps,
-                                       List<Handle<Object>>* handlers,
+                                       ObjectHandles* handlers,
                                        KeyedAccessStoreMode store_mode);
 
   friend class IC;
