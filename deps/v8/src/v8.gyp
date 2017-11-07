@@ -2538,8 +2538,8 @@
           ],
           'action': [
             'python',
-            '../tools/testrunner/utils/dump_build_config_gyp.py',
-            '<(PRODUCT_DIR)/v8_build_config.json',
+            '<@(_inputs)',
+            '<@(_outputs)',
             'dcheck_always_on=<(dcheck_always_on)',
             'is_asan=<(asan)',
             'is_cfi=<(cfi_vptr)',
