@@ -1,5 +1,5 @@
 This is an automatically updated **experimental**
-version of Node.js [Node.js](https://github.com/nodejs/node)
+version of [Node.js](https://github.com/nodejs/node)
 with the lkgr (last known good revision) of V8.
 
 The daily builds of this repo can be found at
