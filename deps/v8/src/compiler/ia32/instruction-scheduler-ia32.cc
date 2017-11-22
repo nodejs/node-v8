@@ -138,6 +138,38 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kIA32I16x8ExtractLane:
     case kSSEI16x8ReplaceLane:
     case kAVXI16x8ReplaceLane:
+    case kSSEI16x8Shl:
+    case kAVXI16x8Shl:
+    case kSSEI16x8ShrS:
+    case kAVXI16x8ShrS:
+    case kSSEI16x8Add:
+    case kAVXI16x8Add:
+    case kSSEI16x8AddSaturateS:
+    case kAVXI16x8AddSaturateS:
+    case kSSEI16x8Sub:
+    case kAVXI16x8Sub:
+    case kSSEI16x8SubSaturateS:
+    case kAVXI16x8SubSaturateS:
+    case kSSEI16x8Mul:
+    case kAVXI16x8Mul:
+    case kSSEI16x8MinS:
+    case kAVXI16x8MinS:
+    case kSSEI16x8MaxS:
+    case kAVXI16x8MaxS:
+    case kSSEI16x8Eq:
+    case kAVXI16x8Eq:
+    case kSSEI16x8Ne:
+    case kAVXI16x8Ne:
+    case kSSEI16x8ShrU:
+    case kAVXI16x8ShrU:
+    case kSSEI16x8AddSaturateU:
+    case kAVXI16x8AddSaturateU:
+    case kSSEI16x8SubSaturateU:
+    case kAVXI16x8SubSaturateU:
+    case kSSEI16x8MinU:
+    case kAVXI16x8MinU:
+    case kSSEI16x8MaxU:
+    case kAVXI16x8MaxU:
     case kIA32I8x16Splat:
     case kIA32I8x16ExtractLane:
     case kSSEI8x16ReplaceLane:

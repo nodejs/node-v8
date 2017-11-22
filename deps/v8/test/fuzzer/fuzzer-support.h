@@ -27,13 +27,12 @@ class FuzzerSupport {
   FuzzerSupport(const FuzzerSupport&);
   FuzzerSupport& operator=(const FuzzerSupport&);
 
-
-  v8::Platform* platform_;
+  std::unique_ptr<v8::Platform> platform_;
   v8::ArrayBuffer::Allocator* allocator_;
   v8::Isolate* isolate_;
   v8::Global<v8::Context> context_;
 };
 
-}  // namespace
+}  // namespace v8_fuzzer
 
 #endif  //  TEST_FUZZER_FUZZER_SUPPORT_H_

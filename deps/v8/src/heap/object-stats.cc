@@ -9,7 +9,6 @@
 #include "src/counters.h"
 #include "src/heap/heap-inl.h"
 #include "src/isolate.h"
-#include "src/objects/code-cache-inl.h"
 #include "src/objects/compilation-cache-inl.h"
 #include "src/utils.h"
 
@@ -306,8 +305,7 @@ void ObjectStatsCollector::CollectGlobalStatistics() {
 }
 
 static bool CanRecordFixedArray(Heap* heap, FixedArrayBase* array) {
-  return (array->map()->instance_type() == FIXED_ARRAY_TYPE ||
-          array->map()->instance_type() == HASH_TABLE_TYPE) &&
+  return array->map()->instance_type() == FIXED_ARRAY_TYPE &&
          array->map() != heap->fixed_double_array_map() &&
          array != heap->empty_fixed_array() &&
          array != heap->empty_byte_array() &&
@@ -368,7 +366,7 @@ void ObjectStatsCollector::RecordJSObjectDetails(JSObject* object) {
   FixedArrayBase* elements = object->elements();
   if (CanRecordFixedArray(heap_, elements) && !IsCowArray(heap_, elements)) {
     if (elements->IsDictionary() && SameLiveness(object, elements)) {
-      SeededNumberDictionary* dict = SeededNumberDictionary::cast(elements);
+      NumberDictionary* dict = NumberDictionary::cast(elements);
       RecordHashTableHelper(object, dict, DICTIONARY_ELEMENTS_SUB_TYPE);
     } else {
       if (IsHoleyElementsKind(object->GetElementsKind())) {
@@ -432,24 +430,10 @@ void ObjectStatsCollector::RecordMapDetails(Map* map_obj) {
   if (map_obj->owns_descriptors() && array != heap_->empty_descriptor_array() &&
       SameLiveness(map_obj, array)) {
     RecordFixedArrayHelper(map_obj, array, DESCRIPTOR_ARRAY_SUB_TYPE, 0);
-    if (array->HasEnumCache()) {
-      RecordFixedArrayHelper(array, array->GetEnumCache(), ENUM_CACHE_SUB_TYPE,
-                             0);
-    }
-    if (array->HasEnumIndicesCache()) {
-      RecordFixedArrayHelper(array, array->GetEnumIndicesCache(),
-                             ENUM_INDICES_CACHE_SUB_TYPE, 0);
-    }
-  }
-
-  FixedArray* code_cache = map_obj->code_cache();
-  if (code_cache->length() > 0) {
-    if (code_cache->IsCodeCacheHashTable()) {
-      RecordHashTableHelper(map_obj, CodeCacheHashTable::cast(code_cache),
-                            MAP_CODE_CACHE_SUB_TYPE);
-    } else {
-      RecordFixedArrayHelper(map_obj, code_cache, MAP_CODE_CACHE_SUB_TYPE, 0);
-    }
+    EnumCache* enum_cache = array->GetEnumCache();
+    RecordFixedArrayHelper(array, enum_cache->keys(), ENUM_CACHE_SUB_TYPE, 0);
+    RecordFixedArrayHelper(array, enum_cache->indices(),
+                           ENUM_INDICES_CACHE_SUB_TYPE, 0);
   }
 
   for (DependentCode* cur_dependent_code = map_obj->dependent_code();
@@ -495,8 +479,8 @@ void ObjectStatsCollector::RecordCodeDetails(Code* code) {
   RecordFixedArrayHelper(code, code->deoptimization_data(),
                          DEOPTIMIZATION_DATA_SUB_TYPE, 0);
   if (code->kind() == Code::Kind::OPTIMIZED_FUNCTION) {
-    DeoptimizationInputData* input_data =
-        DeoptimizationInputData::cast(code->deoptimization_data());
+    DeoptimizationData* input_data =
+        DeoptimizationData::cast(code->deoptimization_data());
     if (input_data->length() > 0) {
       RecordFixedArrayHelper(code->deoptimization_data(),
                              input_data->LiteralArray(),

@@ -15,7 +15,6 @@
 #include "src/compiler/schedule.h"
 #include "src/compiler/state-values-utils.h"
 #include "src/deoptimizer.h"
-#include "src/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -530,7 +529,7 @@ size_t InstructionSelector::AddOperandToStateValueDescriptor(
 
   switch (input->opcode()) {
     case IrOpcode::kArgumentsElementsState: {
-      values->PushArgumentsElements(IsRestOf(input->op()));
+      values->PushArgumentsElements(ArgumentsStateTypeOf(input->op()));
       // The elements backing store of an arguments object participates in the
       // duplicate object counting, but can itself never appear duplicated.
       DCHECK_EQ(StateObjectDeduplicator::kNotDuplicated,
@@ -539,7 +538,7 @@ size_t InstructionSelector::AddOperandToStateValueDescriptor(
       return 0;
     }
     case IrOpcode::kArgumentsLengthState: {
-      values->PushArgumentsLength(IsRestOf(input->op()));
+      values->PushArgumentsLength(ArgumentsStateTypeOf(input->op()));
       return 0;
     }
     case IrOpcode::kObjectState: {
@@ -549,7 +548,7 @@ size_t InstructionSelector::AddOperandToStateValueDescriptor(
     case IrOpcode::kObjectId: {
       size_t id = deduplicator->GetObjectId(input);
       if (id == StateObjectDeduplicator::kNotDuplicated) {
-        DCHECK(input->opcode() == IrOpcode::kTypedObjectState);
+        DCHECK_EQ(IrOpcode::kTypedObjectState, input->opcode());
         size_t entries = 0;
         id = deduplicator->InsertObject(input);
         StateValueList* nested = values->PushRecursiveField(zone, id);
@@ -707,7 +706,7 @@ void InstructionSelector::InitializeCallBuffer(Node* call, CallBuffer* buffer,
       buffer->output_nodes.resize(buffer->descriptor->ReturnCount(), nullptr);
       for (Edge const edge : call->use_edges()) {
         if (!NodeProperties::IsValueEdge(edge)) continue;
-        DCHECK(edge.from()->opcode() == IrOpcode::kProjection);
+        DCHECK_EQ(IrOpcode::kProjection, edge.from()->opcode());
         size_t const index = ProjectionIndexOf(edge.from()->op());
         DCHECK_LT(index, buffer->output_nodes.size());
         DCHECK(!buffer->output_nodes[index]);
@@ -757,6 +756,14 @@ void InstructionSelector::InitializeCallBuffer(Node* call, CallBuffer* buffer,
       buffer->instruction_args.push_back(
           (call_address_immediate &&
            callee->opcode() == IrOpcode::kExternalConstant)
+              ? g.UseImmediate(callee)
+              : g.UseRegister(callee));
+      break;
+    case CallDescriptor::kCallWasmFunction:
+      buffer->instruction_args.push_back(
+          (call_address_immediate &&
+           (callee->opcode() == IrOpcode::kRelocatableInt64Constant ||
+            callee->opcode() == IrOpcode::kRelocatableInt32Constant))
               ? g.UseImmediate(callee)
               : g.UseRegister(callee));
       break;
@@ -820,7 +827,7 @@ void InstructionSelector::InitializeCallBuffer(Node* call, CallBuffer* buffer,
   bool call_tail = (flags & kCallTail) != 0;
   for (size_t index = 0; index < input_count; ++iter, ++index) {
     DCHECK(iter != call->inputs().end());
-    DCHECK((*iter)->op()->opcode() != IrOpcode::kFrameState);
+    DCHECK_NE(IrOpcode::kFrameState, (*iter)->op()->opcode());
     if (index == 0) continue;  // The first argument (callee) is already done.
 
     LinkageLocation location = buffer->descriptor->GetInputLocation(index);
@@ -863,7 +870,9 @@ bool InstructionSelector::IsSourcePositionUsed(Node* node) {
           node->opcode() == IrOpcode::kCall ||
           node->opcode() == IrOpcode::kCallWithCallerSavedRegisters ||
           node->opcode() == IrOpcode::kTrapIf ||
-          node->opcode() == IrOpcode::kTrapUnless);
+          node->opcode() == IrOpcode::kTrapUnless ||
+          node->opcode() == IrOpcode::kProtectedLoad ||
+          node->opcode() == IrOpcode::kProtectedStore);
 }
 
 void InstructionSelector::VisitBlock(BasicBlock* block) {
@@ -1118,6 +1127,9 @@ void InstructionSelector::VisitNode(Node* node) {
       return;
     case IrOpcode::kDebugBreak:
       VisitDebugBreak(node);
+      return;
+    case IrOpcode::kUnreachable:
+      VisitUnreachable(node);
       return;
     case IrOpcode::kComment:
       VisitComment(node);
@@ -2220,12 +2232,7 @@ void InstructionSelector::VisitI16x8Splat(Node* node) { UNIMPLEMENTED(); }
 void InstructionSelector::VisitI16x8ExtractLane(Node* node) { UNIMPLEMENTED(); }
 
 void InstructionSelector::VisitI16x8ReplaceLane(Node* node) { UNIMPLEMENTED(); }
-#endif  // !V8_TARGET_ARCH_ARM && !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_X64
-        // && !V8_TARGET_ARCH_IA32 && !V8_TARGET_ARCH_MIPS &&
-        // !V8_TARGET_ARCH_MIPS64
 
-#if !V8_TARGET_ARCH_ARM && !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_X64 && \
-    !V8_TARGET_ARCH_MIPS && !V8_TARGET_ARCH_MIPS64
 void InstructionSelector::VisitI16x8Shl(Node* node) { UNIMPLEMENTED(); }
 
 void InstructionSelector::VisitI16x8ShrS(Node* node) { UNIMPLEMENTED(); }
@@ -2244,7 +2251,8 @@ void InstructionSelector::VisitI16x8SubSaturateS(Node* node) {
   UNIMPLEMENTED();
 }
 #endif  // !V8_TARGET_ARCH_ARM && !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_X64
-        // && !V8_TARGET_ARCH_MIPS && !V8_TARGET_ARCH_MIPS64
+        // && !V8_TARGET_ARCH_IA32 && !V8_TARGET_ARCH_MIPS &&
+        // !V8_TARGET_ARCH_MIPS64
 
 #if !V8_TARGET_ARCH_ARM && !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_X64 && \
     !V8_TARGET_ARCH_MIPS && !V8_TARGET_ARCH_MIPS64
@@ -2253,7 +2261,7 @@ void InstructionSelector::VisitI16x8AddHoriz(Node* node) { UNIMPLEMENTED(); }
         // && !V8_TARGET_ARCH_MIPS && !V8_TARGET_ARCH_MIPS64
 
 #if !V8_TARGET_ARCH_ARM && !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_X64 && \
-    !V8_TARGET_ARCH_MIPS && !V8_TARGET_ARCH_MIPS64
+    !V8_TARGET_ARCH_IA32 && !V8_TARGET_ARCH_MIPS && !V8_TARGET_ARCH_MIPS64
 void InstructionSelector::VisitI16x8Mul(Node* node) { UNIMPLEMENTED(); }
 
 void InstructionSelector::VisitI16x8MinS(Node* node) { UNIMPLEMENTED(); }
@@ -2275,7 +2283,12 @@ void InstructionSelector::VisitI16x8SubSaturateU(Node* node) {
 void InstructionSelector::VisitI16x8MinU(Node* node) { UNIMPLEMENTED(); }
 
 void InstructionSelector::VisitI16x8MaxU(Node* node) { UNIMPLEMENTED(); }
+#endif  // !V8_TARGET_ARCH_ARM && !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_X64
+        // && !V8_TARGET_ARCH_IA32 && !V8_TARGET_ARCH_MIPS &&
+        // !V8_TARGET_ARCH_MIPS64
 
+#if !V8_TARGET_ARCH_ARM && !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_X64 && \
+    !V8_TARGET_ARCH_MIPS && !V8_TARGET_ARCH_MIPS64
 void InstructionSelector::VisitI16x8Neg(Node* node) { UNIMPLEMENTED(); }
 #endif  // !V8_TARGET_ARCH_ARM && !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_X64
         // && !V8_TARGET_ARCH_MIPS && !V8_TARGET_ARCH_MIPS64
@@ -2474,6 +2487,7 @@ void InstructionSelector::VisitOsrValue(Node* node) {
 
 void InstructionSelector::VisitPhi(Node* node) {
   const int input_count = node->op()->ValueInputCount();
+  DCHECK_EQ(input_count, current_block_->PredecessorCount());
   PhiInstruction* phi = new (instruction_zone())
       PhiInstruction(instruction_zone(), GetVirtualRegister(node),
                      static_cast<size_t>(input_count));
@@ -2512,7 +2526,7 @@ void InstructionSelector::VisitProjection(Node* node) {
       if (ProjectionIndexOf(node->op()) == 0u) {
         Emit(kArchNop, g.DefineSameAsFirst(node), g.Use(value));
       } else {
-        DCHECK(ProjectionIndexOf(node->op()) == 1u);
+        DCHECK_EQ(1u, ProjectionIndexOf(node->op()));
         MarkAsUsed(value);
       }
       break;
@@ -2583,6 +2597,9 @@ void InstructionSelector::VisitCall(Node* node, BasicBlock* handler) {
     case CallDescriptor::kCallJSFunction:
       opcode = kArchCallJSFunction | MiscField::encode(flags);
       break;
+    case CallDescriptor::kCallWasmFunction:
+      opcode = kArchCallWasmFunction | MiscField::encode(flags);
+      break;
   }
 
   // Emit the call instruction.
@@ -2598,10 +2615,13 @@ void InstructionSelector::VisitCall(Node* node, BasicBlock* handler) {
 void InstructionSelector::VisitCallWithCallerSavedRegisters(
     Node* node, BasicBlock* handler) {
   OperandGenerator g(this);
-
-  Emit(kArchSaveCallerRegisters, g.NoOutput());
+  const auto fp_mode = CallDescriptorOf(node->op())->get_save_fp_mode();
+  Emit(kArchSaveCallerRegisters | MiscField::encode(static_cast<int>(fp_mode)),
+       g.NoOutput());
   VisitCall(node, handler);
-  Emit(kArchRestoreCallerRegisters, g.NoOutput());
+  Emit(kArchRestoreCallerRegisters |
+           MiscField::encode(static_cast<int>(fp_mode)),
+       g.NoOutput());
 }
 
 void InstructionSelector::VisitTailCall(Node* node) {
@@ -2645,6 +2665,9 @@ void InstructionSelector::VisitTailCall(Node* node) {
         break;
       case CallDescriptor::kCallAddress:
         opcode = kArchTailCallAddress;
+        break;
+      case CallDescriptor::kCallWasmFunction:
+        opcode = kArchTailCallWasm;
         break;
       default:
         UNREACHABLE();
@@ -2759,6 +2782,11 @@ void InstructionSelector::VisitDebugBreak(Node* node) {
   Emit(kArchDebugBreak, g.NoOutput());
 }
 
+void InstructionSelector::VisitUnreachable(Node* node) {
+  OperandGenerator g(this);
+  Emit(kArchDebugBreak, g.NoOutput());
+}
+
 void InstructionSelector::VisitComment(Node* node) {
   OperandGenerator g(this);
   InstructionOperand operand(g.UseImmediate(node));
@@ -2790,7 +2818,7 @@ bool InstructionSelector::CanProduceSignalingNaN(Node* node) {
 
 FrameStateDescriptor* InstructionSelector::GetFrameStateDescriptor(
     Node* state) {
-  DCHECK(state->opcode() == IrOpcode::kFrameState);
+  DCHECK_EQ(IrOpcode::kFrameState, state->opcode());
   DCHECK_EQ(kFrameStateInputCount, state->InputCount());
   FrameStateInfo state_info = OpParameter<FrameStateInfo>(state);
 

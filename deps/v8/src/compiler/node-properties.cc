@@ -12,7 +12,6 @@
 #include "src/compiler/simplified-operator.h"
 #include "src/compiler/verifier.h"
 #include "src/handles-inl.h"
-#include "src/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -278,6 +277,23 @@ Node* NodeProperties::FindProjection(Node* node, size_t projection_index) {
 
 
 // static
+void NodeProperties::CollectValueProjections(Node* node, Node** projections,
+                                             size_t projection_count) {
+#ifdef DEBUG
+  for (size_t index = 0; index < projection_count; ++index) {
+    DCHECK_NULL(projections[index]);
+  }
+#endif
+  for (Edge const edge : node->use_edges()) {
+    if (!IsValueEdge(edge)) continue;
+    Node* use = edge.from();
+    DCHECK_EQ(IrOpcode::kProjection, use->opcode());
+    projections[ProjectionIndexOf(use->op())] = use;
+  }
+}
+
+
+// static
 void NodeProperties::CollectControlProjections(Node* node, Node** projections,
                                                size_t projection_count) {
 #ifdef DEBUG
@@ -349,12 +365,26 @@ NodeProperties::InferReceiverMapsResult NodeProperties::InferReceiverMaps(
     Node* receiver, Node* effect, ZoneHandleSet<Map>* maps_return) {
   HeapObjectMatcher m(receiver);
   if (m.HasValue()) {
-    Handle<Map> receiver_map(m.Value()->map());
-    if (receiver_map->is_stable()) {
-      // The {receiver_map} is only reliable when we install a stability
-      // code dependency.
-      *maps_return = ZoneHandleSet<Map>(receiver_map);
-      return kUnreliableReceiverMaps;
+    Handle<HeapObject> receiver = m.Value();
+    Isolate* const isolate = m.Value()->GetIsolate();
+    // We don't use ICs for the Array.prototype and the Object.prototype
+    // because the runtime has to be able to intercept them properly, so
+    // we better make sure that TurboFan doesn't outsmart the system here
+    // by storing to elements of either prototype directly.
+    //
+    // TODO(bmeurer): This can be removed once the Array.prototype and
+    // Object.prototype have NO_ELEMENTS elements kind.
+    if (!isolate->IsInAnyContext(*receiver,
+                                 Context::INITIAL_ARRAY_PROTOTYPE_INDEX) &&
+        !isolate->IsInAnyContext(*receiver,
+                                 Context::INITIAL_OBJECT_PROTOTYPE_INDEX)) {
+      Handle<Map> receiver_map(receiver->map(), isolate);
+      if (receiver_map->is_stable()) {
+        // The {receiver_map} is only reliable when we install a stability
+        // code dependency.
+        *maps_return = ZoneHandleSet<Map>(receiver_map);
+        return kUnreliableReceiverMaps;
+      }
     }
   }
   InferReceiverMapsResult result = kReliableReceiverMaps;
@@ -363,7 +393,7 @@ NodeProperties::InferReceiverMapsResult NodeProperties::InferReceiverMaps(
       case IrOpcode::kMapGuard: {
         Node* const object = GetValueInput(effect, 0);
         if (IsSame(receiver, object)) {
-          *maps_return = MapGuardMapsOf(effect->op());
+          *maps_return = MapGuardMapsOf(effect->op()).maps();
           return result;
         }
         break;
@@ -454,6 +484,20 @@ NodeProperties::InferReceiverMapsResult NodeProperties::InferReceiverMaps(
     DCHECK_EQ(1, effect->op()->EffectInputCount());
     effect = NodeProperties::GetEffectInput(effect);
   }
+}
+
+// static
+bool NodeProperties::NoObservableSideEffectBetween(Node* effect,
+                                                   Node* dominator) {
+  while (effect != dominator) {
+    if (effect->op()->EffectInputCount() == 1 &&
+        effect->op()->properties() & Operator::kNoWrite) {
+      effect = NodeProperties::GetEffectInput(effect);
+    } else {
+      return false;
+    }
+  }
+  return true;
 }
 
 // static

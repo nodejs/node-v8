@@ -12,7 +12,6 @@
 #include "src/compiler/node.h"
 #include "src/compiler/osr.h"
 #include "src/compiler/pipeline.h"
-#include "src/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -37,6 +36,9 @@ std::ostream& operator<<(std::ostream& os, const CallDescriptor::Kind& k) {
       break;
     case CallDescriptor::kCallAddress:
       os << "Addr";
+      break;
+    case CallDescriptor::kCallWasmFunction:
+      os << "Wasm";
       break;
   }
   return os;
@@ -118,6 +120,7 @@ int CallDescriptor::CalculateFixedFrameSize() const {
              CommonFrameConstants::kCPSlotCount;
       break;
     case kCallCodeObject:
+    case kCallWasmFunction:
       return TypedFrameConstants::kFixedSlotCount;
   }
   UNREACHABLE();
@@ -145,7 +148,6 @@ bool Linkage::NeedsFrameStateInput(Runtime::FunctionId function) {
     // deoptimize are whitelisted here and can be called without a FrameState.
     case Runtime::kAbort:
     case Runtime::kAllocateInTargetSpace:
-    case Runtime::kConvertReceiver:
     case Runtime::kCreateIterResultObject:
     case Runtime::kGeneratorGetContinuation:
     case Runtime::kIncBlockCounter:
@@ -156,7 +158,6 @@ bool Linkage::NeedsFrameStateInput(Runtime::FunctionId function) {
     case Runtime::kPushBlockContext:
     case Runtime::kPushCatchContext:
     case Runtime::kReThrow:
-    case Runtime::kStringCompare:
     case Runtime::kStringEqual:
     case Runtime::kStringNotEqual:
     case Runtime::kStringLessThan:

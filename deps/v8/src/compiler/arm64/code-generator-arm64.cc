@@ -40,7 +40,7 @@ class Arm64OperandConverter final : public InstructionOperandConverter {
 
   CPURegister InputFloat32OrZeroRegister(size_t index) {
     if (instr_->InputAt(index)->IsImmediate()) {
-      DCHECK(bit_cast<int32_t>(InputFloat32(index)) == 0);
+      DCHECK_EQ(0, bit_cast<int32_t>(InputFloat32(index)));
       return wzr;
     }
     DCHECK(instr_->InputAt(index)->IsFPRegister());
@@ -49,7 +49,7 @@ class Arm64OperandConverter final : public InstructionOperandConverter {
 
   CPURegister InputFloat64OrZeroRegister(size_t index) {
     if (instr_->InputAt(index)->IsImmediate()) {
-      DCHECK(bit_cast<int64_t>(InputDouble(index)) == 0);
+      DCHECK_EQ(0, bit_cast<int64_t>(InputDouble(index)));
       return xzr;
     }
     DCHECK(instr_->InputAt(index)->IsDoubleRegister());
@@ -328,6 +328,7 @@ class OutOfLineRecordWrite final : public OutOfLineCode {
     __ CheckPageFlagClear(value_, scratch0_,
                           MemoryChunk::kPointersToHereAreInterestingMask,
                           exit());
+    __ Add(scratch1_, object_, index_);
     RememberedSetAction const remembered_set_action =
         mode_ > RecordWriteMode::kValueIsMap ? EMIT_REMEMBERED_SET
                                              : OMIT_REMEMBERED_SET;
@@ -339,10 +340,8 @@ class OutOfLineRecordWrite final : public OutOfLineCode {
       unwinding_info_writer_->MarkLinkRegisterOnTopOfStack(__ pc_offset(),
                                                            __ StackPointer());
     }
-    __ Add(scratch1_, object_, index_);
-    __ CallStubDelayed(
-        new (zone_) RecordWriteStub(nullptr, object_, scratch0_, scratch1_,
-                                    remembered_set_action, save_fp_mode));
+    __ CallRecordWriteStub(object_, scratch1_, remembered_set_action,
+                           save_fp_mode);
     if (must_save_lr_) {
       __ Pop(lr);
       unwinding_info_writer_->MarkPopLinkRegisterFromTopOfStack(__ pc_offset());
@@ -657,6 +656,29 @@ void CodeGenerator::AssembleTailCallAfterGap(Instruction* instr,
                                 first_unused_stack_slot);
 }
 
+// Check if the code object is marked for deoptimization. If it is, then it
+// jumps to the CompileLazyDeoptimizedCode builtin. In order to do this we need
+// to:
+//    1. load the address of the current instruction;
+//    2. read from memory the word that contains that bit, which can be found in
+//       the flags in the referenced {CodeDataContainer} object;
+//    3. test kMarkedForDeoptimizationBit in those flags; and
+//    4. if it is not zero then it jumps to the builtin.
+void CodeGenerator::BailoutIfDeoptimized() {
+  Label current;
+  // The Adr instruction gets the address of the current instruction.
+  __ Adr(x2, &current);
+  __ Bind(&current);
+  int pc = __ pc_offset();
+  int offset = Code::kCodeDataContainerOffset - (Code::kHeaderSize + pc);
+  __ Ldr(x2, MemOperand(x2, offset));
+  __ Ldr(x2, FieldMemOperand(x2, CodeDataContainer::kKindSpecificFlagsOffset));
+  __ Tst(x2, Immediate(1 << Code::kMarkedForDeoptimizationBit));
+  Handle<Code> code = isolate()->builtins()->builtin_handle(
+      Builtins::kCompileLazyDeoptimizedCode);
+  __ Jump(code, RelocInfo::CODE_TARGET, ne);
+}
+
 // Assembles an instruction after register allocation, producing machine code.
 CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     Instruction* instr) {
@@ -693,6 +715,40 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       frame_access_state()->ClearSPDelta();
       break;
     }
+    case kArchCallWasmFunction: {
+      // We must not share code targets for calls to builtins for wasm code, as
+      // they might need to be patched individually.
+      internal::Assembler::BlockCodeTargetSharingScope scope;
+      if (info()->IsWasm()) scope.Open(tasm());
+
+      if (instr->InputAt(0)->IsImmediate()) {
+        Address wasm_code = reinterpret_cast<Address>(
+            i.ToConstant(instr->InputAt(0)).ToInt64());
+        if (info()->IsWasm()) {
+          __ Call(wasm_code, RelocInfo::WASM_CALL);
+        } else {
+          __ Call(wasm_code, RelocInfo::JS_TO_WASM_CALL);
+        }
+      } else {
+        Register target = i.InputRegister(0);
+        __ Call(target);
+      }
+      RecordCallPosition(instr);
+      // TODO(titzer): this is ugly. JSSP should be a caller-save register
+      // in this case, but it is not possible to express in the register
+      // allocator.
+      CallDescriptor::Flags flags(MiscField::decode(opcode));
+      if (flags & CallDescriptor::kRestoreJSSP) {
+        __ Ldr(jssp, MemOperand(csp));
+        __ Mov(csp, jssp);
+      }
+      if (flags & CallDescriptor::kRestoreCSP) {
+        __ Mov(csp, jssp);
+        __ AssertCspAligned();
+      }
+      frame_access_state()->ClearSPDelta();
+      break;
+    }
     case kArchTailCallCodeObjectFromJSFunction:
     case kArchTailCallCodeObject: {
       // We must not share code targets for calls to builtins for wasm code, as
@@ -710,6 +766,30 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       } else {
         Register target = i.InputRegister(0);
         __ Add(target, target, Code::kHeaderSize - kHeapObjectTag);
+        __ Jump(target);
+      }
+      unwinding_info_writer_.MarkBlockWillExit();
+      frame_access_state()->ClearSPDelta();
+      frame_access_state()->SetFrameAccessToDefault();
+      break;
+    }
+    case kArchTailCallWasm: {
+      // We must not share code targets for calls to builtins for wasm code, as
+      // they might need to be patched individually.
+      internal::Assembler::BlockCodeTargetSharingScope scope;
+      if (info()->IsWasm()) scope.Open(tasm());
+
+      if (instr->InputAt(0)->IsImmediate()) {
+        Address wasm_code = reinterpret_cast<Address>(
+            i.ToConstant(instr->InputAt(0)).ToInt64());
+        if (info()->IsWasm()) {
+          __ Jump(wasm_code, RelocInfo::WASM_CALL);
+        } else {
+          __ Jump(wasm_code, RelocInfo::JS_TO_WASM_CALL);
+        }
+
+      } else {
+        Register target = i.InputRegister(0);
         __ Jump(target);
       }
       unwinding_info_writer_.MarkBlockWillExit();
@@ -764,13 +844,28 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       UNREACHABLE();
       break;
     case kArchSaveCallerRegisters: {
+      fp_mode_ =
+          static_cast<SaveFPRegsMode>(MiscField::decode(instr->opcode()));
+      DCHECK(fp_mode_ == kDontSaveFPRegs || fp_mode_ == kSaveFPRegs);
       // kReturnRegister0 should have been saved before entering the stub.
-      __ PushCallerSaved(kSaveFPRegs, kReturnRegister0);
+      int bytes = __ PushCallerSaved(fp_mode_, kReturnRegister0);
+      DCHECK_EQ(0, bytes % kPointerSize);
+      DCHECK_EQ(0, frame_access_state()->sp_delta());
+      frame_access_state()->IncreaseSPDelta(bytes / kPointerSize);
+      DCHECK(!caller_registers_saved_);
+      caller_registers_saved_ = true;
       break;
     }
     case kArchRestoreCallerRegisters: {
+      DCHECK(fp_mode_ ==
+             static_cast<SaveFPRegsMode>(MiscField::decode(instr->opcode())));
+      DCHECK(fp_mode_ == kDontSaveFPRegs || fp_mode_ == kSaveFPRegs);
       // Don't overwrite the returned value.
-      __ PopCallerSaved(kSaveFPRegs, kReturnRegister0);
+      int bytes = __ PopCallerSaved(fp_mode_, kReturnRegister0);
+      frame_access_state()->IncreaseSPDelta(-(bytes / kPointerSize));
+      DCHECK_EQ(0, frame_access_state()->sp_delta());
+      DCHECK(caller_registers_saved_);
+      caller_registers_saved_ = false;
       break;
     }
     case kArchPrepareTailCall:
@@ -786,7 +881,22 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         __ CallCFunction(func, num_parameters, 0);
       }
       frame_access_state()->SetFrameAccessToDefault();
+      // Ideally, we should decrement SP delta to match the change of stack
+      // pointer in CallCFunction. However, for certain architectures (e.g.
+      // ARM), there may be more strict alignment requirement, causing old SP
+      // to be saved on the stack. In those cases, we can not calculate the SP
+      // delta statically.
       frame_access_state()->ClearSPDelta();
+      if (caller_registers_saved_) {
+        // Need to re-sync SP delta introduced in kArchSaveCallerRegisters.
+        // Here, we assume the sequence to be:
+        //   kArchSaveCallerRegisters;
+        //   kArchCallCFunction;
+        //   kArchRestoreCallerRegisters;
+        int bytes =
+            __ RequiredStackSizeForCallerSaved(fp_mode_, kReturnRegister0);
+        frame_access_state()->IncreaseSPDelta(bytes / kPointerSize);
+      }
       break;
     }
     case kArchJmp:
@@ -881,12 +991,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kArchStackSlot: {
       FrameOffset offset =
           frame_access_state()->GetFrameOffset(i.InputInt32(0));
-      Register base;
-      if (offset.from_stack_pointer()) {
-        base = __ StackPointer();
-      } else {
-        base = fp;
-      }
+      Register base = offset.from_stack_pointer() ? __ StackPointer() : fp;
       __ Add(i.OutputRegister(0), base, Operand(offset.offset()));
       break;
     }
@@ -1352,7 +1457,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       } else {
         DCHECK(instr->InputAt(1)->IsImmediate());
         // 0.0 is the only immediate supported by fcmp instructions.
-        DCHECK(i.InputFloat32(1) == 0.0f);
+        DCHECK_EQ(0.0f, i.InputFloat32(1));
         __ Fcmp(i.InputFloat32Register(0), i.InputFloat32(1));
       }
       break;
@@ -1387,7 +1492,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       } else {
         DCHECK(instr->InputAt(1)->IsImmediate());
         // 0.0 is the only immediate supported by fcmp instructions.
-        DCHECK(i.InputDouble(1) == 0.0);
+        DCHECK_EQ(0.0, i.InputDouble(1));
         __ Fcmp(i.InputDoubleRegister(0), i.InputDouble(1));
       }
       break;
@@ -2273,6 +2378,10 @@ void CodeGenerator::AssembleArchBranch(Instruction* instr, BranchInfo* branch) {
   if (!branch->fallthru) __ B(flabel);  // no fallthru to flabel.
 }
 
+void CodeGenerator::AssembleArchDeoptBranch(Instruction* instr,
+                                            BranchInfo* branch) {
+  AssembleArchBranch(instr, branch);
+}
 
 void CodeGenerator::AssembleArchJump(RpoNumber target) {
   if (!IsNextInAssemblyOrder(target)) __ B(GetLabel(target));
@@ -2311,6 +2420,10 @@ void CodeGenerator::AssembleArchTrap(Instruction* instr,
                              __ isolate()),
                          0);
         __ LeaveFrame(StackFrame::WASM_COMPILED);
+        CallDescriptor* descriptor = gen_->linkage()->GetIncomingDescriptor();
+        int pop_count = static_cast<int>(descriptor->StackParameterCount());
+        pop_count += (pop_count & 1);  // align
+        __ Drop(pop_count);
         __ Ret();
       } else {
         DCHECK(csp.Is(__ StackPointer()));
@@ -2401,6 +2514,7 @@ void CodeGenerator::FinishFrame(Frame* frame) {
   int saved_count = saves_fp.Count();
   if (saved_count != 0) {
     DCHECK(saves_fp.list() == CPURegList::GetCalleeSavedV().list());
+    DCHECK_EQ(saved_count % 2, 0);
     frame->AllocateSavedCalleeRegisterSlots(saved_count *
                                             (kDoubleSize / kPointerSize));
   }
@@ -2409,6 +2523,7 @@ void CodeGenerator::FinishFrame(Frame* frame) {
                                 descriptor->CalleeSavedRegisters());
   saved_count = saves.Count();
   if (saved_count != 0) {
+    DCHECK_EQ(saved_count % 2, 0);
     frame->AllocateSavedCalleeRegisterSlots(saved_count);
   }
 }
@@ -2419,9 +2534,13 @@ void CodeGenerator::AssembleConstructFrame() {
     __ AssertCspAligned();
   }
 
-  int fixed_frame_size = descriptor->CalculateFixedFrameSize();
   int shrink_slots =
       frame()->GetTotalFrameSlotCount() - descriptor->CalculateFixedFrameSize();
+
+  CPURegList saves = CPURegList(CPURegister::kRegister, kXRegSizeInBits,
+                                descriptor->CalleeSavedRegisters());
+  CPURegList saves_fp = CPURegList(CPURegister::kVRegister, kDRegSizeInBits,
+                                   descriptor->CalleeSavedFPRegisters());
 
   if (frame_access_state()->has_frame()) {
     // Link the frame
@@ -2440,12 +2559,9 @@ void CodeGenerator::AssembleConstructFrame() {
       __ Abort(kShouldNotDirectlyEnterOsrFunction);
 
       // Unoptimized code jumps directly to this entrypoint while the
-      // unoptimized
-      // frame is still on the stack. Optimized code uses OSR values directly
-      // from
-      // the unoptimized frame. Thus, all that needs to be done is to allocate
-      // the
-      // remaining stack slots.
+      // unoptimized frame is still on the stack. Optimized code uses OSR values
+      // directly from the unoptimized frame. Thus, all that needs to be done is
+      // to allocate the remaining stack slots.
       if (FLAG_code_comments) __ RecordComment("-- OSR entrypoint --");
       osr_pc_offset_ = __ pc_offset();
       shrink_slots -= osr_helper()->UnoptimizedFrameSlots();
@@ -2466,9 +2582,9 @@ void CodeGenerator::AssembleConstructFrame() {
         __ Mov(scratch, Operand(ExternalReference::address_of_real_stack_limit(
                             __ isolate())));
         __ Ldr(scratch, MemOperand(scratch));
-        __ Add(scratch, scratch, Operand(shrink_slots * kPointerSize));
+        __ Add(scratch, scratch, shrink_slots * kPointerSize);
         __ Cmp(__ StackPointer(), scratch);
-        __ B(cs, &done);
+        __ B(hs, &done);
       }
 
       if (!frame_access_state()->has_frame()) {
@@ -2482,7 +2598,7 @@ void CodeGenerator::AssembleConstructFrame() {
       __ AssertStackConsistency();
       // Initialize the jssp because it is required for the runtime call.
       __ Mov(jssp, csp);
-      __ Move(cp, Smi::kZero);
+      __ Mov(cp, Smi::kZero);
       __ CallRuntimeDelayed(zone(), Runtime::kThrowWasmStackOverflow);
       // We come from WebAssembly, there are no references for the GC.
       ReferenceMap* reference_map = new (zone()) ReferenceMap(zone());
@@ -2493,46 +2609,54 @@ void CodeGenerator::AssembleConstructFrame() {
       }
       __ SetStackPointer(csp);
       __ AssertStackConsistency();
-      __ bind(&done);
+      __ Bind(&done);
     }
 
+    // Skip callee-saved slots, which are pushed below.
+    shrink_slots -= saves.Count();
+    shrink_slots -= saves_fp.Count();
+
     // Build remainder of frame, including accounting for and filling-in
-    // frame-specific header information, e.g. claiming the extra slot that
-    // other platforms explicitly push for STUB frames and frames recording
-    // their argument count.
-    __ Claim(shrink_slots + (fixed_frame_size & 1));
-    if (descriptor->PushArgumentCount()) {
-      __ Str(kJavaScriptCallArgCountRegister,
-             MemOperand(fp, OptimizedBuiltinFrameConstants::kArgCOffset));
-    }
-    bool is_stub_frame =
-        !descriptor->IsJSFunctionCall() && !descriptor->IsCFunctionCall();
-    if (is_stub_frame) {
-      UseScratchRegisterScope temps(tasm());
-      Register temp = temps.AcquireX();
-      __ Mov(temp, StackFrame::TypeToMarker(info()->GetOutputStackFrameType()));
-      __ Str(temp, MemOperand(fp, TypedFrameConstants::kFrameTypeOffset));
+    // frame-specific header information, i.e. claiming the extra slot that
+    // other platforms explicitly push for STUB (code object) frames and frames
+    // recording their argument count.
+    switch (descriptor->kind()) {
+      case CallDescriptor::kCallJSFunction:
+        if (descriptor->PushArgumentCount()) {
+          __ Claim(shrink_slots + 1);  // Claim extra slot for argc.
+          __ Str(kJavaScriptCallArgCountRegister,
+                 MemOperand(fp, OptimizedBuiltinFrameConstants::kArgCOffset));
+        } else {
+          __ Claim(shrink_slots);
+        }
+        break;
+      case CallDescriptor::kCallCodeObject:
+      case CallDescriptor::kCallWasmFunction: {
+        UseScratchRegisterScope temps(tasm());
+        __ Claim(shrink_slots + 1);  // Claim extra slot for frame type marker.
+        Register scratch = temps.AcquireX();
+        __ Mov(scratch,
+               StackFrame::TypeToMarker(info()->GetOutputStackFrameType()));
+        __ Str(scratch, MemOperand(fp, TypedFrameConstants::kFrameTypeOffset));
+      } break;
+      case CallDescriptor::kCallAddress:
+        __ Claim(shrink_slots);
+        break;
+      default:
+        UNREACHABLE();
     }
   }
 
   // Save FP registers.
-  CPURegList saves_fp = CPURegList(CPURegister::kVRegister, kDRegSizeInBits,
-                                   descriptor->CalleeSavedFPRegisters());
-  int saved_count = saves_fp.Count();
-  if (saved_count != 0) {
-    DCHECK(saves_fp.list() == CPURegList::GetCalleeSavedV().list());
-    __ PushCPURegList(saves_fp);
-  }
+  DCHECK_IMPLIES(saves_fp.Count() != 0,
+                 saves_fp.list() == CPURegList::GetCalleeSavedV().list());
+  __ PushCPURegList(saves_fp);
+
   // Save registers.
   // TODO(palfia): TF save list is not in sync with
   // CPURegList::GetCalleeSaved(): x30 is missing.
   // DCHECK(saves.list() == CPURegList::GetCalleeSaved().list());
-  CPURegList saves = CPURegList(CPURegister::kRegister, kXRegSizeInBits,
-                                descriptor->CalleeSavedRegisters());
-  saved_count = saves.Count();
-  if (saved_count != 0) {
-    __ PushCPURegList(saves);
-  }
+  __ PushCPURegList(saves);
 }
 
 void CodeGenerator::AssembleReturn(InstructionOperand* pop) {
@@ -2541,16 +2665,12 @@ void CodeGenerator::AssembleReturn(InstructionOperand* pop) {
   // Restore registers.
   CPURegList saves = CPURegList(CPURegister::kRegister, kXRegSizeInBits,
                                 descriptor->CalleeSavedRegisters());
-  if (saves.Count() != 0) {
-    __ PopCPURegList(saves);
-  }
+  __ PopCPURegList(saves);
 
   // Restore fp registers.
   CPURegList saves_fp = CPURegList(CPURegister::kVRegister, kDRegSizeInBits,
                                    descriptor->CalleeSavedFPRegisters());
-  if (saves_fp.Count() != 0) {
-    __ PopCPURegList(saves_fp);
-  }
+  __ PopCPURegList(saves_fp);
 
   unwinding_info_writer_.MarkBlockWillExit();
 
