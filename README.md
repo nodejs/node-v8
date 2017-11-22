@@ -1,6 +1,9 @@
 This is an automatically updated **experimental**
 version of Node.js [Node.js](https://github.com/nodejs/node)
-with V8 Tip-of-Tree.
+with the lkgr (last known good revision) of V8.
+
+The daily builds of this repo can be found at
+[v8-canary](https://nodejs.org/download/v8-canary/).
 **Do not use this in production!**
 
 This repository is not owned by @nodejs/v8, but they might be able to
