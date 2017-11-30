@@ -44,17 +44,9 @@
 #include "include/libplatform/v8-tracing.h"
 #include "src/tracing/trace-event.h"
 
-using i::CodeEntry;
-using i::CpuProfile;
-using i::CpuProfiler;
-using i::CpuProfilesCollection;
-using i::Heap;
-using i::ProfileGenerator;
-using i::ProfileNode;
-using i::ProfilerEventsProcessor;
-using i::ProfilerListener;
-using i::ScopedVector;
-using i::Vector;
+namespace v8 {
+namespace internal {
+namespace test_cpu_profiler {
 
 // Helper methods
 static v8::Local<v8::Function> GetFunction(v8::Local<v8::Context> env,
@@ -91,17 +83,17 @@ TEST(StartStop) {
 
 static void EnqueueTickSampleEvent(ProfilerEventsProcessor* proc,
                                    i::Address frame1,
-                                   i::Address frame2 = NULL,
-                                   i::Address frame3 = NULL) {
+                                   i::Address frame2 = nullptr,
+                                   i::Address frame3 = nullptr) {
   v8::TickSample* sample = proc->StartTickSample();
   sample->pc = frame1;
   sample->tos = frame1;
   sample->frames_count = 0;
-  if (frame2 != NULL) {
+  if (frame2 != nullptr) {
     sample->stack[0] = frame2;
     sample->frames_count = 1;
   }
-  if (frame3 != NULL) {
+  if (frame3 != nullptr) {
     sample->stack[1] = frame3;
     sample->frames_count = 2;
   }
@@ -159,11 +151,8 @@ TEST(CodeEvents) {
 
   i::AbstractCode* aaa_code = CreateCode(&env);
   i::AbstractCode* comment_code = CreateCode(&env);
-  i::AbstractCode* args5_code = CreateCode(&env);
   i::AbstractCode* comment2_code = CreateCode(&env);
   i::AbstractCode* moved_code = CreateCode(&env);
-  i::AbstractCode* args3_code = CreateCode(&env);
-  i::AbstractCode* args4_code = CreateCode(&env);
 
   CpuProfilesCollection* profiles = new CpuProfilesCollection(isolate);
   ProfileGenerator* generator = new ProfileGenerator(profiles);
@@ -183,12 +172,9 @@ TEST(CodeEvents) {
                                     *aaa_name);
   profiler_listener.CodeCreateEvent(i::Logger::BUILTIN_TAG, comment_code,
                                     "comment");
-  profiler_listener.CodeCreateEvent(i::Logger::STUB_TAG, args5_code, 5);
   profiler_listener.CodeCreateEvent(i::Logger::BUILTIN_TAG, comment2_code,
                                     "comment2");
   profiler_listener.CodeMoveEvent(comment2_code, moved_code->address());
-  profiler_listener.CodeCreateEvent(i::Logger::STUB_TAG, args3_code, 3);
-  profiler_listener.CodeCreateEvent(i::Logger::STUB_TAG, args4_code, 4);
 
   // Enqueue a tick event to enable code events processing.
   EnqueueTickSampleEvent(processor, aaa_code->address());
@@ -206,10 +192,6 @@ TEST(CodeEvents) {
       generator->code_map()->FindEntry(comment_code->address());
   CHECK(comment);
   CHECK_EQ(0, strcmp("comment", comment->name()));
-
-  CodeEntry* args5 = generator->code_map()->FindEntry(args5_code->address());
-  CHECK(args5);
-  CHECK_EQ(0, strcmp("5", args5->name()));
 
   CHECK(!generator->code_map()->FindEntry(comment2_code->address()));
 
@@ -246,7 +228,7 @@ TEST(TickEvents) {
   profiler_listener.AddObserver(&profiler);
 
   profiler_listener.CodeCreateEvent(i::Logger::BUILTIN_TAG, frame1_code, "bbb");
-  profiler_listener.CodeCreateEvent(i::Logger::STUB_TAG, frame2_code, 5);
+  profiler_listener.CodeCreateEvent(i::Logger::STUB_TAG, frame2_code, "ccc");
   profiler_listener.CodeCreateEvent(i::Logger::BUILTIN_TAG, frame3_code, "ddd");
 
   EnqueueTickSampleEvent(processor, frame1_code->instruction_start());
@@ -272,7 +254,7 @@ TEST(TickEvents) {
   const std::vector<ProfileNode*>* top_down_bbb_children =
       top_down_root_children->back()->children();
   CHECK_EQ(1, top_down_bbb_children->size());
-  CHECK_EQ(0, strcmp("5", top_down_bbb_children->back()->entry()->name()));
+  CHECK_EQ(0, strcmp("ccc", top_down_bbb_children->back()->entry()->name()));
   const std::vector<ProfileNode*>* top_down_stub_children =
       top_down_bbb_children->back()->children();
   CHECK_EQ(1, top_down_stub_children->size());
@@ -505,7 +487,7 @@ static const v8::CpuProfileNode* FindChild(v8::Local<v8::Context> context,
       return child;
     }
   }
-  return NULL;
+  return nullptr;
 }
 
 
@@ -786,11 +768,12 @@ class TestApiCallbacks {
  private:
   void Wait() {
     if (is_warming_up_) return;
-    double start = v8::base::OS::TimeCurrentMillis();
+    v8::Platform* platform = v8::internal::V8::GetCurrentPlatform();
+    double start = platform->CurrentClockTimeMillis();
     double duration = 0;
     while (duration < min_duration_ms_) {
       v8::base::OS::Sleep(v8::base::TimeDelta::FromMilliseconds(1));
-      duration = v8::base::OS::TimeCurrentMillis() - start;
+      duration = platform->CurrentClockTimeMillis() - start;
     }
   }
 
@@ -1289,7 +1272,7 @@ TEST(CpuProfileDeepStack) {
   v8::Local<v8::Function> function = GetFunction(env, "start");
 
   v8::Local<v8::String> profile_name = v8_str("my_profile");
-  function->Call(env, env->Global(), 0, NULL).ToLocalChecked();
+  function->Call(env, env->Global(), 0, nullptr).ToLocalChecked();
   v8::CpuProfile* profile = helper.profiler()->StopProfiling(profile_name);
   CHECK(profile);
   // Dump collected profile to have a better diagnostic in case of failure.
@@ -1490,7 +1473,7 @@ static const char* js_force_collect_sample_source =
     "}";
 
 static void CallCollectSample(const v8::FunctionCallbackInfo<v8::Value>& info) {
-  i::ProfilerExtension::profiler()->CollectSample();
+  v8::CpuProfiler::CollectSample(info.GetIsolate());
 }
 
 TEST(CollectSampleAPI) {
@@ -1622,7 +1605,7 @@ TEST(Inlining) {
   v8::Local<v8::Function> function = GetFunction(env, "start");
 
   v8::Local<v8::String> profile_name = v8_str("my_profile");
-  function->Call(env, env->Global(), 0, NULL).ToLocalChecked();
+  function->Call(env, env->Global(), 0, nullptr).ToLocalChecked();
   v8::CpuProfile* profile = helper.profiler()->StopProfiling(profile_name);
   CHECK(profile);
   // Dump collected profile to have a better diagnostic in case of failure.
@@ -1767,14 +1750,14 @@ TEST(DontStopOnFinishedProfileDelete) {
   CHECK(inner_profile);
   CHECK_EQ(1, iprofiler->GetProfilesCount());
   inner_profile->Delete();
-  inner_profile = NULL;
+  inner_profile = nullptr;
   CHECK_EQ(0, iprofiler->GetProfilesCount());
 
   v8::CpuProfile* outer_profile = profiler->StopProfiling(outer);
   CHECK(outer_profile);
   CHECK_EQ(1, iprofiler->GetProfilesCount());
   outer_profile->Delete();
-  outer_profile = NULL;
+  outer_profile = nullptr;
   CHECK_EQ(0, iprofiler->GetProfilesCount());
   profiler->Dispose();
 }
@@ -1784,7 +1767,7 @@ const char* GetBranchDeoptReason(v8::Local<v8::Context> context,
                                  i::CpuProfile* iprofile, const char* branch[],
                                  int length) {
   v8::CpuProfile* profile = reinterpret_cast<v8::CpuProfile*>(iprofile);
-  const ProfileNode* iopt_function = NULL;
+  const ProfileNode* iopt_function = nullptr;
   iopt_function = GetSimpleBranch(context, profile, branch, length);
   CHECK_EQ(1U, iopt_function->deopt_infos().size());
   return iopt_function->deopt_infos()[0].deopt_reason;
@@ -2148,17 +2131,19 @@ class CpuProfileEventChecker : public v8::platform::tracing::TraceWriter {
 
 TEST(TracingCpuProfiler) {
   v8::Platform* old_platform = i::V8::GetCurrentPlatform();
-  v8::Platform* default_platform = v8::platform::CreateDefaultPlatform();
-  i::V8::SetPlatformForTesting(default_platform);
+  std::unique_ptr<v8::Platform> default_platform =
+      v8::platform::NewDefaultPlatform();
+  i::V8::SetPlatformForTesting(default_platform.get());
 
-  v8::platform::tracing::TracingController tracing_controller;
-  static_cast<v8::platform::DefaultPlatform*>(default_platform)
-      ->SetTracingController(&tracing_controller);
+  auto tracing = base::make_unique<v8::platform::tracing::TracingController>();
+  v8::platform::tracing::TracingController* tracing_controller = tracing.get();
+  static_cast<v8::platform::DefaultPlatform*>(default_platform.get())
+      ->SetTracingController(std::move(tracing));
 
   CpuProfileEventChecker* event_checker = new CpuProfileEventChecker();
   TraceBuffer* ring_buffer =
       TraceBuffer::CreateTraceBufferRingBuffer(1, event_checker);
-  tracing_controller.Initialize(ring_buffer);
+  tracing_controller->Initialize(ring_buffer);
   TraceConfig* trace_config = new TraceConfig();
   trace_config->AddIncludedCategory(
       TRACE_DISABLED_BY_DEFAULT("v8.cpu_profiler"));
@@ -2166,10 +2151,10 @@ TEST(TracingCpuProfiler) {
   LocalContext env;
   v8::HandleScope scope(env->GetIsolate());
   {
-    tracing_controller.StartTracing(trace_config);
+    tracing_controller->StartTracing(trace_config);
     auto profiler = v8::TracingCpuProfiler::Create(env->GetIsolate());
     CompileRun("function foo() { } foo();");
-    tracing_controller.StopTracing();
+    tracing_controller->StopTracing();
     CompileRun("function bar() { } bar();");
   }
 
@@ -2191,3 +2176,97 @@ TEST(TracingCpuProfiler) {
 
   i::V8::SetPlatformForTesting(old_platform);
 }
+
+TEST(Issue763073) {
+  class AllowNativesSyntax {
+   public:
+    AllowNativesSyntax()
+        : allow_natives_syntax_(i::FLAG_allow_natives_syntax),
+          trace_deopt_(i::FLAG_trace_deopt) {
+      i::FLAG_allow_natives_syntax = true;
+      i::FLAG_trace_deopt = true;
+    }
+
+    ~AllowNativesSyntax() {
+      i::FLAG_allow_natives_syntax = allow_natives_syntax_;
+      i::FLAG_trace_deopt = trace_deopt_;
+    }
+
+   private:
+    bool allow_natives_syntax_;
+    bool trace_deopt_;
+  };
+
+  AllowNativesSyntax allow_natives_syntax_scope;
+  LocalContext env;
+  v8::HandleScope scope(env->GetIsolate());
+
+  CompileRun(
+      "function f() { return function g(x) { }; }"
+      // Create first closure, optimize it, and deoptimize it.
+      "var g = f();"
+      "g(1);"
+      "%OptimizeFunctionOnNextCall(g);"
+      "g(1);"
+      "%DeoptimizeFunction(g);"
+      // Create second closure, and optimize it. This will create another
+      // optimized code object and put in the (shared) type feedback vector.
+      "var h = f();"
+      "h(1);"
+      "%OptimizeFunctionOnNextCall(h);"
+      "h(1);");
+
+  // Start profiling.
+  v8::CpuProfiler* cpu_profiler = v8::CpuProfiler::New(env->GetIsolate());
+  v8::Local<v8::String> profile_name = v8_str("test");
+
+  // Here we test that the heap iteration upon profiling start is not
+  // confused by having a deoptimized code object for a closure while
+  // having a different optimized code object in the type feedback vector.
+  cpu_profiler->StartProfiling(profile_name);
+  v8::CpuProfile* p = cpu_profiler->StopProfiling(profile_name);
+  p->Delete();
+  cpu_profiler->Dispose();
+}
+
+static const char* js_collect_sample_api_source =
+    "%NeverOptimizeFunction(start);\n"
+    "function start() {\n"
+    "  CallStaticCollectSample();\n"
+    "}";
+
+static void CallStaticCollectSample(
+    const v8::FunctionCallbackInfo<v8::Value>& info) {
+  v8::CpuProfiler::CollectSample(info.GetIsolate());
+}
+
+TEST(StaticCollectSampleAPI) {
+  i::FLAG_allow_natives_syntax = true;
+  LocalContext env;
+  v8::HandleScope scope(env->GetIsolate());
+
+  v8::Local<v8::FunctionTemplate> func_template =
+      v8::FunctionTemplate::New(env->GetIsolate(), CallStaticCollectSample);
+  v8::Local<v8::Function> func =
+      func_template->GetFunction(env.local()).ToLocalChecked();
+  func->SetName(v8_str("CallStaticCollectSample"));
+  env->Global()
+      ->Set(env.local(), v8_str("CallStaticCollectSample"), func)
+      .FromJust();
+
+  CompileRun(js_collect_sample_api_source);
+  v8::Local<v8::Function> function = GetFunction(env.local(), "start");
+
+  ProfilerHelper helper(env.local());
+  v8::CpuProfile* profile = helper.Run(function, nullptr, 0, 100);
+
+  const v8::CpuProfileNode* root = profile->GetTopDownRoot();
+  const v8::CpuProfileNode* start_node = GetChild(env.local(), root, "start");
+  GetChild(env.local(), start_node, "CallStaticCollectSample");
+
+  profile->Delete();
+}
+
+}  // namespace test_cpu_profiler
+}  // namespace internal
+}  // namespace v8
