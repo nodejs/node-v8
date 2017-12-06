@@ -4,4 +4,3 @@ await async () => 0;
 ^^^^^
 SyntaxError: Unexpected reserved word
     at loaders.set (internal/loader/ModuleRequest.js:*:*)
-    at <anonymous>
