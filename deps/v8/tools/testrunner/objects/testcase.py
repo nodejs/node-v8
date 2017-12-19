@@ -25,92 +25,185 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+import os
+import re
+import shlex
 
-from . import output
+from ..local import command
+from ..local import utils
+
+FLAGS_PATTERN = re.compile(r"//\s+Flags:(.*)")
+
 
 class TestCase(object):
-  def __init__(self, suite, path, variant=None, flags=None,
-               override_shell=None):
+  def __init__(self, suite, path, name):
     self.suite = suite        # TestSuite object
-    self.path = path          # string, e.g. 'div-mod', 'test-api/foo'
-    self.flags = flags or []  # list of strings, flags specific to this test
-    self.variant = variant    # name of the used testing variant
-    self.override_shell = override_shell
-    self.outcomes = frozenset([])
-    self.output = None
-    self.id = None  # int, used to map result back to TestCase instance
-    self.duration = None  # assigned during execution
-    self.run = 1  # The nth time this test is executed.
-    self.env = {}
 
-  def CopyAddingFlags(self, variant, flags):
-    copy = TestCase(self.suite, self.path, variant, self.flags + flags,
-                    self.override_shell)
-    copy.outcomes = self.outcomes
-    copy.env = self.env
+    self.path = path          # string, e.g. 'div-mod', 'test-api/foo'
+    self.name = name          # string that identifies test in the status file
+
+    self.variant = None       # name of the used testing variant
+    self.variant_flags = []   # list of strings, flags specific to this test
+
+    self.id = None  # int, used to map result back to TestCase instance
+    self.run = 1  # The nth time this test is executed.
+    self.cmd = None
+
+  def precompute(self):
+    """It precomputes all things that can be shared among all variants of this
+    object (like flags from source file). Values calculated here should be
+    immutable and shared among all copies (in _copy implementation).
+    """
+    pass
+
+  def create_variant(self, variant, flags):
+    copy = self._copy()
+    if not self.variant_flags:
+      copy.variant_flags = flags
+    else:
+      copy.variant_flags = self.variant_flags + flags
+    copy.variant = variant
     return copy
 
-  def PackTask(self):
+  def _copy(self):
+    """Makes a copy of the object. It should be overriden in case of any
+    additional constructor parameters or precomputed fields.
     """
-    Extracts those parts of this object that are required to run the test
-    and returns them as a JSON serializable object.
+    return self.__class__(self.suite, self.path, self.name)
+
+  def get_command(self, context):
+    params = self._get_cmd_params(context)
+    env = self._get_cmd_env()
+    shell, shell_flags = self._get_shell_with_flags(context)
+    timeout = self._get_timeout(params, context.timeout)
+    return self._create_cmd(shell, shell_flags + params, env, timeout, context)
+
+  def _get_cmd_params(self, ctx):
+    """Gets command parameters and combines them in the following order:
+      - files [empty by default]
+      - extra flags (from command line)
+      - user flags (variant/fuzzer flags)
+      - statusfile flags
+      - mode flags (based on chosen mode)
+      - source flags (from source code) [empty by default]
+
+    The best way to modify how parameters are created is to only override
+    methods for getting partial parameters.
     """
-    assert self.id is not None
-    return [self.suitename(), self.path, self.variant, self.flags,
-            self.override_shell, list(self.outcomes or []),
-            self.id, self.env]
+    return (
+        self._get_files_params(ctx) +
+        self._get_extra_flags(ctx) +
+        self._get_variant_flags() +
+        self._get_statusfile_flags() +
+        self._get_mode_flags(ctx) +
+        self._get_source_flags() +
+        self._get_suite_flags(ctx)
+    )
 
-  @staticmethod
-  def UnpackTask(task):
-    """Creates a new TestCase object based on packed task data."""
-    # For the order of the fields, refer to PackTask() above.
-    test = TestCase(str(task[0]), task[1], task[2], task[3], task[4])
-    test.outcomes = frozenset(task[5])
-    test.id = task[6]
-    test.run = 1
-    test.env = task[7]
-    return test
+  def _get_cmd_env(self):
+    return {}
 
-  def SetSuiteObject(self, suites):
-    self.suite = suites[self.suite]
+  def _get_files_params(self, ctx):
+    return []
 
-  def PackResult(self):
-    """Serializes the output of the TestCase after it has run."""
-    self.suite.StripOutputForTransmit(self)
-    return [self.id, self.output.Pack(), self.duration]
+  def _get_extra_flags(self, ctx):
+    return ctx.extra_flags
 
-  def MergeResult(self, result):
-    """Applies the contents of a Result to this object."""
-    assert result[0] == self.id
-    self.output = output.Output.Unpack(result[1])
-    self.duration = result[2]
+  def _get_variant_flags(self):
+    return self.variant_flags
 
-  def suitename(self):
-    return self.suite.name
+  def _get_statusfile_flags(self):
+    """Gets runtime flags from a status file.
 
-  def GetLabel(self):
-    return self.suitename() + "/" + self.suite.CommonTestName(self)
-
-  def shell(self):
-    if self.override_shell:
-      return self.override_shell
-    return self.suite.shell()
-
-  def __getstate__(self):
-    """Representation to pickle test cases.
-
-    The original suite won't be sent beyond process boundaries. Instead
-    send the name only and retrieve a process-local suite later.
+    Every outcome that starts with "--" is a flag. Status file has to be loaded
+    before using this function.
     """
-    return dict(self.__dict__, suite=self.suite.name)
+
+    flags = []
+    for outcome in self.suite.GetStatusFileOutcomes(self.name, self.variant):
+      if outcome.startswith('--'):
+        flags.append(outcome)
+    return flags
+
+  def _get_mode_flags(self, ctx):
+    return ctx.mode_flags
+
+  def _get_source_flags(self):
+    return []
+
+  def _get_suite_flags(self, ctx):
+    return []
+
+  def _get_shell_with_flags(self, ctx):
+    shell = self._get_shell()
+    shell_flags = []
+    if shell == 'd8':
+      shell_flags.append('--test')
+    if utils.IsWindows():
+      shell += '.exe'
+    if ctx.random_seed:
+      shell_flags.append('--random-seed=%s' % ctx.random_seed)
+    return shell, shell_flags
+
+  def _get_timeout(self, params, timeout):
+    if "--stress-opt" in params:
+      timeout *= 4
+    if "--noenable-vfp3" in params:
+      timeout *= 2
+
+    # TODO(majeski): make it slow outcome dependent.
+    timeout *= 2
+    return timeout
+
+  def _get_shell(self):
+    return 'd8'
+
+  def _get_suffix(self):
+    return '.js'
+
+  def _create_cmd(self, shell, params, env, timeout, ctx):
+    return command.Command(
+      cmd_prefix=ctx.command_prefix,
+      shell=os.path.abspath(os.path.join(ctx.shell_dir, shell)),
+      args=params,
+      env=env,
+      timeout=timeout,
+      verbose=ctx.verbose
+    )
+
+  def _parse_source_flags(self, source=None):
+    source = source or self.get_source()
+    flags = []
+    for match in re.findall(FLAGS_PATTERN, source):
+      flags += shlex.split(match.strip())
+    return flags
+
+  def is_source_available(self):
+    return self._get_source_path() is not None
+
+  def get_source(self):
+    with open(self._get_source_path()) as f:
+      return f.read()
+
+  def _get_source_path(self):
+    return None
 
   def __cmp__(self, other):
     # Make sure that test cases are sorted correctly if sorted without
     # key function. But using a key function is preferred for speed.
     return cmp(
-        (self.suite.name, self.path, self.flags),
-        (other.suite.name, other.path, other.flags),
+        (self.suite.name, self.name, self.variant_flags),
+        (other.suite.name, other.name, other.variant_flags)
     )
 
+  def __hash__(self):
+    return hash((self.suite.name, self.name, ''.join(self.variant_flags)))
+
   def __str__(self):
-    return "[%s/%s  %s]" % (self.suite.name, self.path, self.flags)
+    return self.suite.name + '/' + self.name
+
+  # TODO(majeski): Rename `id` field or `get_id` function since they're
+  # unrelated.
+  def get_id(self):
+    return '%s/%s %s' % (
+        self.suite.name, self.name, ' '.join(self.variant_flags))

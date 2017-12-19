@@ -14,56 +14,13 @@
 
 #include "src/allocation.h"
 
-#if !defined(USE_SIMULATOR)
-// Running without a simulator on a native s390 platform.
-
-namespace v8 {
-namespace internal {
-
-// When running without a simulator we call the entry directly.
-#define CALL_GENERATED_CODE(isolate, entry, p0, p1, p2, p3, p4) \
-  (entry(p0, p1, p2, p3, p4))
-
-typedef int (*s390_regexp_matcher)(String*, int, const byte*, const byte*, int*,
-                                   int, Address, int, Isolate*);
-
-// Call the generated regexp code directly. The code at the entry address
-// should act as a function matching the type ppc_regexp_matcher.
-#define CALL_GENERATED_REGEXP_CODE(isolate, entry, p0, p1, p2, p3, p4, p5, p6, \
-                                   p7, p8)                                     \
-  (FUNCTION_CAST<s390_regexp_matcher>(entry)(p0, p1, p2, p3, p4, p5, p6, p7,   \
-                                             p8))
-
-// The stack limit beyond which we will throw stack overflow errors in
-// generated code. Because generated code on s390 uses the C stack, we
-// just use the C stack limit.
-class SimulatorStack : public v8::internal::AllStatic {
- public:
-  static inline uintptr_t JsLimitFromCLimit(v8::internal::Isolate* isolate,
-                                            uintptr_t c_limit) {
-    USE(isolate);
-    return c_limit;
-  }
-
-  static inline uintptr_t RegisterCTryCatch(v8::internal::Isolate* isolate,
-                                            uintptr_t try_catch_address) {
-    USE(isolate);
-    return try_catch_address;
-  }
-
-  static inline void UnregisterCTryCatch(v8::internal::Isolate* isolate) {
-    USE(isolate);
-  }
-};
-}  // namespace internal
-}  // namespace v8
-
-#else  // !defined(USE_SIMULATOR)
+#if defined(USE_SIMULATOR)
 // Running with a simulator.
 
 #include "src/assembler.h"
 #include "src/base/hashmap.h"
 #include "src/s390/constants-s390.h"
+#include "src/simulator-base.h"
 
 namespace v8 {
 namespace internal {
@@ -94,7 +51,7 @@ class CachePage {
   char validity_map_[kValidityMapSize];  // One byte per line.
 };
 
-class Simulator {
+class Simulator : public SimulatorBase {
  public:
   friend class S390Debugger;
   enum Register {
@@ -206,11 +163,6 @@ class Simulator {
   // Executes S390 instructions until the PC reaches end_sim_pc.
   void Execute();
 
-  // Call on program start.
-  static void Initialize(Isolate* isolate);
-
-  static void TearDown(base::CustomMatcherHashMap* i_cache, Redirection* first);
-
   // V8 generally calls into generated JS code with 5 parameters and into
   // generated RegExp code with 7 parameters. This is a convenience function,
   // which sets up the simulator state and grabs the result on return.
@@ -229,6 +181,9 @@ class Simulator {
   // Debugger input.
   void set_last_debugger_input(char* input);
   char* last_debugger_input() { return last_debugger_input_; }
+
+  // Redirection support.
+  static void SetRedirectInstruction(Instruction* instruction);
 
   // ICache checking.
   static void FlushICache(base::CustomMatcherHashMap* i_cache, void* start,
@@ -439,11 +394,6 @@ class Simulator {
                            int size);
   static CachePage* GetCachePage(base::CustomMatcherHashMap* i_cache,
                                  void* page);
-
-  // Runtime call support. Uses the isolate in a thread-safe way.
-  static void* RedirectExternalReference(
-      Isolate* isolate, void* external_function,
-      v8::internal::ExternalReference::Type type);
 
   // Handle arguments and return value for runtime FP functions.
   void GetFpArgs(double* x, double* y, intptr_t* z);
@@ -1261,30 +1211,8 @@ class Simulator {
       entry, 9, (intptr_t)p0, (intptr_t)p1, (intptr_t)p2, (intptr_t)p3,        \
       (intptr_t)p4, (intptr_t)p5, (intptr_t)p6, (intptr_t)p7, (intptr_t)p8)
 
-// The simulator has its own stack. Thus it has a different stack limit from
-// the C-based native code.  The JS-based limit normally points near the end of
-// the simulator stack.  When the C-based limit is exhausted we reflect that by
-// lowering the JS-based limit as well, to make stack checks trigger.
-class SimulatorStack : public v8::internal::AllStatic {
- public:
-  static inline uintptr_t JsLimitFromCLimit(v8::internal::Isolate* isolate,
-                                            uintptr_t c_limit) {
-    return Simulator::current(isolate)->StackLimit(c_limit);
-  }
-
-  static inline uintptr_t RegisterCTryCatch(v8::internal::Isolate* isolate,
-                                            uintptr_t try_catch_address) {
-    Simulator* sim = Simulator::current(isolate);
-    return sim->PushAddress(try_catch_address);
-  }
-
-  static inline void UnregisterCTryCatch(v8::internal::Isolate* isolate) {
-    Simulator::current(isolate)->PopAddress();
-  }
-};
-
 }  // namespace internal
 }  // namespace v8
 
-#endif  // !defined(USE_SIMULATOR)
+#endif  // defined(USE_SIMULATOR)
 #endif  // V8_S390_SIMULATOR_S390_H_

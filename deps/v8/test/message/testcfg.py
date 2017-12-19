@@ -34,15 +34,11 @@ from testrunner.local import utils
 from testrunner.objects import testcase
 
 
-FLAGS_PATTERN = re.compile(r"//\s+Flags:(.*)")
 INVALID_FLAGS = ["--enable-slow-asserts"]
 MODULE_PATTERN = re.compile(r"^// MODULE$", flags=re.MULTILINE)
 
 
-class MessageTestSuite(testsuite.TestSuite):
-  def __init__(self, name, root):
-    super(MessageTestSuite, self).__init__(name, root)
-
+class TestSuite(testsuite.TestSuite):
   def ListTests(self, context):
     tests = []
     for dirname, dirs, files in os.walk(self.root):
@@ -55,48 +51,49 @@ class MessageTestSuite(testsuite.TestSuite):
           fullpath = os.path.join(dirname, filename)
           relpath = fullpath[len(self.root) + 1 : -3]
           testname = relpath.replace(os.path.sep, "/")
-          test = testcase.TestCase(self, testname)
+          test = self._create_test(testname)
           tests.append(test)
     return tests
 
+  def _test_class(self):
+    return TestCase
+
   def CreateVariantGenerator(self, variants):
-    return super(MessageTestSuite, self).CreateVariantGenerator(
+    return super(TestSuite, self).CreateVariantGenerator(
         variants + ["preparser"])
-
-  def GetFlagsForTestCase(self, testcase, context):
-    source = self.GetSourceForTest(testcase)
-    result = []
-    flags_match = re.findall(FLAGS_PATTERN, source)
-    for match in flags_match:
-      result += match.strip().split()
-    result += context.mode_flags
-    if MODULE_PATTERN.search(source):
-      result.append("--module")
-    result = [x for x in result if x not in INVALID_FLAGS]
-    result.append(os.path.join(self.root, testcase.path + ".js"))
-    return testcase.flags + result
-
-  def GetSourceForTest(self, testcase):
-    filename = os.path.join(self.root, testcase.path + self.suffix())
-    with open(filename) as f:
-      return f.read()
 
   def _IgnoreLine(self, string):
     """Ignore empty lines, valgrind output, Android output."""
-    if not string: return True
-    if not string.strip(): return True
-    return (string.startswith("==") or string.startswith("**") or
-            string.startswith("ANDROID"))
+    return (
+      not string or
+      not string.strip() or
+      string.startswith("==") or
+      string.startswith("**") or
+      string.startswith("ANDROID")
+    )
 
-  def IsFailureOutput(self, testcase):
-    output = testcase.output
-    testpath = testcase.path
+  def _GetExpectedFail(self, test):
+    path = test.path
+    while path:
+      (head, tail) = os.path.split(path)
+      if tail == "fail":
+        return True
+      path = head
+    return False
+
+  def IsFailureOutput(self, test, output):
+    testpath = test.path
+    expected_fail = self._GetExpectedFail(test)
+    fail = output.exit_code != 0
+    if expected_fail != fail:
+      return True
     expected_path = os.path.join(self.root, testpath + ".out")
     expected_lines = []
     # Can't use utils.ReadLinesFrom() here because it strips whitespace.
     with open(expected_path) as f:
       for line in f:
-        if line.startswith("#") or not line.strip(): continue
+        if line.startswith("#") or not line.strip():
+          continue
         expected_lines.append(line)
     raw_lines = output.stdout.splitlines()
     actual_lines = [ s for s in raw_lines if not self._IgnoreLine(s) ]
@@ -113,9 +110,45 @@ class MessageTestSuite(testsuite.TestSuite):
         return True
     return False
 
-  def StripOutputForTransmit(self, testcase):
-    pass
 
+class TestCase(testcase.TestCase):
+  def __init__(self, *args, **kwargs):
+    super(TestCase, self).__init__(*args, **kwargs)
+
+    # precomputed
+    self._source_files = None
+    self._source_flags = None
+
+  def precompute(self):
+    source = self.get_source()
+    self._source_files = self._parse_source_files(source)
+    self._source_flags = self._parse_source_flags(source)
+
+  def _copy(self):
+    copy = super(TestCase, self)._copy()
+    copy._source_files = self._source_files
+    copy._source_flags = self._source_flags
+    return copy
+
+  def _parse_source_files(self, source):
+    files = []
+    if MODULE_PATTERN.search(source):
+      files.append("--module")
+    files.append(os.path.join(self.suite.root, self.path + ".js"))
+    return files
+
+  def _get_cmd_params(self, ctx):
+    params = super(TestCase, self)._get_cmd_params(ctx)
+    return [p for p in params if p not in INVALID_FLAGS]
+
+  def _get_files_params(self, ctx):
+    return self._source_files
+
+  def _get_source_flags(self):
+    return self._source_flags
+
+  def _get_source_path(self):
+    return os.path.join(self.suite.root, self.path + self._get_suffix())
 
 def GetSuite(name, root):
-  return MessageTestSuite(name, root)
+  return TestSuite(name, root)

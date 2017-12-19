@@ -10,10 +10,13 @@
 #include "src/base/compiler-specific.h"
 #include "src/compiler/operator.h"
 #include "src/compiler/types.h"
+#include "src/deoptimize-reason.h"
 #include "src/globals.h"
 #include "src/handles.h"
 #include "src/machine-type.h"
 #include "src/objects.h"
+#include "src/type-hints.h"
+#include "src/vector-slot-pair.h"
 #include "src/zone/zone-handle-set.h"
 
 namespace v8 {
@@ -50,7 +53,6 @@ struct FieldAccess {
 };
 
 V8_EXPORT_PRIVATE bool operator==(FieldAccess const&, FieldAccess const&);
-bool operator!=(FieldAccess const&, FieldAccess const&);
 
 size_t hash_value(FieldAccess const&);
 
@@ -77,7 +79,6 @@ struct ElementAccess {
 };
 
 V8_EXPORT_PRIVATE bool operator==(ElementAccess const&, ElementAccess const&);
-bool operator!=(ElementAccess const&, ElementAccess const&);
 
 size_t hash_value(ElementAccess const&);
 
@@ -87,6 +88,31 @@ V8_EXPORT_PRIVATE ElementAccess const& ElementAccessOf(const Operator* op)
     WARN_UNUSED_RESULT;
 
 ExternalArrayType ExternalArrayTypeOf(const Operator* op) WARN_UNUSED_RESULT;
+
+// The ConvertReceiverMode is used as parameter by ConvertReceiver operators.
+ConvertReceiverMode ConvertReceiverModeOf(Operator const* op);
+
+// A the parameters for several Check nodes. The {feedback} parameter is
+// optional. If {feedback} references a valid CallIC slot and this MapCheck
+// fails, then speculation on that CallIC slot will be disabled.
+class CheckParameters final {
+ public:
+  explicit CheckParameters(const VectorSlotPair& feedback)
+      : feedback_(feedback) {}
+
+  VectorSlotPair const& feedback() const { return feedback_; }
+
+ private:
+  VectorSlotPair feedback_;
+};
+
+bool operator==(CheckParameters const&, CheckParameters const&);
+
+size_t hash_value(CheckParameters const&);
+
+std::ostream& operator<<(std::ostream&, CheckParameters const&);
+
+CheckParameters const& CheckParametersOf(Operator const*) WARN_UNUSED_RESULT;
 
 enum class CheckFloat64HoleMode : uint8_t {
   kNeverReturnHole,  // Never return the hole (deoptimize instead).
@@ -133,22 +159,46 @@ DEFINE_OPERATORS_FOR_FLAGS(CheckMapsFlags)
 
 std::ostream& operator<<(std::ostream&, CheckMapsFlags);
 
-// A descriptor for map checks.
-class CheckMapsParameters final {
+class MapsParameterInfo {
  public:
-  CheckMapsParameters(CheckMapsFlags flags, ZoneHandleSet<Map> const& maps)
-      : flags_(flags), maps_(maps) {}
+  explicit MapsParameterInfo(ZoneHandleSet<Map> const& maps);
 
-  CheckMapsFlags flags() const { return flags_; }
+  Maybe<InstanceType> instance_type() const { return instance_type_; }
   ZoneHandleSet<Map> const& maps() const { return maps_; }
 
  private:
-  CheckMapsFlags const flags_;
   ZoneHandleSet<Map> const maps_;
+  Maybe<InstanceType> instance_type_;
+};
+
+std::ostream& operator<<(std::ostream&, MapsParameterInfo const&);
+
+bool operator==(MapsParameterInfo const&, MapsParameterInfo const&);
+bool operator!=(MapsParameterInfo const&, MapsParameterInfo const&);
+
+size_t hash_value(MapsParameterInfo const&);
+
+// A descriptor for map checks. The {feedback} parameter is optional.
+// If {feedback} references a valid CallIC slot and this MapCheck fails,
+// then speculation on that CallIC slot will be disabled.
+class CheckMapsParameters final {
+ public:
+  CheckMapsParameters(CheckMapsFlags flags, ZoneHandleSet<Map> const& maps,
+                      const VectorSlotPair& feedback)
+      : flags_(flags), maps_info_(maps), feedback_(feedback) {}
+
+  CheckMapsFlags flags() const { return flags_; }
+  ZoneHandleSet<Map> const& maps() const { return maps_info_.maps(); }
+  MapsParameterInfo const& maps_info() const { return maps_info_; }
+  VectorSlotPair const& feedback() const { return feedback_; }
+
+ private:
+  CheckMapsFlags const flags_;
+  MapsParameterInfo const maps_info_;
+  VectorSlotPair const feedback_;
 };
 
 bool operator==(CheckMapsParameters const&, CheckMapsParameters const&);
-bool operator!=(CheckMapsParameters const&, CheckMapsParameters const&);
 
 size_t hash_value(CheckMapsParameters const&);
 
@@ -157,8 +207,10 @@ std::ostream& operator<<(std::ostream&, CheckMapsParameters const&);
 CheckMapsParameters const& CheckMapsParametersOf(Operator const*)
     WARN_UNUSED_RESULT;
 
+MapsParameterInfo const& MapGuardMapsOf(Operator const*) WARN_UNUSED_RESULT;
+
 // Parameters for CompareMaps operator.
-ZoneHandleSet<Map> const& CompareMapsParametersOf(Operator const*)
+MapsParameterInfo const& CompareMapsParametersOf(Operator const*)
     WARN_UNUSED_RESULT;
 
 // A descriptor for growing elements backing stores.
@@ -173,7 +225,29 @@ inline size_t hash_value(GrowFastElementsMode mode) {
 
 std::ostream& operator<<(std::ostream&, GrowFastElementsMode);
 
-GrowFastElementsMode GrowFastElementsModeOf(const Operator*) WARN_UNUSED_RESULT;
+class GrowFastElementsParameters {
+ public:
+  GrowFastElementsParameters(GrowFastElementsMode mode,
+                             const VectorSlotPair& feedback)
+      : mode_(mode), feedback_(feedback) {}
+
+  GrowFastElementsMode mode() const { return mode_; }
+  const VectorSlotPair& feedback() const { return feedback_; }
+
+ private:
+  GrowFastElementsMode mode_;
+  VectorSlotPair feedback_;
+};
+
+bool operator==(const GrowFastElementsParameters&,
+                const GrowFastElementsParameters&);
+
+inline size_t hash_value(const GrowFastElementsParameters&);
+
+std::ostream& operator<<(std::ostream&, const GrowFastElementsParameters&);
+
+const GrowFastElementsParameters& GrowFastElementsParametersOf(const Operator*)
+    WARN_UNUSED_RESULT;
 
 // A descriptor for elements kind transitions.
 class ElementsTransition final {
@@ -197,7 +271,6 @@ class ElementsTransition final {
 };
 
 bool operator==(ElementsTransition const&, ElementsTransition const&);
-bool operator!=(ElementsTransition const&, ElementsTransition const&);
 
 size_t hash_value(ElementsTransition);
 
@@ -206,9 +279,14 @@ std::ostream& operator<<(std::ostream&, ElementsTransition);
 ElementsTransition const& ElementsTransitionOf(const Operator* op)
     WARN_UNUSED_RESULT;
 
-// Parameters for TransitionAndStoreElement.
+// Parameters for TransitionAndStoreElement, or
+// TransitionAndStoreNonNumberElement, or
+// TransitionAndStoreNumberElement.
 Handle<Map> DoubleMapParameterOf(const Operator* op);
 Handle<Map> FastMapParameterOf(const Operator* op);
+
+// Parameters for TransitionAndStoreNonNumberElement.
+Type* ValueTypeParameterOf(const Operator* op);
 
 // A hint for speculative number operations.
 enum class NumberOperationHint : uint8_t {
@@ -247,7 +325,6 @@ size_t hash_value(AllocateParameters);
 V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream&, AllocateParameters);
 
 bool operator==(AllocateParameters const&, AllocateParameters const&);
-bool operator!=(AllocateParameters const&, AllocateParameters const&);
 
 PretenureFlag PretenureFlagOf(const Operator* op) WARN_UNUSED_RESULT;
 
@@ -256,6 +333,8 @@ Type* AllocateTypeOf(const Operator* op) WARN_UNUSED_RESULT;
 UnicodeEncoding UnicodeEncodingOf(const Operator*) WARN_UNUSED_RESULT;
 
 BailoutReason BailoutReasonOf(const Operator* op) WARN_UNUSED_RESULT;
+
+DeoptimizeReason DeoptimizeReasonOf(const Operator* op) WARN_UNUSED_RESULT;
 
 // Interface for building simplified operators, which represent the
 // medium-level operations of V8, including adding numbers, allocating objects,
@@ -360,6 +439,12 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* SpeculativeNumberEqual(NumberOperationHint hint);
 
   const Operator* ReferenceEqual();
+  const Operator* SameValue();
+
+  const Operator* TypeOf();
+  const Operator* ClassOf();
+
+  const Operator* ToBoolean();
 
   const Operator* StringEqual();
   const Operator* StringLessThan();
@@ -370,6 +455,7 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* StringFromCharCode();
   const Operator* StringFromCodePoint(UnicodeEncoding encoding);
   const Operator* StringIndexOf();
+  const Operator* StringLength();
   const Operator* StringToLowerCaseIntl();
   const Operator* StringToUpperCaseIntl();
 
@@ -378,6 +464,7 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
 
   const Operator* SpeculativeToNumber(NumberOperationHint hint);
 
+  const Operator* StringToNumber();
   const Operator* PlainPrimitiveToNumber();
   const Operator* PlainPrimitiveToWord32();
   const Operator* PlainPrimitiveToFloat64();
@@ -399,14 +486,16 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* TruncateTaggedToBit();
   const Operator* TruncateTaggedPointerToBit();
 
-  const Operator* CheckIf();
-  const Operator* CheckBounds();
-  const Operator* CheckMaps(CheckMapsFlags, ZoneHandleSet<Map>);
+  const Operator* CheckIf(DeoptimizeReason deoptimize_reason);
+  const Operator* CheckBounds(const VectorSlotPair& feedback);
+  const Operator* CheckMaps(CheckMapsFlags, ZoneHandleSet<Map>,
+                            const VectorSlotPair& = VectorSlotPair());
   const Operator* CompareMaps(ZoneHandleSet<Map>);
+  const Operator* MapGuard(ZoneHandleSet<Map> maps);
 
   const Operator* CheckHeapObject();
   const Operator* CheckInternalizedString();
-  const Operator* CheckNumber();
+  const Operator* CheckNumber(const VectorSlotPair& feedback);
   const Operator* CheckSmi();
   const Operator* CheckString();
   const Operator* CheckSeqString();
@@ -431,11 +520,17 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* CheckedTaggedToTaggedPointer();
   const Operator* CheckedTruncateTaggedToWord32(CheckTaggedInputMode);
 
+  const Operator* ConvertReceiver(ConvertReceiverMode);
+
   const Operator* CheckFloat64Hole(CheckFloat64HoleMode);
   const Operator* CheckNotTaggedHole();
   const Operator* ConvertTaggedHoleToUndefined();
 
+  const Operator* CheckEqualsInternalizedString();
+  const Operator* CheckEqualsSymbol();
+
   const Operator* ObjectIsArrayBufferView();
+  const Operator* ObjectIsBigInt();
   const Operator* ObjectIsCallable();
   const Operator* ObjectIsConstructor();
   const Operator* ObjectIsDetectableCallable();
@@ -459,6 +554,9 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   // new-arguments-elements arguments-frame, arguments-length
   const Operator* NewArgumentsElements(int mapped_count);
 
+  // new-cons-string length, first, second
+  const Operator* NewConsString();
+
   // array-buffer-was-neutered buffer
   const Operator* ArrayBufferWasNeutered();
 
@@ -466,12 +564,15 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* EnsureWritableFastElements();
 
   // maybe-grow-fast-elements object, elements, index, length
-  const Operator* MaybeGrowFastElements(GrowFastElementsMode mode);
+  const Operator* MaybeGrowFastElements(GrowFastElementsMode mode,
+                                        const VectorSlotPair& feedback);
 
   // transition-elements-kind object, from-map, to-map
   const Operator* TransitionElementsKind(ElementsTransition transition);
 
   const Operator* Allocate(Type* type, PretenureFlag pretenure = NOT_TENURED);
+  const Operator* AllocateRaw(Type* type,
+                              PretenureFlag pretenure = NOT_TENURED);
 
   const Operator* LoadFieldByIndex();
   const Operator* LoadField(FieldAccess const&);
@@ -488,6 +589,13 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
                                             Handle<Map> fast_map);
   // store-element [base + index], smi value, only with fast arrays.
   const Operator* StoreSignedSmallElement();
+
+  // store-element [base + index], double value, only with fast arrays.
+  const Operator* TransitionAndStoreNumberElement(Handle<Map> double_map);
+
+  // store-element [base + index], object value, only with fast arrays.
+  const Operator* TransitionAndStoreNonNumberElement(Handle<Map> fast_map,
+                                                     Type* value_type);
 
   // load-typed-element buffer, [base + external + index]
   const Operator* LoadTypedElement(ExternalArrayType const&);

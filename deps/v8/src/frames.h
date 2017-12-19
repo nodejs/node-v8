@@ -9,10 +9,14 @@
 #include "src/flags.h"
 #include "src/handles.h"
 #include "src/objects.h"
+#include "src/objects/code.h"
 #include "src/safepoint-table.h"
 
 namespace v8 {
 namespace internal {
+namespace wasm {
+class WasmCode;
+}
 
 class AbstractCode;
 class Debug;
@@ -39,9 +43,6 @@ class InnerPointerToCodeCache {
     Flush();
   }
 
-  Code* GcSafeFindCodeForInnerPointer(Address inner_pointer);
-  Code* GcSafeCastToCode(HeapObject* object, Address inner_pointer);
-
   void Flush() {
     memset(&cache_[0], 0, sizeof(cache_));
   }
@@ -63,8 +64,9 @@ class InnerPointerToCodeCache {
 class StackHandlerConstants : public AllStatic {
  public:
   static const int kNextOffset = 0 * kPointerSize;
+  static const int kPaddingOffset = 1 * kPointerSize;
 
-  static const int kSize = kNextOffset + kPointerSize;
+  static const int kSize = kPaddingOffset + kPointerSize;
   static const int kSlotCount = kSize >> kPointerSizeLog2;
 };
 
@@ -91,6 +93,7 @@ class StackHandler BASE_EMBEDDED {
   V(OPTIMIZED, OptimizedFrame)                                            \
   V(WASM_COMPILED, WasmCompiledFrame)                                     \
   V(WASM_TO_JS, WasmToJsFrame)                                            \
+  V(WASM_TO_WASM, WasmToWasmFrame)                                        \
   V(JS_TO_WASM, JsToWasmFrame)                                            \
   V(WASM_INTERPRETER_ENTRY, WasmInterpreterEntryFrame)                    \
   V(C_WASM_ENTRY, CWasmEntryFrame)                                        \
@@ -102,7 +105,8 @@ class StackHandler BASE_EMBEDDED {
   V(CONSTRUCT, ConstructFrame)                                            \
   V(ARGUMENTS_ADAPTOR, ArgumentsAdaptorFrame)                             \
   V(BUILTIN, BuiltinFrame)                                                \
-  V(BUILTIN_EXIT, BuiltinExitFrame)
+  V(BUILTIN_EXIT, BuiltinExitFrame)                                       \
+  V(NATIVE, NativeFrame)
 
 // Abstract base class for all stack frames.
 class StackFrame BASE_EMBEDDED {
@@ -178,15 +182,14 @@ class StackFrame BASE_EMBEDDED {
   // and should be converted back to a stack frame type using MarkerToType.
   // Otherwise, the value is a tagged function pointer.
   static bool IsTypeMarker(intptr_t function_or_marker) {
-    bool is_marker = ((function_or_marker & kSmiTagMask) == kSmiTag);
-    return is_marker;
+    return (function_or_marker & kSmiTagMask) == kSmiTag;
   }
 
   // Copy constructor; it breaks the connection to host iterator
   // (as an iterator usually lives on stack).
   StackFrame(const StackFrame& original) {
     this->state_ = original.state_;
-    this->iterator_ = NULL;
+    this->iterator_ = nullptr;
     this->isolate_ = original.isolate_;
   }
 
@@ -326,6 +329,25 @@ class StackFrame BASE_EMBEDDED {
   friend class SafeStackFrameIterator;
 };
 
+class NativeFrame : public StackFrame {
+ public:
+  Type type() const override { return NATIVE; }
+
+  Code* unchecked_code() const override { return nullptr; }
+
+  // Garbage collection support.
+  void Iterate(RootVisitor* v) const override {}
+
+ protected:
+  inline explicit NativeFrame(StackFrameIteratorBase* iterator);
+
+  Address GetCallerStackPointer() const override;
+
+ private:
+  void ComputeCallerState(State* state) const override;
+
+  friend class StackFrameIteratorBase;
+};
 
 // Entry frames are used to enter JavaScript execution from C.
 class EntryFrame: public StackFrame {
@@ -527,15 +549,17 @@ class FrameSummary BASE_EMBEDDED {
 
   class WasmCompiledFrameSummary : public WasmFrameSummary {
    public:
-    WasmCompiledFrameSummary(Isolate*, Handle<WasmInstanceObject>, Handle<Code>,
-                             int code_offset, bool at_to_number_conversion);
+    WasmCompiledFrameSummary(Isolate*, Handle<WasmInstanceObject>,
+                             WasmCodeWrapper, int code_offset,
+                             bool at_to_number_conversion);
     uint32_t function_index() const;
-    Handle<Code> code() const { return code_; }
+    WasmCodeWrapper code() const { return code_; }
     int code_offset() const { return code_offset_; }
     int byte_offset() const;
+    static int GetWasmSourcePosition(const wasm::WasmCode* code, int offset);
 
    private:
-    Handle<Code> code_;
+    WasmCodeWrapper const code_;
     int code_offset_;
   };
 
@@ -705,7 +729,6 @@ class JavaScriptFrame : public StandardFrame {
   // actual passed arguments are available in an arguments adaptor
   // frame below it on the stack.
   inline bool has_adapted_arguments() const;
-  int GetArgumentsLength() const;
 
   // Garbage collection support.
   void Iterate(RootVisitor* v) const override;
@@ -816,7 +839,7 @@ class OptimizedFrame : public JavaScriptFrame {
   int LookupExceptionHandlerInTable(
       int* data, HandlerTable::CatchPrediction* prediction) override;
 
-  DeoptimizationInputData* GetDeoptimizationData(int* deopt_index) const;
+  DeoptimizationData* GetDeoptimizationData(int* deopt_index) const;
 
   Object* receiver() const override;
 
@@ -894,8 +917,6 @@ class ArgumentsAdaptorFrame: public JavaScriptFrame {
   // Printing support.
   void Print(StringStream* accumulator, PrintMode mode,
              int index) const override;
-
-  static int GetLength(Address fp);
 
  protected:
   inline explicit ArgumentsAdaptorFrame(StackFrameIteratorBase* iterator);
@@ -1026,6 +1047,17 @@ class JsToWasmFrame : public StubFrame {
   friend class StackFrameIteratorBase;
 };
 
+class WasmToWasmFrame : public StubFrame {
+ public:
+  Type type() const override { return WASM_TO_WASM; }
+
+ protected:
+  inline explicit WasmToWasmFrame(StackFrameIteratorBase* iterator);
+
+ private:
+  friend class StackFrameIteratorBase;
+};
+
 class CWasmEntryFrame : public StubFrame {
  public:
   Type type() const override { return C_WASM_ENTRY; }
@@ -1119,7 +1151,7 @@ class StackFrameIteratorBase BASE_EMBEDDED {
  public:
   Isolate* isolate() const { return isolate_; }
 
-  bool done() const { return frame_ == NULL; }
+  bool done() const { return frame_ == nullptr; }
 
  protected:
   // An iterator that iterates over a given thread's stack.
@@ -1140,7 +1172,7 @@ class StackFrameIteratorBase BASE_EMBEDDED {
 
   // Get the type-specific frame singleton in a given state.
   StackFrame* SingletonFor(StackFrame::Type type, StackFrame::State* state);
-  // A helper function, can return a NULL pointer.
+  // A helper function, can return a nullptr pointer.
   StackFrame* SingletonFor(StackFrame::Type type);
 
  private:

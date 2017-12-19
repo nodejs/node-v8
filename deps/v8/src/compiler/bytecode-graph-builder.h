@@ -16,6 +16,9 @@
 
 namespace v8 {
 namespace internal {
+
+class VectorSlotPair;
+
 namespace compiler {
 
 class Reduction;
@@ -152,7 +155,6 @@ class BytecodeGraphBuilder {
   void BuildCreateArguments(CreateArgumentsType type);
   Node* BuildLoadGlobal(Handle<Name> name, uint32_t feedback_slot_index,
                         TypeofMode typeof_mode);
-  void BuildStoreGlobal(LanguageMode language_mode);
 
   enum class StoreMode {
     // Check the prototype chain before storing.
@@ -171,6 +173,7 @@ class BytecodeGraphBuilder {
                  std::initializer_list<Node*> args, int slot_id) {
     BuildCall(receiver_mode, args.begin(), args.size(), slot_id);
   }
+  void BuildUnaryOp(const Operator* op);
   void BuildBinaryOp(const Operator* op);
   void BuildBinaryOpWithImmediate(const Operator* op);
   void BuildCompareOp(const Operator* op);
@@ -183,6 +186,8 @@ class BytecodeGraphBuilder {
   // Optional early lowering to the simplified operator level.  Note that
   // the result has already been wired into the environment just like
   // any other invocation of {NewNode} would do.
+  JSTypeHintLowering::LoweringResult TryBuildSimplifiedUnaryOp(
+      const Operator* op, Node* operand, FeedbackSlot slot);
   JSTypeHintLowering::LoweringResult TryBuildSimplifiedBinaryOp(
       const Operator* op, Node* left, Node* right, FeedbackSlot slot);
   JSTypeHintLowering::LoweringResult TryBuildSimplifiedForInNext(
@@ -228,6 +233,10 @@ class BytecodeGraphBuilder {
   // Helper function to compute call frequency from the recorded type
   // feedback.
   CallFrequency ComputeCallFrequency(int slot_id) const;
+
+  // Helper function to extract the speculation mode from the recorded type
+  // feedback.
+  SpeculationMode GetSpeculationMode(int slot_id) const;
 
   // Control flow plumbing.
   void BuildJump();

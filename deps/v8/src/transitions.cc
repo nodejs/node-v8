@@ -17,7 +17,7 @@ void TransitionsAccessor::Initialize() {
     encoding_ = kUninitialized;
   } else if (HeapObject::cast(raw_transitions_)->IsWeakCell()) {
     encoding_ = kWeakCell;
-  } else if (StoreHandler::IsHandler(raw_transitions_)) {
+  } else if (HeapObject::cast(raw_transitions_)->IsStoreHandler()) {
     encoding_ = kHandler;
   } else if (HeapObject::cast(raw_transitions_)->IsTransitionArray()) {
     encoding_ = kFullTransitionArray;
@@ -137,7 +137,7 @@ void TransitionsAccessor::Insert(Handle<Name> name, Handle<Map> target,
     }
 
     ++new_nof;
-    CHECK(new_nof <= kMaxNumberOfTransitions);
+    CHECK_LE(new_nof, kMaxNumberOfTransitions);
     DCHECK(insertion_index >= 0 && insertion_index <= number_of_transitions);
 
     // If there is enough capacity, insert new entry into the existing array.
@@ -250,7 +250,7 @@ Object* TransitionsAccessor::SearchHandler(Name* name,
       int transition = transitions()->Search(kData, name, NONE);
       if (transition == kNotFound) return nullptr;
       Object* raw_handler = transitions()->GetRawTarget(transition);
-      if (StoreHandler::IsHandler(raw_handler)) {
+      if (raw_handler->IsStoreHandler()) {
         return StoreHandler::ValidHandlerOrNull(raw_handler, name,
                                                 out_transition);
       }
@@ -289,7 +289,7 @@ Map* TransitionsAccessor::SearchTransition(Name* name, PropertyKind kind,
 Map* TransitionsAccessor::SearchSpecial(Symbol* name) {
   if (encoding() != kFullTransitionArray) return nullptr;
   int transition = transitions()->SearchSpecial(name);
-  if (transition == kNotFound) return NULL;
+  if (transition == kNotFound) return nullptr;
   return transitions()->GetTarget(transition);
 }
 
@@ -307,7 +307,7 @@ Handle<Map> TransitionsAccessor::FindTransitionToField(Handle<Name> name) {
   DCHECK(name->IsUniqueName());
   DisallowHeapAllocation no_gc;
   Map* target = SearchTransition(*name, kData, NONE);
-  if (target == NULL) return Handle<Map>::null();
+  if (target == nullptr) return Handle<Map>::null();
   PropertyDetails details = target->GetLastDescriptorDetails();
   DCHECK_EQ(NONE, details.attributes());
   if (details.location() != kField) return Handle<Map>::null();
@@ -475,7 +475,7 @@ FixedArray* TransitionsAccessor::GetPrototypeTransitions() {
 // static
 void TransitionArray::SetNumberOfPrototypeTransitions(
     FixedArray* proto_transitions, int value) {
-  DCHECK(proto_transitions->length() != 0);
+  DCHECK_NE(proto_transitions->length(), 0);
   proto_transitions->set(kProtoTransitionNumberOfEntriesOffset,
                          Smi::FromInt(value));
 }
@@ -645,7 +645,7 @@ int TransitionArray::SearchDetails(int transition, PropertyKind kind,
       break;
     }
   }
-  if (out_insertion_index != NULL) *out_insertion_index = transition;
+  if (out_insertion_index != nullptr) *out_insertion_index = transition;
   return kNotFound;
 }
 

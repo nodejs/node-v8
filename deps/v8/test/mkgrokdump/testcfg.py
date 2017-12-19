@@ -9,20 +9,17 @@ from testrunner.local import testsuite
 from testrunner.objects import testcase
 
 
-class MkGrokdump(testsuite.TestSuite):
+SHELL = 'mkgrokdump'
 
-  def __init__(self, name, root):
-    super(MkGrokdump, self).__init__(name, root)
-
+class TestSuite(testsuite.TestSuite):
   def ListTests(self, context):
-    test = testcase.TestCase(self, self.shell())
+    test = self._create_test(SHELL)
     return [test]
 
-  def GetFlagsForTestCase(self, testcase, context):
-    return []
+  def _test_class(self):
+    return TestCase
 
-  def IsFailureOutput(self, testcase):
-    output = testcase.output
+  def IsFailureOutput(self, test, output):
     v8_path = os.path.dirname(os.path.dirname(os.path.abspath(self.root)))
     expected_path = os.path.join(v8_path, "tools", "v8heapconst.py")
     with open(expected_path) as f:
@@ -42,8 +39,20 @@ class MkGrokdump(testsuite.TestSuite):
       return True
     return False
 
-  def shell(self):
-    return "mkgrokdump"
+
+class TestCase(testcase.TestCase):
+  def _get_variant_flags(self):
+    return []
+
+  def _get_statusfile_flags(self):
+    return []
+
+  def _get_mode_flags(self, ctx):
+    return []
+
+  def _get_shell(self):
+    return SHELL
+
 
 def GetSuite(name, root):
-  return MkGrokdump(name, root)
+  return TestSuite(name, root)

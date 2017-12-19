@@ -50,7 +50,8 @@ MaybeHandle<Object> RegExpUtils::SetLastIndex(Isolate* isolate,
     return recv;
   } else {
     return Object::SetProperty(recv, isolate->factory()->lastIndex_string(),
-                               handle(Smi::FromInt(value), isolate), STRICT);
+                               handle(Smi::FromInt(value), isolate),
+                               LanguageMode::kStrict);
   }
 }
 
@@ -132,6 +133,10 @@ Maybe<bool> RegExpUtils::IsRegExp(Isolate* isolate, Handle<Object> object) {
 bool RegExpUtils::IsUnmodifiedRegExp(Isolate* isolate, Handle<Object> obj) {
   // TODO(ishell): Update this check once map changes for constant field
   // tracking are landing.
+
+#ifdef V8_ENABLE_FORCE_SLOW_PATH
+  if (isolate->force_slow_path()) return false;
+#endif
 
   if (!obj->IsJSReceiver()) return false;
 

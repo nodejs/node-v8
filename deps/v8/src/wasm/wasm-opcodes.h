@@ -19,7 +19,7 @@ const uint32_t kWasmMagic = 0x6d736100;
 const uint32_t kWasmVersion = 0x01;
 
 // Binary encoding of local types.
-enum ValueTypeCode {
+enum ValueTypeCode : uint8_t {
   kLocalVoid = 0x40,
   kLocalI32 = 0x7f,
   kLocalI64 = 0x7e,
@@ -27,9 +27,6 @@ enum ValueTypeCode {
   kLocalF64 = 0x7c,
   kLocalS128 = 0x7b
 };
-
-// Type code for multi-value block types.
-static const uint8_t kMultivalBlock = 0x41;
 
 // We reuse the internal machine type to represent WebAssembly types.
 // A typedef improves readability without adding a whole new type system.
@@ -105,15 +102,15 @@ constexpr WasmCodePosition kNoCodePosition = -1;
 
 // Store memory expressions.
 #define FOREACH_STORE_MEM_OPCODE(V) \
-  V(I32StoreMem, 0x36, i_ii)        \
-  V(I64StoreMem, 0x37, l_il)        \
-  V(F32StoreMem, 0x38, f_if)        \
-  V(F64StoreMem, 0x39, d_id)        \
-  V(I32StoreMem8, 0x3a, i_ii)       \
-  V(I32StoreMem16, 0x3b, i_ii)      \
-  V(I64StoreMem8, 0x3c, l_il)       \
-  V(I64StoreMem16, 0x3d, l_il)      \
-  V(I64StoreMem32, 0x3e, l_il)
+  V(I32StoreMem, 0x36, v_ii)        \
+  V(I64StoreMem, 0x37, v_il)        \
+  V(F32StoreMem, 0x38, v_if)        \
+  V(F64StoreMem, 0x39, v_id)        \
+  V(I32StoreMem8, 0x3a, v_ii)       \
+  V(I32StoreMem16, 0x3b, v_ii)      \
+  V(I64StoreMem8, 0x3c, v_il)       \
+  V(I64StoreMem16, 0x3d, v_il)      \
+  V(I64StoreMem32, 0x3e, v_il)
 
 // Miscellaneous memory expressions
 #define FOREACH_MISC_MEM_OPCODE(V) \
@@ -416,15 +413,15 @@ constexpr WasmCodePosition kNoCodePosition = -1;
 
 #define FOREACH_SIMD_MEM_OPCODE(V) \
   V(S128LoadMem, 0xfd80, s_i)      \
-  V(S128StoreMem, 0xfd81, s_is)
+  V(S128StoreMem, 0xfd81, v_is)
 
 #define FOREACH_ATOMIC_OPCODE(V)               \
   V(I32AtomicLoad, 0xfe10, i_i)                \
   V(I32AtomicLoad8U, 0xfe12, i_i)              \
   V(I32AtomicLoad16U, 0xfe13, i_i)             \
-  V(I32AtomicStore, 0xfe17, i_ii)              \
-  V(I32AtomicStore8U, 0xfe19, i_ii)            \
-  V(I32AtomicStore16U, 0xfe1a, i_ii)           \
+  V(I32AtomicStore, 0xfe17, v_ii)              \
+  V(I32AtomicStore8U, 0xfe19, v_ii)            \
+  V(I32AtomicStore16U, 0xfe1a, v_ii)           \
   V(I32AtomicAdd, 0xfe1e, i_ii)                \
   V(I32AtomicAdd8U, 0xfe20, i_ii)              \
   V(I32AtomicAdd16U, 0xfe21, i_ii)             \
@@ -463,35 +460,38 @@ constexpr WasmCodePosition kNoCodePosition = -1;
   FOREACH_ATOMIC_OPCODE(V)
 
 // All signatures.
-#define FOREACH_SIGNATURE(V)            \
-  FOREACH_SIMD_SIGNATURE(V)             \
-  V(i_ii, kWasmI32, kWasmI32, kWasmI32) \
-  V(i_i, kWasmI32, kWasmI32)            \
-  V(i_v, kWasmI32)                      \
-  V(i_ff, kWasmI32, kWasmF32, kWasmF32) \
-  V(i_f, kWasmI32, kWasmF32)            \
-  V(i_dd, kWasmI32, kWasmF64, kWasmF64) \
-  V(i_d, kWasmI32, kWasmF64)            \
-  V(i_l, kWasmI32, kWasmI64)            \
-  V(l_ll, kWasmI64, kWasmI64, kWasmI64) \
-  V(i_ll, kWasmI32, kWasmI64, kWasmI64) \
-  V(l_l, kWasmI64, kWasmI64)            \
-  V(l_i, kWasmI64, kWasmI32)            \
-  V(l_f, kWasmI64, kWasmF32)            \
-  V(l_d, kWasmI64, kWasmF64)            \
-  V(f_ff, kWasmF32, kWasmF32, kWasmF32) \
-  V(f_f, kWasmF32, kWasmF32)            \
-  V(f_d, kWasmF32, kWasmF64)            \
-  V(f_i, kWasmF32, kWasmI32)            \
-  V(f_l, kWasmF32, kWasmI64)            \
-  V(d_dd, kWasmF64, kWasmF64, kWasmF64) \
-  V(d_d, kWasmF64, kWasmF64)            \
-  V(d_f, kWasmF64, kWasmF32)            \
-  V(d_i, kWasmF64, kWasmI32)            \
-  V(d_l, kWasmF64, kWasmI64)            \
-  V(d_id, kWasmF64, kWasmI32, kWasmF64) \
-  V(f_if, kWasmF32, kWasmI32, kWasmF32) \
-  V(l_il, kWasmI64, kWasmI32, kWasmI64) \
+#define FOREACH_SIGNATURE(V)             \
+  FOREACH_SIMD_SIGNATURE(V)              \
+  V(i_ii, kWasmI32, kWasmI32, kWasmI32)  \
+  V(i_i, kWasmI32, kWasmI32)             \
+  V(i_v, kWasmI32)                       \
+  V(i_ff, kWasmI32, kWasmF32, kWasmF32)  \
+  V(i_f, kWasmI32, kWasmF32)             \
+  V(i_dd, kWasmI32, kWasmF64, kWasmF64)  \
+  V(i_d, kWasmI32, kWasmF64)             \
+  V(i_l, kWasmI32, kWasmI64)             \
+  V(l_ll, kWasmI64, kWasmI64, kWasmI64)  \
+  V(i_ll, kWasmI32, kWasmI64, kWasmI64)  \
+  V(l_l, kWasmI64, kWasmI64)             \
+  V(l_i, kWasmI64, kWasmI32)             \
+  V(l_f, kWasmI64, kWasmF32)             \
+  V(l_d, kWasmI64, kWasmF64)             \
+  V(f_ff, kWasmF32, kWasmF32, kWasmF32)  \
+  V(f_f, kWasmF32, kWasmF32)             \
+  V(f_d, kWasmF32, kWasmF64)             \
+  V(f_i, kWasmF32, kWasmI32)             \
+  V(f_l, kWasmF32, kWasmI64)             \
+  V(d_dd, kWasmF64, kWasmF64, kWasmF64)  \
+  V(d_d, kWasmF64, kWasmF64)             \
+  V(d_f, kWasmF64, kWasmF32)             \
+  V(d_i, kWasmF64, kWasmI32)             \
+  V(d_l, kWasmF64, kWasmI64)             \
+  V(v_ii, kWasmStmt, kWasmI32, kWasmI32) \
+  V(v_id, kWasmStmt, kWasmI32, kWasmF64) \
+  V(d_id, kWasmF64, kWasmI32, kWasmF64)  \
+  V(v_if, kWasmStmt, kWasmI32, kWasmF32) \
+  V(f_if, kWasmF32, kWasmI32, kWasmF32)  \
+  V(v_il, kWasmI64, kWasmI32, kWasmI64)  \
   V(i_iii, kWasmI32, kWasmI32, kWasmI32, kWasmI32)
 
 #define FOREACH_SIMD_SIGNATURE(V)          \
@@ -535,13 +535,123 @@ enum TrapReason {
 #undef DECLARE_ENUM
 };
 
+// TODO(clemensh): Compute memtype and size from ValueType once we have c++14
+// constexpr support.
+#define FOREACH_LOAD_TYPE(V) \
+  V(I32, , Int32, 2)         \
+  V(I32, 8S, Int8, 0)        \
+  V(I32, 8U, Uint8, 0)       \
+  V(I32, 16S, Int16, 1)      \
+  V(I32, 16U, Uint16, 1)     \
+  V(I64, , Int64, 3)         \
+  V(I64, 8S, Int8, 0)        \
+  V(I64, 8U, Uint8, 0)       \
+  V(I64, 16S, Int16, 1)      \
+  V(I64, 16U, Uint16, 1)     \
+  V(I64, 32S, Int32, 2)      \
+  V(I64, 32U, Uint32, 2)     \
+  V(F32, , Float32, 2)       \
+  V(F64, , Float64, 3)       \
+  V(S128, , Simd128, 4)
+
+class LoadType {
+ public:
+  enum LoadTypeValue : uint8_t {
+#define DEF_ENUM(type, suffix, ...) k##type##Load##suffix,
+    FOREACH_LOAD_TYPE(DEF_ENUM)
+#undef DEF_ENUM
+  };
+
+  // Allow implicit convertion of the enum value to this wrapper.
+  constexpr LoadType(LoadTypeValue val)  // NOLINT(runtime/explicit)
+      : val_(val) {}
+
+  constexpr LoadTypeValue value() const { return val_; }
+  constexpr unsigned size_log_2() const { return kLoadSizeLog2[val_]; }
+  constexpr unsigned size() const { return 1 << size_log_2(); }
+  constexpr ValueType value_type() const { return kValueType[val_]; }
+  constexpr MachineType mem_type() const { return kMemType[val_]; }
+
+ private:
+  const LoadTypeValue val_;
+
+  static constexpr uint8_t kLoadSizeLog2[] = {
+#define LOAD_SIZE(_, __, ___, size) size,
+      FOREACH_LOAD_TYPE(LOAD_SIZE)
+#undef LOAD_SIZE
+  };
+
+  static constexpr ValueType kValueType[] = {
+#define VALUE_TYPE(type, ...) kWasm##type,
+      FOREACH_LOAD_TYPE(VALUE_TYPE)
+#undef VALUE_TYPE
+  };
+
+  static constexpr MachineType kMemType[] = {
+#define MEMTYPE(_, __, memtype, ___) MachineType::memtype(),
+      FOREACH_LOAD_TYPE(MEMTYPE)
+#undef MEMTYPE
+  };
+};
+
+#define FOREACH_STORE_TYPE(V) \
+  V(I32, , Word32, 2)         \
+  V(I32, 8, Word8, 0)         \
+  V(I32, 16, Word16, 1)       \
+  V(I64, , Word64, 3)         \
+  V(I64, 8, Word8, 0)         \
+  V(I64, 16, Word16, 1)       \
+  V(I64, 32, Word32, 2)       \
+  V(F32, , Float32, 2)        \
+  V(F64, , Float64, 3)        \
+  V(S128, , Simd128, 4)
+
+class StoreType {
+ public:
+  enum StoreTypeValue : uint8_t {
+#define DEF_ENUM(type, suffix, ...) k##type##Store##suffix,
+    FOREACH_STORE_TYPE(DEF_ENUM)
+#undef DEF_ENUM
+  };
+
+  // Allow implicit convertion of the enum value to this wrapper.
+  constexpr StoreType(StoreTypeValue val)  // NOLINT(runtime/explicit)
+      : val_(val) {}
+
+  constexpr StoreTypeValue value() const { return val_; }
+  constexpr unsigned size_log_2() const { return kStoreSizeLog2[val_]; }
+  constexpr unsigned size() const { return 1 << size_log_2(); }
+  constexpr ValueType value_type() const { return kValueType[val_]; }
+  constexpr ValueType mem_rep() const { return kMemRep[val_]; }
+
+ private:
+  const StoreTypeValue val_;
+
+  static constexpr uint8_t kStoreSizeLog2[] = {
+#define STORE_SIZE(_, __, ___, size) size,
+      FOREACH_STORE_TYPE(STORE_SIZE)
+#undef STORE_SIZE
+  };
+
+  static constexpr ValueType kValueType[] = {
+#define VALUE_TYPE(type, ...) kWasm##type,
+      FOREACH_STORE_TYPE(VALUE_TYPE)
+#undef VALUE_TYPE
+  };
+
+  static constexpr MachineRepresentation kMemRep[] = {
+#define MEMREP(_, __, memrep, ___) MachineRepresentation::k##memrep,
+      FOREACH_STORE_TYPE(MEMREP)
+#undef MEMREP
+  };
+};
+
 // A collection of opcode-related static methods.
 class V8_EXPORT_PRIVATE WasmOpcodes {
  public:
   static const char* OpcodeName(WasmOpcode opcode);
   static FunctionSig* Signature(WasmOpcode opcode);
   static FunctionSig* AsmjsSignature(WasmOpcode opcode);
-  static FunctionSig* AtomicSignature(WasmOpcode opcode);
   static bool IsPrefixOpcode(WasmOpcode opcode);
   static bool IsControlOpcode(WasmOpcode opcode);
   // Check whether the given opcode always jumps, i.e. all instructions after
@@ -552,7 +662,7 @@ class V8_EXPORT_PRIVATE WasmOpcodes {
   static const char* TrapReasonMessage(TrapReason reason);
 
   static byte MemSize(MachineType type) {
-    return 1 << ElementSizeLog2Of(type.representation());
+    return MemSize(type.representation());
   }
 
   static byte MemSize(ValueType type) { return 1 << ElementSizeLog2Of(type); }

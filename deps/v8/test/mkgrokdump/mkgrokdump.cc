@@ -46,8 +46,8 @@ class MockArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
 
 static int DumpHeapConstants(const char* argv0) {
   // Start up V8.
-  v8::Platform* platform = v8::platform::CreateDefaultPlatform();
-  v8::V8::InitializePlatform(platform);
+  std::unique_ptr<v8::Platform> platform = v8::platform::NewDefaultPlatform();
+  v8::V8::InitializePlatform(platform.get());
   v8::V8::Initialize();
   v8::V8::InitializeExternalStartupData(argv0);
   Isolate::CreateParams create_params;
@@ -75,7 +75,7 @@ static int DumpHeapConstants(const char* argv0) {
     for (i::Object* o = it.Next(); o != NULL; o = it.Next()) {
       i::Map* m = i::Map::cast(o);
       const char* n = NULL;
-      intptr_t p = reinterpret_cast<intptr_t>(m) & 0x7ffff;
+      intptr_t p = reinterpret_cast<intptr_t>(m) & 0x7FFFF;
       int t = m->instance_type();
       ROOT_LIST(ROOT_LIST_CASE)
       STRUCT_LIST(STRUCT_LIST_CASE)
@@ -103,7 +103,7 @@ static int DumpHeapConstants(const char* argv0) {
       for (i::Object* o = it.Next(); o != NULL; o = it.Next()) {
         const char* n = NULL;
         i::Heap::RootListIndex i = i::Heap::kStrongRootListLength;
-        intptr_t p = reinterpret_cast<intptr_t>(o) & 0x7ffff;
+        intptr_t p = reinterpret_cast<intptr_t>(o) & 0x7FFFF;
         ROOT_LIST(ROOT_LIST_CASE)
         if (n == NULL) continue;
         if (!i::Heap::RootIsImmortalImmovable(i)) continue;
@@ -128,7 +128,6 @@ static int DumpHeapConstants(const char* argv0) {
   // Teardown.
   isolate->Dispose();
   v8::V8::ShutdownPlatform();
-  delete platform;
   return 0;
 }
 

@@ -211,8 +211,8 @@ Handle<JSReceiver> LookupIterator::GetRootForNonJSReceiver(
   auto root =
       handle(receiver->GetPrototypeChainRootMap(isolate)->prototype(), isolate);
   if (root->IsNull(isolate)) {
-    unsigned int magic = 0xbbbbbbbb;
-    isolate->PushStackTraceAndDie(magic, *receiver, NULL, magic);
+    unsigned int magic = 0xBBBBBBBB;
+    isolate->PushStackTraceAndDie(magic, *receiver, nullptr, magic);
   }
   return Handle<JSReceiver>::cast(root);
 }
@@ -381,7 +381,7 @@ void LookupIterator::ReconfigureDataProperty(Handle<Object> value,
       PropertyDetails original_details =
           dictionary->DetailsAt(dictionary_entry());
       int enumeration_index = original_details.dictionary_index();
-      DCHECK(enumeration_index > 0);
+      DCHECK_GT(enumeration_index, 0);
       details = details.set_index(enumeration_index);
       dictionary->SetEntry(dictionary_entry(), *name(), *value, details);
       property_details_ = details;
@@ -479,6 +479,7 @@ void LookupIterator::ApplyTransitionToDataProperty(Handle<JSObject> receiver) {
   DCHECK(receiver.is_identical_to(GetStoreTarget()));
   holder_ = receiver;
   if (receiver->IsJSGlobalObject()) {
+    JSObject::InvalidatePrototypeChains(receiver->map());
     state_ = DATA;
     return;
   }
@@ -495,6 +496,9 @@ void LookupIterator::ApplyTransitionToDataProperty(Handle<JSObject> receiver) {
     Handle<NameDictionary> dictionary(receiver->property_dictionary(),
                                       isolate_);
     int entry;
+    if (receiver->map()->is_prototype_map()) {
+      JSObject::InvalidatePrototypeChains(receiver->map());
+    }
     dictionary = NameDictionary::Add(dictionary, name(),
                                      isolate_->factory()->uninitialized_value(),
                                      property_details_, &entry);
@@ -521,8 +525,8 @@ void LookupIterator::Delete() {
     bool is_prototype_map = holder->map()->is_prototype_map();
     RuntimeCallTimerScope stats_scope(
         isolate_, is_prototype_map
-                      ? &RuntimeCallStats::PrototypeObject_DeleteProperty
-                      : &RuntimeCallStats::Object_DeleteProperty);
+                      ? RuntimeCallCounterId::kPrototypeObject_DeleteProperty
+                      : RuntimeCallCounterId::kObject_DeleteProperty);
 
     PropertyNormalizationMode mode =
         is_prototype_map ? KEEP_INOBJECT_PROPERTIES : CLEAR_INOBJECT_PROPERTIES;
@@ -618,11 +622,11 @@ void LookupIterator::TransitionToAccessorPair(Handle<Object> pair,
 
   if (IsElement()) {
     // TODO(verwaest): Move code into the element accessor.
-    Handle<SeededNumberDictionary> dictionary =
-        JSObject::NormalizeElements(receiver);
+    isolate_->CountUsage(v8::Isolate::kIndexAccessor);
+    Handle<NumberDictionary> dictionary = JSObject::NormalizeElements(receiver);
 
-    dictionary = SeededNumberDictionary::Set(dictionary, index_, pair, receiver,
-                                             details);
+    dictionary =
+        NumberDictionary::Set(dictionary, index_, pair, receiver, details);
     receiver->RequireSlowElements(*dictionary);
 
     if (receiver->HasSlowArgumentsElements()) {
@@ -638,9 +642,12 @@ void LookupIterator::TransitionToAccessorPair(Handle<Object> pair,
 
     ReloadPropertyInformation<true>();
   } else {
-    PropertyNormalizationMode mode = receiver->map()->is_prototype_map()
-                                         ? KEEP_INOBJECT_PROPERTIES
-                                         : CLEAR_INOBJECT_PROPERTIES;
+    PropertyNormalizationMode mode = CLEAR_INOBJECT_PROPERTIES;
+    if (receiver->map()->is_prototype_map()) {
+      JSObject::InvalidatePrototypeChains(receiver->map());
+      mode = KEEP_INOBJECT_PROPERTIES;
+    }
+
     // Normalize object to make this operation simple.
     JSObject::NormalizeProperties(receiver, mode, 0,
                                   "TransitionToAccessorPair");
@@ -682,7 +689,7 @@ bool LookupIterator::HolderIsReceiverOrHiddenPrototype() const {
 
 
 Handle<Object> LookupIterator::FetchValue() const {
-  Object* result = NULL;
+  Object* result = nullptr;
   if (IsElement()) {
     Handle<JSObject> holder = GetHolder<JSObject>();
     ElementsAccessor* accessor = holder->GetElementsAccessor();
@@ -778,11 +785,7 @@ FieldIndex LookupIterator::GetFieldIndex() const {
   DCHECK(holder_->HasFastProperties());
   DCHECK_EQ(kField, property_details_.location());
   DCHECK(!IsElement());
-  Map* holder_map = holder_->map();
-  int index =
-      holder_map->instance_descriptors()->GetFieldIndex(descriptor_number());
-  bool is_double = representation().IsDouble();
-  return FieldIndex::ForPropertyIndex(holder_map, index, is_double);
+  return FieldIndex::ForDescriptor(holder_->map(), descriptor_number());
 }
 
 Handle<FieldType> LookupIterator::GetFieldType() const {
@@ -868,8 +871,8 @@ bool LookupIterator::SkipInterceptor(JSObject* holder) {
 
 JSReceiver* LookupIterator::NextHolder(Map* map) {
   DisallowHeapAllocation no_gc;
-  if (map->prototype() == heap()->null_value()) return NULL;
-  if (!check_prototype_chain() && !map->has_hidden_prototype()) return NULL;
+  if (map->prototype() == heap()->null_value()) return nullptr;
+  if (!check_prototype_chain() && !map->has_hidden_prototype()) return nullptr;
   return JSReceiver::cast(map->prototype());
 }
 

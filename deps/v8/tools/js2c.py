@@ -125,6 +125,9 @@ def ExpandMacroDefinition(lines, pos, name_pattern, macro, expander):
       end = end + 1
     # Remember to add the last match.
     add_arg(lines[last_match:end-1])
+    if arg_index[0] < len(macro.args) -1:
+      lineno = lines.count(os.linesep, 0, start) + 1
+      raise Error('line %s: Too few arguments for macro "%s"' % (lineno, name_pattern.pattern))
     result = macro.expand(mapping)
     # Replace the occurrence of the macro with the expansion
     lines = lines[:start] + result + lines[end:]
@@ -362,7 +365,7 @@ class Sources:
 
 
 def IsDebuggerFile(filename):
-  return "debug" in filename
+  return os.path.basename(os.path.dirname(filename)) == "debug"
 
 def IsMacroFile(filename):
   return filename.endswith("macros.py")

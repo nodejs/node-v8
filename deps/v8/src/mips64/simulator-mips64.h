@@ -16,71 +16,12 @@
 #include "src/allocation.h"
 #include "src/mips64/constants-mips64.h"
 
-#if !defined(USE_SIMULATOR)
-// Running without a simulator on a native mips platform.
-
-namespace v8 {
-namespace internal {
-
-// When running without a simulator we call the entry directly.
-#define CALL_GENERATED_CODE(isolate, entry, p0, p1, p2, p3, p4) \
-  entry(p0, p1, p2, p3, p4)
-
-
-// Call the generated regexp code directly. The code at the entry address
-// should act as a function matching the type arm_regexp_matcher.
-typedef int (*mips_regexp_matcher)(String* input,
-                                   int64_t start_offset,
-                                   const byte* input_start,
-                                   const byte* input_end,
-                                   int* output,
-                                   int64_t output_size,
-                                   Address stack_base,
-                                   int64_t direct_call,
-                                   Isolate* isolate);
-
-#define CALL_GENERATED_REGEXP_CODE(isolate, entry, p0, p1, p2, p3, p4, p5, p6, \
-                                   p7, p8)                                     \
-  (FUNCTION_CAST<mips_regexp_matcher>(entry)(p0, p1, p2, p3, p4, p5, p6, p7,   \
-                                             p8))
-
-// The stack limit beyond which we will throw stack overflow errors in
-// generated code. Because generated code on mips uses the C stack, we
-// just use the C stack limit.
-class SimulatorStack : public v8::internal::AllStatic {
- public:
-  static inline uintptr_t JsLimitFromCLimit(Isolate* isolate,
-                                            uintptr_t c_limit) {
-    return c_limit;
-  }
-
-  static inline uintptr_t RegisterCTryCatch(Isolate* isolate,
-                                            uintptr_t try_catch_address) {
-    USE(isolate);
-    return try_catch_address;
-  }
-
-  static inline void UnregisterCTryCatch(Isolate* isolate) { USE(isolate); }
-};
-
-}  // namespace internal
-}  // namespace v8
-
-// Calculated the stack limit beyond which we will throw stack overflow errors.
-// This macro must be called from a C++ method. It relies on being able to take
-// the address of "this" to get a value on the current execution stack and then
-// calculates the stack limit based on that value.
-// NOTE: The check for overflow is not safe as there is no guarantee that the
-// running thread has its stack in all memory up to address 0x00000000.
-#define GENERATED_CODE_STACK_LIMIT(limit) \
-  (reinterpret_cast<uintptr_t>(this) >= limit ? \
-      reinterpret_cast<uintptr_t>(this) - limit : 0)
-
-#else  // !defined(USE_SIMULATOR)
+#if defined(USE_SIMULATOR)
 // Running with a simulator.
 
 #include "src/assembler.h"
 #include "src/base/hashmap.h"
+#include "src/simulator-base.h"
 
 namespace v8 {
 namespace internal {
@@ -151,7 +92,7 @@ class SimInstruction : public InstructionGetters<SimInstructionBase> {
   }
 };
 
-class Simulator {
+class Simulator : public SimulatorBase {
  public:
   friend class MipsDebugger;
 
@@ -298,11 +239,6 @@ class Simulator {
   // Executes MIPS instructions until the PC reaches end_sim_pc.
   void Execute();
 
-  // Call on program start.
-  static void Initialize(Isolate* isolate);
-
-  static void TearDown(base::CustomMatcherHashMap* i_cache, Redirection* first);
-
   // V8 generally calls into generated JS code with 5 parameters and into
   // generated RegExp code with 7 parameters. This is a convenience function,
   // which sets up the simulator state and grabs the result on return.
@@ -319,6 +255,9 @@ class Simulator {
   // Debugger input.
   void set_last_debugger_input(char* input);
   char* last_debugger_input() { return last_debugger_input_; }
+
+  // Redirection support.
+  static void SetRedirectInstruction(Instruction* instruction);
 
   // ICache checking.
   static void FlushICache(base::CustomMatcherHashMap* i_cache, void* start,
@@ -587,11 +526,6 @@ class Simulator {
   // Exceptions.
   void SignalException(Exception e);
 
-  // Runtime call support. Uses the isolate in a thread-safe way.
-  static void* RedirectExternalReference(Isolate* isolate,
-                                         void* external_function,
-                                         ExternalReference::Type type);
-
   // Handle arguments and return value for runtime FP functions.
   void GetFpArgs(double* x, double* y, int32_t* z);
   void SetFpResult(const double& result);
@@ -660,30 +594,8 @@ class Simulator {
       entry, 9, p0, p1, p2, p3, p4, reinterpret_cast<int64_t*>(p5), p6, p7,    \
       p8))
 
-// The simulator has its own stack. Thus it has a different stack limit from
-// the C-based native code.  The JS-based limit normally points near the end of
-// the simulator stack.  When the C-based limit is exhausted we reflect that by
-// lowering the JS-based limit as well, to make stack checks trigger.
-class SimulatorStack : public v8::internal::AllStatic {
- public:
-  static inline uintptr_t JsLimitFromCLimit(Isolate* isolate,
-                                            uintptr_t c_limit) {
-    return Simulator::current(isolate)->StackLimit(c_limit);
-  }
-
-  static inline uintptr_t RegisterCTryCatch(Isolate* isolate,
-                                            uintptr_t try_catch_address) {
-    Simulator* sim = Simulator::current(isolate);
-    return sim->PushAddress(try_catch_address);
-  }
-
-  static inline void UnregisterCTryCatch(Isolate* isolate) {
-    Simulator::current(isolate)->PopAddress();
-  }
-};
-
 }  // namespace internal
 }  // namespace v8
 
-#endif  // !defined(USE_SIMULATOR)
+#endif  // defined(USE_SIMULATOR)
 #endif  // V8_MIPS_SIMULATOR_MIPS_H_

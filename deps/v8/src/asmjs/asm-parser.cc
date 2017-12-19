@@ -230,7 +230,7 @@ wasm::AsmJsParser::VarInfo* AsmJsParser::GetVarInfo(
 }
 
 uint32_t AsmJsParser::VarIndex(VarInfo* info) {
-  DCHECK(info->kind == VarKind::kGlobal);
+  DCHECK_EQ(info->kind, VarKind::kGlobal);
   return info->index + static_cast<uint32_t>(global_imports_.size());
 }
 
@@ -308,7 +308,7 @@ void AsmJsParser::BareBegin(BlockKind kind, AsmJsScanner::token_t label) {
 }
 
 void AsmJsParser::BareEnd() {
-  DCHECK(block_stack_.size() > 0);
+  DCHECK_GT(block_stack_.size(), 0);
   block_stack_.pop_back();
 }
 
@@ -447,7 +447,7 @@ void AsmJsParser::ValidateModuleVar(bool mutable_variable) {
     DeclareGlobal(info, mutable_variable, AsmType::Double(), kWasmF64,
                   WasmInitExpr(dvalue));
   } else if (CheckForUnsigned(&uvalue)) {
-    if (uvalue > 0x7fffffff) {
+    if (uvalue > 0x7FFFFFFF) {
       FAIL("Numeric literal out of range");
     }
     DeclareGlobal(info, mutable_variable,
@@ -458,7 +458,7 @@ void AsmJsParser::ValidateModuleVar(bool mutable_variable) {
       DeclareGlobal(info, mutable_variable, AsmType::Double(), kWasmF64,
                     WasmInitExpr(-dvalue));
     } else if (CheckForUnsigned(&uvalue)) {
-      if (uvalue > 0x7fffffff) {
+      if (uvalue > 0x7FFFFFFF) {
         FAIL("Numeric literal out of range");
       }
       DeclareGlobal(info, mutable_variable,
@@ -797,7 +797,7 @@ void AsmJsParser::ValidateFunction() {
   }
   function_info = GetVarInfo(function_name);
   if (function_info->type->IsA(AsmType::None())) {
-    DCHECK(function_info->kind == VarKind::kFunction);
+    DCHECK_EQ(function_info->kind, VarKind::kFunction);
     function_info->type = function_type;
   } else if (!function_type->IsA(function_info->type)) {
     // TODO(bradnelson): Should IsExactly be used here?
@@ -899,7 +899,7 @@ void AsmJsParser::ValidateFunctionLocals(size_t param_count,
           current_function_builder_->EmitF64Const(-dvalue);
           current_function_builder_->EmitSetLocal(info->index);
         } else if (CheckForUnsigned(&uvalue)) {
-          if (uvalue > 0x7fffffff) {
+          if (uvalue > 0x7FFFFFFF) {
             FAIL("Numeric literal out of range");
           }
           info->kind = VarKind::kLocal;
@@ -951,7 +951,7 @@ void AsmJsParser::ValidateFunctionLocals(size_t param_count,
             current_function_builder_->EmitF32Const(dvalue);
             current_function_builder_->EmitSetLocal(info->index);
           } else if (CheckForUnsigned(&uvalue)) {
-            if (uvalue > 0x7fffffff) {
+            if (uvalue > 0x7FFFFFFF) {
               FAIL("Numeric literal out of range");
             }
             info->kind = VarKind::kLocal;
@@ -1328,7 +1328,7 @@ void AsmJsParser::ValidateCase() {
     FAIL("Expected numeric literal");
   }
   // TODO(bradnelson): Share negation plumbing.
-  if ((negate && uvalue > 0x80000000) || (!negate && uvalue > 0x7fffffff)) {
+  if ((negate && uvalue > 0x80000000) || (!negate && uvalue > 0x7FFFFFFF)) {
     FAIL("Numeric literal out of range");
   }
   int32_t value = static_cast<int32_t>(uvalue);
@@ -1389,14 +1389,13 @@ AsmType* AsmJsParser::NumericLiteral() {
     current_function_builder_->EmitF64Const(dvalue);
     return AsmType::Double();
   } else if (CheckForUnsigned(&uvalue)) {
-    if (uvalue <= 0x7fffffff) {
+    if (uvalue <= 0x7FFFFFFF) {
       current_function_builder_->EmitI32Const(static_cast<int32_t>(uvalue));
       return AsmType::FixNum();
-    } else if (uvalue <= 0xffffffff) {
+    } else {
+      DCHECK_LE(uvalue, 0xFFFFFFFF);
       current_function_builder_->EmitI32Const(static_cast<int32_t>(uvalue));
       return AsmType::Unsigned();
-    } else {
-      FAILn("Integer numeric literal out of range.");
     }
   } else {
     FAILn("Expected numeric literal.");
@@ -1545,7 +1544,7 @@ AsmType* AsmJsParser::UnaryExpression() {
   if (Check('-')) {
     uint32_t uvalue;
     if (CheckForUnsigned(&uvalue)) {
-      // TODO(bradnelson): was supposed to be 0x7fffffff, check errata.
+      // TODO(bradnelson): was supposed to be 0x7FFFFFFF, check errata.
       if (uvalue <= 0x80000000) {
         current_function_builder_->EmitI32Const(-static_cast<int32_t>(uvalue));
       } else {
@@ -1613,7 +1612,7 @@ AsmType* AsmJsParser::UnaryExpression() {
       if (!ret->IsA(AsmType::Intish())) {
         FAILn("operator ~ expects intish");
       }
-      current_function_builder_->EmitI32Const(0xffffffff);
+      current_function_builder_->EmitI32Const(0xFFFFFFFF);
       current_function_builder_->Emit(kExprI32Xor);
       ret = AsmType::Signed();
     }
@@ -2195,7 +2194,7 @@ AsmType* AsmJsParser::ValidateCall() {
     if (return_type->IsA(AsmType::Float())) {
       FAILn("Imported function can't be called as float");
     }
-    DCHECK(function_info->import != nullptr);
+    DCHECK_NOT_NULL(function_info->import);
     // TODO(bradnelson): Factor out.
     uint32_t index;
     auto it = function_info->import->cache.find(sig);
@@ -2387,9 +2386,9 @@ void AsmJsParser::ValidateHeapAccess() {
     // TODO(bradnelson): Check more things.
     // TODO(mstarzinger): Clarify and explain where this limit is coming from,
     // as it is not mandated by the spec directly.
-    if (offset > 0x7fffffff ||
+    if (offset > 0x7FFFFFFF ||
         static_cast<uint64_t>(offset) * static_cast<uint64_t>(size) >
-            0x7fffffff) {
+            0x7FFFFFFF) {
       FAIL("Heap access out of range");
     }
     if (Check(']')) {

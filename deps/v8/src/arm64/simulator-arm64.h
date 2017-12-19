@@ -16,56 +16,13 @@
 #include "src/assembler.h"
 #include "src/base/compiler-specific.h"
 #include "src/globals.h"
+#include "src/simulator-base.h"
 #include "src/utils.h"
 
 namespace v8 {
 namespace internal {
 
-#if !defined(USE_SIMULATOR)
-
-// Running without a simulator on a native ARM64 platform.
-// When running without a simulator we call the entry directly.
-#define CALL_GENERATED_CODE(isolate, entry, p0, p1, p2, p3, p4) \
-  (entry(p0, p1, p2, p3, p4))
-
-typedef int (*arm64_regexp_matcher)(String* input,
-                                    int64_t start_offset,
-                                    const byte* input_start,
-                                    const byte* input_end,
-                                    int* output,
-                                    int64_t output_size,
-                                    Address stack_base,
-                                    int64_t direct_call,
-                                    Isolate* isolate);
-
-// Call the generated regexp code directly. The code at the entry address
-// should act as a function matching the type arm64_regexp_matcher.
-#define CALL_GENERATED_REGEXP_CODE(isolate, entry, p0, p1, p2, p3, p4, p5, p6, \
-                                   p7, p8)                                     \
-  (FUNCTION_CAST<arm64_regexp_matcher>(entry)(p0, p1, p2, p3, p4, p5, p6, p7,  \
-                                              p8))
-
-// Running without a simulator there is nothing to do.
-class SimulatorStack : public v8::internal::AllStatic {
- public:
-  static uintptr_t JsLimitFromCLimit(v8::internal::Isolate* isolate,
-                                     uintptr_t c_limit) {
-    USE(isolate);
-    return c_limit;
-  }
-
-  static uintptr_t RegisterCTryCatch(v8::internal::Isolate* isolate,
-                                     uintptr_t try_catch_address) {
-    USE(isolate);
-    return try_catch_address;
-  }
-
-  static void UnregisterCTryCatch(v8::internal::Isolate* isolate) {
-    USE(isolate);
-  }
-};
-
-#else  // !defined(USE_SIMULATOR)
+#if defined(USE_SIMULATOR)
 
 // Assemble the specified IEEE-754 components into the target type and apply
 // appropriate rounding.
@@ -680,8 +637,11 @@ class LogicVRegister {
   bool round_[kQRegSize];
 };
 
-class Simulator : public DecoderVisitor {
+// Using multiple inheritance here is permitted because {DecoderVisitor} is a
+// pure interface class with only pure virtual methods.
+class Simulator : public DecoderVisitor, public SimulatorBase {
  public:
+  static void SetRedirectInstruction(Instruction* instruction);
   static void FlushICache(base::CustomMatcherHashMap* i_cache, void* start,
                           size_t size) {
     USE(i_cache);
@@ -690,16 +650,11 @@ class Simulator : public DecoderVisitor {
   }
 
   explicit Simulator(Decoder<DispatchingDecoderVisitor>* decoder,
-                     Isolate* isolate = NULL,
-                     FILE* stream = stderr);
+                     Isolate* isolate = nullptr, FILE* stream = stderr);
   Simulator();
   ~Simulator();
 
   // System functions.
-
-  static void Initialize(Isolate* isolate);
-
-  static void TearDown(base::CustomMatcherHashMap* i_cache, Redirection* first);
 
   static Simulator* current(v8::internal::Isolate* isolate);
 
@@ -807,10 +762,6 @@ class Simulator : public DecoderVisitor {
 
   void ResetState();
 
-  // Runtime call support. Uses the isolate in a thread-safe way.
-  static void* RedirectExternalReference(Isolate* isolate,
-                                         void* external_function,
-                                         ExternalReference::Type type);
   void DoRuntimeCall(Instruction* instr);
 
   // Run the simulator.
@@ -1700,9 +1651,9 @@ class Simulator : public DecoderVisitor {
   LogicVRegister Table(VectorFormat vform, LogicVRegister dst,
                        const LogicVRegister& ind, bool zero_out_of_bounds,
                        const LogicVRegister* tab1,
-                       const LogicVRegister* tab2 = NULL,
-                       const LogicVRegister* tab3 = NULL,
-                       const LogicVRegister* tab4 = NULL);
+                       const LogicVRegister* tab2 = nullptr,
+                       const LogicVRegister* tab3 = nullptr,
+                       const LogicVRegister* tab4 = nullptr);
   LogicVRegister tbl(VectorFormat vform, LogicVRegister dst,
                      const LogicVRegister& tab, const LogicVRegister& ind);
   LogicVRegister tbl(VectorFormat vform, LogicVRegister dst,
@@ -2206,7 +2157,7 @@ class Simulator : public DecoderVisitor {
   // functions, or to save and restore it when entering and leaving generated
   // code.
   void AssertSupportedFPCR() {
-    DCHECK(fpcr().FZ() == 0);             // No flush-to-zero support.
+    DCHECK_EQ(fpcr().FZ(), 0);            // No flush-to-zero support.
     DCHECK(fpcr().RMode() == FPTieEven);  // Ties-to-even rounding only.
 
     // The simulator does not support half-precision operations so fpcr().AHP()
@@ -2419,29 +2370,7 @@ inline float Simulator::FPDefaultNaN<float>() {
   static_cast<int>(Simulator::current(isolate)->CallRegExp(                    \
       entry, p0, p1, p2, p3, p4, p5, p6, p7, p8))
 
-// The simulator has its own stack. Thus it has a different stack limit from
-// the C-based native code.  The JS-based limit normally points near the end of
-// the simulator stack.  When the C-based limit is exhausted we reflect that by
-// lowering the JS-based limit as well, to make stack checks trigger.
-class SimulatorStack : public v8::internal::AllStatic {
- public:
-  static uintptr_t JsLimitFromCLimit(v8::internal::Isolate* isolate,
-                                            uintptr_t c_limit) {
-    return Simulator::current(isolate)->StackLimit(c_limit);
-  }
-
-  static uintptr_t RegisterCTryCatch(v8::internal::Isolate* isolate,
-                                     uintptr_t try_catch_address) {
-    Simulator* sim = Simulator::current(isolate);
-    return sim->PushAddress(try_catch_address);
-  }
-
-  static void UnregisterCTryCatch(v8::internal::Isolate* isolate) {
-    Simulator::current(isolate)->PopAddress();
-  }
-};
-
-#endif  // !defined(USE_SIMULATOR)
+#endif  // defined(USE_SIMULATOR)
 
 }  // namespace internal
 }  // namespace v8

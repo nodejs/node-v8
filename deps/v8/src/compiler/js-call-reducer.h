@@ -15,6 +15,7 @@ namespace internal {
 // Forward declarations.
 class CompilationDependencies;
 class Factory;
+class VectorSlotPair;
 
 namespace compiler {
 
@@ -24,7 +25,6 @@ class CommonOperatorBuilder;
 class JSGraph;
 class JSOperatorBuilder;
 class SimplifiedOperatorBuilder;
-class VectorSlotPair;
 
 // Performs strength reduction on {JSConstruct} and {JSCall} nodes,
 // which might allow inlining or other optimizations to be performed afterwards.
@@ -54,23 +54,29 @@ class JSCallReducer final : public AdvancedReducer {
  private:
   Reduction ReduceArrayConstructor(Node* node);
   Reduction ReduceBooleanConstructor(Node* node);
-  Reduction ReduceCallApiFunction(
-      Node* node, Handle<FunctionTemplateInfo> function_template_info);
-  Reduction ReduceNumberConstructor(Node* node);
+  Reduction ReduceCallApiFunction(Node* node, Handle<JSFunction> function);
   Reduction ReduceFunctionPrototypeApply(Node* node);
+  Reduction ReduceFunctionPrototypeBind(Node* node);
   Reduction ReduceFunctionPrototypeCall(Node* node);
   Reduction ReduceFunctionPrototypeHasInstance(Node* node);
   Reduction ReduceObjectConstructor(Node* node);
   Reduction ReduceObjectGetPrototype(Node* node, Node* object);
   Reduction ReduceObjectGetPrototypeOf(Node* node);
+  Reduction ReduceObjectIs(Node* node);
   Reduction ReduceObjectPrototypeGetProto(Node* node);
   Reduction ReduceObjectPrototypeHasOwnProperty(Node* node);
   Reduction ReduceObjectPrototypeIsPrototypeOf(Node* node);
   Reduction ReduceReflectApply(Node* node);
   Reduction ReduceReflectConstruct(Node* node);
+  Reduction ReduceReflectGet(Node* node);
   Reduction ReduceReflectGetPrototypeOf(Node* node);
+  Reduction ReduceReflectHas(Node* node);
   Reduction ReduceArrayForEach(Handle<JSFunction> function, Node* node);
   Reduction ReduceArrayMap(Handle<JSFunction> function, Node* node);
+  Reduction ReduceArrayFilter(Handle<JSFunction> function, Node* node);
+  enum class ArrayFindVariant : uint8_t { kFind, kFindIndex };
+  Reduction ReduceArrayFind(ArrayFindVariant variant,
+                            Handle<JSFunction> function, Node* node);
   Reduction ReduceCallOrConstructWithArrayLikeOrSpread(
       Node* node, int arity, CallFrequency const& frequency,
       VectorSlotPair const& feedback);
@@ -83,6 +89,31 @@ class JSCallReducer final : public AdvancedReducer {
   Reduction ReduceReturnReceiver(Node* node);
 
   Reduction ReduceSoftDeoptimize(Node* node, DeoptimizeReason reason);
+
+  // Returns the updated {to} node, and updates control and effect along the
+  // way.
+  Node* DoFilterPostCallbackWork(ElementsKind kind, Node** control,
+                                 Node** effect, Node* a, Node* to,
+                                 Node* element, Node* callback_value);
+
+  // If {fncallback} is not callable, throw a TypeError.
+  // {control} is altered, and new nodes {check_fail} and {check_throw} are
+  // returned. {check_fail} is the control branch where IsCallable failed,
+  // and {check_throw} is the call to throw a TypeError in that
+  // branch.
+  void WireInCallbackIsCallableCheck(Node* fncallback, Node* context,
+                                     Node* check_frame_state, Node* effect,
+                                     Node** control, Node** check_fail,
+                                     Node** check_throw);
+  void RewirePostCallbackExceptionEdges(Node* check_throw, Node* on_exception,
+                                        Node* effect, Node** check_fail,
+                                        Node** control);
+
+  // Load receiver[k], first bounding k by receiver array length.
+  // k is thusly changed, and the effect is changed as well.
+  Node* SafeLoadElement(ElementsKind kind, Node* receiver, Node* control,
+                        Node** effect, Node** k,
+                        const VectorSlotPair& feedback);
 
   Graph* graph() const;
   JSGraph* jsgraph() const { return jsgraph_; }

@@ -87,22 +87,6 @@ namespace internal {
   V(xmm6)                               \
   V(xmm7)
 
-// Note that the bit values must match those used in actual instruction encoding
-const int kNumRegs = 8;
-
-// Caller-saved registers
-const RegList kJSCallerSaved =
-    1 << 0 |  // eax
-    1 << 1 |  // ecx
-    1 << 2 |  // edx
-    1 << 3 |  // ebx - used as a caller-saved register in JavaScript code
-    1 << 7;   // edi - callee function
-
-const int kNumJSCallerSaved = 5;
-
-// Number of registers for which space is reserved in safepoints.
-const int kNumSafepointRegisters = 8;
-
 enum RegisterCode {
 #define REGISTER_CODE(R) kRegCode_##R,
   GENERAL_REGISTERS(REGISTER_CODE)
@@ -155,6 +139,21 @@ typedef XMMRegister Simd128Register;
 DOUBLE_REGISTERS(DEFINE_REGISTER)
 #undef DEFINE_REGISTER
 constexpr DoubleRegister no_double_reg = DoubleRegister::no_reg();
+
+// Note that the bit values must match those used in actual instruction encoding
+constexpr int kNumRegs = 8;
+
+// Caller-saved registers
+constexpr RegList kJSCallerSaved =
+    Register::ListOf<eax, ecx, edx,
+                     ebx,  // used as a caller-saved register in JavaScript code
+                     edi   // callee function
+                     >();
+
+constexpr int kNumJSCallerSaved = 5;
+
+// Number of registers for which space is reserved in safepoints.
+constexpr int kNumSafepointRegisters = 8;
 
 enum Condition {
   // any value < 0 is considered no_condition
@@ -393,7 +392,8 @@ class Operand BASE_EMBEDDED {
   }
 
   // Returns true if this Operand is a wrapper for the specified register.
-  bool is_reg(Register reg) const;
+  bool is_reg(Register reg) const { return is_reg(reg.code()); }
+  bool is_reg(XMMRegister reg) const { return is_reg(reg.code()); }
 
   // Returns true if this Operand is a wrapper for one register.
   bool is_reg_only() const;
@@ -406,7 +406,7 @@ class Operand BASE_EMBEDDED {
   // Set the ModRM byte without an encoded 'reg' register. The
   // register is encoded later as part of the emit_operand operation.
   inline void set_modrm(int mod, Register rm) {
-    DCHECK((mod & -4) == 0);
+    DCHECK_EQ(mod & -4, 0);
     buf_[0] = mod << 6 | rm.code();
     len_ = 1;
   }
@@ -419,6 +419,11 @@ class Operand BASE_EMBEDDED {
     *p = disp;
     len_ += sizeof(int32_t);
     rmode_ = rmode;
+  }
+
+  inline bool is_reg(int reg_code) const {
+    return ((buf_[0] & 0xF8) == 0xC0)  // addressing mode is register only.
+           && ((buf_[0] & 0x07) == reg_code);  // register codes match.
   }
 
   byte buf_[6];
@@ -500,14 +505,15 @@ class Assembler : public AssemblerBase {
   // relocation information starting from the end of the buffer. See CodeDesc
   // for a detailed comment on the layout (globals.h).
   //
-  // If the provided buffer is NULL, the assembler allocates and grows its own
-  // buffer, and buffer_size determines the initial buffer size. The buffer is
-  // owned by the assembler and deallocated upon destruction of the assembler.
+  // If the provided buffer is nullptr, the assembler allocates and grows its
+  // own buffer, and buffer_size determines the initial buffer size. The buffer
+  // is owned by the assembler and deallocated upon destruction of the
+  // assembler.
   //
-  // If the provided buffer is not NULL, the assembler uses the provided buffer
-  // for code generation and assumes its size to be buffer_size. If the buffer
-  // is too small, a fatal error occurs. No deallocation of the buffer is done
-  // upon destruction of the assembler.
+  // If the provided buffer is not nullptr, the assembler uses the provided
+  // buffer for code generation and assumes its size to be buffer_size. If the
+  // buffer is too small, a fatal error occurs. No deallocation of the buffer is
+  // done upon destruction of the assembler.
   Assembler(Isolate* isolate, void* buffer, int buffer_size)
       : Assembler(IsolateData(isolate), buffer, buffer_size) {}
   Assembler(IsolateData isolate_data, void* buffer, int buffer_size);
@@ -857,6 +863,7 @@ class Assembler : public AssemblerBase {
   int CallSize(Handle<Code> code, RelocInfo::Mode mode);
   void call(Handle<Code> code, RelocInfo::Mode rmode);
   void call(CodeStub* stub);
+  void wasm_call(Address address, RelocInfo::Mode rmode);
 
   // Jumps
   // unconditional jump to L
@@ -997,6 +1004,8 @@ class Assembler : public AssemblerBase {
   void rcpps(XMMRegister dst, XMMRegister src) { rcpps(dst, Operand(src)); }
   void rsqrtps(XMMRegister dst, const Operand& src);
   void rsqrtps(XMMRegister dst, XMMRegister src) { rsqrtps(dst, Operand(src)); }
+  void haddps(XMMRegister dst, const Operand& src);
+  void haddps(XMMRegister dst, XMMRegister src) { haddps(dst, Operand(src)); }
 
   void minps(XMMRegister dst, const Operand& src);
   void minps(XMMRegister dst, XMMRegister src) { minps(dst, Operand(src)); }
@@ -1142,6 +1151,10 @@ class Assembler : public AssemblerBase {
   }
   void pextrd(const Operand& dst, XMMRegister src, int8_t offset);
 
+  void insertps(XMMRegister dst, XMMRegister src, int8_t offset) {
+    insertps(dst, Operand(src), offset);
+  }
+  void insertps(XMMRegister dst, const Operand& src, int8_t offset);
   void pinsrb(XMMRegister dst, Register src, int8_t offset) {
     pinsrb(dst, Operand(src), offset);
   }
@@ -1390,6 +1403,14 @@ class Assembler : public AssemblerBase {
   void vrsqrtps(XMMRegister dst, const Operand& src) {
     vinstr(0x52, dst, xmm0, src, kNone, k0F, kWIG);
   }
+  void vmovaps(XMMRegister dst, XMMRegister src) {
+    vps(0x28, dst, xmm0, Operand(src));
+  }
+  void vshufps(XMMRegister dst, XMMRegister src1, XMMRegister src2, byte imm8) {
+    vshufps(dst, src1, Operand(src2), imm8);
+  }
+  void vshufps(XMMRegister dst, XMMRegister src1, const Operand& src2,
+               byte imm8);
 
   void vpsllw(XMMRegister dst, XMMRegister src, int8_t imm8);
   void vpslld(XMMRegister dst, XMMRegister src, int8_t imm8);
@@ -1420,6 +1441,12 @@ class Assembler : public AssemblerBase {
   }
   void vpextrd(const Operand& dst, XMMRegister src, int8_t offset);
 
+  void vinsertps(XMMRegister dst, XMMRegister src1, XMMRegister src2,
+                 int8_t offset) {
+    vinsertps(dst, src1, Operand(src2), offset);
+  }
+  void vinsertps(XMMRegister dst, XMMRegister src1, const Operand& src2,
+                 int8_t offset);
   void vpinsrb(XMMRegister dst, XMMRegister src1, Register src2,
                int8_t offset) {
     vpinsrb(dst, src1, Operand(src2), offset);
@@ -1452,6 +1479,12 @@ class Assembler : public AssemblerBase {
     vinstr(0x5B, dst, xmm0, src, kF3, k0F, kWIG);
   }
 
+  void vmovdqu(XMMRegister dst, const Operand& src) {
+    vinstr(0x6F, dst, xmm0, src, kF3, k0F, kWIG);
+  }
+  void vmovdqu(const Operand& dst, XMMRegister src) {
+    vinstr(0x7F, src, xmm0, dst, kF3, k0F, kWIG);
+  }
   void vmovd(XMMRegister dst, Register src) { vmovd(dst, Operand(src)); }
   void vmovd(XMMRegister dst, const Operand& src) {
     vinstr(0x6E, dst, xmm0, src, k66, k0F, kWIG);
@@ -1758,7 +1791,7 @@ class Assembler : public AssemblerBase {
                               LeadingOpcode m, VexW w);
 
   // labels
-  void print(Label* L);
+  void print(const Label* L);
   void bind_to(Label* L, int pos);
 
   // displacements
@@ -1788,7 +1821,6 @@ class Assembler : public AssemblerBase {
 
   bool is_optimizable_farjmp(int idx);
 
-  friend class CodePatcher;
   friend class EnsureSpace;
 
   // Internal reference positions, required for (potential) patching in

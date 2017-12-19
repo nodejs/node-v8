@@ -71,16 +71,26 @@
 
   # BUG(5193). The cpu profiler tests are notoriously flaky.
   'test-cpu-profiler/CollectCpuProfile': [SKIP],
+  'test-cpu-profiler/CollectCpuProfileSamples': [SKIP],
   'test-cpu-profiler/CollectDeoptEvents': [SKIP],
   'test-cpu-profiler/CpuProfileDeepStack': [SKIP],
+  'test-cpu-profiler/DeoptAtFirstLevelInlinedSource': [SKIP],
+  'test-cpu-profiler/DeoptAtSecondLevelInlinedSource': [SKIP],
   'test-cpu-profiler/FunctionApplySample': [SKIP],
   'test-cpu-profiler/HotDeoptNoFrameEntry': [SKIP],
   'test-cpu-profiler/JsNative1JsNative2JsSample': [SKIP],
   'test-cpu-profiler/JsNativeJsRuntimeJsSample': [SKIP],
   'test-cpu-profiler/JsNativeJsRuntimeJsSampleMultiple': [SKIP],
   'test-cpu-profiler/JsNativeJsSample': [SKIP],
+  'test-cpu-profiler/NativeAccessorUninitializedIC': [SKIP],
   'test-cpu-profiler/SampleWhenFrameIsNotSetup': [SKIP],
   'test-sampler/LibSamplerCollectSample': [SKIP],
+
+  # BUG(7202). The test is flaky.
+  'test-cpu-profiler/NativeFrameStackTrace': [SKIP],
+
+  # BUG(7054)
+  'test-cpu-profiler/StaticCollectSampleAPI': [SKIP],
 
   # BUG(2340). Preprocessing stack traces is disabled at the moment.
   'test-heap/PreprocessStackTrace': [FAIL],
@@ -101,6 +111,8 @@
 
   # Test that serialization with unknown external reference fails.
   'test-serialize/SnapshotCreatorUnknownExternalReferences': [FAIL],
+  'test-serialize/SnapshotCreatorNoExternalReferencesCustomFail1': [FAIL],
+  'test-serialize/SnapshotCreatorNoExternalReferencesCustomFail2': [FAIL],
 
   ############################################################################
   # Slow tests.
@@ -108,6 +120,10 @@
   'test-strings/StringOOM*': [PASS, ['mode == debug', SKIP]],
   'test-serialize/CustomSnapshotDataBlobImmortalImmovableRoots': [PASS, ['mode == debug', SKIP]],
   'test-parsing/ObjectRestNegativeTestSlow': [PASS, ['mode == debug', SKIP]],
+
+  # todo(ahaas): Flaky test. I want to remove this test eventually but keep it
+  # for now for debugging.
+  'test-multiple-return/ReturnMultipleRandom': [SKIP],
 }],  # ALWAYS
 
 ##############################################################################
@@ -153,6 +169,18 @@
 }],  # 'arch == arm64 and mode == debug and simulator_run'
 
 ##############################################################################
+# TODO(ahaas): Port multiple return values to ARM, MIPS, S390 and PPC
+['arch == arm or arch == arm64 or arch == mips or arch == mips64 or arch == mipsel or arch == mips64el or arch == s390 or arch == s390x or arch == ppc or arch == ppc64', {
+  'test-multiple-return/*': [SKIP],
+}],
+['system == windows and arch == x64', {
+  'test-multiple-return/ReturnMultipleInt32': [SKIP],
+  'test-multiple-return/ReturnMultipleInt64': [SKIP],
+  'test-multiple-return/ReturnMultipleFloat32': [SKIP],
+  'test-multiple-return/ReturnMultipleFloat64': [SKIP],
+}],
+
+##############################################################################
 ['asan == True', {
   # Skip tests not suitable for ASAN.
   'test-assembler-x64/AssemblerX64XchglOperations': [SKIP],
@@ -171,6 +199,11 @@
 ['tsan == True', {
   # BUG(v8:6133).
   'test-cpu-profiler/TickEvents': [SKIP],
+  # BUG(v8:6924). The test allocates a lot of memory.
+  'test-api/NewStringRangeError': [PASS, NO_VARIANTS],
+
+  # BUG(chromium:794911).
+  'test-cpu-profiler/TracingCpuProfiler': [SKIP],
 }],  # 'tsan == True'
 
 ##############################################################################
