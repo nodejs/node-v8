@@ -34,6 +34,11 @@ TESTFLAGS ?=
 ANDROID_NDK_HOST_ARCH ?=
 ANDROID_V8 ?= /data/local/tmp/v8
 
+$(warning Make (gyp) is deprecated. Please use GN instead.)
+$(warning See https://github.com/v8/v8/wiki/Building-with-GN)
+$(warning Or contact yangguo@chromium.org.)
+$(error Expect the Makefile to be removed soon)
+
 # Special build flags. Use them like this: "make library=shared"
 
 # library=shared || component=shared_library
@@ -273,14 +278,10 @@ GYPFILES = third_party/icu/icu.gypi third_party/icu/icu.gyp \
            gypfiles/standalone.gypi \
 	   gypfiles/toolchain.gypi gypfiles/all.gyp gypfiles/mac/asan.gyp \
 	   test/cctest/cctest.gyp test/fuzzer/fuzzer.gyp \
-	   test/unittests/unittests.gyp src/v8.gyp \
+	   test/unittests/unittests.gyp gypfiles/v8.gyp \
 	   tools/parser-shell.gyp testing/gmock.gyp testing/gtest.gyp \
-	   samples/samples.gyp src/third_party/vtune/v8vtune.gyp src/d8.gyp
+	   gypfiles/samples.gyp gypfiles/v8vtune.gyp gypfiles/d8.gyp
 
-# If vtunejit=on, the v8vtune.gyp will be appended.
-ifeq ($(vtunejit), on)
-  GYPFILES += src/third_party/vtune/v8vtune.gyp
-endif
 # Generates all combinations of ARCHES and MODES, e.g. "ia32.release".
 BUILDS = $(foreach mode,$(MODES),$(addsuffix .$(mode),$(ARCHES)))
 ANDROID_BUILDS = $(foreach mode,$(MODES), \

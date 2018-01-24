@@ -63,8 +63,6 @@ enum class FrameStateType {
   kInterpretedFunction,  // Represents an InterpretedFrame.
   kArgumentsAdaptor,     // Represents an ArgumentsAdaptorFrame.
   kConstructStub,        // Represents a ConstructStubFrame.
-  kGetterStub,           // Represents a GetterStubFrame.
-  kSetterStub,           // Represents a SetterStubFrame.
   kBuiltinContinuation,  // Represents a continuation to a stub.
   kJavaScriptBuiltinContinuation  // Represents a continuation to a JavaScipt
                                   // builtin.
@@ -147,16 +145,14 @@ static const int kFrameStateInputCount = kFrameStateOuterStateInput + 1;
 
 enum class ContinuationFrameStateMode { EAGER, LAZY };
 
-Node* CreateStubBuiltinContinuationFrameState(JSGraph* graph,
-                                              Builtins::Name name,
-                                              Node* context, Node** parameters,
-                                              int parameter_count,
-                                              Node* outer_frame_state,
-                                              ContinuationFrameStateMode mode);
+Node* CreateStubBuiltinContinuationFrameState(
+    JSGraph* graph, Builtins::Name name, Node* context, Node* const* parameters,
+    int parameter_count, Node* outer_frame_state,
+    ContinuationFrameStateMode mode);
 
 Node* CreateJavaScriptBuiltinContinuationFrameState(
     JSGraph* graph, Handle<JSFunction> function, Builtins::Name name,
-    Node* target, Node* context, Node** stack_parameters,
+    Node* target, Node* context, Node* const* stack_parameters,
     int stack_parameter_count, Node* outer_frame_state,
     ContinuationFrameStateMode mode);
 

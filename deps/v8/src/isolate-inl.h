@@ -13,7 +13,7 @@ namespace internal {
 
 
 void Isolate::set_context(Context* context) {
-  DCHECK(context == NULL || context->IsContext());
+  DCHECK(context == nullptr || context->IsContext());
   thread_local_top_.context_ = context;
 }
 
@@ -131,7 +131,7 @@ bool Isolate::IsArrayConstructorIntact() {
   return array_constructor_cell->value() == Smi::FromInt(kProtectorValid);
 }
 
-bool Isolate::IsArraySpeciesLookupChainIntact() {
+bool Isolate::IsSpeciesLookupChainIntact() {
   // Note: It would be nice to have debug checks to make sure that the
   // species protector is accurate, but this would be hard to do for most of
   // what the protector stands for:

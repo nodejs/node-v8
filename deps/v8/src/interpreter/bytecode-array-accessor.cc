@@ -7,6 +7,7 @@
 #include "src/interpreter/bytecode-decoder.h"
 #include "src/interpreter/interpreter-intrinsics.h"
 #include "src/objects-inl.h"
+#include "src/objects/code-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -154,7 +155,7 @@ Runtime::FunctionId BytecodeArrayAccessor::GetRuntimeIdOperand(
     int operand_index) const {
   OperandType operand_type =
       Bytecodes::GetOperandType(current_bytecode(), operand_index);
-  DCHECK(operand_type == OperandType::kRuntimeId);
+  DCHECK_EQ(operand_type, OperandType::kRuntimeId);
   uint32_t raw_id = GetUnsignedOperand(operand_index, operand_type);
   return static_cast<Runtime::FunctionId>(raw_id);
 }
@@ -163,7 +164,7 @@ uint32_t BytecodeArrayAccessor::GetNativeContextIndexOperand(
     int operand_index) const {
   OperandType operand_type =
       Bytecodes::GetOperandType(current_bytecode(), operand_index);
-  DCHECK(operand_type == OperandType::kNativeContextIndex);
+  DCHECK_EQ(operand_type, OperandType::kNativeContextIndex);
   return GetUnsignedOperand(operand_index, operand_type);
 }
 
@@ -171,7 +172,7 @@ Runtime::FunctionId BytecodeArrayAccessor::GetIntrinsicIdOperand(
     int operand_index) const {
   OperandType operand_type =
       Bytecodes::GetOperandType(current_bytecode(), operand_index);
-  DCHECK(operand_type == OperandType::kIntrinsicId);
+  DCHECK_EQ(operand_type, OperandType::kIntrinsicId);
   uint32_t raw_id = GetUnsignedOperand(operand_index, operand_type);
   return IntrinsicsHelper::ToRuntimeId(
       static_cast<IntrinsicsHelper::IntrinsicId>(raw_id));
@@ -205,12 +206,18 @@ int BytecodeArrayAccessor::GetJumpTargetOffset() const {
 
 JumpTableTargetOffsets BytecodeArrayAccessor::GetJumpTableTargetOffsets()
     const {
-  DCHECK_EQ(current_bytecode(), Bytecode::kSwitchOnSmiNoFeedback);
-
-  uint32_t table_start = GetIndexOperand(0);
-  uint32_t table_size = GetUnsignedImmediateOperand(1);
-  int32_t case_value_base = GetImmediateOperand(2);
-
+  uint32_t table_start, table_size;
+  int32_t case_value_base;
+  if (current_bytecode() == Bytecode::kSwitchOnGeneratorState) {
+    table_start = GetIndexOperand(1);
+    table_size = GetUnsignedImmediateOperand(2);
+    case_value_base = 0;
+  } else {
+    DCHECK_EQ(current_bytecode(), Bytecode::kSwitchOnSmiNoFeedback);
+    table_start = GetIndexOperand(0);
+    table_size = GetUnsignedImmediateOperand(1);
+    case_value_base = GetImmediateOperand(2);
+  }
   return JumpTableTargetOffsets(this, table_start, table_size, case_value_base);
 }
 
@@ -296,6 +303,7 @@ void JumpTableTargetOffsets::iterator::UpdateAndAdvanceToValid() {
   while (current_->IsTheHole(isolate)) {
     ++table_offset_;
     ++index_;
+    if (table_offset_ >= table_end_) break;
     current_ = accessor_->GetConstantAtIndex(table_offset_);
   }
 }
