@@ -23,6 +23,7 @@ for (const [ value, _method ] of [
   [ new Number(), 'isNumberObject' ],
   [ new String(), 'isStringObject' ],
   [ Object(Symbol()), 'isSymbolObject' ],
+  [ Object(BigInt(0)), 'isBigIntObject' ],
   [ new Error(), 'isNativeError' ],
   [ new RegExp() ],
   [ async function() {}, 'isAsyncFunction' ],
@@ -148,7 +149,7 @@ try {
 const exclude = [
   'Undefined', 'Null', 'NullOrUndefined', 'True', 'False', 'Name', 'String',
   'Symbol', 'Function', 'Array', 'Object', 'Boolean', 'Number', 'Int32',
-  'Uint32'
+  'Uint32', 'BigInt'
 ];
 
 const start = v8_h.indexOf('Value : public Data');
