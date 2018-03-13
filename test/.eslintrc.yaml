@@ -21,5 +21,6 @@ rules:
 # Global scoped methods and vars
 globals:
   WebAssembly: false
+  BigInt: false
   BigInt64Array: false
   BigUint64Array: false
