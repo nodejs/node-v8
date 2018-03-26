@@ -161,20 +161,18 @@ Type::bitset BitsetType::Lub(i::Map* map) {
     case SHORT_EXTERNAL_STRING_TYPE:
     case SHORT_EXTERNAL_ONE_BYTE_STRING_TYPE:
     case SHORT_EXTERNAL_STRING_WITH_ONE_BYTE_DATA_TYPE:
-      return kOtherNonSeqString;
     case STRING_TYPE:
     case ONE_BYTE_STRING_TYPE:
-      return kOtherSeqString;
+      return kString;
     case EXTERNAL_INTERNALIZED_STRING_TYPE:
     case EXTERNAL_ONE_BYTE_INTERNALIZED_STRING_TYPE:
     case EXTERNAL_INTERNALIZED_STRING_WITH_ONE_BYTE_DATA_TYPE:
     case SHORT_EXTERNAL_INTERNALIZED_STRING_TYPE:
     case SHORT_EXTERNAL_ONE_BYTE_INTERNALIZED_STRING_TYPE:
     case SHORT_EXTERNAL_INTERNALIZED_STRING_WITH_ONE_BYTE_DATA_TYPE:
-      return kInternalizedNonSeqString;
     case INTERNALIZED_STRING_TYPE:
     case ONE_BYTE_INTERNALIZED_STRING_TYPE:
-      return kInternalizedSeqString;
+      return kInternalizedString;
     case SYMBOL_TYPE:
       return kSymbol;
     case BIGINT_TYPE:
@@ -223,6 +221,7 @@ Type::bitset BitsetType::Lub(i::Map* map) {
     case JS_ASYNC_GENERATOR_OBJECT_TYPE:
     case JS_MODULE_NAMESPACE_TYPE:
     case JS_ARRAY_BUFFER_TYPE:
+    case JS_ARRAY_ITERATOR_TYPE:
     case JS_REGEXP_TYPE:  // TODO(rossberg): there should be a RegExp type.
     case JS_TYPED_ARRAY_TYPE:
     case JS_DATA_VIEW_TYPE:
@@ -235,11 +234,6 @@ Type::bitset BitsetType::Lub(i::Map* map) {
     case JS_MAP_VALUE_ITERATOR_TYPE:
     case JS_STRING_ITERATOR_TYPE:
     case JS_ASYNC_FROM_SYNC_ITERATOR_TYPE:
-
-#define ARRAY_ITERATOR_CASE(type) case type:
-      ARRAY_ITERATOR_TYPE_LIST(ARRAY_ITERATOR_CASE)
-#undef ARRAY_ITERATOR_CASE
-
     case JS_WEAK_MAP_TYPE:
     case JS_WEAK_SET_TYPE:
     case JS_PROMISE_TYPE:
@@ -268,14 +262,28 @@ Type::bitset BitsetType::Lub(i::Map* map) {
     case ACCESSOR_PAIR_TYPE:
     case FIXED_ARRAY_TYPE:
     case HASH_TABLE_TYPE:
+    case WEAK_FIXED_ARRAY_TYPE:
     case FIXED_DOUBLE_ARRAY_TYPE:
+    case FEEDBACK_METADATA_TYPE:
     case BYTE_ARRAY_TYPE:
     case BYTECODE_ARRAY_TYPE:
+    case BOILERPLATE_DESCRIPTION_TYPE:
     case DESCRIPTOR_ARRAY_TYPE:
     case TRANSITION_ARRAY_TYPE:
+    case FEEDBACK_CELL_TYPE:
     case FEEDBACK_VECTOR_TYPE:
     case PROPERTY_ARRAY_TYPE:
     case FOREIGN_TYPE:
+    case SCOPE_INFO_TYPE:
+    case BLOCK_CONTEXT_TYPE:
+    case CATCH_CONTEXT_TYPE:
+    case DEBUG_EVALUATE_CONTEXT_TYPE:
+    case EVAL_CONTEXT_TYPE:
+    case FUNCTION_CONTEXT_TYPE:
+    case MODULE_CONTEXT_TYPE:
+    case NATIVE_CONTEXT_TYPE:
+    case SCRIPT_CONTEXT_TYPE:
+    case WITH_CONTEXT_TYPE:
     case SCRIPT_TYPE:
     case CODE_TYPE:
     case PROPERTY_CELL_TYPE:
@@ -299,8 +307,8 @@ Type::bitset BitsetType::Lub(i::Map* map) {
     case OBJECT_TEMPLATE_INFO_TYPE:
     case ALLOCATION_MEMENTO_TYPE:
     case ALIASED_ARGUMENTS_ENTRY_TYPE:
-    case PROMISE_RESOLVE_THENABLE_JOB_INFO_TYPE:
-    case PROMISE_REACTION_JOB_INFO_TYPE:
+    case PROMISE_CAPABILITY_TYPE:
+    case PROMISE_REACTION_TYPE:
     case DEBUG_INFO_TYPE:
     case STACK_FRAME_INFO_TYPE:
     case WEAK_CELL_TYPE:
@@ -309,11 +317,19 @@ Type::bitset BitsetType::Lub(i::Map* map) {
     case PROTOTYPE_INFO_TYPE:
     case TUPLE2_TYPE:
     case TUPLE3_TYPE:
+    case WASM_COMPILED_MODULE_TYPE:
+    case WASM_DEBUG_INFO_TYPE:
+    case WASM_SHARED_MODULE_DATA_TYPE:
     case LOAD_HANDLER_TYPE:
     case STORE_HANDLER_TYPE:
     case CONTEXT_EXTENSION_TYPE:
     case ASYNC_GENERATOR_REQUEST_TYPE:
     case CODE_DATA_CONTAINER_TYPE:
+    case CALLBACK_TASK_TYPE:
+    case CALLABLE_TASK_TYPE:
+    case PROMISE_FULFILL_REACTION_JOB_TASK_TYPE:
+    case PROMISE_REJECT_REACTION_JOB_TASK_TYPE:
+    case PROMISE_RESOLVE_THENABLE_JOB_TASK_TYPE:
       UNREACHABLE();
   }
   UNREACHABLE();
@@ -354,6 +370,7 @@ size_t BitsetType::BoundariesSize() {
 }
 
 Type::bitset BitsetType::ExpandInternals(Type::bitset bits) {
+  DCHECK_IMPLIES(bits & kOtherString, (bits & kString) == kString);
   DisallowHeapAllocation no_allocation;
   if (!(bits & kPlainNumber)) return bits;  // Shortcut.
   const Boundary* boundaries = Boundaries();
@@ -610,11 +627,6 @@ bool UnionType::Wellformed() {
 // -----------------------------------------------------------------------------
 // Union and intersection
 
-static bool AddIsSafe(int x, int y) {
-  return x >= 0 ? y <= std::numeric_limits<int>::max() - x
-                : y >= std::numeric_limits<int>::min() - x;
-}
-
 Type* Type::Intersect(Type* type1, Type* type2, Zone* zone) {
   // Fast case: bit sets.
   if (type1->IsBitset() && type2->IsBitset()) {
@@ -642,10 +654,9 @@ Type* Type::Intersect(Type* type1, Type* type2, Zone* zone) {
   bitset bits = type1->BitsetGlb() & type2->BitsetGlb();
   int size1 = type1->IsUnion() ? type1->AsUnion()->Length() : 1;
   int size2 = type2->IsUnion() ? type2->AsUnion()->Length() : 1;
-  if (!AddIsSafe(size1, size2)) return Any();
-  int size = size1 + size2;
-  if (!AddIsSafe(size, 2)) return Any();
-  size += 2;
+  int size;
+  if (base::bits::SignedAddOverflow32(size1, size2, &size)) return Any();
+  if (base::bits::SignedAddOverflow32(size, 2, &size)) return Any();
   Type* result_type = UnionType::New(size, zone);
   UnionType* result = result_type->AsUnion();
   size = 0;
@@ -822,7 +833,7 @@ Type* Type::NewConstant(i::Handle<i::Object> value, Zone* zone) {
   } else if (value->IsHeapNumber()) {
     return NewConstant(value->Number(), zone);
   } else if (value->IsString() && !value->IsInternalizedString()) {
-    return Type::OtherString();
+    return Type::String();
   }
   return HeapConstant(i::Handle<i::HeapObject>::cast(value), zone);
 }
@@ -844,10 +855,9 @@ Type* Type::Union(Type* type1, Type* type2, Zone* zone) {
   // Slow case: create union.
   int size1 = type1->IsUnion() ? type1->AsUnion()->Length() : 1;
   int size2 = type2->IsUnion() ? type2->AsUnion()->Length() : 1;
-  if (!AddIsSafe(size1, size2)) return Any();
-  int size = size1 + size2;
-  if (!AddIsSafe(size, 2)) return Any();
-  size += 2;
+  int size;
+  if (base::bits::SignedAddOverflow32(size1, size2, &size)) return Any();
+  if (base::bits::SignedAddOverflow32(size, 2, &size)) return Any();
   Type* result_type = UnionType::New(size, zone);
   UnionType* result = result_type->AsUnion();
   size = 0;

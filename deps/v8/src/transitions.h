@@ -55,19 +55,18 @@ class TransitionsAccessor {
   Map* SearchTransition(Name* name, PropertyKind kind,
                         PropertyAttributes attributes);
 
-  // This TransitionsAccessor instance is unusable after this operation.
-  void UpdateHandler(Name* name, Object* handler);
-
-  // If a valid handler is found, returns the transition target in
-  // |out_transition|.
-  Object* SearchHandler(Name* name, Handle<Map>* out_transition);
-
   Map* SearchSpecial(Symbol* name);
   // Returns true for non-property transitions like elements kind, or
   // or frozen/sealed transitions.
   static bool IsSpecialTransition(Name* name);
 
-  Handle<Map> FindTransitionToField(Handle<Name> name);
+  enum RequestedLocation { kAnyLocation, kFieldOnly };
+  MaybeHandle<Map> FindTransitionToDataProperty(
+      Handle<Name> name, RequestedLocation requested_location = kAnyLocation);
+
+  MaybeHandle<Map> FindTransitionToField(Handle<Name> name) {
+    return FindTransitionToDataProperty(name, kFieldOnly);
+  }
 
   Handle<String> ExpectedTransitionKey();
   Handle<Map> ExpectedTransitionTarget();
@@ -127,6 +126,8 @@ class TransitionsAccessor {
     kPrototypeInfo,
     kUninitialized,
     kWeakCell,
+    // TODO(ishell): drop support for kHandler encoding since we use maps
+    // as transition handlers.
     kHandler,
     kFullTransitionArray,
   };

@@ -26,6 +26,7 @@
 #include "src/wasm/function-body-decoder.h"
 #include "src/wasm/local-decl-encoder.h"
 #include "src/wasm/wasm-code-manager.h"
+#include "src/wasm/wasm-code-specialization.h"
 #include "src/wasm/wasm-external-refs.h"
 #include "src/wasm/wasm-interpreter.h"
 #include "src/wasm/wasm-js.h"
@@ -91,13 +92,7 @@ class TestingModuleBuilder {
 
   byte* AddMemory(uint32_t size);
 
-  size_t CodeTableLength() const {
-    if (FLAG_wasm_jit_to_native) {
-      return native_module_->FunctionCount();
-    } else {
-      return function_code_.size();
-    }
-  }
+  size_t CodeTableLength() const { return native_module_->FunctionCount(); }
 
   template <typename T>
   T* AddMemoryElems(uint32_t count) {
@@ -187,10 +182,6 @@ class TestingModuleBuilder {
 
   Handle<JSFunction> WrapCode(uint32_t index);
 
-  void SetFunctionCode(uint32_t index, Handle<Code> code) {
-    function_code_[index] = code;
-  }
-
   void AddIndirectFunctionTable(const uint16_t* function_indexes,
                                 uint32_t table_size);
 
@@ -207,21 +198,16 @@ class TestingModuleBuilder {
   LowerSimd lower_simd() { return lower_simd_; }
   Isolate* isolate() { return isolate_; }
   Handle<WasmInstanceObject> instance_object() { return instance_object_; }
-  WasmCodeWrapper GetFunctionCode(uint32_t index) {
-    if (FLAG_wasm_jit_to_native) {
-      return WasmCodeWrapper(native_module_->GetCode(index));
-    } else {
-      return WasmCodeWrapper(function_code_[index]);
-    }
-  }
-  void SetFunctionCode(int index, Handle<Code> code) {
-    function_code_[index] = code;
+  wasm::WasmCode* GetFunctionCode(uint32_t index) {
+    return native_module_->GetCode(index);
   }
   Address globals_start() { return reinterpret_cast<Address>(globals_data_); }
   void Link() {
-    if (!FLAG_wasm_jit_to_native) return;
     if (!linked_) {
-      native_module_->LinkAll();
+      Zone specialization_zone(isolate()->allocator(), ZONE_NAME);
+      CodeSpecialization code_specialization(isolate(), &specialization_zone);
+      code_specialization.RelocateDirectCalls(native_module_);
+      code_specialization.ApplyToWholeModule(native_module_);
       linked_ = true;
       native_module_->SetExecutable(true);
     }
@@ -242,7 +228,6 @@ class TestingModuleBuilder {
   uint32_t global_offset;
   byte* mem_start_;
   uint32_t mem_size_;
-  std::vector<Handle<Code>> function_code_;
   std::vector<GlobalHandleAddress> function_tables_;
   V8_ALIGNED(16) byte globals_data_[kMaxGlobalsSize];
   WasmInterpreter* interpreter_;
@@ -268,33 +253,26 @@ class WasmFunctionWrapper : private compiler::GraphAndBuilders {
  public:
   WasmFunctionWrapper(Zone* zone, int num_params);
 
-  void Init(CallDescriptor* descriptor, MachineType return_type,
+  void Init(CallDescriptor* call_descriptor, MachineType return_type,
             Vector<MachineType> param_types);
 
   template <typename ReturnType, typename... ParamTypes>
-  void Init(CallDescriptor* descriptor) {
+  void Init(CallDescriptor* call_descriptor) {
     std::array<MachineType, sizeof...(ParamTypes)> param_machine_types{
         {MachineTypeForC<ParamTypes>()...}};
     Vector<MachineType> param_vec(param_machine_types.data(),
                                   param_machine_types.size());
-    Init(descriptor, MachineTypeForC<ReturnType>(), param_vec);
+    Init(call_descriptor, MachineTypeForC<ReturnType>(), param_vec);
   }
 
-  void SetInnerCode(WasmCodeWrapper code) {
-    if (FLAG_wasm_jit_to_native) {
-      intptr_t address = reinterpret_cast<intptr_t>(
-          code.GetWasmCode()->instructions().start());
-      compiler::NodeProperties::ChangeOp(
-          inner_code_node_,
-          kPointerSize == 8
-              ? common()->RelocatableInt64Constant(address,
-                                                   RelocInfo::WASM_CALL)
-              : common()->RelocatableInt32Constant(static_cast<int>(address),
-                                                   RelocInfo::WASM_CALL));
-    } else {
-      compiler::NodeProperties::ChangeOp(
-          inner_code_node_, common()->HeapConstant(code.GetCode()));
-    }
+  void SetInnerCode(wasm::WasmCode* code) {
+    intptr_t address = reinterpret_cast<intptr_t>(code->instructions().start());
+    compiler::NodeProperties::ChangeOp(
+        inner_code_node_,
+        kPointerSize == 8
+            ? common()->RelocatableInt64Constant(address, RelocInfo::WASM_CALL)
+            : common()->RelocatableInt32Constant(static_cast<int>(address),
+                                                 RelocInfo::WASM_CALL));
   }
 
   const compiler::Operator* IntPtrConstant(intptr_t value) {

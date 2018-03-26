@@ -20,7 +20,6 @@ ParseInfo::ParseInfo(AccountingAllocator* zone_allocator)
     : zone_(std::make_shared<Zone>(zone_allocator, ZONE_NAME)),
       flags_(0),
       extension_(nullptr),
-      compile_options_(ScriptCompiler::kNoCompileOptions),
       script_scope_(nullptr),
       unicode_cache_(nullptr),
       stack_limit_(0),
@@ -32,7 +31,6 @@ ParseInfo::ParseInfo(AccountingAllocator* zone_allocator)
       function_literal_id_(FunctionLiteral::kIdTypeInvalid),
       max_function_literal_id_(FunctionLiteral::kIdTypeInvalid),
       character_stream_(nullptr),
-      cached_data_(nullptr),
       ast_value_factory_(nullptr),
       ast_string_constants_(nullptr),
       function_name_(nullptr),
@@ -55,8 +53,8 @@ ParseInfo::ParseInfo(Handle<SharedFunctionInfo> shared)
   set_allow_lazy_parsing(FLAG_lazy_inner_functions);
   set_is_named_expression(shared->is_named_expression());
   set_compiler_hints(shared->compiler_hints());
-  set_start_position(shared->start_position());
-  set_end_position(shared->end_position());
+  set_start_position(shared->StartPosition());
+  set_end_position(shared->EndPosition());
   function_literal_id_ = shared->function_literal_id();
   set_language_mode(shared->language_mode());
   set_asm_wasm_broken(shared->is_asm_wasm_broken());
@@ -79,7 +77,7 @@ ParseInfo::ParseInfo(Handle<SharedFunctionInfo> shared)
   // has the appropriate slots.
   set_collect_type_profile(
       isolate->is_collecting_type_profile() &&
-      (shared->feedback_metadata()->length() == 0
+      (shared->feedback_metadata()->is_empty()
            ? script->IsUserJavaScript()
            : shared->feedback_metadata()->HasTypeProfileSlot()));
   if (block_coverage_enabled() && script->IsUserJavaScript()) {
@@ -120,8 +118,8 @@ ParseInfo* ParseInfo::AllocateWithoutScript(Handle<SharedFunctionInfo> shared) {
   p->set_allow_lazy_parsing(FLAG_lazy_inner_functions);
   p->set_is_named_expression(shared->is_named_expression());
   p->set_compiler_hints(shared->compiler_hints());
-  p->set_start_position(shared->start_position());
-  p->set_end_position(shared->end_position());
+  p->set_start_position(shared->StartPosition());
+  p->set_end_position(shared->EndPosition());
   p->function_literal_id_ = shared->function_literal_id();
   p->set_language_mode(shared->language_mode());
 

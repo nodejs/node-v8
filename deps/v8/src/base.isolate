@@ -6,7 +6,7 @@
     '../third_party/icu/icu.isolate',
 
     # MSVS runtime libraries.
-    '../gypfiles/win/msvs_dependencies.isolate',
+    '../gni/msvs_dependencies.isolate',
   ],
   'conditions': [
     ['v8_use_snapshot=="true" and v8_use_external_startup_data==1', {
@@ -14,6 +14,13 @@
         'files': [
           '<(PRODUCT_DIR)/natives_blob.bin',
           '<(PRODUCT_DIR)/snapshot_blob.bin',
+        ],
+      },
+    }],
+    ['v8_use_snapshot=="true" and v8_use_external_startup_data==1 and v8_use_multi_snapshots==1', {
+      'variables': {
+        'files': [
+          '<(PRODUCT_DIR)/snapshot_blob_trusted.bin',
         ],
       },
     }],

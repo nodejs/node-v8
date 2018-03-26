@@ -5,19 +5,15 @@
 #include "src/snapshot/startup-serializer.h"
 
 #include "src/api.h"
+#include "src/global-handles.h"
 #include "src/objects-inl.h"
 #include "src/v8threads.h"
 
 namespace v8 {
 namespace internal {
 
-StartupSerializer::StartupSerializer(
-    Isolate* isolate,
-    v8::SnapshotCreator::FunctionCodeHandling function_code_handling)
-    : Serializer(isolate),
-      clear_function_code_(function_code_handling ==
-                           v8::SnapshotCreator::FunctionCodeHandling::kClear),
-      can_be_rehashed_(true) {
+StartupSerializer::StartupSerializer(Isolate* isolate)
+    : Serializer(isolate), can_be_rehashed_(true) {
   InitializeCodeAddressMap();
 }
 
@@ -32,13 +28,7 @@ void StartupSerializer::SerializeObject(HeapObject* obj, HowToCode how_to_code,
   DCHECK(!ObjectIsBytecodeHandler(obj));  // Only referenced in dispatch table.
   DCHECK(!obj->IsJSFunction());
 
-  if (clear_function_code() && obj->IsBytecodeArray()) {
-    obj = isolate()->heap()->undefined_value();
-  }
-
-  BuiltinReferenceSerializationMode mode =
-      clear_function_code() ? kCanonicalizeCompileLazy : kDefault;
-  if (SerializeBuiltinReference(obj, how_to_code, where_to_point, skip, mode)) {
+  if (SerializeBuiltinReference(obj, how_to_code, where_to_point, skip)) {
     return;
   }
   if (SerializeHotObject(obj, how_to_code, where_to_point, skip)) return;
@@ -94,7 +84,7 @@ void StartupSerializer::SerializeWeakReferencesAndDeferred() {
   // add entries to the partial snapshot cache of the startup snapshot. Add
   // one entry with 'undefined' to terminate the partial snapshot cache.
   Object* undefined = isolate()->heap()->undefined_value();
-  VisitRootPointer(Root::kPartialSnapshotCache, &undefined);
+  VisitRootPointer(Root::kPartialSnapshotCache, nullptr, &undefined);
   isolate()->heap()->IterateWeakRoots(this, VISIT_FOR_SERIALIZATION);
   SerializeDeferredObjects();
   Pad();
@@ -106,7 +96,7 @@ int StartupSerializer::PartialSnapshotCacheIndex(HeapObject* heap_object) {
     // This object is not part of the partial snapshot cache yet. Add it to the
     // startup snapshot so we can refer to it via partial snapshot index from
     // the partial snapshot.
-    VisitRootPointer(Root::kPartialSnapshotCache,
+    VisitRootPointer(Root::kPartialSnapshotCache, nullptr,
                      reinterpret_cast<Object**>(&heap_object));
   }
   return index;
@@ -133,8 +123,8 @@ void StartupSerializer::SerializeStrongReferences() {
   isolate->heap()->IterateStrongRoots(this, VISIT_FOR_SERIALIZATION);
 }
 
-void StartupSerializer::VisitRootPointers(Root root, Object** start,
-                                          Object** end) {
+void StartupSerializer::VisitRootPointers(Root root, const char* description,
+                                          Object** start, Object** end) {
   if (start == isolate()->heap()->roots_array_start()) {
     // Serializing the root list needs special handling:
     // - The first pass over the root list only serializes immortal immovables.
@@ -156,7 +146,7 @@ void StartupSerializer::VisitRootPointers(Root root, Object** start,
     }
     FlushSkip(skip);
   } else {
-    Serializer::VisitRootPointers(root, start, end);
+    Serializer::VisitRootPointers(root, description, start, end);
   }
 }
 
@@ -197,8 +187,9 @@ void SerializedHandleChecker::AddToSet(FixedArray* serialized) {
   for (int i = 0; i < length; i++) serialized_.insert(serialized->get(i));
 }
 
-void SerializedHandleChecker::VisitRootPointers(Root root, Object** start,
-                                                Object** end) {
+void SerializedHandleChecker::VisitRootPointers(Root root,
+                                                const char* description,
+                                                Object** start, Object** end) {
   for (Object** p = start; p < end; p++) {
     if (serialized_.find(*p) != serialized_.end()) continue;
     PrintF("%s handle not serialized: ",

@@ -103,7 +103,8 @@ class FixedArray : public FixedArrayBase {
 
   // Return a grown copy if the index is bigger than the array's length.
   static Handle<FixedArray> SetAndGrow(Handle<FixedArray> array, int index,
-                                       Handle<Object> value);
+                                       Handle<Object> value,
+                                       PretenureFlag pretenure = NOT_TENURED);
 
   // Setter that uses write barrier.
   inline void set(int index, Object* value);
@@ -242,14 +243,62 @@ class FixedDoubleArray : public FixedArrayBase {
   DISALLOW_IMPLICIT_CONSTRUCTORS(FixedDoubleArray);
 };
 
-class WeakFixedArray : public FixedArray {
+// WeakFixedArray describes fixed-sized arrays with element type
+// MaybeObject*.
+class WeakFixedArray : public HeapObject {
  public:
-  // If |maybe_array| is not a WeakFixedArray, a fresh one will be allocated.
-  // This function does not check if the value exists already, callers must
-  // ensure this themselves if necessary.
-  static Handle<WeakFixedArray> Add(Handle<Object> maybe_array,
-                                    Handle<HeapObject> value,
-                                    int* assigned_index = nullptr);
+  DECL_CAST(WeakFixedArray)
+
+  inline MaybeObject* Get(int index) const;
+
+  // Setter that uses write barrier.
+  inline void Set(int index, MaybeObject* value);
+
+  static constexpr int SizeFor(int length) {
+    return kHeaderSize + length * kPointerSize;
+  }
+
+  DECL_INT_ACCESSORS(length)
+
+  // Get and set the length using acquire loads and release stores.
+  inline int synchronized_length() const;
+  inline void synchronized_set_length(int value);
+
+  // Gives access to raw memory which stores the array's data.
+  inline MaybeObject** data_start();
+
+  DECL_VERIFIER(WeakFixedArray)
+
+  class BodyDescriptor;
+  typedef BodyDescriptor BodyDescriptorWeak;
+
+  static const int kLengthOffset = HeapObject::kHeaderSize;
+  static const int kHeaderSize = kLengthOffset + kPointerSize;
+
+  static const int kMaxLength =
+      (FixedArray::kMaxSize - kHeaderSize) / kPointerSize;
+
+ private:
+  static int OffsetOfElementAt(int index) {
+    return kHeaderSize + index * kPointerSize;
+  }
+
+  friend class Heap;
+
+  static const int kFirstIndex = 1;
+
+  DISALLOW_IMPLICIT_CONSTRUCTORS(WeakFixedArray);
+};
+
+// Deprecated. Use WeakFixedArray instead.
+class FixedArrayOfWeakCells : public FixedArray {
+ public:
+  // If |maybe_array| is not a FixedArrayOfWeakCells, a fresh one will be
+  // allocated. This function does not check if the value exists already,
+  // callers must ensure this themselves if necessary.
+  static Handle<FixedArrayOfWeakCells> Add(Handle<Object> maybe_array,
+                                           Handle<HeapObject> value,
+                                           int* assigned_index = nullptr);
 
   // Returns true if an entry was found and removed.
   bool Remove(Handle<HeapObject> value);
@@ -281,7 +330,7 @@ class WeakFixedArray : public FixedArray {
 
    private:
     int index_;
-    WeakFixedArray* list_;
+    FixedArrayOfWeakCells* list_;
 #ifdef DEBUG
     int last_used_index_;
     DisallowHeapAllocation no_gc_;
@@ -289,16 +338,17 @@ class WeakFixedArray : public FixedArray {
     DISALLOW_COPY_AND_ASSIGN(Iterator);
   };
 
-  DECL_CAST(WeakFixedArray)
+  DECL_CAST(FixedArrayOfWeakCells)
 
  private:
   static const int kLastUsedIndexIndex = 0;
   static const int kFirstIndex = 1;
 
-  static Handle<WeakFixedArray> Allocate(
-      Isolate* isolate, int size, Handle<WeakFixedArray> initialize_from);
+  static Handle<FixedArrayOfWeakCells> Allocate(
+      Isolate* isolate, int size,
+      Handle<FixedArrayOfWeakCells> initialize_from);
 
-  static void Set(Handle<WeakFixedArray> array, int index,
+  static void Set(Handle<FixedArrayOfWeakCells> array, int index,
                   Handle<HeapObject> value);
   inline void clear(int index);
 
@@ -309,7 +359,7 @@ class WeakFixedArray : public FixedArray {
   void set(int index, Smi* value);
   void set(int index, Object* value);
   void set(int index, Object* value, WriteBarrierMode mode);
-  DISALLOW_IMPLICIT_CONSTRUCTORS(WeakFixedArray);
+  DISALLOW_IMPLICIT_CONSTRUCTORS(FixedArrayOfWeakCells);
 };
 
 // Generic array grows dynamically with O(1) amortized insertion.
@@ -466,16 +516,18 @@ class PodArray : public ByteArray {
 };
 
 // V has parameters (Type, type, TYPE, C type, element_size)
-#define TYPED_ARRAYS(V)                   \
-  V(Uint8, uint8, UINT8, uint8_t, 1)      \
-  V(Int8, int8, INT8, int8_t, 1)          \
-  V(Uint16, uint16, UINT16, uint16_t, 2)  \
-  V(Int16, int16, INT16, int16_t, 2)      \
-  V(Uint32, uint32, UINT32, uint32_t, 4)  \
-  V(Int32, int32, INT32, int32_t, 4)      \
-  V(Float32, float32, FLOAT32, float, 4)  \
-  V(Float64, float64, FLOAT64, double, 8) \
-  V(Uint8Clamped, uint8_clamped, UINT8_CLAMPED, uint8_t, 1)
+#define TYPED_ARRAYS(V)                                     \
+  V(Uint8, uint8, UINT8, uint8_t, 1)                        \
+  V(Int8, int8, INT8, int8_t, 1)                            \
+  V(Uint16, uint16, UINT16, uint16_t, 2)                    \
+  V(Int16, int16, INT16, int16_t, 2)                        \
+  V(Uint32, uint32, UINT32, uint32_t, 4)                    \
+  V(Int32, int32, INT32, int32_t, 4)                        \
+  V(Float32, float32, FLOAT32, float, 4)                    \
+  V(Float64, float64, FLOAT64, double, 8)                   \
+  V(Uint8Clamped, uint8_clamped, UINT8_CLAMPED, uint8_t, 1) \
+  V(BigUint64, biguint64, BIGUINT64, uint64_t, 8)           \
+  V(BigInt64, bigint64, BIGINT64, int64_t, 8)
 
 class FixedTypedArrayBase : public FixedArrayBase {
  public:
@@ -548,6 +600,11 @@ class FixedTypedArray : public FixedTypedArrayBase {
   static inline ElementType from(int value);
   static inline ElementType from(uint32_t value);
   static inline ElementType from(double value);
+  static inline ElementType from(int64_t value);
+  static inline ElementType from(uint64_t value);
+
+  static inline ElementType FromHandle(Handle<Object> value,
+                                       bool* lossless = nullptr);
 
   // This accessor applies the correct conversion from Smi, HeapNumber
   // and undefined.

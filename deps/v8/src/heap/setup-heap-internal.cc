@@ -27,6 +27,7 @@
 #include "src/objects/shared-function-info.h"
 #include "src/objects/string.h"
 #include "src/regexp/jsregexp.h"
+#include "src/wasm/wasm-objects.h"
 
 namespace v8 {
 namespace internal {
@@ -112,6 +113,8 @@ bool Heap::CreateInitialMaps() {
     }
 
     ALLOCATE_PARTIAL_MAP(FIXED_ARRAY_TYPE, kVariableSizeSentinel, fixed_array);
+    ALLOCATE_PARTIAL_MAP(WEAK_FIXED_ARRAY_TYPE, kVariableSizeSentinel,
+                         weak_fixed_array);
     ALLOCATE_PARTIAL_MAP(FIXED_ARRAY_TYPE, kVariableSizeSentinel,
                          fixed_cow_array)
     DCHECK_NE(fixed_array_map(), fixed_cow_array_map());
@@ -132,6 +135,12 @@ bool Heap::CreateInitialMaps() {
     if (!allocation.To(&obj)) return false;
   }
   set_empty_fixed_array(FixedArray::cast(obj));
+
+  {
+    AllocationResult allocation = AllocateEmptyWeakFixedArray();
+    if (!allocation.To(&obj)) return false;
+  }
+  set_empty_weak_fixed_array(WeakFixedArray::cast(obj));
 
   {
     AllocationResult allocation = Allocate(null_map(), OLD_SPACE);
@@ -191,6 +200,7 @@ bool Heap::CreateInitialMaps() {
   // Fix the instance_descriptors for the existing maps.
   FinalizePartialMap(this, meta_map());
   FinalizePartialMap(this, fixed_array_map());
+  FinalizePartialMap(this, weak_fixed_array_map());
   FinalizePartialMap(this, fixed_cow_array_map());
   FinalizePartialMap(this, descriptor_array_map());
   FinalizePartialMap(this, undefined_map());
@@ -222,7 +232,7 @@ bool Heap::CreateInitialMaps() {
           (constructor_function_index));                          \
     }
 
-    ALLOCATE_VARSIZE_MAP(FIXED_ARRAY_TYPE, scope_info)
+    ALLOCATE_VARSIZE_MAP(SCOPE_INFO_TYPE, scope_info)
     ALLOCATE_VARSIZE_MAP(FIXED_ARRAY_TYPE, module_info)
     ALLOCATE_VARSIZE_MAP(FEEDBACK_VECTOR_TYPE, feedback_vector)
     ALLOCATE_PRIMITIVE_MAP(HEAP_NUMBER_TYPE, HeapNumber::kSize, heap_number,
@@ -269,6 +279,7 @@ bool Heap::CreateInitialMaps() {
 
     ALLOCATE_VARSIZE_MAP(FIXED_DOUBLE_ARRAY_TYPE, fixed_double_array)
     fixed_double_array_map()->set_elements_kind(HOLEY_DOUBLE_ELEMENTS);
+    ALLOCATE_VARSIZE_MAP(FEEDBACK_METADATA_TYPE, feedback_metadata)
     ALLOCATE_VARSIZE_MAP(BYTE_ARRAY_TYPE, byte_array)
     ALLOCATE_VARSIZE_MAP(BYTECODE_ARRAY_TYPE, bytecode_array)
     ALLOCATE_VARSIZE_MAP(FREE_SPACE_TYPE, free_space)
@@ -286,14 +297,27 @@ bool Heap::CreateInitialMaps() {
 
     ALLOCATE_VARSIZE_MAP(CODE_TYPE, code)
 
-    ALLOCATE_MAP(CELL_TYPE, Cell::kSize, cell)
+    ALLOCATE_MAP(CELL_TYPE, Cell::kSize, cell);
+    {
+      // The invalid_prototype_validity_cell is needed for JSObject maps.
+      Smi* value = Smi::FromInt(Map::kPrototypeChainInvalid);
+      Cell* cell;
+      if (!AllocateCell(value).To(&cell)) return false;
+      set_invalid_prototype_validity_cell(cell);
+    }
+
     ALLOCATE_MAP(PROPERTY_CELL_TYPE, PropertyCell::kSize, global_property_cell)
     ALLOCATE_MAP(WEAK_CELL_TYPE, WeakCell::kSize, weak_cell)
-    ALLOCATE_MAP(CELL_TYPE, Cell::kSize, no_closures_cell)
-    ALLOCATE_MAP(CELL_TYPE, Cell::kSize, one_closure_cell)
-    ALLOCATE_MAP(CELL_TYPE, Cell::kSize, many_closures_cell)
     ALLOCATE_MAP(FILLER_TYPE, kPointerSize, one_pointer_filler)
     ALLOCATE_MAP(FILLER_TYPE, 2 * kPointerSize, two_pointer_filler)
+
+    // The "no closures" and "one closure" FeedbackCell maps need
+    // to be marked unstable because their objects can change maps.
+    ALLOCATE_MAP(FEEDBACK_CELL_TYPE, FeedbackCell::kSize, no_closures_cell)
+    no_closures_cell_map()->mark_unstable();
+    ALLOCATE_MAP(FEEDBACK_CELL_TYPE, FeedbackCell::kSize, one_closure_cell)
+    one_closure_cell_map()->mark_unstable();
+    ALLOCATE_MAP(FEEDBACK_CELL_TYPE, FeedbackCell::kSize, many_closures_cell)
 
     ALLOCATE_VARSIZE_MAP(TRANSITION_ARRAY_TYPE, transition_array)
 
@@ -303,22 +327,24 @@ bool Heap::CreateInitialMaps() {
     ALLOCATE_VARSIZE_MAP(HASH_TABLE_TYPE, name_dictionary)
     ALLOCATE_VARSIZE_MAP(HASH_TABLE_TYPE, global_dictionary)
     ALLOCATE_VARSIZE_MAP(HASH_TABLE_TYPE, number_dictionary)
+    ALLOCATE_VARSIZE_MAP(HASH_TABLE_TYPE, simple_number_dictionary)
     ALLOCATE_VARSIZE_MAP(HASH_TABLE_TYPE, string_table)
-    ALLOCATE_VARSIZE_MAP(HASH_TABLE_TYPE, weak_hash_table)
 
     ALLOCATE_VARSIZE_MAP(FIXED_ARRAY_TYPE, array_list)
 
-    ALLOCATE_VARSIZE_MAP(FIXED_ARRAY_TYPE, function_context)
-    ALLOCATE_VARSIZE_MAP(FIXED_ARRAY_TYPE, catch_context)
-    ALLOCATE_VARSIZE_MAP(FIXED_ARRAY_TYPE, with_context)
-    ALLOCATE_VARSIZE_MAP(FIXED_ARRAY_TYPE, debug_evaluate_context)
-    ALLOCATE_VARSIZE_MAP(FIXED_ARRAY_TYPE, block_context)
-    ALLOCATE_VARSIZE_MAP(FIXED_ARRAY_TYPE, module_context)
-    ALLOCATE_VARSIZE_MAP(FIXED_ARRAY_TYPE, eval_context)
-    ALLOCATE_VARSIZE_MAP(FIXED_ARRAY_TYPE, script_context)
+    ALLOCATE_VARSIZE_MAP(FUNCTION_CONTEXT_TYPE, function_context)
+    ALLOCATE_VARSIZE_MAP(CATCH_CONTEXT_TYPE, catch_context)
+    ALLOCATE_VARSIZE_MAP(WITH_CONTEXT_TYPE, with_context)
+    ALLOCATE_VARSIZE_MAP(DEBUG_EVALUATE_CONTEXT_TYPE, debug_evaluate_context)
+    ALLOCATE_VARSIZE_MAP(BLOCK_CONTEXT_TYPE, block_context)
+    ALLOCATE_VARSIZE_MAP(MODULE_CONTEXT_TYPE, module_context)
+    ALLOCATE_VARSIZE_MAP(EVAL_CONTEXT_TYPE, eval_context)
+    ALLOCATE_VARSIZE_MAP(SCRIPT_CONTEXT_TYPE, script_context)
     ALLOCATE_VARSIZE_MAP(FIXED_ARRAY_TYPE, script_context_table)
 
-    ALLOCATE_VARSIZE_MAP(FIXED_ARRAY_TYPE, native_context)
+    ALLOCATE_VARSIZE_MAP(BOILERPLATE_DESCRIPTION_TYPE, boilerplate_description)
+
+    ALLOCATE_VARSIZE_MAP(NATIVE_CONTEXT_TYPE, native_context)
     native_context_map()->set_visitor_id(kVisitNativeContext);
 
     ALLOCATE_MAP(SHARED_FUNCTION_INFO_TYPE, SharedFunctionInfo::kAlignedSize,
@@ -339,8 +365,14 @@ bool Heap::CreateInitialMaps() {
     AllocationResult allocation = AllocateEmptyScopeInfo();
     if (!allocation.To(&obj)) return false;
   }
-
   set_empty_scope_info(ScopeInfo::cast(obj));
+
+  {
+    AllocationResult allocation = AllocateEmptyBoilerplateDescription();
+    if (!allocation.To(&obj)) return false;
+  }
+  set_empty_boilerplate_description(BoilerplateDescription::cast(obj));
+
   {
     AllocationResult allocation = Allocate(boolean_map(), OLD_SPACE);
     if (!allocation.To(&obj)) return false;
@@ -475,7 +507,7 @@ void Heap::CreateInitialObjects() {
 
   // Create the code_stubs dictionary. The initial size is set to avoid
   // expanding the dictionary during bootstrapping.
-  set_code_stubs(*NumberDictionary::New(isolate(), 128));
+  set_code_stubs(*SimpleNumberDictionary::New(isolate(), 128));
 
   {
     HandleScope scope(isolate());
@@ -533,7 +565,10 @@ void Heap::CreateInitialObjects() {
   set_regexp_multiple_cache(*factory->NewFixedArray(
       RegExpResultsCache::kRegExpResultsCacheSize, TENURED));
 
-  set_undefined_cell(*factory->NewCell(factory->undefined_value()));
+  // Allocate FeedbackCell for builtins.
+  Handle<FeedbackCell> many_closures_cell =
+      factory->NewManyClosuresCell(factory->undefined_value());
+  set_many_closures_cell(*many_closures_cell);
 
   // Microtask queue uses the empty fixed array as a sentinel for "empty".
   // Number of queued microtasks stored in Isolate::pending_microtask_count().
@@ -557,10 +592,6 @@ void Heap::CreateInitialObjects() {
   set_retained_maps(ArrayList::cast(empty_fixed_array()));
   set_retaining_path_targets(undefined_value());
 
-  set_weak_object_to_code_table(*WeakHashTable::New(isolate(), 16, TENURED));
-
-  set_weak_new_space_object_to_code_list(*ArrayList::New(isolate(), 16));
-
   set_feedback_vectors_for_profiling_tools(undefined_value());
 
   set_script_list(Smi::kZero);
@@ -575,6 +606,7 @@ void Heap::CreateInitialObjects() {
 
   // Handling of script id generation is in Heap::NextScriptId().
   set_last_script_id(Smi::FromInt(v8::UnboundScript::kNoScriptId));
+  set_last_debugging_id(Smi::FromInt(SharedFunctionInfo::kNoDebuggingId));
   set_next_template_serial_number(Smi::kZero);
 
   // Allocate the empty OrderedHashMap.
@@ -596,6 +628,11 @@ void Heap::CreateInitialObjects() {
     empty_ordered_hash_set->set(i, Smi::kZero);
   }
   set_empty_ordered_hash_set(*empty_ordered_hash_set);
+
+  // Allocate the empty FeedbackMetadata.
+  Handle<FeedbackMetadata> empty_feedback_metadata =
+      factory->NewFeedbackMetadata(0);
+  set_empty_feedback_metadata(*empty_feedback_metadata);
 
   // Allocate the empty script.
   Handle<Script> script = factory->NewScript(factory->empty_string());
@@ -630,13 +667,21 @@ void Heap::CreateInitialObjects() {
       handle(Smi::FromInt(Isolate::kProtectorValid), isolate()));
   set_string_length_protector(*string_length_overflow_cell);
 
-  Handle<Cell> fast_array_iteration_cell = factory->NewCell(
-      handle(Smi::FromInt(Isolate::kProtectorValid), isolate()));
-  set_fast_array_iteration_protector(*fast_array_iteration_cell);
-
   cell = factory->NewPropertyCell(factory->empty_string());
   cell->set_value(Smi::FromInt(Isolate::kProtectorValid));
   set_array_buffer_neutering_protector(*cell);
+
+  cell = factory->NewPropertyCell(factory->empty_string());
+  cell->set_value(Smi::FromInt(Isolate::kProtectorValid));
+  set_promise_hook_protector(*cell);
+
+  Handle<Cell> promise_resolve_cell = factory->NewCell(
+      handle(Smi::FromInt(Isolate::kProtectorValid), isolate()));
+  set_promise_resolve_protector(*promise_resolve_cell);
+
+  cell = factory->NewPropertyCell(factory->empty_string());
+  cell->set_value(Smi::FromInt(Isolate::kProtectorValid));
+  set_promise_then_protector(*cell);
 
   set_serialized_objects(empty_fixed_array());
   set_serialized_global_proxy_sizes(empty_fixed_array());
@@ -649,6 +694,9 @@ void Heap::CreateInitialObjects() {
   set_deserialize_lazy_handler(Smi::kZero);
   set_deserialize_lazy_handler_wide(Smi::kZero);
   set_deserialize_lazy_handler_extra_wide(Smi::kZero);
+
+  // Initialize builtins constants table.
+  set_builtins_constants_table(empty_fixed_array());
 
   // Initialize context slot cache.
   isolate_->context_slot_cache()->Clear();
@@ -670,6 +718,12 @@ void Heap::CreateInternalAccessorInfoObjects() {
   roots_[k##AccessorName##AccessorRootIndex] = *acessor_info;
   ACCESSOR_INFO_LIST(INIT_ACCESSOR_INFO)
 #undef INIT_ACCESSOR_INFO
+
+#define INIT_SIDE_EFFECT_FLAG(AccessorName)                      \
+  AccessorInfo::cast(roots_[k##AccessorName##AccessorRootIndex]) \
+      ->set_has_no_side_effect(true);
+  SIDE_EFFECT_FREE_ACCESSOR_INFO_LIST(INIT_SIDE_EFFECT_FLAG)
+#undef INIT_SIDE_EFFECT_FLAG
 }
 
 }  // namespace internal

@@ -97,7 +97,7 @@ class MockPlatform : public v8::Platform {
     EXPECT_TRUE(idle_task_ == nullptr);
   }
 
-  size_t NumberOfAvailableBackgroundThreads() override { return 1; }
+  int NumberOfWorkerThreads() override { return 1; }
 
   std::shared_ptr<TaskRunner> GetForegroundTaskRunner(
       v8::Isolate* isolate) override {
@@ -105,14 +105,13 @@ class MockPlatform : public v8::Platform {
     return std::make_shared<MockTaskRunner>(this, is_foreground_task_runner);
   }
 
-  std::shared_ptr<TaskRunner> GetBackgroundTaskRunner(
+  std::shared_ptr<TaskRunner> GetWorkerThreadsTaskRunner(
       v8::Isolate* isolate) override {
     constexpr bool is_foreground_task_runner = false;
     return std::make_shared<MockTaskRunner>(this, is_foreground_task_runner);
   }
 
-  void CallOnBackgroundThread(Task* task,
-                              ExpectedRuntime expected_runtime) override {
+  void CallOnWorkerThread(Task* task) override {
     base::LockGuard<base::Mutex> lock(&mutex_);
     background_tasks_.push_back(task);
   }
@@ -183,8 +182,7 @@ class MockPlatform : public v8::Platform {
       base::LockGuard<base::Mutex> lock(&mutex_);
       tasks.swap(background_tasks_);
     }
-    platform->CallOnBackgroundThread(new TaskWrapper(this, tasks, true),
-                                     kShortRunningTask);
+    platform->CallOnWorkerThread(new TaskWrapper(this, tasks, true));
     sem_.Wait();
   }
 
@@ -194,8 +192,7 @@ class MockPlatform : public v8::Platform {
       base::LockGuard<base::Mutex> lock(&mutex_);
       tasks.swap(background_tasks_);
     }
-    platform->CallOnBackgroundThread(new TaskWrapper(this, tasks, false),
-                                     kShortRunningTask);
+    platform->CallOnWorkerThread(new TaskWrapper(this, tasks, false));
   }
 
   void RunForegroundTasks() {
@@ -336,7 +333,7 @@ TEST_F(CompilerDispatcherTest, IsEnqueued) {
   ASSERT_FALSE(dispatcher.IsEnqueued(shared));
   ASSERT_TRUE(dispatcher.Enqueue(shared));
   ASSERT_TRUE(dispatcher.IsEnqueued(shared));
-  dispatcher.AbortAll(CompilerDispatcher::BlockingBehavior::kBlock);
+  dispatcher.AbortAll(BlockingBehavior::kBlock);
   ASSERT_FALSE(dispatcher.IsEnqueued(shared));
   ASSERT_TRUE(platform.IdleTaskPending());
   platform.ClearIdleTask();
@@ -640,7 +637,7 @@ TEST_F(CompilerDispatcherTest, AsyncAbortAllPendingBackgroundTask) {
   ASSERT_TRUE(platform.BackgroundTasksPending());
 
   // The background task hasn't yet started, so we can just cancel it.
-  dispatcher.AbortAll(CompilerDispatcher::BlockingBehavior::kDontBlock);
+  dispatcher.AbortAll(BlockingBehavior::kDontBlock);
   ASSERT_FALSE(platform.ForegroundTasksPending());
 
   ASSERT_FALSE(dispatcher.IsEnqueued(shared));
@@ -692,7 +689,7 @@ TEST_F(CompilerDispatcherTest, AsyncAbortAllRunningBackgroundTask) {
   // Busy loop until the background task started running.
   while (dispatcher.block_for_testing_.Value()) {
   }
-  dispatcher.AbortAll(CompilerDispatcher::BlockingBehavior::kDontBlock);
+  dispatcher.AbortAll(BlockingBehavior::kDontBlock);
   ASSERT_TRUE(platform.ForegroundTasksPending());
 
   // We can't schedule new tasks while we're aborting.
@@ -768,7 +765,7 @@ TEST_F(CompilerDispatcherTest, FinishNowDuringAbortAll) {
   // Busy loop until the background task started running.
   while (dispatcher.block_for_testing_.Value()) {
   }
-  dispatcher.AbortAll(CompilerDispatcher::BlockingBehavior::kDontBlock);
+  dispatcher.AbortAll(BlockingBehavior::kDontBlock);
   ASSERT_TRUE(platform.ForegroundTasksPending());
 
   // Run the first AbortTask. Since the background job is still pending, it
@@ -868,9 +865,8 @@ TEST_F(CompilerDispatcherTest, MemoryPressureFromBackground) {
 
   ASSERT_TRUE(dispatcher.Enqueue(shared));
   base::Semaphore sem(0);
-  V8::GetCurrentPlatform()->CallOnBackgroundThread(
-      new PressureNotificationTask(i_isolate(), &dispatcher, &sem),
-      v8::Platform::kShortRunningTask);
+  V8::GetCurrentPlatform()->CallOnWorkerThread(
+      new PressureNotificationTask(i_isolate(), &dispatcher, &sem));
 
   sem.Wait();
 

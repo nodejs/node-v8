@@ -86,8 +86,7 @@ std::vector<SerializedData::Reservation>
 DefaultSerializerAllocator::EncodeReservations() const {
   std::vector<SerializedData::Reservation> out;
 
-  STATIC_ASSERT(NEW_SPACE == 0);
-  for (int i = 0; i < kNumberOfPreallocatedSpaces; i++) {
+  for (int i = FIRST_SPACE; i < kNumberOfPreallocatedSpaces; i++) {
     for (size_t j = 0; j < completed_chunks_[i].size(); j++) {
       out.emplace_back(completed_chunks_[i][j]);
     }
@@ -114,14 +113,12 @@ void DefaultSerializerAllocator::OutputStatistics() {
 
   PrintF("  Spaces (bytes):\n");
 
-  STATIC_ASSERT(NEW_SPACE == 0);
-  for (int space = 0; space < kNumberOfSpaces; space++) {
+  for (int space = FIRST_SPACE; space < kNumberOfSpaces; space++) {
     PrintF("%16s", AllocationSpaceName(static_cast<AllocationSpace>(space)));
   }
   PrintF("\n");
 
-  STATIC_ASSERT(NEW_SPACE == 0);
-  for (int space = 0; space < kNumberOfPreallocatedSpaces; space++) {
+  for (int space = FIRST_SPACE; space < kNumberOfPreallocatedSpaces; space++) {
     size_t s = pending_chunk_[space];
     for (uint32_t chunk_size : completed_chunks_[space]) s += chunk_size;
     PrintF("%16" PRIuS, s);

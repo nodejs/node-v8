@@ -74,6 +74,11 @@ class Profiler;
 class ProfilerListener;
 class RuntimeCallTimer;
 class Ticker;
+class WasmCompiledModule;
+
+namespace wasm {
+class WasmCode;
+}
 
 #undef LOG
 #define LOG(isolate, Call)                              \
@@ -176,6 +181,8 @@ class Logger : public CodeEventListener {
   void CodeCreateEvent(CodeEventListener::LogEventsAndTags tag,
                        AbstractCode* code, SharedFunctionInfo* shared,
                        Name* source, int line, int column);
+  void CodeCreateEvent(CodeEventListener::LogEventsAndTags tag,
+                       const wasm::WasmCode* code, wasm::WasmName name);
   // Emits a code deoptimization event.
   void CodeDisableOptEvent(AbstractCode* code, SharedFunctionInfo* shared);
   void CodeMovingGCEvent();
@@ -186,6 +193,8 @@ class Logger : public CodeEventListener {
   // Emits a code line info record event.
   void CodeLinePosInfoRecordEvent(Address code_start,
                                   ByteArray* source_position_table);
+  void CodeLinePosInfoRecordEvent(Address code_start,
+                                  Vector<const byte> source_position_table);
 
   void SharedFunctionInfoMoveEvent(Address from, Address to);
 
@@ -234,6 +243,7 @@ class Logger : public CodeEventListener {
 
   void LogExistingFunction(Handle<SharedFunctionInfo> shared,
                            Handle<AbstractCode> code);
+  void LogCompiledModule(Handle<WasmCompiledModule> module);
   // Logs all compiled functions found in the heap.
   void LogCompiledFunctions();
   // Logs all accessor callbacks found in the heap.
@@ -379,8 +389,10 @@ class CodeEventLogger : public CodeEventListener {
   void CodeCreateEvent(LogEventsAndTags tag, AbstractCode* code,
                        SharedFunctionInfo* shared, Name* source, int line,
                        int column) override;
-  void RegExpCodeCreateEvent(AbstractCode* code, String* source) override;
+  void CodeCreateEvent(LogEventsAndTags tag, const wasm::WasmCode* code,
+                       wasm::WasmName name) override;
 
+  void RegExpCodeCreateEvent(AbstractCode* code, String* source) override;
   void CallbackEvent(Name* name, Address entry_point) override {}
   void GetterCallbackEvent(Name* name, Address entry_point) override {}
   void SetterCallbackEvent(Name* name, Address entry_point) override {}
@@ -394,6 +406,8 @@ class CodeEventLogger : public CodeEventListener {
 
   virtual void LogRecordedBuffer(AbstractCode* code, SharedFunctionInfo* shared,
                                  const char* name, int length) = 0;
+  virtual void LogRecordedBuffer(const wasm::WasmCode* code, const char* name,
+                                 int length) = 0;
 
   NameBuffer* name_buffer_;
 };

@@ -19,6 +19,7 @@
 namespace v8 {
 namespace internal {
 
+class BigInt;
 class HeapNumber;
 class Isolate;
 class JSArrayBuffer;
@@ -107,12 +108,14 @@ class ValueSerializer {
   void WriteZigZag(T value);
   void WriteOneByteString(Vector<const uint8_t> chars);
   void WriteTwoByteString(Vector<const uc16> chars);
+  void WriteBigIntContents(BigInt* bigint);
   Maybe<uint8_t*> ReserveRawBytes(size_t bytes);
 
   // Writing V8 objects of various kinds.
   void WriteOddball(Oddball* oddball);
   void WriteSmi(Smi* smi);
   void WriteHeapNumber(HeapNumber* number);
+  void WriteBigInt(BigInt* bigint);
   void WriteString(Handle<String> string);
   Maybe<bool> WriteJSReceiver(Handle<JSReceiver> receiver) WARN_UNUSED_RESULT;
   Maybe<bool> WriteJSObject(Handle<JSObject> object) WARN_UNUSED_RESULT;
@@ -255,6 +258,7 @@ class ValueDeserializer {
 
   // Reading V8 objects of specific kinds.
   // The tag is assumed to have already been read.
+  MaybeHandle<BigInt> ReadBigInt() WARN_UNUSED_RESULT;
   MaybeHandle<String> ReadUtf8String() WARN_UNUSED_RESULT;
   MaybeHandle<String> ReadOneByteString() WARN_UNUSED_RESULT;
   MaybeHandle<String> ReadTwoByteString() WARN_UNUSED_RESULT;
@@ -266,8 +270,9 @@ class ValueDeserializer {
   MaybeHandle<JSRegExp> ReadJSRegExp() WARN_UNUSED_RESULT;
   MaybeHandle<JSMap> ReadJSMap() WARN_UNUSED_RESULT;
   MaybeHandle<JSSet> ReadJSSet() WARN_UNUSED_RESULT;
-  MaybeHandle<JSArrayBuffer> ReadJSArrayBuffer() WARN_UNUSED_RESULT;
-  MaybeHandle<JSArrayBuffer> ReadTransferredJSArrayBuffer(bool is_shared)
+  MaybeHandle<JSArrayBuffer> ReadJSArrayBuffer(bool is_shared)
+      WARN_UNUSED_RESULT;
+  MaybeHandle<JSArrayBuffer> ReadTransferredJSArrayBuffer()
       WARN_UNUSED_RESULT;
   MaybeHandle<JSArrayBufferView> ReadJSArrayBufferView(
       Handle<JSArrayBuffer> buffer) WARN_UNUSED_RESULT;
@@ -300,7 +305,7 @@ class ValueDeserializer {
 
   // Always global handles.
   Handle<FixedArray> id_map_;
-  MaybeHandle<NumberDictionary> array_buffer_transfer_map_;
+  MaybeHandle<SimpleNumberDictionary> array_buffer_transfer_map_;
 
   DISALLOW_COPY_AND_ASSIGN(ValueDeserializer);
 };

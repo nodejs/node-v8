@@ -31,8 +31,10 @@
 
 #include "src/assembler.h"
 #include "src/eh-frame.h"
+#include "src/instruction-stream.h"
 #include "src/objects-inl.h"
 #include "src/source-position-table.h"
+#include "src/wasm/wasm-code-manager.h"
 
 #if V8_OS_LINUX
 #include <fcntl.h>
@@ -213,7 +215,11 @@ void PerfJitLogger::LogRecordedBuffer(AbstractCode* abstract_code,
 
   // Debug info has to be emitted first.
   if (FLAG_perf_prof && shared != nullptr) {
-    LogWriteDebugInfo(code, shared);
+    // TODO(herhut): This currently breaks for js2wasm/wasm2js functions.
+    if (code->kind() != Code::JS_TO_WASM_FUNCTION &&
+        code->kind() != Code::WASM_TO_JS_FUNCTION) {
+      LogWriteDebugInfo(code, shared);
+    }
   }
 
   const char* code_name = name;
@@ -226,16 +232,32 @@ void PerfJitLogger::LogRecordedBuffer(AbstractCode* abstract_code,
   // Unwinding info comes right after debug info.
   if (FLAG_perf_prof_unwinding_info) LogWriteUnwindingInfo(code);
 
+  WriteJitCodeLoadEntry(code_pointer, code_size, code_name, length);
+}
+
+void PerfJitLogger::LogRecordedBuffer(const wasm::WasmCode* code,
+                                      const char* name, int length) {
+  base::LockGuard<base::RecursiveMutex> guard_file(file_mutex_.Pointer());
+
+  if (perf_output_handle_ == nullptr) return;
+
+  WriteJitCodeLoadEntry(code->instructions().start(),
+                        code->instructions().length(), name, length);
+}
+
+void PerfJitLogger::WriteJitCodeLoadEntry(const uint8_t* code_pointer,
+                                          uint32_t code_size, const char* name,
+                                          int name_length) {
   static const char string_terminator[] = "\0";
 
   PerfJitCodeLoad code_load;
   code_load.event_ = PerfJitCodeLoad::kLoad;
-  code_load.size_ = sizeof(code_load) + length + 1 + code_size;
+  code_load.size_ = sizeof(code_load) + name_length + 1 + code_size;
   code_load.time_stamp_ = GetTimestamp();
   code_load.process_id_ =
       static_cast<uint32_t>(base::OS::GetCurrentProcessId());
   code_load.thread_id_ = static_cast<uint32_t>(base::OS::GetCurrentThreadId());
-  code_load.vma_ = 0x0;  //  Our addresses are absolute.
+  code_load.vma_ = reinterpret_cast<uint64_t>(code_pointer);
   code_load.code_address_ = reinterpret_cast<uint64_t>(code_pointer);
   code_load.code_size_ = code_size;
   code_load.code_id_ = code_index_;
@@ -243,7 +265,7 @@ void PerfJitLogger::LogRecordedBuffer(AbstractCode* abstract_code,
   code_index_++;
 
   LogWriteBytes(reinterpret_cast<const char*>(&code_load), sizeof(code_load));
-  LogWriteBytes(code_name, length);
+  LogWriteBytes(name, name_length);
   LogWriteBytes(string_terminator, 1);
   LogWriteBytes(reinterpret_cast<const char*>(code_pointer), code_size);
 }
@@ -288,6 +310,8 @@ void PerfJitLogger::LogWriteDebugInfo(Code* code, SharedFunctionInfo* shared) {
     entry_count++;
   }
   if (entry_count == 0) return;
+  // The WasmToJS wrapper stubs have source position entries.
+  if (!shared->HasSourceCode()) return;
   Handle<Script> script(Script::cast(shared->script()));
 
   PerfJitCodeDebugInfo debug_info;

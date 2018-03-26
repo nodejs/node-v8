@@ -92,7 +92,7 @@ MemoryPressureTask::MemoryPressureTask(Isolate* isolate,
 MemoryPressureTask::~MemoryPressureTask() {}
 
 void MemoryPressureTask::RunInternal() {
-  dispatcher_->AbortAll(CompilerDispatcher::BlockingBehavior::kDontBlock);
+  dispatcher_->AbortAll(BlockingBehavior::kDontBlock);
 }
 
 }  // namespace
@@ -520,15 +520,13 @@ void CompilerDispatcher::ScheduleMoreBackgroundTasksIfNeeded() {
   {
     base::LockGuard<base::Mutex> lock(&mutex_);
     if (pending_background_jobs_.empty()) return;
-    if (platform_->NumberOfAvailableBackgroundThreads() <=
-        num_background_tasks_) {
+    if (platform_->NumberOfWorkerThreads() <= num_background_tasks_) {
       return;
     }
     ++num_background_tasks_;
   }
-  platform_->CallOnBackgroundThread(
-      new BackgroundTask(isolate_, task_manager_.get(), this),
-      v8::Platform::kShortRunningTask);
+  platform_->CallOnWorkerThread(
+      new BackgroundTask(isolate_, task_manager_.get(), this));
 }
 
 void CompilerDispatcher::DoBackgroundWork() {

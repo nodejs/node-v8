@@ -226,6 +226,11 @@ consts_misc = [
         'value': 'NumberDictionaryShape::kPrefixSize' },
     { 'name': 'numberdictionaryshape_entry_size',
         'value': 'NumberDictionaryShape::kEntrySize' },
+
+    { 'name': 'simplenumberdictionaryshape_prefix_size',
+        'value': 'SimpleNumberDictionaryShape::kPrefixSize' },
+    { 'name': 'simplenumberdictionaryshape_entry_size',
+        'value': 'SimpleNumberDictionaryShape::kEntrySize' },
 ];
 
 #
@@ -260,8 +265,6 @@ extras_accessors = [
     'ExternalString, resource, Object, kResourceOffset',
     'SeqOneByteString, chars, char, kHeaderSize',
     'SeqTwoByteString, chars, char, kHeaderSize',
-    'SharedFunctionInfo, code, Code, kCodeOffset',
-    'SharedFunctionInfo, scope_info, ScopeInfo, kScopeInfoOffset',
     'SharedFunctionInfo, function_token_position, int, kFunctionTokenPositionOffset',
     'SharedFunctionInfo, start_position_and_type, int, kStartPositionAndTypeOffset',
     'SharedFunctionInfo, end_position, int, kEndPositionOffset',

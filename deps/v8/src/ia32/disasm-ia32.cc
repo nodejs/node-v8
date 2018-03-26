@@ -868,6 +868,11 @@ int DisassemblerIA32::AVXInstruction(byte* data) {
     int mod, regop, rm, vvvv = vex_vreg();
     get_modrm(*current, &mod, &regop, &rm);
     switch (opcode) {
+      case 0x51:
+        AppendToBuffer("vsqrtsd %s,%s,", NameOfXMMRegister(regop),
+                       NameOfXMMRegister(vvvv));
+        current += PrintRightXMMOperand(current);
+        break;
       case 0x58:
         AppendToBuffer("vaddsd %s,%s,", NameOfXMMRegister(regop),
                        NameOfXMMRegister(vvvv));
@@ -904,6 +909,11 @@ int DisassemblerIA32::AVXInstruction(byte* data) {
         AppendToBuffer(",%d", *reinterpret_cast<int8_t*>(current));
         current++;
         break;
+      case 0x7C:
+        AppendToBuffer("vhaddps %s,%s,", NameOfXMMRegister(regop),
+                       NameOfXMMRegister(vvvv));
+        current += PrintRightXMMOperand(current);
+        break;
       default:
         UnimplementedInstruction();
     }
@@ -911,6 +921,11 @@ int DisassemblerIA32::AVXInstruction(byte* data) {
     int mod, regop, rm, vvvv = vex_vreg();
     get_modrm(*current, &mod, &regop, &rm);
     switch (opcode) {
+      case 0x51:
+        AppendToBuffer("vsqrtss %s,%s,", NameOfXMMRegister(regop),
+                       NameOfXMMRegister(vvvv));
+        current += PrintRightXMMOperand(current);
+        break;
       case 0x58:
         AppendToBuffer("vaddss %s,%s,", NameOfXMMRegister(regop),
                        NameOfXMMRegister(vvvv));
@@ -2564,6 +2579,11 @@ int Disassembler::InstructionDecode(v8::internal::Vector<char> buffer,
   return d.InstructionDecode(buffer, instruction);
 }
 
+int Disassembler::InstructionDecodeForTesting(v8::internal::Vector<char> buffer,
+                                              byte* instruction) {
+  DisassemblerIA32 d(converter_, true /*crash if unimplemented*/);
+  return d.InstructionDecode(buffer, instruction);
+}
 
 // The IA-32 assembler does not currently use constant pools.
 int Disassembler::ConstantPoolSizeAt(byte* instruction) { return -1; }

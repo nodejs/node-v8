@@ -19,7 +19,8 @@ template <int kArrayLength>
 class CustomArgumentsBase : public Relocatable {
  public:
   virtual inline void IterateInstance(RootVisitor* v) {
-    v->VisitRootPointers(Root::kRelocatable, values_, values_ + kArrayLength);
+    v->VisitRootPointers(Root::kRelocatable, nullptr, values_,
+                         values_ + kArrayLength);
   }
 
  protected:
@@ -102,8 +103,9 @@ class PropertyCallbackArguments
   // -------------------------------------------------------------------------
   // Accessor Callbacks
   // Also used for AccessorSetterCallback.
-  inline void CallAccessorSetter(Handle<AccessorInfo> info, Handle<Name> name,
-                                 Handle<Object> value);
+  inline Handle<Object> CallAccessorSetter(Handle<AccessorInfo> info,
+                                           Handle<Name> name,
+                                           Handle<Object> value);
   // Also used for AccessorGetterCallback, AccessorNameGetterCallback.
   inline Handle<Object> CallAccessorGetter(Handle<AccessorInfo> info,
                                            Handle<Name> name);
@@ -117,9 +119,6 @@ class PropertyCallbackArguments
   inline Handle<Object> CallNamedSetter(Handle<InterceptorInfo> interceptor,
                                         Handle<Name> name,
                                         Handle<Object> value);
-  inline Handle<Object> CallNamedSetterCallback(
-      GenericNamedPropertySetterCallback callback, Handle<Name> name,
-      Handle<Object> value);
   inline Handle<Object> CallNamedDefiner(Handle<InterceptorInfo> interceptor,
                                          Handle<Name> name,
                                          const v8::PropertyDescriptor& desc);
@@ -159,15 +158,16 @@ class PropertyCallbackArguments
       Handle<InterceptorInfo> interceptor);
 
   inline Handle<Object> BasicCallIndexedGetterCallback(
-      IndexedPropertyGetterCallback f, uint32_t index);
+      IndexedPropertyGetterCallback f, uint32_t index, Handle<Object> info);
   inline Handle<Object> BasicCallNamedGetterCallback(
-      GenericNamedPropertyGetterCallback f, Handle<Name> name);
+      GenericNamedPropertyGetterCallback f, Handle<Name> name,
+      Handle<Object> info);
 
   inline JSObject* holder() {
     return JSObject::cast(this->begin()[T::kHolderIndex]);
   }
 
-  bool PerformSideEffectCheck(Isolate* isolate, Address function);
+  bool PerformSideEffectCheck(Isolate* isolate, Handle<Object> callback_info);
 
   // Don't copy PropertyCallbackArguments, because they would both have the
   // same prev_ pointer.
@@ -215,9 +215,13 @@ class FunctionCallbackArguments
    * and used if it's been set to anything inside the callback.
    * New style callbacks always use the return value.
    */
-  Handle<Object> Call(FunctionCallback f);
+  Handle<Object> Call(CallHandlerInfo* handler);
 
  private:
+  inline JSObject* holder() {
+    return JSObject::cast(this->begin()[T::kHolderIndex]);
+  }
+
   internal::Object** argv_;
   int argc_;
 };

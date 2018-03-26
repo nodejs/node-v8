@@ -137,7 +137,8 @@ struct ValueTypePair {
 } kValueTypes[] = {{kLocalI32, kWasmI32},
                    {kLocalI64, kWasmI64},
                    {kLocalF32, kWasmF32},
-                   {kLocalF64, kWasmF64}};
+                   {kLocalF64, kWasmF64},
+                   {kLocalAnyRef, kWasmAnyRef}};
 
 class WasmModuleVerifyTest : public TestWithIsolateAndZone {
  public:
@@ -894,7 +895,17 @@ TEST_F(WasmModuleVerifyTest, IndirectFunctionInvalidIndex) {
   EXPECT_FAILURE(data);
 }
 
-class WasmSignatureDecodeTest : public TestWithZone {};
+class WasmSignatureDecodeTest : public TestWithZone {
+ public:
+  WasmSignatureDecodeTest()
+      // In the following tests we turn on support for AnyRef by default. There
+      // is a test (Fail_anyref_without_flag) which explicitly turns off support
+      // for AnyRef.
+      : flag_scope(&FLAG_experimental_wasm_anyref, true) {}
+
+ private:
+  FlagScope<bool> flag_scope;
+};
 
 TEST_F(WasmSignatureDecodeTest, Ok_v_v) {
   static const byte data[] = {SIG_ENTRY_v_v};
@@ -1010,6 +1021,19 @@ TEST_F(WasmSignatureDecodeTest, Fail_off_end) {
   }
 }
 
+TEST_F(WasmSignatureDecodeTest, Fail_anyref_without_flag) {
+  // Disable AnyRef support and check that decoding fails.
+  FlagScope<bool> flag_scope(&FLAG_experimental_wasm_anyref, false);
+  byte kInvalidType = kLocalAnyRef;
+  for (size_t i = 0; i < SIZEOF_SIG_ENTRY_x_xx; i++) {
+    byte data[] = {SIG_ENTRY_x_xx(kLocalI32, kLocalI32, kLocalI32)};
+    data[i] = kInvalidType;
+    FunctionSig* sig =
+        DecodeWasmSignatureForTesting(zone(), data, data + sizeof(data));
+    EXPECT_EQ(nullptr, sig);
+  }
+}
+
 TEST_F(WasmSignatureDecodeTest, Fail_invalid_type) {
   byte kInvalidType = 76;
   for (size_t i = 0; i < SIZEOF_SIG_ENTRY_x_xx; i++) {
@@ -1075,7 +1099,6 @@ TEST_F(WasmFunctionVerifyTest, Ok_v_v_empty) {
     WasmFunction* function = result.val.get();
     EXPECT_EQ(0u, function->sig->parameter_count());
     EXPECT_EQ(0u, function->sig->return_count());
-    EXPECT_EQ(0u, function->name.offset());
     EXPECT_EQ(static_cast<uint32_t>(SIZEOF_SIG_ENTRY_v_v),
               function->code.offset());
     EXPECT_EQ(sizeof(data), function->code.end_offset());

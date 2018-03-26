@@ -58,6 +58,7 @@ String16 consoleAPITypeValue(ConsoleAPIType type) {
   return protocol::Runtime::ConsoleAPICalled::TypeEnum::Log;
 }
 
+const char kGlobalConsoleMessageHandleLabel[] = "DevTools console";
 const unsigned maxConsoleMessageCount = 1000;
 const int maxConsoleMessageV8Size = 10 * 1024 * 1024;
 const unsigned maxArrayItemsLimit = 10000;
@@ -91,6 +92,9 @@ class V8ValueStringBuilder {
     if (value->IsString()) return append(v8::Local<v8::String>::Cast(value));
     if (value->IsStringObject())
       return append(v8::Local<v8::StringObject>::Cast(value)->ValueOf());
+    if (value->IsBigInt()) return append(v8::Local<v8::BigInt>::Cast(value));
+    if (value->IsBigIntObject())
+      return append(v8::Local<v8::BigIntObject>::Cast(value)->ValueOf());
     if (value->IsSymbol()) return append(v8::Local<v8::Symbol>::Cast(value));
     if (value->IsSymbolObject())
       return append(v8::Local<v8::SymbolObject>::Cast(value)->ValueOf());
@@ -152,6 +156,13 @@ class V8ValueStringBuilder {
     m_builder.append("Symbol(");
     bool result = append(symbol->Name(), IgnoreUndefined);
     m_builder.append(')');
+    return result;
+  }
+
+  bool append(v8::Local<v8::BigInt> bigint) {
+    bool result = append(bigint->ToString());
+    if (m_tryCatch.HasCaught()) return false;
+    m_builder.append('n');
     return result;
   }
 
@@ -379,8 +390,10 @@ std::unique_ptr<V8ConsoleMessage> V8ConsoleMessage::createForConsoleAPI(
   message->m_type = type;
   message->m_contextId = contextId;
   for (size_t i = 0; i < arguments.size(); ++i) {
-    message->m_arguments.push_back(std::unique_ptr<v8::Global<v8::Value>>(
-        new v8::Global<v8::Value>(isolate, arguments.at(i))));
+    std::unique_ptr<v8::Global<v8::Value>> argument(
+        new v8::Global<v8::Value>(isolate, arguments.at(i)));
+    argument->AnnotateStrongRetainer(kGlobalConsoleMessageHandleLabel);
+    message->m_arguments.push_back(std::move(argument));
     message->m_v8Size +=
         v8::debug::EstimatedValueSize(isolate, arguments.at(i));
   }

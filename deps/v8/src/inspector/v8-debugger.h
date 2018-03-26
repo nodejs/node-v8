@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef V8_INSPECTOR_V8DEBUGGER_H_
-#define V8_INSPECTOR_V8DEBUGGER_H_
+#ifndef V8_INSPECTOR_V8_DEBUGGER_H_
+#define V8_INSPECTOR_V8_DEBUGGER_H_
 
 #include <list>
 #include <unordered_map>
@@ -32,6 +32,8 @@ struct V8StackTraceId;
 using protocol::Response;
 using ScheduleStepIntoAsyncCallback =
     protocol::Debugger::Backend::ScheduleStepIntoAsyncCallback;
+using TerminateExecutionCallback =
+    protocol::Runtime::Backend::TerminateExecutionCallback;
 
 class V8Debugger : public v8::debug::DebugDelegate {
  public:
@@ -59,6 +61,8 @@ class V8Debugger : public v8::debug::DebugDelegate {
       int targetContextGroupId);
   void pauseOnAsyncCall(int targetContextGroupId, uintptr_t task,
                         const String16& debuggerId);
+
+  void terminateExecution(std::unique_ptr<TerminateExecutionCallback> callback);
 
   Response continueToLocation(int targetContextGroupId,
                               V8DebuggerScript* script,
@@ -132,6 +136,7 @@ class V8Debugger : public v8::debug::DebugDelegate {
   bool shouldContinueToCurrentLocation();
 
   static void v8OOMCallback(void* data);
+  static void terminateExecutionCompletedCallback(v8::Isolate* isolate);
 
   void handleProgramBreak(
       v8::Local<v8::Context> pausedContext, v8::Local<v8::Value> exception,
@@ -169,7 +174,6 @@ class V8Debugger : public v8::debug::DebugDelegate {
                       bool has_compile_error) override;
   void BreakProgramRequested(
       v8::Local<v8::Context> paused_context, v8::Local<v8::Object>,
-      v8::Local<v8::Value>,
       const std::vector<v8::debug::BreakpointId>& break_points_hit) override;
   void ExceptionThrown(v8::Local<v8::Context> paused_context,
                        v8::Local<v8::Object>, v8::Local<v8::Value> exception,
@@ -233,6 +237,8 @@ class V8Debugger : public v8::debug::DebugDelegate {
   protocol::HashMap<String16, std::pair<int64_t, int64_t>>
       m_serializedDebuggerIdToDebuggerId;
 
+  std::unique_ptr<TerminateExecutionCallback> m_terminateExecutionCallback;
+
   WasmTranslation m_wasmTranslation;
 
   DISALLOW_COPY_AND_ASSIGN(V8Debugger);
@@ -240,4 +246,4 @@ class V8Debugger : public v8::debug::DebugDelegate {
 
 }  // namespace v8_inspector
 
-#endif  // V8_INSPECTOR_V8DEBUGGER_H_
+#endif  // V8_INSPECTOR_V8_DEBUGGER_H_

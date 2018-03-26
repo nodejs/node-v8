@@ -1020,6 +1020,14 @@
     }                                                                      \
   } while (0)
 
+// Macro for getting the real base::TimeTicks::Now() which can be overridden in
+// headless when VirtualTime is enabled.
+#define TRACE_TIME_TICKS_NOW() INTERNAL_TRACE_TIME_TICKS_NOW()
+
+// Macro for getting the real base::Time::Now() which can be overridden in
+// headless when VirtualTime is enabled.
+#define TRACE_TIME_NOW() INTERNAL_TRACE_TIME_NOW()
+
 // Notes regarding the following definitions:
 // New values can be added and propagated to third party libraries, but existing
 // definitions must never be changed, because third party libraries may use old

@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef V8_WASM_OPCODES_H_
-#define V8_WASM_OPCODES_H_
+#ifndef V8_WASM_WASM_OPCODES_H_
+#define V8_WASM_WASM_OPCODES_H_
 
 #include "src/globals.h"
 #include "src/machine-type.h"
@@ -23,6 +23,7 @@ constexpr ValueType kWasmI32 = MachineRepresentation::kWord32;
 constexpr ValueType kWasmI64 = MachineRepresentation::kWord64;
 constexpr ValueType kWasmF32 = MachineRepresentation::kFloat32;
 constexpr ValueType kWasmF64 = MachineRepresentation::kFloat64;
+constexpr ValueType kWasmAnyRef = MachineRepresentation::kTaggedPointer;
 constexpr ValueType kWasmS128 = MachineRepresentation::kSimd128;
 constexpr ValueType kWasmVar = MachineRepresentation::kTagged;
 
@@ -65,7 +66,8 @@ using WasmName = Vector<const char>;
   V(I32Const, 0x41, _)         \
   V(I64Const, 0x42, _)         \
   V(F32Const, 0x43, _)         \
-  V(F64Const, 0x44, _)
+  V(F64Const, 0x44, _)         \
+  V(RefNull, 0xd0, _)
 
 // Load memory expressions.
 #define FOREACH_LOAD_MEM_OPCODE(V) \
@@ -225,41 +227,48 @@ using WasmName = Vector<const char>;
   V(I32ReinterpretF32, 0xbc, i_f) \
   V(I64ReinterpretF64, 0xbd, l_d) \
   V(F32ReinterpretI32, 0xbe, f_i) \
-  V(F64ReinterpretI64, 0xbf, d_l)
+  V(F64ReinterpretI64, 0xbf, d_l) \
+  V(I32SExtendI8, 0xc0, i_i)      \
+  V(I32SExtendI16, 0xc1, i_i)     \
+  V(I64SExtendI8, 0xc2, l_l)      \
+  V(I64SExtendI16, 0xc3, l_l)     \
+  V(I64SExtendI32, 0xc4, l_l)     \
+  V(RefIsNull, 0xd1, i_r)         \
+  V(RefEq, 0xd2, i_rr)
 
 // For compatibility with Asm.js.
 #define FOREACH_ASMJS_COMPAT_OPCODE(V) \
-  V(F64Acos, 0xc2, d_d)                \
-  V(F64Asin, 0xc3, d_d)                \
-  V(F64Atan, 0xc4, d_d)                \
-  V(F64Cos, 0xc5, d_d)                 \
-  V(F64Sin, 0xc6, d_d)                 \
-  V(F64Tan, 0xc7, d_d)                 \
-  V(F64Exp, 0xc8, d_d)                 \
-  V(F64Log, 0xc9, d_d)                 \
-  V(F64Atan2, 0xca, d_dd)              \
-  V(F64Pow, 0xcb, d_dd)                \
-  V(F64Mod, 0xcc, d_dd)                \
-  V(I32AsmjsDivS, 0xd0, i_ii)          \
-  V(I32AsmjsDivU, 0xd1, i_ii)          \
-  V(I32AsmjsRemS, 0xd2, i_ii)          \
-  V(I32AsmjsRemU, 0xd3, i_ii)          \
-  V(I32AsmjsLoadMem8S, 0xd4, i_i)      \
-  V(I32AsmjsLoadMem8U, 0xd5, i_i)      \
-  V(I32AsmjsLoadMem16S, 0xd6, i_i)     \
-  V(I32AsmjsLoadMem16U, 0xd7, i_i)     \
-  V(I32AsmjsLoadMem, 0xd8, i_i)        \
-  V(F32AsmjsLoadMem, 0xd9, f_i)        \
-  V(F64AsmjsLoadMem, 0xda, d_i)        \
-  V(I32AsmjsStoreMem8, 0xdb, i_ii)     \
-  V(I32AsmjsStoreMem16, 0xdc, i_ii)    \
-  V(I32AsmjsStoreMem, 0xdd, i_ii)      \
-  V(F32AsmjsStoreMem, 0xde, f_if)      \
-  V(F64AsmjsStoreMem, 0xdf, d_id)      \
-  V(I32AsmjsSConvertF32, 0xe0, i_f)    \
-  V(I32AsmjsUConvertF32, 0xe1, i_f)    \
-  V(I32AsmjsSConvertF64, 0xe2, i_d)    \
-  V(I32AsmjsUConvertF64, 0xe3, i_d)
+  V(F64Acos, 0xc5, d_d)                \
+  V(F64Asin, 0xc6, d_d)                \
+  V(F64Atan, 0xc7, d_d)                \
+  V(F64Cos, 0xc8, d_d)                 \
+  V(F64Sin, 0xc9, d_d)                 \
+  V(F64Tan, 0xca, d_d)                 \
+  V(F64Exp, 0xcb, d_d)                 \
+  V(F64Log, 0xcc, d_d)                 \
+  V(F64Atan2, 0xcd, d_dd)              \
+  V(F64Pow, 0xce, d_dd)                \
+  V(F64Mod, 0xcf, d_dd)                \
+  V(I32AsmjsDivS, 0xd3, i_ii)          \
+  V(I32AsmjsDivU, 0xd4, i_ii)          \
+  V(I32AsmjsRemS, 0xd5, i_ii)          \
+  V(I32AsmjsRemU, 0xd6, i_ii)          \
+  V(I32AsmjsLoadMem8S, 0xd7, i_i)      \
+  V(I32AsmjsLoadMem8U, 0xd8, i_i)      \
+  V(I32AsmjsLoadMem16S, 0xd9, i_i)     \
+  V(I32AsmjsLoadMem16U, 0xda, i_i)     \
+  V(I32AsmjsLoadMem, 0xdb, i_i)        \
+  V(F32AsmjsLoadMem, 0xdc, f_i)        \
+  V(F64AsmjsLoadMem, 0xdd, d_i)        \
+  V(I32AsmjsStoreMem8, 0xde, i_ii)     \
+  V(I32AsmjsStoreMem16, 0xdf, i_ii)    \
+  V(I32AsmjsStoreMem, 0xe0, i_ii)      \
+  V(F32AsmjsStoreMem, 0xe1, f_if)      \
+  V(F64AsmjsStoreMem, 0xe2, d_id)      \
+  V(I32AsmjsSConvertF32, 0xe3, i_f)    \
+  V(I32AsmjsUConvertF32, 0xe4, i_f)    \
+  V(I32AsmjsSConvertF64, 0xe5, i_d)    \
+  V(I32AsmjsUConvertF64, 0xe6, i_d)
 
 #define FOREACH_SIMD_0_OPERAND_OPCODE(V) \
   V(F32x4Splat, 0xfd00, s_f)             \
@@ -403,37 +412,76 @@ using WasmName = Vector<const char>;
   V(I32SConvertSatF32, 0xfc00, i_f) \
   V(I32UConvertSatF32, 0xfc01, i_f) \
   V(I32SConvertSatF64, 0xfc02, i_d) \
-  V(I32UConvertSatF64, 0xfc03, i_d)
-// TODO(kschimpf): Add remaining i64 numeric opcodes.
+  V(I32UConvertSatF64, 0xfc03, i_d) \
+  V(I64SConvertSatF32, 0xfc04, l_f) \
+  V(I64UConvertSatF32, 0xfc05, l_f) \
+  V(I64SConvertSatF64, 0xfc06, l_d) \
+  V(I64UConvertSatF64, 0xfc07, l_d)
 
-#define FOREACH_ATOMIC_OPCODE(V)               \
-  V(I32AtomicLoad, 0xfe10, i_i)                \
-  V(I32AtomicLoad8U, 0xfe12, i_i)              \
-  V(I32AtomicLoad16U, 0xfe13, i_i)             \
-  V(I32AtomicStore, 0xfe17, v_ii)              \
-  V(I32AtomicStore8U, 0xfe19, v_ii)            \
-  V(I32AtomicStore16U, 0xfe1a, v_ii)           \
-  V(I32AtomicAdd, 0xfe1e, i_ii)                \
-  V(I32AtomicAdd8U, 0xfe20, i_ii)              \
-  V(I32AtomicAdd16U, 0xfe21, i_ii)             \
-  V(I32AtomicSub, 0xfe25, i_ii)                \
-  V(I32AtomicSub8U, 0xfe27, i_ii)              \
-  V(I32AtomicSub16U, 0xfe28, i_ii)             \
-  V(I32AtomicAnd, 0xfe2c, i_ii)                \
-  V(I32AtomicAnd8U, 0xfe2e, i_ii)              \
-  V(I32AtomicAnd16U, 0xfe2f, i_ii)             \
-  V(I32AtomicOr, 0xfe33, i_ii)                 \
-  V(I32AtomicOr8U, 0xfe35, i_ii)               \
-  V(I32AtomicOr16U, 0xfe36, i_ii)              \
-  V(I32AtomicXor, 0xfe3a, i_ii)                \
-  V(I32AtomicXor8U, 0xfe3c, i_ii)              \
-  V(I32AtomicXor16U, 0xfe3d, i_ii)             \
-  V(I32AtomicExchange, 0xfe41, i_ii)           \
-  V(I32AtomicExchange8U, 0xfe43, i_ii)         \
-  V(I32AtomicExchange16U, 0xfe44, i_ii)        \
-  V(I32AtomicCompareExchange, 0xfe48, i_iii)   \
-  V(I32AtomicCompareExchange8U, 0xfe4a, i_iii) \
-  V(I32AtomicCompareExchange16U, 0xfe4b, i_iii)
+#define FOREACH_ATOMIC_OPCODE(V)                \
+  V(I32AtomicLoad, 0xfe10, i_i)                 \
+  V(I64AtomicLoad, 0xfe11, l_i)                 \
+  V(I32AtomicLoad8U, 0xfe12, i_i)               \
+  V(I32AtomicLoad16U, 0xfe13, i_i)              \
+  V(I64AtomicLoad8U, 0xfe14, l_i)               \
+  V(I64AtomicLoad16U, 0xfe15, l_i)              \
+  V(I64AtomicLoad32U, 0xfe16, l_i)              \
+  V(I32AtomicStore, 0xfe17, v_ii)               \
+  V(I64AtomicStore, 0xfe18, v_il)               \
+  V(I32AtomicStore8U, 0xfe19, v_ii)             \
+  V(I32AtomicStore16U, 0xfe1a, v_ii)            \
+  V(I64AtomicStore8U, 0xfe1b, v_il)             \
+  V(I64AtomicStore16U, 0xfe1c, v_il)            \
+  V(I64AtomicStore32U, 0xfe1d, v_il)            \
+  V(I32AtomicAdd, 0xfe1e, i_ii)                 \
+  V(I64AtomicAdd, 0xfe1f, l_il)                 \
+  V(I32AtomicAdd8U, 0xfe20, i_ii)               \
+  V(I32AtomicAdd16U, 0xfe21, i_ii)              \
+  V(I64AtomicAdd8U, 0xfe22, l_il)               \
+  V(I64AtomicAdd16U, 0xfe23, l_il)              \
+  V(I64AtomicAdd32U, 0xfe24, l_il)              \
+  V(I32AtomicSub, 0xfe25, i_ii)                 \
+  V(I64AtomicSub, 0xfe26, l_il)                 \
+  V(I32AtomicSub8U, 0xfe27, i_ii)               \
+  V(I32AtomicSub16U, 0xfe28, i_ii)              \
+  V(I64AtomicSub8U, 0xfe29, l_il)               \
+  V(I64AtomicSub16U, 0xfe2a, l_il)              \
+  V(I64AtomicSub32U, 0xfe2b, l_il)              \
+  V(I32AtomicAnd, 0xfe2c, i_ii)                 \
+  V(I64AtomicAnd, 0xfe2d, l_il)                 \
+  V(I32AtomicAnd8U, 0xfe2e, i_ii)               \
+  V(I32AtomicAnd16U, 0xfe2f, i_ii)              \
+  V(I64AtomicAnd8U, 0xfe30, l_il)               \
+  V(I64AtomicAnd16U, 0xfe31, l_il)              \
+  V(I64AtomicAnd32U, 0xfe32, l_il)              \
+  V(I32AtomicOr, 0xfe33, i_ii)                  \
+  V(I64AtomicOr, 0xfe34, l_il)                  \
+  V(I32AtomicOr8U, 0xfe35, i_ii)                \
+  V(I32AtomicOr16U, 0xfe36, i_ii)               \
+  V(I64AtomicOr8U, 0xfe37, l_il)                \
+  V(I64AtomicOr16U, 0xfe38, l_il)               \
+  V(I64AtomicOr32U, 0xfe39, l_il)               \
+  V(I32AtomicXor, 0xfe3a, i_ii)                 \
+  V(I64AtomicXor, 0xfe3b, l_il)                 \
+  V(I32AtomicXor8U, 0xfe3c, i_ii)               \
+  V(I32AtomicXor16U, 0xfe3d, i_ii)              \
+  V(I64AtomicXor8U, 0xfe3e, l_il)               \
+  V(I64AtomicXor16U, 0xfe3f, l_il)              \
+  V(I64AtomicXor32U, 0xfe40, l_il)              \
+  V(I32AtomicExchange, 0xfe41, i_ii)            \
+  V(I64AtomicExchange, 0xfe42, l_il)            \
+  V(I32AtomicExchange8U, 0xfe43, i_ii)          \
+  V(I32AtomicExchange16U, 0xfe44, i_ii)         \
+  V(I64AtomicExchange8U, 0xfe45, l_il)          \
+  V(I64AtomicExchange16U, 0xfe46, l_il)         \
+  V(I64AtomicExchange32U, 0xfe47, l_il)         \
+  V(I32AtomicCompareExchange, 0xfe48, i_iii)    \
+  V(I64AtomicCompareExchange, 0xfe49, l_ill)    \
+  V(I32AtomicCompareExchange8U, 0xfe4a, i_iii)  \
+  V(I32AtomicCompareExchange16U, 0xfe4b, i_iii) \
+  V(I64AtomicCompareExchange8U, 0xfe4c, l_ill)  \
+  V(I64AtomicCompareExchange16U, 0xfe4d, l_ill) \
+  V(I64AtomicCompareExchange32U, 0xfe4e, l_ill)
 
 // All opcodes.
 #define FOREACH_OPCODE(V)             \
@@ -452,39 +500,43 @@ using WasmName = Vector<const char>;
   FOREACH_NUMERIC_OPCODE(V)
 
 // All signatures.
-#define FOREACH_SIGNATURE(V)             \
-  FOREACH_SIMD_SIGNATURE(V)              \
-  V(i_ii, kWasmI32, kWasmI32, kWasmI32)  \
-  V(i_i, kWasmI32, kWasmI32)             \
-  V(i_v, kWasmI32)                       \
-  V(i_ff, kWasmI32, kWasmF32, kWasmF32)  \
-  V(i_f, kWasmI32, kWasmF32)             \
-  V(i_dd, kWasmI32, kWasmF64, kWasmF64)  \
-  V(i_d, kWasmI32, kWasmF64)             \
-  V(i_l, kWasmI32, kWasmI64)             \
-  V(l_ll, kWasmI64, kWasmI64, kWasmI64)  \
-  V(i_ll, kWasmI32, kWasmI64, kWasmI64)  \
-  V(l_l, kWasmI64, kWasmI64)             \
-  V(l_i, kWasmI64, kWasmI32)             \
-  V(l_f, kWasmI64, kWasmF32)             \
-  V(l_d, kWasmI64, kWasmF64)             \
-  V(f_ff, kWasmF32, kWasmF32, kWasmF32)  \
-  V(f_f, kWasmF32, kWasmF32)             \
-  V(f_d, kWasmF32, kWasmF64)             \
-  V(f_i, kWasmF32, kWasmI32)             \
-  V(f_l, kWasmF32, kWasmI64)             \
-  V(d_dd, kWasmF64, kWasmF64, kWasmF64)  \
-  V(d_d, kWasmF64, kWasmF64)             \
-  V(d_f, kWasmF64, kWasmF32)             \
-  V(d_i, kWasmF64, kWasmI32)             \
-  V(d_l, kWasmF64, kWasmI64)             \
-  V(v_ii, kWasmStmt, kWasmI32, kWasmI32) \
-  V(v_id, kWasmStmt, kWasmI32, kWasmF64) \
-  V(d_id, kWasmF64, kWasmI32, kWasmF64)  \
-  V(v_if, kWasmStmt, kWasmI32, kWasmF32) \
-  V(f_if, kWasmF32, kWasmI32, kWasmF32)  \
-  V(v_il, kWasmI64, kWasmI32, kWasmI64)  \
-  V(i_iii, kWasmI32, kWasmI32, kWasmI32, kWasmI32)
+#define FOREACH_SIGNATURE(V)                       \
+  FOREACH_SIMD_SIGNATURE(V)                        \
+  V(i_ii, kWasmI32, kWasmI32, kWasmI32)            \
+  V(i_i, kWasmI32, kWasmI32)                       \
+  V(i_v, kWasmI32)                                 \
+  V(i_ff, kWasmI32, kWasmF32, kWasmF32)            \
+  V(i_f, kWasmI32, kWasmF32)                       \
+  V(i_dd, kWasmI32, kWasmF64, kWasmF64)            \
+  V(i_d, kWasmI32, kWasmF64)                       \
+  V(i_l, kWasmI32, kWasmI64)                       \
+  V(l_ll, kWasmI64, kWasmI64, kWasmI64)            \
+  V(i_ll, kWasmI32, kWasmI64, kWasmI64)            \
+  V(l_l, kWasmI64, kWasmI64)                       \
+  V(l_i, kWasmI64, kWasmI32)                       \
+  V(l_f, kWasmI64, kWasmF32)                       \
+  V(l_d, kWasmI64, kWasmF64)                       \
+  V(f_ff, kWasmF32, kWasmF32, kWasmF32)            \
+  V(f_f, kWasmF32, kWasmF32)                       \
+  V(f_d, kWasmF32, kWasmF64)                       \
+  V(f_i, kWasmF32, kWasmI32)                       \
+  V(f_l, kWasmF32, kWasmI64)                       \
+  V(d_dd, kWasmF64, kWasmF64, kWasmF64)            \
+  V(d_d, kWasmF64, kWasmF64)                       \
+  V(d_f, kWasmF64, kWasmF32)                       \
+  V(d_i, kWasmF64, kWasmI32)                       \
+  V(d_l, kWasmF64, kWasmI64)                       \
+  V(v_ii, kWasmStmt, kWasmI32, kWasmI32)           \
+  V(v_id, kWasmStmt, kWasmI32, kWasmF64)           \
+  V(d_id, kWasmF64, kWasmI32, kWasmF64)            \
+  V(v_if, kWasmStmt, kWasmI32, kWasmF32)           \
+  V(f_if, kWasmF32, kWasmI32, kWasmF32)            \
+  V(v_il, kWasmStmt, kWasmI32, kWasmI64)           \
+  V(l_il, kWasmI64, kWasmI32, kWasmI64)            \
+  V(i_iii, kWasmI32, kWasmI32, kWasmI32, kWasmI32) \
+  V(l_ill, kWasmI64, kWasmI32, kWasmI64, kWasmI64) \
+  V(i_r, kWasmI32, kWasmAnyRef)                    \
+  V(i_rr, kWasmI32, kWasmAnyRef, kWasmAnyRef)
 
 #define FOREACH_SIMD_SIGNATURE(V)          \
   V(s_s, kWasmS128, kWasmS128)             \
@@ -565,6 +617,21 @@ class LoadType {
   constexpr ValueType value_type() const { return kValueType[val_]; }
   constexpr MachineType mem_type() const { return kMemType[val_]; }
 
+  static LoadType ForValueType(ValueType type) {
+    switch (type) {
+      case kWasmI32:
+        return kI32Load;
+      case kWasmI64:
+        return kI64Load;
+      case kWasmF32:
+        return kF32Load;
+      case kWasmF64:
+        return kF64Load;
+      default:
+        UNREACHABLE();
+    }
+  }
+
  private:
   const LoadTypeValue val_;
 
@@ -617,6 +684,21 @@ class StoreType {
   constexpr ValueType value_type() const { return kValueType[val_]; }
   constexpr ValueType mem_rep() const { return kMemRep[val_]; }
 
+  static StoreType ForValueType(ValueType type) {
+    switch (type) {
+      case kWasmI32:
+        return kI32Store;
+      case kWasmI64:
+        return kI64Store;
+      case kWasmF32:
+        return kF32Store;
+      case kWasmF64:
+        return kF64Store;
+      default:
+        UNREACHABLE();
+    }
+  }
+
  private:
   const StoreTypeValue val_;
 
@@ -647,6 +729,8 @@ class V8_EXPORT_PRIVATE WasmOpcodes {
   static FunctionSig* AsmjsSignature(WasmOpcode opcode);
   static bool IsPrefixOpcode(WasmOpcode opcode);
   static bool IsControlOpcode(WasmOpcode opcode);
+  static bool IsSignExtensionOpcode(WasmOpcode opcode);
+  static bool IsAnyRefOpcode(WasmOpcode opcode);
   // Check whether the given opcode always jumps, i.e. all instructions after
   // this one in the current block are dead. Returns false for |end|.
   static bool IsUnconditionalJump(WasmOpcode opcode);
@@ -672,6 +756,8 @@ class V8_EXPORT_PRIVATE WasmOpcodes {
         return kLocalF64;
       case kWasmS128:
         return kLocalS128;
+      case kWasmAnyRef:
+        return kLocalAnyRef;
       case kWasmStmt:
         return kLocalVoid;
       default:
@@ -689,6 +775,8 @@ class V8_EXPORT_PRIVATE WasmOpcodes {
         return MachineType::Float32();
       case kWasmF64:
         return MachineType::Float64();
+      case kWasmAnyRef:
+        return MachineType::TaggedPointer();
       case kWasmS128:
         return MachineType::Simd128();
       case kWasmStmt:
@@ -710,6 +798,8 @@ class V8_EXPORT_PRIVATE WasmOpcodes {
         return kWasmF32;
       case MachineRepresentation::kFloat64:
         return kWasmF64;
+      case MachineRepresentation::kTaggedPointer:
+        return kWasmAnyRef;
       case MachineRepresentation::kSimd128:
         return kWasmS128;
       default:
@@ -727,6 +817,8 @@ class V8_EXPORT_PRIVATE WasmOpcodes {
         return 'f';
       case kWasmF64:
         return 'd';
+      case kWasmAnyRef:
+        return 'r';
       case kWasmS128:
         return 's';
       case kWasmStmt:
@@ -748,6 +840,8 @@ class V8_EXPORT_PRIVATE WasmOpcodes {
         return "f32";
       case kWasmF64:
         return "f64";
+      case kWasmAnyRef:
+        return "ref";
       case kWasmS128:
         return "s128";
       case kWasmStmt:
@@ -793,4 +887,4 @@ struct WasmInitExpr {
 }  // namespace internal
 }  // namespace v8
 
-#endif  // V8_WASM_OPCODES_H_
+#endif  // V8_WASM_WASM_OPCODES_H_

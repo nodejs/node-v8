@@ -2,13 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef V8_CALL_INTERFACE_DESCRIPTOR_H_
-#define V8_CALL_INTERFACE_DESCRIPTOR_H_
+#ifndef V8_INTERFACE_DESCRIPTORS_H_
+#define V8_INTERFACE_DESCRIPTORS_H_
 
 #include <memory>
 
 #include "src/assembler.h"
 #include "src/globals.h"
+#include "src/isolate.h"
 #include "src/macro-assembler.h"
 
 namespace v8 {
@@ -30,7 +31,6 @@ class PlatformInterfaceDescriptor;
   V(StoreTransition)                  \
   V(StoreGlobal)                      \
   V(StoreGlobalWithVector)            \
-  V(FastNewClosure)                   \
   V(FastNewFunctionContext)           \
   V(FastNewObject)                    \
   V(FastNewArguments)                 \
@@ -63,6 +63,7 @@ class PlatformInterfaceDescriptor;
   V(BinaryOp)                         \
   V(StringAdd)                        \
   V(StringAt)                         \
+  V(StringSubstring)                  \
   V(ForInPrepare)                     \
   V(GetProperty)                      \
   V(ArgumentAdaptor)                  \
@@ -80,6 +81,7 @@ class PlatformInterfaceDescriptor;
   V(FrameDropperTrampoline)           \
   V(WasmRuntimeCall)                  \
   V(RunMicrotasks)                    \
+  V(PromiseReactionHandler)           \
   BUILTIN_LIST_TFS(V)
 
 class V8_EXPORT_PRIVATE CallInterfaceDescriptorData {
@@ -514,12 +516,6 @@ class LoadGlobalWithVectorDescriptor : public LoadGlobalDescriptor {
   }
 };
 
-class FastNewClosureDescriptor : public CallInterfaceDescriptor {
- public:
-  DEFINE_PARAMETERS(kSharedFunctionInfo, kVector, kSlot)
-  DECLARE_DESCRIPTOR(FastNewClosureDescriptor, CallInterfaceDescriptor)
-};
-
 class FastNewFunctionContextDescriptor : public CallInterfaceDescriptor {
  public:
   DEFINE_PARAMETERS(kFunction, kSlots)
@@ -661,7 +657,9 @@ class ConstructStubDescriptor : public CallInterfaceDescriptor {
                                                CallInterfaceDescriptor)
 };
 
-
+// This descriptor is also used by DebugBreakTrampoline because it handles both
+// regular function calls and construct calls, and we need to pass new.target
+// for the latter.
 class ConstructTrampolineDescriptor : public CallInterfaceDescriptor {
  public:
   DEFINE_PARAMETERS(kFunction, kNewTarget, kActualArgumentsCount)
@@ -767,6 +765,13 @@ class StringAtDescriptor final : public CallInterfaceDescriptor {
  public:
   DEFINE_PARAMETERS(kReceiver, kPosition)
   DECLARE_DESCRIPTOR_WITH_CUSTOM_FUNCTION_TYPE(StringAtDescriptor,
+                                               CallInterfaceDescriptor)
+};
+
+class StringSubstringDescriptor final : public CallInterfaceDescriptor {
+ public:
+  DEFINE_PARAMETERS(kString, kFrom, kTo)
+  DECLARE_DESCRIPTOR_WITH_CUSTOM_FUNCTION_TYPE(StringSubstringDescriptor,
                                                CallInterfaceDescriptor)
 };
 
@@ -884,6 +889,13 @@ class RunMicrotasksDescriptor final : public CallInterfaceDescriptor {
                              0)
 };
 
+class PromiseReactionHandlerDescriptor final : public CallInterfaceDescriptor {
+ public:
+  DEFINE_PARAMETERS(kArgument, kGenerator)
+  DECLARE_DEFAULT_DESCRIPTOR(PromiseReactionHandlerDescriptor,
+                             CallInterfaceDescriptor, 2)
+};
+
 #define DEFINE_TFS_BUILTIN_DESCRIPTOR(Name, ...)                          \
   class Name##Descriptor : public CallInterfaceDescriptor {               \
    public:                                                                \
@@ -917,4 +929,4 @@ INTERFACE_DESCRIPTOR_LIST(DEF_KEY)
 #include "src/arm/interface-descriptors-arm.h"
 #endif
 
-#endif  // V8_CALL_INTERFACE_DESCRIPTOR_H_
+#endif  // V8_INTERFACE_DESCRIPTORS_H_

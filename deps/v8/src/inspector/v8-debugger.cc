@@ -154,7 +154,6 @@ class MatchPrototypePredicate : public v8::debug::QueryObjectPredicate {
   v8::Local<v8::Context> m_context;
   v8::Local<v8::Value> m_prototype;
 };
-
 }  // namespace
 
 V8Debugger::V8Debugger(v8::Isolate* isolate, V8InspectorImpl* inspector)
@@ -168,7 +167,14 @@ V8Debugger::V8Debugger(v8::Isolate* isolate, V8InspectorImpl* inspector)
       m_pauseOnExceptionsState(v8::debug::NoBreakOnException),
       m_wasmTranslation(isolate) {}
 
-V8Debugger::~V8Debugger() {}
+V8Debugger::~V8Debugger() {
+  if (m_terminateExecutionCallback) {
+    m_isolate->RemoveCallCompletedCallback(
+        &V8Debugger::terminateExecutionCompletedCallback);
+    m_isolate->RemoveMicrotasksCompletedCallback(
+        &V8Debugger::terminateExecutionCompletedCallback);
+  }
+}
 
 void V8Debugger::enable() {
   if (m_enableCount++) return;
@@ -334,6 +340,34 @@ void V8Debugger::pauseOnAsyncCall(int targetContextGroupId, uintptr_t task,
   m_taskWithScheduledBreakDebuggerId = debuggerId;
 }
 
+void V8Debugger::terminateExecution(
+    std::unique_ptr<TerminateExecutionCallback> callback) {
+  if (m_terminateExecutionCallback) {
+    callback->sendFailure(
+        Response::Error("There is current termination request in progress"));
+    return;
+  }
+  m_terminateExecutionCallback = std::move(callback);
+  m_isolate->AddCallCompletedCallback(
+      &V8Debugger::terminateExecutionCompletedCallback);
+  m_isolate->AddMicrotasksCompletedCallback(
+      &V8Debugger::terminateExecutionCompletedCallback);
+  m_isolate->TerminateExecution();
+}
+
+void V8Debugger::terminateExecutionCompletedCallback(v8::Isolate* isolate) {
+  isolate->RemoveCallCompletedCallback(
+      &V8Debugger::terminateExecutionCompletedCallback);
+  isolate->RemoveMicrotasksCompletedCallback(
+      &V8Debugger::terminateExecutionCompletedCallback);
+  V8InspectorImpl* inspector =
+      static_cast<V8InspectorImpl*>(v8::debug::GetInspector(isolate));
+  V8Debugger* debugger = inspector->debugger();
+  debugger->m_isolate->CancelTerminateExecution();
+  debugger->m_terminateExecutionCallback->sendSuccess();
+  debugger->m_terminateExecutionCallback.reset();
+}
+
 Response V8Debugger::continueToLocation(
     int targetContextGroupId, V8DebuggerScript* script,
     std::unique_ptr<protocol::Debugger::Location> location,
@@ -494,7 +528,6 @@ void V8Debugger::ScriptCompiled(v8::Local<v8::debug::Script> script,
 
 void V8Debugger::BreakProgramRequested(
     v8::Local<v8::Context> pausedContext, v8::Local<v8::Object>,
-    v8::Local<v8::Value>,
     const std::vector<v8::debug::BreakpointId>& break_points_hit) {
   handleProgramBreak(pausedContext, v8::Local<v8::Value>(), break_points_hit);
 }

@@ -36,6 +36,14 @@ class BodyDescriptorBase BASE_EMBEDDED {
   static inline void IteratePointer(HeapObject* obj, int offset,
                                     ObjectVisitor* v);
 
+  template <typename ObjectVisitor>
+  static inline void IterateMaybeWeakPointers(HeapObject* obj, int start_offset,
+                                              int end_offset, ObjectVisitor* v);
+
+  template <typename ObjectVisitor>
+  static inline void IterateMaybeWeakPointer(HeapObject* obj, int offset,
+                                             ObjectVisitor* v);
+
  protected:
   // Returns true for all header and embedder fields.
   static inline bool IsValidSlotImpl(HeapObject* obj, int offset);

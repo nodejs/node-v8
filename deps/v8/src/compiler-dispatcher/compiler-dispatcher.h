@@ -72,8 +72,6 @@ class V8_EXPORT_PRIVATE CompilerDispatcher {
  public:
   typedef uintptr_t JobId;
 
-  enum class BlockingBehavior { kBlock, kDontBlock };
-
   CompilerDispatcher(Isolate* isolate, Platform* platform,
                      size_t max_stack_size);
   ~CompilerDispatcher();
@@ -186,7 +184,7 @@ class V8_EXPORT_PRIVATE CompilerDispatcher {
   bool idle_task_scheduled_;
 
   // Number of scheduled or running BackgroundTask objects.
-  size_t num_background_tasks_;
+  int num_background_tasks_;
 
   // The set of CompilerDispatcherJobs that can be advanced on any thread.
   std::unordered_set<CompilerDispatcherJob*> pending_background_jobs_;

@@ -46,7 +46,7 @@ struct SsaEnv {
     locals = nullptr;
     control = nullptr;
     effect = nullptr;
-    context_cache = {0};
+    context_cache = {};
   }
   void SetNotMerged() {
     if (state == kMerged) state = kReached;
@@ -235,6 +235,10 @@ class WasmGraphBuildingInterface {
     result->node = builder_->Float64Constant(value);
   }
 
+  void RefNull(Decoder* decoder, Value* result) {
+    result->node = builder_->HeapConstant(Handle<HeapObject>::null());
+  }
+
   void Drop(Decoder* decoder, const Value& value) {}
 
   void DoReturn(Decoder* decoder, Vector<Value> values, bool implicit) {
@@ -369,13 +373,13 @@ class WasmGraphBuildingInterface {
   void CallDirect(Decoder* decoder,
                   const CallFunctionOperand<validate>& operand,
                   const Value args[], Value returns[]) {
-    DoCall(decoder, nullptr, operand, args, returns, false);
+    DoCall(decoder, nullptr, operand.sig, operand.index, args, returns);
   }
 
   void CallIndirect(Decoder* decoder, const Value& index,
                     const CallIndirectOperand<validate>& operand,
                     const Value args[], Value returns[]) {
-    DoCall(decoder, index.node, operand, args, returns, true);
+    DoCall(decoder, index.node, operand.sig, operand.sig_index, args, returns);
   }
 
   void SimdOp(Decoder* decoder, WasmOpcode opcode, Vector<Value> args,
@@ -750,7 +754,7 @@ class WasmGraphBuildingInterface {
     } else {
       result->state = SsaEnv::kUnreachable;
       result->locals = nullptr;
-      result->context_cache = {0};
+      result->context_cache = {};
     }
 
     return result;
@@ -778,34 +782,33 @@ class WasmGraphBuildingInterface {
     result->control = nullptr;
     result->effect = nullptr;
     result->locals = nullptr;
-    result->context_cache = {0};
+    result->context_cache = {};
     return result;
   }
 
-  template <typename Operand>
   void DoCall(WasmFullDecoder<validate, WasmGraphBuildingInterface>* decoder,
-              TFNode* index_node, const Operand& operand, const Value args[],
-              Value returns[], bool is_indirect) {
-    int param_count = static_cast<int>(operand.sig->parameter_count());
+              TFNode* index_node, FunctionSig* sig, uint32_t index,
+              const Value args[], Value returns[]) {
+    int param_count = static_cast<int>(sig->parameter_count());
     TFNode** arg_nodes = builder_->Buffer(param_count + 1);
     TFNode** return_nodes = nullptr;
     arg_nodes[0] = index_node;
     for (int i = 0; i < param_count; ++i) {
       arg_nodes[i + 1] = args[i].node;
     }
-    if (is_indirect) {
-      builder_->CallIndirect(operand.index, arg_nodes, &return_nodes,
+    if (index_node) {
+      builder_->CallIndirect(index, arg_nodes, &return_nodes,
                              decoder->position());
     } else {
-      builder_->CallDirect(operand.index, arg_nodes, &return_nodes,
+      builder_->CallDirect(index, arg_nodes, &return_nodes,
                            decoder->position());
     }
-    int return_count = static_cast<int>(operand.sig->return_count());
+    int return_count = static_cast<int>(sig->return_count());
     for (int i = 0; i < return_count; ++i) {
       returns[i].node = return_nodes[i];
     }
     // The invoked function could have used grow_memory, so we need to
-    // reload mem_size and mem_start
+    // reload mem_size and mem_start.
     LoadContextIntoSsa(ssa_env_);
   }
 };
@@ -960,8 +963,31 @@ bool PrintRawWasmCode(AccountingAllocator* allocator, const FunctionBody& body,
 
     os << RawOpcodeName(opcode) << ",";
 
-    for (unsigned j = 1; j < length; ++j) {
-      os << " 0x" << AsHex(i.pc()[j], 2) << ",";
+    if (opcode == kExprLoop || opcode == kExprIf || opcode == kExprBlock ||
+        opcode == kExprTry) {
+      DCHECK_EQ(2, length);
+
+      switch (i.pc()[1]) {
+#define CASE_LOCAL_TYPE(local_name, type_name) \
+  case kLocal##local_name:                     \
+    os << " kWasm" #type_name ",";             \
+    break;
+
+        CASE_LOCAL_TYPE(I32, I32)
+        CASE_LOCAL_TYPE(I64, I64)
+        CASE_LOCAL_TYPE(F32, F32)
+        CASE_LOCAL_TYPE(F64, F64)
+        CASE_LOCAL_TYPE(S128, S128)
+        CASE_LOCAL_TYPE(Void, Stmt)
+        default:
+          os << " 0x" << AsHex(i.pc()[1], 2) << ",";
+          break;
+      }
+#undef CASE_LOCAL_TYPE
+    } else {
+      for (unsigned j = 1; j < length; ++j) {
+        os << " 0x" << AsHex(i.pc()[j], 2) << ",";
+      }
     }
 
     switch (opcode) {
@@ -1002,7 +1028,7 @@ bool PrintRawWasmCode(AccountingAllocator* allocator, const FunctionBody& body,
       }
       case kExprCallIndirect: {
         CallIndirectOperand<Decoder::kNoValidate> operand(&i, i.pc());
-        os << "   // sig #" << operand.index;
+        os << "   // sig #" << operand.sig_index;
         if (decoder.Complete(i.pc(), operand)) {
           os << ": " << *operand.sig;
         }

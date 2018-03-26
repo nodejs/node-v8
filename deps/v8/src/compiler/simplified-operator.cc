@@ -258,11 +258,6 @@ std::ostream& operator<<(std::ostream& os, CheckTaggedInputMode mode) {
   UNREACHABLE();
 }
 
-CheckTaggedInputMode CheckTaggedInputModeOf(const Operator* op) {
-  DCHECK(op->opcode() == IrOpcode::kCheckedTaggedToFloat64);
-  return OpParameter<CheckTaggedInputMode>(op);
-}
-
 std::ostream& operator<<(std::ostream& os, GrowFastElementsMode mode) {
   switch (mode) {
     case GrowFastElementsMode::kDoubleElements:
@@ -487,8 +482,7 @@ size_t hash_value(NumberOperationHint hint) {
 }
 
 NumberOperationHint NumberOperationHintOf(const Operator* op) {
-  DCHECK(op->opcode() == IrOpcode::kSpeculativeToNumber ||
-         op->opcode() == IrOpcode::kSpeculativeNumberAdd ||
+  DCHECK(op->opcode() == IrOpcode::kSpeculativeNumberAdd ||
          op->opcode() == IrOpcode::kSpeculativeNumberSubtract ||
          op->opcode() == IrOpcode::kSpeculativeNumberMultiply ||
          op->opcode() == IrOpcode::kSpeculativeNumberDivide ||
@@ -505,6 +499,25 @@ NumberOperationHint NumberOperationHintOf(const Operator* op) {
          op->opcode() == IrOpcode::kSpeculativeSafeIntegerAdd ||
          op->opcode() == IrOpcode::kSpeculativeSafeIntegerSubtract);
   return OpParameter<NumberOperationHint>(op);
+}
+
+bool operator==(NumberOperationParameters const& lhs,
+                NumberOperationParameters const& rhs) {
+  return lhs.hint() == rhs.hint() && lhs.feedback() == rhs.feedback();
+}
+
+size_t hash_value(NumberOperationParameters const& p) {
+  return base::hash_combine(p.hint(), p.feedback());
+}
+
+std::ostream& operator<<(std::ostream& os, NumberOperationParameters const& p) {
+  return os << p.hint() << " " << p.feedback();
+}
+
+NumberOperationParameters const& NumberOperationParametersOf(
+    Operator const* op) {
+  DCHECK_EQ(IrOpcode::kSpeculativeToNumber, op->opcode());
+  return OpParameter<NumberOperationParameters>(op);
 }
 
 size_t hash_value(AllocateParameters info) {
@@ -537,7 +550,8 @@ Type* AllocateTypeOf(const Operator* op) {
 }
 
 UnicodeEncoding UnicodeEncodingOf(const Operator* op) {
-  DCHECK_EQ(IrOpcode::kStringFromCodePoint, op->opcode());
+  DCHECK(op->opcode() == IrOpcode::kStringFromSingleCodePoint ||
+         op->opcode() == IrOpcode::kStringCodePointAt);
   return OpParameter<UnicodeEncoding>(op);
 }
 
@@ -553,7 +567,8 @@ DeoptimizeReason DeoptimizeReasonOf(const Operator* op) {
 
 const CheckTaggedInputParameters& CheckTaggedInputParametersOf(
     const Operator* op) {
-  DCHECK(op->opcode() == IrOpcode::kCheckedTruncateTaggedToWord32);
+  DCHECK(op->opcode() == IrOpcode::kCheckedTruncateTaggedToWord32 ||
+         op->opcode() == IrOpcode::kCheckedTaggedToFloat64);
   return OpParameter<CheckTaggedInputParameters>(op);
 }
 
@@ -655,18 +670,12 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(NumberToUint8Clamped, Operator::kNoProperties, 1, 0)         \
   V(NumberSilenceNaN, Operator::kNoProperties, 1, 0)             \
   V(StringToNumber, Operator::kNoProperties, 1, 0)               \
-  V(StringCharAt, Operator::kNoProperties, 2, 1)                 \
-  V(StringCharCodeAt, Operator::kNoProperties, 2, 1)             \
-  V(SeqStringCharCodeAt, Operator::kNoProperties, 2, 1)          \
-  V(StringCodePointAt, Operator::kNoProperties, 2, 1)            \
-  V(SeqStringCodePointAt, Operator::kNoProperties, 2, 1)         \
-  V(StringFromCharCode, Operator::kNoProperties, 1, 0)           \
+  V(StringFromSingleCharCode, Operator::kNoProperties, 1, 0)     \
   V(StringIndexOf, Operator::kNoProperties, 3, 0)                \
   V(StringLength, Operator::kNoProperties, 1, 0)                 \
   V(StringToLowerCaseIntl, Operator::kNoProperties, 1, 0)        \
   V(StringToUpperCaseIntl, Operator::kNoProperties, 1, 0)        \
   V(TypeOf, Operator::kNoProperties, 1, 1)                       \
-  V(ClassOf, Operator::kNoProperties, 1, 1)                      \
   V(PlainPrimitiveToNumber, Operator::kNoProperties, 1, 0)       \
   V(PlainPrimitiveToWord32, Operator::kNoProperties, 1, 0)       \
   V(PlainPrimitiveToFloat64, Operator::kNoProperties, 1, 0)      \
@@ -700,6 +709,12 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(ObjectIsSymbol, Operator::kNoProperties, 1, 0)               \
   V(ObjectIsUndetectable, Operator::kNoProperties, 1, 0)         \
   V(NumberIsFloat64Hole, Operator::kNoProperties, 1, 0)          \
+  V(NumberIsFinite, Operator::kNoProperties, 1, 0)               \
+  V(ObjectIsFiniteNumber, Operator::kNoProperties, 1, 0)         \
+  V(NumberIsInteger, Operator::kNoProperties, 1, 0)              \
+  V(ObjectIsSafeInteger, Operator::kNoProperties, 1, 0)          \
+  V(NumberIsSafeInteger, Operator::kNoProperties, 1, 0)          \
+  V(ObjectIsInteger, Operator::kNoProperties, 1, 0)              \
   V(ConvertTaggedHoleToUndefined, Operator::kNoProperties, 1, 0) \
   V(SameValue, Operator::kCommutative, 2, 0)                     \
   V(ReferenceEqual, Operator::kCommutative, 2, 0)                \
@@ -709,6 +724,10 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(ToBoolean, Operator::kNoProperties, 1, 0)                    \
   V(NewConsString, Operator::kNoProperties, 3, 0)                \
   V(MaskIndexWithBound, Operator::kNoProperties, 2, 0)
+
+#define EFFECT_DEPENDENT_OP_LIST(V)                     \
+  V(StringCharCodeAt, Operator::kNoProperties, 2, 1)    \
+  V(StringSubstring, Operator::kNoProperties, 3, 1)
 
 #define SPECULATIVE_NUMBER_BINOP_LIST(V)      \
   SIMPLIFIED_SPECULATIVE_NUMBER_BINOP_LIST(V) \
@@ -723,7 +742,6 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(CheckInternalizedString, 1, 1)       \
   V(CheckNotTaggedHole, 1, 1)            \
   V(CheckReceiver, 1, 1)                 \
-  V(CheckSeqString, 1, 1)                \
   V(CheckSymbol, 1, 1)                   \
   V(CheckedInt32Add, 2, 1)               \
   V(CheckedInt32Div, 2, 1)               \
@@ -754,6 +772,20 @@ struct SimplifiedOperatorGlobalCache final {
   Name##Operator k##Name;
   PURE_OP_LIST(PURE)
 #undef PURE
+
+#define EFFECT_DEPENDENT(Name, properties, value_input_count,              \
+                         control_input_count)                              \
+  struct Name##Operator final : public Operator {                          \
+    Name##Operator()                                                       \
+        : Operator(IrOpcode::k##Name,                                      \
+                   Operator::kNoDeopt | Operator::kNoWrite |               \
+                       Operator::kNoThrow | properties,                    \
+                   #Name, value_input_count, 1, control_input_count, 1, 1, \
+                   0) {}                                                   \
+  };                                                                       \
+  Name##Operator k##Name;
+  EFFECT_DEPENDENT_OP_LIST(EFFECT_DEPENDENT)
+#undef EFFECT_DEPENDENT
 
 #define CHECKED(Name, value_input_count, value_output_count)             \
   struct Name##Operator final : public Operator {                        \
@@ -791,16 +823,30 @@ struct SimplifiedOperatorGlobalCache final {
 #undef CHECK_IF
 
   template <UnicodeEncoding kEncoding>
-  struct StringFromCodePointOperator final : public Operator1<UnicodeEncoding> {
-    StringFromCodePointOperator()
-        : Operator1<UnicodeEncoding>(IrOpcode::kStringFromCodePoint,
-                                     Operator::kPure, "StringFromCodePoint", 1,
-                                     0, 0, 1, 0, 0, kEncoding) {}
+  struct StringCodePointAtOperator final : public Operator1<UnicodeEncoding> {
+    StringCodePointAtOperator()
+        : Operator1<UnicodeEncoding>(IrOpcode::kStringCodePointAt,
+                                     Operator::kFoldable | Operator::kNoThrow,
+                                     "StringCodePointAt", 2, 1, 1, 1, 1, 0,
+                                     kEncoding) {}
   };
-  StringFromCodePointOperator<UnicodeEncoding::UTF16>
-      kStringFromCodePointOperatorUTF16;
-  StringFromCodePointOperator<UnicodeEncoding::UTF32>
-      kStringFromCodePointOperatorUTF32;
+  StringCodePointAtOperator<UnicodeEncoding::UTF16>
+      kStringCodePointAtOperatorUTF16;
+  StringCodePointAtOperator<UnicodeEncoding::UTF32>
+      kStringCodePointAtOperatorUTF32;
+
+  template <UnicodeEncoding kEncoding>
+  struct StringFromSingleCodePointOperator final
+      : public Operator1<UnicodeEncoding> {
+    StringFromSingleCodePointOperator()
+        : Operator1<UnicodeEncoding>(
+              IrOpcode::kStringFromSingleCodePoint, Operator::kPure,
+              "StringFromSingleCodePoint", 1, 0, 0, 1, 0, 0, kEncoding) {}
+  };
+  StringFromSingleCodePointOperator<UnicodeEncoding::UTF16>
+      kStringFromSingleCodePointOperatorUTF16;
+  StringFromSingleCodePointOperator<UnicodeEncoding::UTF32>
+      kStringFromSingleCodePointOperatorUTF32;
 
   struct ArrayBufferWasNeuteredOperator final : public Operator {
     ArrayBufferWasNeuteredOperator()
@@ -891,12 +937,13 @@ struct SimplifiedOperatorGlobalCache final {
 
   template <CheckTaggedInputMode kMode>
   struct CheckedTaggedToFloat64Operator final
-      : public Operator1<CheckTaggedInputMode> {
+      : public Operator1<CheckTaggedInputParameters> {
     CheckedTaggedToFloat64Operator()
-        : Operator1<CheckTaggedInputMode>(
+        : Operator1<CheckTaggedInputParameters>(
               IrOpcode::kCheckedTaggedToFloat64,
               Operator::kFoldable | Operator::kNoThrow,
-              "CheckedTaggedToFloat64", 1, 1, 1, 1, 1, 0, kMode) {}
+              "CheckedTaggedToFloat64", 1, 1, 1, 1, 1, 0,
+              CheckTaggedInputParameters(kMode, VectorSlotPair())) {}
   };
   CheckedTaggedToFloat64Operator<CheckTaggedInputMode::kNumber>
       kCheckedTaggedToFloat64NumberOperator;
@@ -1004,14 +1051,13 @@ struct SimplifiedOperatorGlobalCache final {
 
   template <NumberOperationHint kHint>
   struct SpeculativeToNumberOperator final
-      : public Operator1<NumberOperationHint> {
+      : public Operator1<NumberOperationParameters> {
     SpeculativeToNumberOperator()
-        : Operator1<NumberOperationHint>(
-              IrOpcode::kSpeculativeToNumber,            // opcode
-              Operator::kFoldable | Operator::kNoThrow,  // flags
-              "SpeculativeToNumber",                     // name
-              1, 1, 1, 1, 1, 0,                          // counts
-              kHint) {}                                  // parameter
+        : Operator1<NumberOperationParameters>(
+              IrOpcode::kSpeculativeToNumber,
+              Operator::kFoldable | Operator::kNoThrow, "SpeculativeToNumber",
+              1, 1, 1, 1, 1, 0,
+              NumberOperationParameters(kHint, VectorSlotPair())) {}
   };
   SpeculativeToNumberOperator<NumberOperationHint::kSignedSmall>
       kSpeculativeToNumberSignedSmallOperator;
@@ -1032,6 +1078,7 @@ SimplifiedOperatorBuilder::SimplifiedOperatorBuilder(Zone* zone)
 #define GET_FROM_CACHE(Name, ...) \
   const Operator* SimplifiedOperatorBuilder::Name() { return &cache_.k##Name; }
 PURE_OP_LIST(GET_FROM_CACHE)
+EFFECT_DEPENDENT_OP_LIST(GET_FROM_CACHE)
 CHECKED_OP_LIST(GET_FROM_CACHE)
 GET_FROM_CACHE(ArrayBufferWasNeutered)
 GET_FROM_CACHE(ArgumentsFrame)
@@ -1140,14 +1187,19 @@ const Operator* SimplifiedOperatorBuilder::CheckedTaggedToInt32(
 }
 
 const Operator* SimplifiedOperatorBuilder::CheckedTaggedToFloat64(
-    CheckTaggedInputMode mode) {
-  switch (mode) {
-    case CheckTaggedInputMode::kNumber:
-      return &cache_.kCheckedTaggedToFloat64NumberOperator;
-    case CheckTaggedInputMode::kNumberOrOddball:
-      return &cache_.kCheckedTaggedToFloat64NumberOrOddballOperator;
+    CheckTaggedInputMode mode, const VectorSlotPair& feedback) {
+  if (!feedback.IsValid()) {
+    switch (mode) {
+      case CheckTaggedInputMode::kNumber:
+        return &cache_.kCheckedTaggedToFloat64NumberOperator;
+      case CheckTaggedInputMode::kNumberOrOddball:
+        return &cache_.kCheckedTaggedToFloat64NumberOrOddballOperator;
+    }
   }
-  UNREACHABLE();
+  return new (zone()) Operator1<CheckTaggedInputParameters>(
+      IrOpcode::kCheckedTaggedToFloat64,
+      Operator::kFoldable | Operator::kNoThrow, "CheckedTaggedToFloat64", 1, 1,
+      1, 1, 1, 0, CheckTaggedInputParameters(mode, feedback));
 }
 
 const Operator* SimplifiedOperatorBuilder::CheckedTruncateTaggedToWord32(
@@ -1222,20 +1274,25 @@ const Operator* SimplifiedOperatorBuilder::CheckFloat64Hole(
 }
 
 const Operator* SimplifiedOperatorBuilder::SpeculativeToNumber(
-    NumberOperationHint hint) {
-  switch (hint) {
-    case NumberOperationHint::kSignedSmall:
-      return &cache_.kSpeculativeToNumberSignedSmallOperator;
-    case NumberOperationHint::kSignedSmallInputs:
-      break;
-    case NumberOperationHint::kSigned32:
-      return &cache_.kSpeculativeToNumberSigned32Operator;
-    case NumberOperationHint::kNumber:
-      return &cache_.kSpeculativeToNumberNumberOperator;
-    case NumberOperationHint::kNumberOrOddball:
-      return &cache_.kSpeculativeToNumberNumberOrOddballOperator;
+    NumberOperationHint hint, const VectorSlotPair& feedback) {
+  if (!feedback.IsValid()) {
+    switch (hint) {
+      case NumberOperationHint::kSignedSmall:
+        return &cache_.kSpeculativeToNumberSignedSmallOperator;
+      case NumberOperationHint::kSignedSmallInputs:
+        break;
+      case NumberOperationHint::kSigned32:
+        return &cache_.kSpeculativeToNumberSigned32Operator;
+      case NumberOperationHint::kNumber:
+        return &cache_.kSpeculativeToNumberNumberOperator;
+      case NumberOperationHint::kNumberOrOddball:
+        return &cache_.kSpeculativeToNumberNumberOrOddballOperator;
+    }
   }
-  UNREACHABLE();
+  return new (zone()) Operator1<NumberOperationParameters>(
+      IrOpcode::kSpeculativeToNumber, Operator::kFoldable | Operator::kNoThrow,
+      "SpeculativeToNumber", 1, 1, 1, 1, 1, 0,
+      NumberOperationParameters(hint, feedback));
 }
 
 const Operator* SimplifiedOperatorBuilder::EnsureWritableFastElements() {
@@ -1362,6 +1419,11 @@ const Operator* SimplifiedOperatorBuilder::NewArgumentsElements(
       mapped_count);                    // parameter
 }
 
+int NewArgumentsElementsMappedCountOf(const Operator* op) {
+  DCHECK_EQ(IrOpcode::kNewArgumentsElements, op->opcode());
+  return OpParameter<int>(op);
+}
+
 const Operator* SimplifiedOperatorBuilder::Allocate(Type* type,
                                                     PretenureFlag pretenure) {
   return new (zone()) Operator1<AllocateParameters>(
@@ -1378,13 +1440,24 @@ const Operator* SimplifiedOperatorBuilder::AllocateRaw(
       "AllocateRaw", 1, 1, 1, 1, 1, 1, AllocateParameters(type, pretenure));
 }
 
-const Operator* SimplifiedOperatorBuilder::StringFromCodePoint(
+const Operator* SimplifiedOperatorBuilder::StringCodePointAt(
     UnicodeEncoding encoding) {
   switch (encoding) {
     case UnicodeEncoding::UTF16:
-      return &cache_.kStringFromCodePointOperatorUTF16;
+      return &cache_.kStringCodePointAtOperatorUTF16;
     case UnicodeEncoding::UTF32:
-      return &cache_.kStringFromCodePointOperatorUTF32;
+      return &cache_.kStringCodePointAtOperatorUTF32;
+  }
+  UNREACHABLE();
+}
+
+const Operator* SimplifiedOperatorBuilder::StringFromSingleCodePoint(
+    UnicodeEncoding encoding) {
+  switch (encoding) {
+    case UnicodeEncoding::UTF16:
+      return &cache_.kStringFromSingleCodePointOperatorUTF16;
+    case UnicodeEncoding::UTF32:
+      return &cache_.kStringFromSingleCodePointOperatorUTF32;
   }
   UNREACHABLE();
 }
@@ -1463,6 +1536,7 @@ const Operator* SimplifiedOperatorBuilder::TransitionAndStoreNonNumberElement(
 }
 
 #undef PURE_OP_LIST
+#undef EFFECT_DEPENDENT_OP_LIST
 #undef SPECULATIVE_NUMBER_BINOP_LIST
 #undef CHECKED_WITH_FEEDBACK_OP_LIST
 #undef CHECKED_OP_LIST
