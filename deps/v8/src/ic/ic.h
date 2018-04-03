@@ -2,13 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef V8_IC_H_
-#define V8_IC_H_
+#ifndef V8_IC_IC_H_
+#define V8_IC_IC_H_
 
 #include <vector>
 
 #include "src/factory.h"
 #include "src/feedback-vector.h"
+#include "src/ic/stub-cache.h"
+#include "src/isolate.h"
 #include "src/macro-assembler.h"
 #include "src/messages.h"
 #include "src/objects/map.h"
@@ -36,7 +38,8 @@ class IC {
 
   // Construct the IC structure with the given number of extra
   // JavaScript frames on the stack.
-  IC(FrameDepth depth, Isolate* isolate, FeedbackNexus* nexus = nullptr);
+  IC(FrameDepth depth, Isolate* isolate, Handle<FeedbackVector> vector,
+     FeedbackSlot slot);
   virtual ~IC() {}
 
   State state() const { return state_; }
@@ -57,7 +60,7 @@ class IC {
   }
   bool IsAnyStore() const {
     return IsStoreIC() || IsStoreOwnIC() || IsStoreGlobalIC() ||
-           IsKeyedStoreIC();
+           IsKeyedStoreIC() || IsStoreInArrayLiteralICKind(kind());
   }
 
   static inline bool IsHandler(Object* object);
@@ -66,6 +69,9 @@ class IC {
   static void OnFeedbackChanged(Isolate* isolate, FeedbackVector* vector,
                                 FeedbackSlot slot, JSFunction* host_function,
                                 const char* reason);
+
+  static void OnFeedbackChanged(Isolate* isolate, FeedbackNexus* nexus,
+                                JSFunction* host_function, const char* reason);
 
  protected:
   Address fp() const { return fp_; }
@@ -127,7 +133,10 @@ class IC {
   bool IsStoreIC() const { return IsStoreICKind(kind_); }
   bool IsStoreOwnIC() const { return IsStoreOwnICKind(kind_); }
   bool IsKeyedStoreIC() const { return IsKeyedStoreICKind(kind_); }
-  bool is_keyed() const { return IsKeyedLoadIC() || IsKeyedStoreIC(); }
+  bool is_keyed() const {
+    return IsKeyedLoadIC() || IsKeyedStoreIC() ||
+           IsStoreInArrayLiteralICKind(kind_);
+  }
   bool ShouldRecomputeHandler(Handle<String> name);
 
   Handle<Map> receiver_map() { return receiver_map_; }
@@ -151,17 +160,12 @@ class IC {
     return !target_maps_.empty() ? *target_maps_[0] : nullptr;
   }
 
-  Handle<FeedbackVector> vector() const { return nexus()->vector_handle(); }
-  FeedbackSlot slot() const { return nexus()->slot(); }
   State saved_state() const {
     return state() == RECOMPUTE_HANDLER ? old_state_ : state();
   }
 
-  template <class NexusClass>
-  NexusClass* casted_nexus() {
-    return static_cast<NexusClass*>(nexus_);
-  }
-  FeedbackNexus* nexus() const { return nexus_; }
+  const FeedbackNexus* nexus() const { return &nexus_; }
+  FeedbackNexus* nexus() { return &nexus_; }
 
  private:
   inline Address constant_pool() const;
@@ -200,7 +204,7 @@ class IC {
 
   const char* slow_stub_reason_;
 
-  FeedbackNexus* nexus_;
+  FeedbackNexus nexus_;
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(IC);
 };
@@ -208,18 +212,15 @@ class IC {
 
 class CallIC : public IC {
  public:
-  CallIC(Isolate* isolate, CallICNexus* nexus)
-      : IC(EXTRA_CALL_FRAME, isolate, nexus) {
-    DCHECK_NOT_NULL(nexus);
-  }
+  CallIC(Isolate* isolate, Handle<FeedbackVector> vector, FeedbackSlot slot)
+      : IC(EXTRA_CALL_FRAME, isolate, vector, slot) {}
 };
 
 
 class LoadIC : public IC {
  public:
-  LoadIC(Isolate* isolate, FeedbackNexus* nexus)
-      : IC(NO_EXTRA_FRAME, isolate, nexus) {
-    DCHECK_NOT_NULL(nexus);
+  LoadIC(Isolate* isolate, Handle<FeedbackVector> vector, FeedbackSlot slot)
+      : IC(NO_EXTRA_FRAME, isolate, vector, slot) {
     DCHECK(IsAnyLoad());
   }
 
@@ -252,8 +253,9 @@ class LoadIC : public IC {
 
 class LoadGlobalIC : public LoadIC {
  public:
-  LoadGlobalIC(Isolate* isolate, FeedbackNexus* nexus)
-      : LoadIC(isolate, nexus) {}
+  LoadGlobalIC(Isolate* isolate, Handle<FeedbackVector> vector,
+               FeedbackSlot slot)
+      : LoadIC(isolate, vector, slot) {}
 
   MUST_USE_RESULT MaybeHandle<Object> Load(Handle<Name> name);
 
@@ -265,10 +267,9 @@ class LoadGlobalIC : public LoadIC {
 
 class KeyedLoadIC : public LoadIC {
  public:
-  KeyedLoadIC(Isolate* isolate, KeyedLoadICNexus* nexus)
-      : LoadIC(isolate, nexus) {
-    DCHECK_NOT_NULL(nexus);
-  }
+  KeyedLoadIC(Isolate* isolate, Handle<FeedbackVector> vector,
+              FeedbackSlot slot)
+      : LoadIC(isolate, vector, slot) {}
 
   MUST_USE_RESULT MaybeHandle<Object> Load(Handle<Object> object,
                                            Handle<Object> key);
@@ -297,14 +298,12 @@ class KeyedLoadIC : public LoadIC {
 
 class StoreIC : public IC {
  public:
-  StoreIC(Isolate* isolate, FeedbackNexus* nexus)
-      : IC(NO_EXTRA_FRAME, isolate, nexus) {
+  StoreIC(Isolate* isolate, Handle<FeedbackVector> vector, FeedbackSlot slot)
+      : IC(NO_EXTRA_FRAME, isolate, vector, slot) {
     DCHECK(IsAnyStore());
   }
 
-  LanguageMode language_mode() const {
-    return nexus()->vector()->GetLanguageMode(nexus()->slot());
-  }
+  LanguageMode language_mode() const { return nexus()->GetLanguageMode(); }
 
   MUST_USE_RESULT MaybeHandle<Object> Store(
       Handle<Object> object, Handle<Name> name, Handle<Object> value,
@@ -324,8 +323,7 @@ class StoreIC : public IC {
   // Update the inline cache and the global stub cache based on the
   // lookup result.
   void UpdateCaches(LookupIterator* lookup, Handle<Object> value,
-                    JSReceiver::StoreFromKeyed store_mode,
-                    MaybeHandle<Object> cached_handler);
+                    JSReceiver::StoreFromKeyed store_mode);
 
  private:
   Handle<Object> ComputeHandler(LookupIterator* lookup);
@@ -337,8 +335,9 @@ class StoreIC : public IC {
 
 class StoreGlobalIC : public StoreIC {
  public:
-  StoreGlobalIC(Isolate* isolate, FeedbackNexus* nexus)
-      : StoreIC(isolate, nexus) {}
+  StoreGlobalIC(Isolate* isolate, Handle<FeedbackVector> vector,
+                FeedbackSlot slot)
+      : StoreIC(isolate, vector, slot) {}
 
   MUST_USE_RESULT MaybeHandle<Object> Store(Handle<Name> name,
                                             Handle<Object> value);
@@ -358,11 +357,12 @@ enum KeyedStoreIncrementLength { kDontIncrementLength, kIncrementLength };
 class KeyedStoreIC : public StoreIC {
  public:
   KeyedAccessStoreMode GetKeyedAccessStoreMode() {
-    return casted_nexus<KeyedStoreICNexus>()->GetKeyedAccessStoreMode();
+    return nexus()->GetKeyedAccessStoreMode();
   }
 
-  KeyedStoreIC(Isolate* isolate, KeyedStoreICNexus* nexus)
-      : StoreIC(isolate, nexus) {}
+  KeyedStoreIC(Isolate* isolate, Handle<FeedbackVector> vector,
+               FeedbackSlot slot)
+      : StoreIC(isolate, vector, slot) {}
 
   MUST_USE_RESULT MaybeHandle<Object> Store(Handle<Object> object,
                                             Handle<Object> name,
@@ -370,7 +370,12 @@ class KeyedStoreIC : public StoreIC {
 
  protected:
   void UpdateStoreElement(Handle<Map> receiver_map,
-                          KeyedAccessStoreMode store_mode);
+                          KeyedAccessStoreMode store_mode,
+                          bool receiver_was_cow);
+
+  Handle<Code> slow_stub() const override {
+    return BUILTIN_CODE(isolate(), KeyedStoreIC_Slow);
+  }
 
  private:
   Handle<Map> ComputeTransitionedMap(Handle<Map> map,
@@ -386,7 +391,23 @@ class KeyedStoreIC : public StoreIC {
   friend class IC;
 };
 
+class StoreInArrayLiteralIC : public KeyedStoreIC {
+ public:
+  StoreInArrayLiteralIC(Isolate* isolate, Handle<FeedbackVector> vector,
+                        FeedbackSlot slot)
+      : KeyedStoreIC(isolate, vector, slot) {
+    DCHECK(IsStoreInArrayLiteralICKind(kind()));
+  }
+
+  void Store(Handle<JSArray> array, Handle<Object> index, Handle<Object> value);
+
+ private:
+  Handle<Code> slow_stub() const override {
+    return BUILTIN_CODE(isolate(), StoreInArrayLiteralIC_Slow);
+  }
+};
+
 }  // namespace internal
 }  // namespace v8
 
-#endif  // V8_IC_H_
+#endif  // V8_IC_IC_H_

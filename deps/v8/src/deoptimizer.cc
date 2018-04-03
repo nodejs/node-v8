@@ -276,6 +276,7 @@ void Deoptimizer::DeoptimizeAll(Isolate* isolate) {
     CodeTracer::Scope scope(isolate->GetCodeTracer());
     PrintF(scope.file(), "[deoptimize all code in all contexts]\n");
   }
+  isolate->AbortConcurrentOptimization(BlockingBehavior::kBlock);
   DisallowHeapAllocation no_allocation;
   // For all contexts, mark all code, then deoptimize.
   Object* context = isolate->heap()->native_contexts_list();
@@ -545,10 +546,8 @@ int LookupCatchHandler(TranslatedFrame* translated_frame, int* data_out) {
   switch (translated_frame->kind()) {
     case TranslatedFrame::kInterpretedFunction: {
       int bytecode_offset = translated_frame->node_id().ToInt();
-      BytecodeArray* bytecode =
-          translated_frame->raw_shared_info()->bytecode_array();
-      HandlerTable* table = HandlerTable::cast(bytecode->handler_table());
-      return table->LookupRange(bytecode_offset, data_out, nullptr);
+      HandlerTable table(translated_frame->raw_shared_info()->bytecode_array());
+      return table.LookupRange(bytecode_offset, data_out, nullptr);
     }
     default:
       break;
@@ -956,7 +955,8 @@ void Deoptimizer::DoComputeInterpretedFrame(TranslatedFrame* translated_frame,
       (!is_topmost || (bailout_type_ == LAZY)) && !goto_catch_handler
           ? builtins->builtin(Builtins::kInterpreterEnterBytecodeAdvance)
           : builtins->builtin(Builtins::kInterpreterEnterBytecodeDispatch);
-  output_frame->SetPc(reinterpret_cast<intptr_t>(dispatch_builtin->entry()));
+  output_frame->SetPc(
+      reinterpret_cast<intptr_t>(dispatch_builtin->InstructionStart()));
 
   // Update constant pool.
   if (FLAG_enable_embedded_constant_pool) {
@@ -980,7 +980,7 @@ void Deoptimizer::DoComputeInterpretedFrame(TranslatedFrame* translated_frame,
     // Set the continuation for the topmost frame.
     Code* continuation = builtins->builtin(Builtins::kNotifyDeoptimized);
     output_frame->SetContinuation(
-        reinterpret_cast<intptr_t>(continuation->entry()));
+        reinterpret_cast<intptr_t>(continuation->InstructionStart()));
   }
 }
 
@@ -1114,7 +1114,7 @@ void Deoptimizer::DoComputeArgumentsAdaptorFrame(
   Code* adaptor_trampoline =
       builtins->builtin(Builtins::kArgumentsAdaptorTrampoline);
   intptr_t pc_value = reinterpret_cast<intptr_t>(
-      adaptor_trampoline->instruction_start() +
+      adaptor_trampoline->InstructionStart() +
       isolate_->heap()->arguments_adaptor_deopt_pc_offset()->value());
   output_frame->SetPc(pc_value);
   if (FLAG_enable_embedded_constant_pool) {
@@ -1303,7 +1303,7 @@ void Deoptimizer::DoComputeConstructStubFrame(TranslatedFrame* translated_frame,
 
   // Compute this frame's PC.
   DCHECK(bailout_id.IsValidForConstructStub());
-  Address start = construct_stub->instruction_start();
+  Address start = construct_stub->InstructionStart();
   int pc_offset =
       bailout_id == BailoutId::ConstructStubCreate()
           ? isolate_->heap()->construct_stub_create_deopt_pc_offset()->value()
@@ -1338,7 +1338,7 @@ void Deoptimizer::DoComputeConstructStubFrame(TranslatedFrame* translated_frame,
     DCHECK_EQ(LAZY, bailout_type_);
     Code* continuation = builtins->builtin(Builtins::kNotifyDeoptimized);
     output_frame->SetContinuation(
-        reinterpret_cast<intptr_t>(continuation->entry()));
+        reinterpret_cast<intptr_t>(continuation->InstructionStart()));
   }
 }
 
@@ -1363,6 +1363,8 @@ void Deoptimizer::DoComputeConstructStubFrame(TranslatedFrame* translated_frame,
 //                TO
 //    |          ....           |
 //    +-------------------------+
+//    | arg padding (arch dept) |<- at most 1*kPointerSize
+//    +-------------------------+
 //    |     builtin param 0     |<- FrameState input value n becomes
 //    +-------------------------+
 //    |           ...           |
@@ -1384,7 +1386,13 @@ void Deoptimizer::DoComputeConstructStubFrame(TranslatedFrame* translated_frame,
 //    |          ...            |   to map a FrameState's 0..n-1 inputs to
 //    +-------------------------+   the builtin's n input register params.
 //    | builtin input GPR regn  |
-//    |-------------------------|<- spreg
+//    +-------------------------+
+//    | reg padding (arch dept) |
+//    +-------------------------+
+//    | res padding (arch dept) |<- only if {is_topmost}; result is pop'd by
+//    +-------------------------+<- kNotifyDeopt ASM stub and moved to acc
+//    |      result  value      |<- reg, as ContinueToBuiltin stub expects.
+//    +-------------------------+<- spreg
 //
 void Deoptimizer::DoComputeBuiltinContinuation(
     TranslatedFrame* translated_frame, int frame_index,
@@ -1398,7 +1406,7 @@ void Deoptimizer::DoComputeBuiltinContinuation(
 
   BailoutId bailout_id = translated_frame->node_id();
   Builtins::Name builtin_name = Builtins::GetBuiltinFromBailoutId(bailout_id);
-  DCHECK(!Builtins::IsLazy(builtin_name));
+  CHECK(!Builtins::IsLazy(builtin_name));
   Code* builtin = isolate()->builtins()->builtin(builtin_name);
   Callable continuation_callable =
       Builtins::CallableFor(isolate(), builtin_name);
@@ -1688,12 +1696,12 @@ void Deoptimizer::DoComputeBuiltinContinuation(
                  : isolate()->builtins()->builtin(
                        Builtins::kContinueToCodeStubBuiltin));
   output_frame->SetPc(
-      reinterpret_cast<intptr_t>(continue_to_builtin->instruction_start()));
+      reinterpret_cast<intptr_t>(continue_to_builtin->InstructionStart()));
 
   Code* continuation =
       isolate()->builtins()->builtin(Builtins::kNotifyDeoptimized);
   output_frame->SetContinuation(
-      reinterpret_cast<intptr_t>(continuation->entry()));
+      reinterpret_cast<intptr_t>(continuation->InstructionStart()));
 }
 
 void Deoptimizer::MaterializeHeapObjects() {
@@ -1832,14 +1840,13 @@ void Deoptimizer::EnsureCodeForDeoptimizationEntry(Isolate* isolate,
   GenerateDeoptimizationEntries(&masm, kMaxNumberOfEntries, type);
   CodeDesc desc;
   masm.GetCode(isolate, &desc);
-  DCHECK(!RelocInfo::RequiresRelocation(isolate, desc));
+  DCHECK(!RelocInfo::RequiresRelocation(desc));
 
   // Allocate the code as immovable since the entry addresses will be used
   // directly and there is no support for relocating them.
   Handle<Code> code = isolate->factory()->NewCode(
       desc, Code::STUB, Handle<Object>(), Builtins::kNoBuiltinId,
-      MaybeHandle<HandlerTable>(), MaybeHandle<ByteArray>(),
-      MaybeHandle<DeoptimizationData>(), kImmovable);
+      MaybeHandle<ByteArray>(), MaybeHandle<DeoptimizationData>(), kImmovable);
   CHECK(Heap::IsImmovable(*code));
 
   CHECK_NULL(data->deopt_entry_code_[type]);
@@ -2287,7 +2294,7 @@ DeoptimizedFrameInfo::DeoptimizedFrameInfo(TranslatedState* state,
 
 
 Deoptimizer::DeoptInfo Deoptimizer::GetDeoptInfo(Code* code, Address pc) {
-  CHECK(code->instruction_start() <= pc && pc <= code->instruction_end());
+  CHECK(code->InstructionStart() <= pc && pc <= code->InstructionEnd());
   SourcePosition last_position = SourcePosition::Unknown();
   DeoptimizeReason last_reason = DeoptimizeReason::kUnknown;
   int last_deopt_id = kNoDeoptimizationId;
@@ -3376,6 +3383,16 @@ void TranslatedState::InitializeCapturedObjectAt(
       return;
 
     case FIXED_ARRAY_TYPE:
+    case BLOCK_CONTEXT_TYPE:
+    case CATCH_CONTEXT_TYPE:
+    case DEBUG_EVALUATE_CONTEXT_TYPE:
+    case EVAL_CONTEXT_TYPE:
+    case FUNCTION_CONTEXT_TYPE:
+    case MODULE_CONTEXT_TYPE:
+    case NATIVE_CONTEXT_TYPE:
+    case SCRIPT_CONTEXT_TYPE:
+    case WITH_CONTEXT_TYPE:
+    case BOILERPLATE_DESCRIPTION_TYPE:
     case HASH_TABLE_TYPE:
     case PROPERTY_ARRAY_TYPE:
     case CONTEXT_EXTENSION_TYPE:
@@ -3501,6 +3518,15 @@ void TranslatedState::EnsureCapturedObjectAllocatedAt(
       return MaterializeMutableHeapNumber(frame, &value_index, slot);
 
     case FIXED_ARRAY_TYPE:
+    case BLOCK_CONTEXT_TYPE:
+    case CATCH_CONTEXT_TYPE:
+    case DEBUG_EVALUATE_CONTEXT_TYPE:
+    case EVAL_CONTEXT_TYPE:
+    case FUNCTION_CONTEXT_TYPE:
+    case MODULE_CONTEXT_TYPE:
+    case NATIVE_CONTEXT_TYPE:
+    case SCRIPT_CONTEXT_TYPE:
+    case WITH_CONTEXT_TYPE:
     case HASH_TABLE_TYPE: {
       // Check we have the right size.
       int array_length =
@@ -3906,7 +3932,7 @@ bool TranslatedState::DoUpdateFeedback() {
   if (!feedback_vector_handle_.is_null()) {
     CHECK(!feedback_slot_.IsInvalid());
     isolate()->CountUsage(v8::Isolate::kDeoptimizerDisableSpeculation);
-    CallICNexus nexus(feedback_vector_handle_, feedback_slot_);
+    FeedbackNexus nexus(feedback_vector_handle_, feedback_slot_);
     nexus.SetSpeculationMode(SpeculationMode::kDisallowSpeculation);
     return true;
   }

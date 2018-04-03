@@ -9,6 +9,7 @@
 
 #include "src/base/platform/mutex.h"
 #include "src/globals.h"
+#include "src/vector.h"
 
 namespace v8 {
 namespace internal {
@@ -17,6 +18,11 @@ class AbstractCode;
 class Name;
 class SharedFunctionInfo;
 class String;
+
+namespace wasm {
+class WasmCode;
+using WasmName = Vector<const char>;
+}  // namespace wasm
 
 #define LOG_EVENTS_AND_TAGS_LIST(V)                                      \
   V(CODE_CREATION_EVENT, "code-creation")                                \
@@ -64,6 +70,8 @@ class CodeEventListener {
   virtual void CodeCreateEvent(LogEventsAndTags tag, AbstractCode* code,
                                SharedFunctionInfo* shared, Name* source,
                                int line, int column) = 0;
+  virtual void CodeCreateEvent(LogEventsAndTags tag, const wasm::WasmCode* code,
+                               wasm::WasmName name) = 0;
   virtual void CallbackEvent(Name* name, Address entry_point) = 0;
   virtual void GetterCallbackEvent(Name* name, Address entry_point) = 0;
   virtual void SetterCallbackEvent(Name* name, Address entry_point) = 0;
@@ -113,6 +121,10 @@ class CodeEventDispatcher {
                        int column) {
     CODE_EVENT_DISPATCH(
         CodeCreateEvent(tag, code, shared, source, line, column));
+  }
+  void CodeCreateEvent(LogEventsAndTags tag, const wasm::WasmCode* code,
+                       wasm::WasmName name) {
+    CODE_EVENT_DISPATCH(CodeCreateEvent(tag, code, name));
   }
   void CallbackEvent(Name* name, Address entry_point) {
     CODE_EVENT_DISPATCH(CallbackEvent(name, entry_point));

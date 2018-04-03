@@ -75,11 +75,11 @@ void Int64Lowering::LowerGraph() {
 
 namespace {
 
-int GetReturnIndexAfterLowering(
-    CallDescriptor* descriptor, int old_index) {
+int GetReturnIndexAfterLowering(CallDescriptor* call_descriptor,
+                                int old_index) {
   int result = old_index;
   for (int i = 0; i < old_index; i++) {
-    if (descriptor->GetReturnType(i).representation() ==
+    if (call_descriptor->GetReturnType(i).representation() ==
         MachineRepresentation::kWord64) {
       result++;
     }
@@ -87,9 +87,9 @@ int GetReturnIndexAfterLowering(
   return result;
 }
 
-int GetReturnCountAfterLowering(CallDescriptor* descriptor) {
+int GetReturnCountAfterLowering(CallDescriptor* call_descriptor) {
   return GetReturnIndexAfterLowering(
-      descriptor, static_cast<int>(descriptor->ReturnCount()));
+      call_descriptor, static_cast<int>(call_descriptor->ReturnCount()));
 }
 
 int GetParameterIndexAfterLowering(
@@ -149,7 +149,7 @@ void Int64Lowering::GetIndexNodes(Node* index, Node*& index_low,
 void Int64Lowering::LowerNode(Node* node) {
   switch (node->opcode()) {
     case IrOpcode::kInt64Constant: {
-      int64_t value = OpParameter<int64_t>(node);
+      int64_t value = OpParameter<int64_t>(node->op());
       Node* low_node = graph()->NewNode(
           common()->Int32Constant(static_cast<int32_t>(value & 0xFFFFFFFF)));
       Node* high_node = graph()->NewNode(
@@ -164,7 +164,7 @@ void Int64Lowering::LowerNode(Node* node) {
         rep = LoadRepresentationOf(node->op()).representation();
       } else {
         DCHECK_EQ(IrOpcode::kUnalignedLoad, node->opcode());
-        rep = UnalignedLoadRepresentationOf(node->op()).representation();
+        rep = LoadRepresentationOf(node->op()).representation();
       }
 
       if (rep == MachineRepresentation::kWord64) {
@@ -314,32 +314,32 @@ void Int64Lowering::LowerNode(Node* node) {
       break;
     }
     case IrOpcode::kTailCall: {
-      CallDescriptor* descriptor =
+      auto call_descriptor =
           const_cast<CallDescriptor*>(CallDescriptorOf(node->op()));
       bool returns_require_lowering =
-          GetReturnCountAfterLowering(descriptor) !=
-          static_cast<int>(descriptor->ReturnCount());
+          GetReturnCountAfterLowering(call_descriptor) !=
+          static_cast<int>(call_descriptor->ReturnCount());
       if (DefaultLowering(node) || returns_require_lowering) {
         // Tail calls do not have return values, so adjusting the call
         // descriptor is enough.
-        auto new_descriptor = GetI32WasmCallDescriptor(zone(), descriptor);
+        auto new_descriptor = GetI32WasmCallDescriptor(zone(), call_descriptor);
         NodeProperties::ChangeOp(node, common()->TailCall(new_descriptor));
       }
       break;
     }
     case IrOpcode::kCall: {
-      CallDescriptor* descriptor =
+      auto call_descriptor =
           const_cast<CallDescriptor*>(CallDescriptorOf(node->op()));
       bool returns_require_lowering =
-          GetReturnCountAfterLowering(descriptor) !=
-              static_cast<int>(descriptor->ReturnCount());
+          GetReturnCountAfterLowering(call_descriptor) !=
+          static_cast<int>(call_descriptor->ReturnCount());
       if (DefaultLowering(node) || returns_require_lowering) {
         // We have to adjust the call descriptor.
-        NodeProperties::ChangeOp(
-            node, common()->Call(GetI32WasmCallDescriptor(zone(), descriptor)));
+        NodeProperties::ChangeOp(node, common()->Call(GetI32WasmCallDescriptor(
+                                           zone(), call_descriptor)));
       }
       if (returns_require_lowering) {
-        size_t return_arity = descriptor->ReturnCount();
+        size_t return_arity = call_descriptor->ReturnCount();
         if (return_arity == 1) {
           // We access the additional return values through projections.
           Node* low_node =
@@ -355,14 +355,14 @@ void Int64Lowering::LowerNode(Node* node) {
                ++old_index, ++new_index) {
             Node* use_node = projections[old_index];
             DCHECK_EQ(ProjectionIndexOf(use_node->op()), old_index);
-            DCHECK_EQ(GetReturnIndexAfterLowering(descriptor,
+            DCHECK_EQ(GetReturnIndexAfterLowering(call_descriptor,
                                                   static_cast<int>(old_index)),
                       static_cast<int>(new_index));
             if (new_index != old_index) {
               NodeProperties::ChangeOp(
                   use_node, common()->Projection(new_index));
             }
-            if (descriptor->GetReturnType(old_index).representation() ==
+            if (call_descriptor->GetReturnType(old_index).representation() ==
                 MachineRepresentation::kWord64) {
               Node* high_node = graph()->NewNode(
                   common()->Projection(new_index + 1), node,

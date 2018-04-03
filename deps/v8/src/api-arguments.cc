@@ -13,13 +13,16 @@
 namespace v8 {
 namespace internal {
 
-Handle<Object> FunctionCallbackArguments::Call(FunctionCallback f) {
+Handle<Object> FunctionCallbackArguments::Call(CallHandlerInfo* handler) {
   Isolate* isolate = this->isolate();
+  LOG(isolate, ApiObjectAccess("call", holder()));
+  RuntimeCallTimerScope timer(isolate, RuntimeCallCounterId::kFunctionCallback);
+  v8::FunctionCallback f =
+      v8::ToCData<v8::FunctionCallback>(handler->callback());
   if (isolate->needs_side_effect_check() &&
-      !isolate->debug()->PerformSideEffectCheckForCallback(FUNCTION_ADDR(f))) {
+      !isolate->debug()->PerformSideEffectCheckForCallback(handler)) {
     return Handle<Object>();
   }
-  RuntimeCallTimerScope timer(isolate, RuntimeCallCounterId::kFunctionCallback);
   VMState<EXTERNAL> state(isolate);
   ExternalCallbackScope call_scope(isolate, FUNCTION_ADDR(f));
   FunctionCallbackInfo<v8::Value> info(begin(), argv_, argc_);
@@ -45,9 +48,11 @@ Handle<JSObject> PropertyCallbackArguments::CallIndexedEnumerator(
   return CallPropertyEnumerator(interceptor);
 }
 
-bool PropertyCallbackArguments::PerformSideEffectCheck(Isolate* isolate,
-                                                       Address function) {
-  return isolate->debug()->PerformSideEffectCheckForCallback(function);
+bool PropertyCallbackArguments::PerformSideEffectCheck(
+    Isolate* isolate, Handle<Object> callback_info) {
+  // TODO(7515): always pass a valid callback info object.
+  if (callback_info.is_null()) return false;
+  return isolate->debug()->PerformSideEffectCheckForCallback(*callback_info);
 }
 
 }  // namespace internal

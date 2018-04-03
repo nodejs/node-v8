@@ -5,42 +5,52 @@
 #ifndef V8_FACTORY_H_
 #define V8_FACTORY_H_
 
-#include "src/feedback-vector.h"
+#include "src/builtins/builtins.h"
 #include "src/globals.h"
-#include "src/ic/handler-configuration.h"
-#include "src/isolate.h"
+#include "src/handles.h"
+#include "src/heap/heap.h"
 #include "src/messages.h"
-#include "src/objects/data-handler.h"
-#include "src/objects/descriptor-array.h"
+#include "src/objects/code.h"
 #include "src/objects/dictionary.h"
+#include "src/objects/hash-table.h"
 #include "src/objects/js-array.h"
 #include "src/objects/js-regexp.h"
-#include "src/objects/scope-info.h"
 #include "src/objects/string.h"
-#include "src/string-hasher.h"
 
 namespace v8 {
 namespace internal {
 
 // Forward declarations.
 class AliasedArgumentsEntry;
-class BreakPointInfo;
-class BreakPoint;
 class BoilerplateDescription;
+class BreakPoint;
+class BreakPointInfo;
+class CallableTask;
+class CallbackTask;
 class ConstantElementsPair;
 class CoverageInfo;
 class DebugInfo;
+class EnumCache;
 class FreshlyAllocatedBigInt;
+class Isolate;
 class JSMap;
 class JSMapIterator;
 class JSModuleNamespace;
 class JSSet;
 class JSSetIterator;
 class JSWeakMap;
+class LoadHandler;
+class ModuleInfo;
 class NewFunctionArgs;
-struct SourceRange;
 class PreParsedScopeData;
+class PromiseResolveThenableJobTask;
+class RegExpMatchInfo;
+class ScriptContextTable;
+class StoreHandler;
 class TemplateObjectDescription;
+struct SourceRange;
+template <typename T>
+class ZoneVector;
 
 enum FunctionMode {
   kWithNameBit = 1 << 0,
@@ -79,12 +89,19 @@ class V8_EXPORT_PRIVATE Factory final {
 
   // Allocates a fixed array-like object with given map and initialized with
   // undefined values.
-  Handle<FixedArray> NewFixedArrayWithMap(Heap::RootListIndex map_root_index,
-                                          int length, PretenureFlag pretenure);
+  template <typename T = FixedArray>
+  Handle<T> NewFixedArrayWithMap(Heap::RootListIndex map_root_index, int length,
+                                 PretenureFlag pretenure = NOT_TENURED);
 
   // Allocates a fixed array initialized with undefined values.
   Handle<FixedArray> NewFixedArray(int length,
                                    PretenureFlag pretenure = NOT_TENURED);
+
+  // Allocates a fixed array which may contain in-place weak references. The
+  // array is initialized with undefined values
+  Handle<WeakFixedArray> NewWeakFixedArray(
+      int length, PretenureFlag pretenure = NOT_TENURED);
+
   Handle<PropertyArray> NewPropertyArray(int length,
                                          PretenureFlag pretenure = NOT_TENURED);
   // Tries allocating a fixed array initialized with undefined values.
@@ -101,7 +118,8 @@ class V8_EXPORT_PRIVATE Factory final {
       int length, PretenureFlag pretenure = NOT_TENURED);
 
   // Allocates an uninitialized fixed array. It must be filled by the caller.
-  Handle<FixedArray> NewUninitializedFixedArray(int length);
+  Handle<FixedArray> NewUninitializedFixedArray(
+      int length, PretenureFlag pretenure = NOT_TENURED);
 
   // Allocates a feedback vector whose slots are initialized with undefined
   // values.
@@ -126,6 +144,8 @@ class V8_EXPORT_PRIVATE Factory final {
   Handle<FixedArrayBase> NewFixedDoubleArrayWithHoles(
       int size,
       PretenureFlag pretenure = NOT_TENURED);
+
+  Handle<FeedbackMetadata> NewFeedbackMetadata(int slot_count);
 
   Handle<FrameArray> NewFrameArray(int number_of_frames,
                                    PretenureFlag pretenure = NOT_TENURED);
@@ -165,8 +185,7 @@ class V8_EXPORT_PRIVATE Factory final {
 
   // Create a new TemplateObjectDescription struct.
   Handle<TemplateObjectDescription> NewTemplateObjectDescription(
-      int hash, Handle<FixedArray> raw_strings,
-      Handle<FixedArray> cooked_strings);
+      Handle<FixedArray> raw_strings, Handle<FixedArray> cooked_strings);
 
   // Create a pre-tenured empty AccessorPair.
   Handle<AccessorPair> NewAccessorPair();
@@ -326,6 +345,7 @@ class V8_EXPORT_PRIVATE Factory final {
   // Create a symbol.
   Handle<Symbol> NewSymbol();
   Handle<Symbol> NewPrivateSymbol();
+  Handle<Symbol> NewPrivateFieldSymbol();
 
   // Create a global (but otherwise uninitialized) context.
   Handle<Context> NewNativeContext();
@@ -386,15 +406,20 @@ class V8_EXPORT_PRIVATE Factory final {
   Handle<SourcePositionTableWithFrameCache>
   NewSourcePositionTableWithFrameCache(
       Handle<ByteArray> source_position_table,
-      Handle<NumberDictionary> stack_frame_cache);
+      Handle<SimpleNumberDictionary> stack_frame_cache);
+
+  // Allocate various microtasks.
+  Handle<CallableTask> NewCallableTask(Handle<JSReceiver> callable,
+                                       Handle<Context> context);
+  Handle<CallbackTask> NewCallbackTask(Handle<Foreign> callback,
+                                       Handle<Foreign> data);
+  Handle<PromiseResolveThenableJobTask> NewPromiseResolveThenableJobTask(
+      Handle<JSPromise> promise_to_resolve, Handle<JSReceiver> then,
+      Handle<JSReceiver> thenable, Handle<Context> context);
 
   // Foreign objects are pretenured when allocated by the bootstrapper.
   Handle<Foreign> NewForeign(Address addr,
                              PretenureFlag pretenure = NOT_TENURED);
-
-  // Allocate a new foreign object.  The foreign is pretenured (allocated
-  // directly in the old generation).
-  Handle<Foreign> NewForeign(const AccessorDescriptor* foreign);
 
   Handle<ByteArray> NewByteArray(int length,
                                  PretenureFlag pretenure = NOT_TENURED);
@@ -417,9 +442,9 @@ class V8_EXPORT_PRIVATE Factory final {
 
   Handle<WeakCell> NewWeakCell(Handle<HeapObject> value);
 
-  Handle<Cell> NewNoClosuresCell(Handle<Object> value);
-  Handle<Cell> NewOneClosureCell(Handle<Object> value);
-  Handle<Cell> NewManyClosuresCell(Handle<Object> value);
+  Handle<FeedbackCell> NewNoClosuresCell(Handle<HeapObject> value);
+  Handle<FeedbackCell> NewOneClosureCell(Handle<HeapObject> value);
+  Handle<FeedbackCell> NewManyClosuresCell(Handle<HeapObject> value);
 
   Handle<TransitionArray> NewTransitionArray(int capacity);
 
@@ -495,7 +520,8 @@ class V8_EXPORT_PRIVATE Factory final {
 
   // Allocates a new BigInt with {length} digits. Only to be used by
   // MutableBigInt::New*.
-  Handle<FreshlyAllocatedBigInt> NewBigInt(int length);
+  Handle<FreshlyAllocatedBigInt> NewBigInt(
+      int length, PretenureFlag pretenure = NOT_TENURED);
 
   Handle<JSObject> NewArgumentsObject(Handle<JSFunction> callee, int length);
 
@@ -594,7 +620,7 @@ class V8_EXPORT_PRIVATE Factory final {
 
   Handle<JSIteratorResult> NewJSIteratorResult(Handle<Object> value, bool done);
   Handle<JSAsyncFromSyncIterator> NewJSAsyncFromSyncIterator(
-      Handle<JSReceiver> sync_iterator);
+      Handle<JSReceiver> sync_iterator, Handle<Object> next);
 
   Handle<JSMap> NewJSMap();
   Handle<JSSet> NewJSSet();
@@ -635,12 +661,12 @@ class V8_EXPORT_PRIVATE Factory final {
 
   Handle<JSFunction> NewFunctionFromSharedFunctionInfo(
       Handle<Map> initial_map, Handle<SharedFunctionInfo> function_info,
-      Handle<Object> context_or_undefined, Handle<Cell> vector,
+      Handle<Object> context_or_undefined, Handle<FeedbackCell> feedback_cell,
       PretenureFlag pretenure = TENURED);
 
   Handle<JSFunction> NewFunctionFromSharedFunctionInfo(
       Handle<SharedFunctionInfo> function_info, Handle<Context> context,
-      Handle<Cell> vector, PretenureFlag pretenure = TENURED);
+      Handle<FeedbackCell> feedback_cell, PretenureFlag pretenure = TENURED);
 
   Handle<JSFunction> NewFunctionFromSharedFunctionInfo(
       Handle<Map> initial_map, Handle<SharedFunctionInfo> function_info,
@@ -677,19 +703,25 @@ class V8_EXPORT_PRIVATE Factory final {
   Handle<Code> NewCode(const CodeDesc& desc, Code::Kind kind,
                        Handle<Object> self_reference,
                        int32_t builtin_index = Builtins::kNoBuiltinId,
-                       MaybeHandle<HandlerTable> maybe_handler_table =
-                           MaybeHandle<HandlerTable>(),
                        MaybeHandle<ByteArray> maybe_source_position_table =
                            MaybeHandle<ByteArray>(),
                        MaybeHandle<DeoptimizationData> maybe_deopt_data =
                            MaybeHandle<DeoptimizationData>(),
                        Movability movability = kMovable, uint32_t stub_key = 0,
                        bool is_turbofanned = false, int stack_slots = 0,
-                       int safepoint_table_offset = 0);
+                       int safepoint_table_offset = 0,
+                       int handler_table_offset = 0);
 
   // Allocates a new, empty code object for use by builtin deserialization. The
   // given {size} argument specifies the size of the entire code object.
   Handle<Code> NewCodeForDeserialization(uint32_t size);
+
+#ifdef V8_EMBEDDED_BUILTINS
+  // Allocates a new code object and initializes it as the trampoline to the
+  // given off-heap entry point.
+  Handle<Code> NewOffHeapTrampolineFor(Handle<Code> code,
+                                       Address off_heap_entry);
+#endif
 
   Handle<Code> CopyCode(Handle<Code> code);
 
@@ -764,13 +796,13 @@ class V8_EXPORT_PRIVATE Factory final {
 #undef ACCESSOR_INFO_ACCESSOR
 
   // Allocates a new SharedFunctionInfo object.
-  Handle<SharedFunctionInfo> NewSharedFunctionInfo(
-      MaybeHandle<String> name, FunctionKind kind, Handle<Code> code,
-      Handle<ScopeInfo> scope_info);
-  Handle<SharedFunctionInfo> NewSharedFunctionInfo(
-      MaybeHandle<String> name, MaybeHandle<Code> code, bool is_constructor,
-      FunctionKind kind = kNormalFunction,
-      int maybe_builtin_index = Builtins::kNoBuiltinId);
+  Handle<SharedFunctionInfo> NewSharedFunctionInfoForApiFunction(
+      MaybeHandle<String> maybe_name,
+      Handle<FunctionTemplateInfo> function_template_info, FunctionKind kind);
+
+  Handle<SharedFunctionInfo> NewSharedFunctionInfoForBuiltin(
+      MaybeHandle<String> name, int builtin_index,
+      FunctionKind kind = kNormalFunction);
 
   Handle<SharedFunctionInfo> NewSharedFunctionInfoForLiteral(
       FunctionLiteral* literal, Handle<Script> script);
@@ -848,6 +880,8 @@ class V8_EXPORT_PRIVATE Factory final {
   // Converts the given ToPrimitive hint to it's string representation.
   Handle<String> ToPrimitiveHintString(ToPrimitiveHint hint);
 
+  Handle<JSPromise> NewJSPromise(PretenureFlag pretenure = NOT_TENURED);
+
  private:
   Isolate* isolate() { return reinterpret_cast<Isolate*>(this); }
 
@@ -875,6 +909,13 @@ class V8_EXPORT_PRIVATE Factory final {
   // Create a JSArray with no elements and no length.
   Handle<JSArray> NewJSArray(ElementsKind elements_kind,
                              PretenureFlag pretenure = NOT_TENURED);
+
+  Handle<JSPromise> NewJSPromiseWithoutHook(
+      PretenureFlag pretenure = NOT_TENURED);
+
+  Handle<SharedFunctionInfo> NewSharedFunctionInfo(
+      MaybeHandle<String> name, MaybeHandle<HeapObject> maybe_function_data,
+      int maybe_builtin_index, FunctionKind kind = kNormalFunction);
 };
 
 // Utility class to simplify argument handling around JSFunction creation.
@@ -882,17 +923,16 @@ class NewFunctionArgs final {
  public:
   static NewFunctionArgs ForWasm(Handle<String> name, Handle<Code> code,
                                  Handle<Map> map);
-  static NewFunctionArgs ForBuiltin(Handle<String> name, Handle<Code> code,
-                                    Handle<Map> map, int builtin_id);
+  static NewFunctionArgs ForBuiltin(Handle<String> name, Handle<Map> map,
+                                    int builtin_id);
   static NewFunctionArgs ForFunctionWithoutCode(Handle<String> name,
                                                 Handle<Map> map,
                                                 LanguageMode language_mode);
   static NewFunctionArgs ForBuiltinWithPrototype(
-      Handle<String> name, Handle<Code> code, Handle<Object> prototype,
-      InstanceType type, int instance_size, int inobject_properties,
-      int builtin_id, MutableMode prototype_mutability);
+      Handle<String> name, Handle<Object> prototype, InstanceType type,
+      int instance_size, int inobject_properties, int builtin_id,
+      MutableMode prototype_mutability);
   static NewFunctionArgs ForBuiltinWithoutPrototype(Handle<String> name,
-                                                    Handle<Code> code,
                                                     int builtin_id,
                                                     LanguageMode language_mode);
 

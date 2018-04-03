@@ -6742,7 +6742,7 @@ TEST(RunComputedCodeObject) {
   CallDescriptor* c = Linkage::GetSimplifiedCDescriptor(r.zone(), &sig);
   LinkageLocation ret[] = {c->GetReturnLocation(0)};
   Signature<LinkageLocation> loc(1, 0, ret);
-  CallDescriptor* desc = new (r.zone()) CallDescriptor(  // --
+  auto call_descriptor = new (r.zone()) CallDescriptor(  // --
       CallDescriptor::kCallCodeObject,                   // kind
       MachineType::AnyTagged(),                          // target_type
       c->GetInputLocation(0),                            // target_loc
@@ -6753,7 +6753,7 @@ TEST(RunComputedCodeObject) {
       c->CalleeSavedFPRegisters(),                       // callee saved FP
       CallDescriptor::kNoFlags,                          // flags
       "c-call-as-code");
-  Node* call = r.AddNode(r.common()->Call(desc), phi);
+  Node* call = r.AddNode(r.common()->Call(call_descriptor), phi);
   r.Return(call);
 
   CHECK_EQ(33, r.Call(1));
@@ -6897,29 +6897,6 @@ TEST(Regression738952) {
   m.Return(m.Load(MachineType::Int32(), m.PointerConstant(&sentinel),
                   m.TruncateFloat64ToWord32(m.Float64Constant(d))));
   CHECK_EQ(sentinel, m.Call());
-}
-
-TEST(Regression6640) {
-  RawMachineAssemblerTester<int32_t> m;
-
-  int32_t old_value = 0;
-  int32_t new_value = 1;
-  Node* c = m.RelocatableInt32Constant(
-      old_value, RelocInfo::WASM_FUNCTION_TABLE_SIZE_REFERENCE);
-  m.Return(m.Word32Equal(c, c));
-
-  // Patch the code.
-  Handle<Code> code = m.GetCode();
-  for (RelocIterator it(*code,
-                        1 << RelocInfo::WASM_FUNCTION_TABLE_SIZE_REFERENCE);
-       !it.done(); it.next()) {
-    // TODO(6792): No longer needed once WebAssembly code is off heap.
-    CodeSpaceMemoryModificationScope modification_scope(code->GetHeap());
-    it.rinfo()->update_wasm_function_table_size_reference(
-        code->GetIsolate(), old_value, new_value, FLUSH_ICACHE_IF_NEEDED);
-  }
-
-  CHECK(m.Call());
 }
 
 }  // namespace compiler

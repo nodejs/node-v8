@@ -5,6 +5,8 @@
 #ifndef V8_API_NATIVES_H_
 #define V8_API_NATIVES_H_
 
+#include "include/v8.h"
+#include "src/base/macros.h"
 #include "src/handles.h"
 #include "src/property-details.h"
 
@@ -39,7 +41,7 @@ class ApiNatives {
   static Handle<JSFunction> CreateApiFunction(
       Isolate* isolate, Handle<FunctionTemplateInfo> obj,
       Handle<Object> prototype, ApiInstanceType instance_type,
-      MaybeHandle<Name> maybe_name = MaybeHandle<Name>());
+      MaybeHandle<Name> name = MaybeHandle<Name>());
 
   static void AddDataProperty(Isolate* isolate, Handle<TemplateInfo> info,
                               Handle<Name> name, Handle<Object> value,
@@ -62,4 +64,4 @@ class ApiNatives {
 }  // namespace internal
 }  // namespace v8
 
-#endif
+#endif  // V8_API_NATIVES_H_

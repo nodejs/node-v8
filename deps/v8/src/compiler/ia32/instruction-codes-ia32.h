@@ -121,10 +121,15 @@ namespace compiler {
   V(AVXF32x4ExtractLane)           \
   V(SSEF32x4ReplaceLane)           \
   V(AVXF32x4ReplaceLane)           \
+  V(IA32F32x4SConvertI32x4)        \
+  V(SSEF32x4UConvertI32x4)         \
+  V(AVXF32x4UConvertI32x4)         \
   V(SSEF32x4Abs)                   \
   V(AVXF32x4Abs)                   \
   V(SSEF32x4Neg)                   \
   V(AVXF32x4Neg)                   \
+  V(IA32F32x4RecipApprox)          \
+  V(IA32F32x4RecipSqrtApprox)      \
   V(SSEF32x4Add)                   \
   V(AVXF32x4Add)                   \
   V(SSEF32x4Sub)                   \
@@ -229,6 +234,10 @@ namespace compiler {
   V(IA32I8x16ExtractLane)          \
   V(SSEI8x16ReplaceLane)           \
   V(AVXI8x16ReplaceLane)           \
+  V(SSEI8x16Shl)                   \
+  V(AVXI8x16Shl)                   \
+  V(SSEI8x16ShrS)                  \
+  V(AVXI8x16ShrS)                  \
   V(IA32I8x16Neg)                  \
   V(SSEI8x16Add)                   \
   V(AVXI8x16Add)                   \
@@ -238,6 +247,8 @@ namespace compiler {
   V(AVXI8x16Sub)                   \
   V(SSEI8x16SubSaturateS)          \
   V(AVXI8x16SubSaturateS)          \
+  V(SSEI8x16Mul)                   \
+  V(AVXI8x16Mul)                   \
   V(SSEI8x16MinS)                  \
   V(AVXI8x16MinS)                  \
   V(SSEI8x16MaxS)                  \
@@ -254,6 +265,8 @@ namespace compiler {
   V(AVXI8x16AddSaturateU)          \
   V(SSEI8x16SubSaturateU)          \
   V(AVXI8x16SubSaturateU)          \
+  V(SSEI8x16ShrU)                  \
+  V(AVXI8x16ShrU)                  \
   V(SSEI8x16MinU)                  \
   V(AVXI8x16MinU)                  \
   V(SSEI8x16MaxU)                  \
@@ -270,7 +283,11 @@ namespace compiler {
   V(SSES128Or)                     \
   V(AVXS128Or)                     \
   V(SSES128Xor)                    \
-  V(AVXS128Xor)
+  V(AVXS128Xor)                    \
+  V(SSES128Select)                 \
+  V(AVXS128Select)                 \
+  V(IA32S8x16Shuffle)              \
+  V(IA32S32x4Swizzle)
 
 // Addressing modes represent the "shape" of inputs to an instruction.
 // Many instructions support multiple addressing modes. Addressing modes

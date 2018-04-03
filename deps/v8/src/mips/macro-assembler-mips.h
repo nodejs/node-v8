@@ -19,12 +19,15 @@ constexpr Register kReturnRegister2 = a0;
 constexpr Register kJSFunctionRegister = a1;
 constexpr Register kContextRegister = s7;
 constexpr Register kAllocateSizeRegister = a0;
+constexpr Register kSpeculationPoisonRegister = t3;
 constexpr Register kInterpreterAccumulatorRegister = v0;
 constexpr Register kInterpreterBytecodeOffsetRegister = t4;
 constexpr Register kInterpreterBytecodeArrayRegister = t5;
 constexpr Register kInterpreterDispatchTableRegister = t6;
 constexpr Register kJavaScriptCallArgCountRegister = a0;
+constexpr Register kJavaScriptCallCodeStartRegister = a2;
 constexpr Register kJavaScriptCallNewTargetRegister = a3;
+constexpr Register kOffHeapTrampolineRegister = at;
 constexpr Register kRuntimeCallFunctionRegister = a1;
 constexpr Register kRuntimeCallArgCountRegister = a0;
 
@@ -458,6 +461,12 @@ class TurboAssembler : public Assembler {
 
   DEFINE_INSTRUCTION(Slt);
   DEFINE_INSTRUCTION(Sltu);
+  DEFINE_INSTRUCTION(Sle);
+  DEFINE_INSTRUCTION(Sleu);
+  DEFINE_INSTRUCTION(Sgt);
+  DEFINE_INSTRUCTION(Sgtu);
+  DEFINE_INSTRUCTION(Sge);
+  DEFINE_INSTRUCTION(Sgeu);
 
   // MIPS32 R2 instruction macro.
   DEFINE_INSTRUCTION(Ror);
@@ -558,7 +567,14 @@ class TurboAssembler : public Assembler {
   void Movt(Register rd, Register rs, uint16_t cc = 0);
   void Movf(Register rd, Register rs, uint16_t cc = 0);
 
+  void LoadZeroIfConditionNotZero(Register dest, Register condition);
+  void LoadZeroIfConditionZero(Register dest, Register condition);
+  void LoadZeroOnCondition(Register rd, Register rs, const Operand& rt,
+                           Condition cond);
+
   void Clz(Register rd, Register rs);
+  void Ctz(Register rd, Register rs);
+  void Popcnt(Register rd, Register rs);
 
   // Int64Lowering instructions
   void AddPair(Register dst_low, Register dst_high, Register left_low,
@@ -731,67 +747,25 @@ class TurboAssembler : public Assembler {
     Mthc1(src_high, dst);
   }
 
-  void Move(FPURegister dst, float imm);
-  void Move(FPURegister dst, double imm);
+  void Move(FPURegister dst, float imm) { Move(dst, bit_cast<uint32_t>(imm)); }
+  void Move(FPURegister dst, double imm) { Move(dst, bit_cast<uint64_t>(imm)); }
+  void Move(FPURegister dst, uint32_t src);
+  void Move(FPURegister dst, uint64_t src);
 
   // -------------------------------------------------------------------------
-  // Overflow handling functions.
-  // Usage: first call the appropriate arithmetic function, then call one of the
-  // jump functions with the overflow_dst register as the second parameter.
+  // Overflow operations.
 
-  inline void AddBranchOvf(Register dst, Register left, const Operand& right,
-                           Label* overflow_label, Register scratch = at) {
-    AddBranchOvf(dst, left, right, overflow_label, nullptr, scratch);
-  }
-
-  inline void AddBranchNoOvf(Register dst, Register left, const Operand& right,
-                             Label* no_overflow_label, Register scratch = at) {
-    AddBranchOvf(dst, left, right, nullptr, no_overflow_label, scratch);
-  }
-
-  void AddBranchOvf(Register dst, Register left, const Operand& right,
-                    Label* overflow_label, Label* no_overflow_label,
-                    Register scratch = at);
-
-  void AddBranchOvf(Register dst, Register left, Register right,
-                    Label* overflow_label, Label* no_overflow_label,
-                    Register scratch = at);
-
-  inline void SubBranchOvf(Register dst, Register left, const Operand& right,
-                           Label* overflow_label, Register scratch = at) {
-    SubBranchOvf(dst, left, right, overflow_label, nullptr, scratch);
-  }
-
-  inline void SubBranchNoOvf(Register dst, Register left, const Operand& right,
-                             Label* no_overflow_label, Register scratch = at) {
-    SubBranchOvf(dst, left, right, nullptr, no_overflow_label, scratch);
-  }
-
-  void SubBranchOvf(Register dst, Register left, const Operand& right,
-                    Label* overflow_label, Label* no_overflow_label,
-                    Register scratch = at);
-
-  void SubBranchOvf(Register dst, Register left, Register right,
-                    Label* overflow_label, Label* no_overflow_label,
-                    Register scratch = at);
-
-  inline void MulBranchOvf(Register dst, Register left, const Operand& right,
-                           Label* overflow_label, Register scratch = at) {
-    MulBranchOvf(dst, left, right, overflow_label, nullptr, scratch);
-  }
-
-  inline void MulBranchNoOvf(Register dst, Register left, const Operand& right,
-                             Label* no_overflow_label, Register scratch = at) {
-    MulBranchOvf(dst, left, right, nullptr, no_overflow_label, scratch);
-  }
-
-  void MulBranchOvf(Register dst, Register left, const Operand& right,
-                    Label* overflow_label, Label* no_overflow_label,
-                    Register scratch = at);
-
-  void MulBranchOvf(Register dst, Register left, Register right,
-                    Label* overflow_label, Label* no_overflow_label,
-                    Register scratch = at);
+  // AddOverflow sets overflow register to a negative value if
+  // overflow occured, otherwise it is zero or positive
+  void AddOverflow(Register dst, Register left, const Operand& right,
+                   Register overflow);
+  // SubOverflow sets overflow register to a negative value if
+  // overflow occured, otherwise it is zero or positive
+  void SubOverflow(Register dst, Register left, const Operand& right,
+                   Register overflow);
+  // MulOverflow sets overflow register to zero if no overflow occured
+  void MulOverflow(Register dst, Register left, const Operand& right,
+                   Register overflow);
 
 // Number of instructions needed for calculation of switch table entry address
 #ifdef _MIPS_ARCH_MIPS32R6
@@ -843,6 +817,12 @@ class TurboAssembler : public Assembler {
                       Condition cc, FPURegister cmp1, FPURegister cmp2) {
     BranchF64(bd, target, nan, cc, cmp1, cmp2);
   }
+
+  // Compute the start of the generated instruction stream from the current PC.
+  // This is an alternative to embedding the {CodeObject} handle as a reference.
+  void ComputeCodeStartAddress(Register dst);
+
+  void ResetSpeculationPoisonRegister();
 
  protected:
   void BranchLong(Label* L, BranchDelaySlot bdslot);
@@ -1023,10 +1003,6 @@ class MacroAssembler : public TurboAssembler {
   void InvokeFunction(Register function, const ParameterCount& expected,
                       const ParameterCount& actual, InvokeFlag flag);
 
-  void InvokeFunction(Handle<JSFunction> function,
-                      const ParameterCount& expected,
-                      const ParameterCount& actual, InvokeFlag flag);
-
   // Frame restart support.
   void MaybeDropFrames();
 
@@ -1089,6 +1065,13 @@ const Operand& rt = Operand(zero_reg), BranchDelaySlot bd = PROTECT
                                BranchDelaySlot bd = PROTECT,
                                bool builtin_exit_frame = false);
 
+  // Generates a trampoline to jump to the off-heap instruction stream.
+  void JumpToInstructionStream(Address entry);
+
+  // ---------------------------------------------------------------------------
+  // In-place weak references.
+  void LoadWeakValue(Register out, Register in, Label* target_if_cleared);
+
   // -------------------------------------------------------------------------
   // StatsCounter support.
 
@@ -1130,6 +1113,9 @@ const Operand& rt = Operand(zero_reg), BranchDelaySlot bd = PROTECT
 
   // Abort execution if argument is not a FixedArray, enabled via --debug-code.
   void AssertFixedArray(Register object);
+
+  // Abort execution if argument is not a Constructor, enabled via --debug-code.
+  void AssertConstructor(Register object);
 
   // Abort execution if argument is not a JSFunction, enabled via --debug-code.
   void AssertFunction(Register object);

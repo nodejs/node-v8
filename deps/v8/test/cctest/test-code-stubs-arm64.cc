@@ -64,7 +64,6 @@ ConvertDToIFunc MakeConvertDToIFuncTrampoline(Isolate* isolate,
   // Save registers make sure they don't get clobbered.
   int source_reg_offset = kDoubleSize;
   int reg_num = 0;
-  queue.Queue(xzr);  // Push xzr to maintain sp alignment.
   for (; reg_num < Register::kNumRegisters; ++reg_num) {
     if (RegisterConfiguration::Default()->IsAllocatableGeneralCode(reg_num)) {
       Register reg = Register::from_code(reg_num);
@@ -129,7 +128,7 @@ ConvertDToIFunc MakeConvertDToIFuncTrampoline(Isolate* isolate,
   CodeDesc desc;
   masm.GetCode(isolate, &desc);
   MakeAssemblerBufferExecutable(buffer, allocated);
-  Assembler::FlushICache(isolate, buffer, allocated);
+  Assembler::FlushICache(buffer, allocated);
   return (reinterpret_cast<ConvertDToIFunc>(
       reinterpret_cast<intptr_t>(buffer)));
 }

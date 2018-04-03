@@ -279,22 +279,20 @@ uint32_t RelocInfo::embedded_size() const {
       Assembler::target_address_at(pc_, constant_pool_)));
 }
 
-void RelocInfo::set_embedded_address(Isolate* isolate, Address address,
+void RelocInfo::set_embedded_address(Address address,
                                      ICacheFlushMode flush_mode) {
-  Assembler::set_target_address_at(isolate, pc_, constant_pool_, address,
-                                   flush_mode);
+  Assembler::set_target_address_at(pc_, constant_pool_, address, flush_mode);
 }
 
-void RelocInfo::set_embedded_size(Isolate* isolate, uint32_t size,
-                                  ICacheFlushMode flush_mode) {
-  Assembler::set_target_address_at(isolate, pc_, constant_pool_,
+void RelocInfo::set_embedded_size(uint32_t size, ICacheFlushMode flush_mode) {
+  Assembler::set_target_address_at(pc_, constant_pool_,
                                    reinterpret_cast<Address>(size), flush_mode);
 }
 
-void RelocInfo::set_js_to_wasm_address(Isolate* isolate, Address address,
+void RelocInfo::set_js_to_wasm_address(Address address,
                                        ICacheFlushMode icache_flush_mode) {
   DCHECK_EQ(rmode_, JS_TO_WASM_CALL);
-  set_embedded_address(isolate, address, icache_flush_mode);
+  set_embedded_address(address, icache_flush_mode);
 }
 
 Address RelocInfo::js_to_wasm_address() const {
@@ -336,7 +334,7 @@ void Assembler::AllocateAndInstallRequestedHeapObjects(Isolate* isolate) {
       case HeapObjectRequest::kHeapNumber:
         object = isolate->factory()->NewHeapNumber(request.heap_number(),
                                                    IMMUTABLE, TENURED);
-        set_target_address_at(nullptr, pc, static_cast<Address>(nullptr),
+        set_target_address_at(pc, static_cast<Address>(nullptr),
                               reinterpret_cast<Address>(object.location()),
                               SKIP_ICACHE_FLUSH);
         break;
@@ -373,6 +371,7 @@ void Assembler::GetCode(Isolate* isolate, CodeDesc* desc) {
   desc->buffer_size = buffer_size_;
   desc->instr_size = pc_offset();
   desc->reloc_size = (buffer_ + buffer_size_) - reloc_info_writer.pos();
+  desc->constant_pool_size = 0;
   desc->origin = this;
   desc->unwinding_info_size = 0;
   desc->unwinding_info = nullptr;
@@ -2132,7 +2131,7 @@ void Assembler::GrowBuffer(int needed) {
   // Some internal data structures overflow for very large buffers,
   // they must ensure that kMaximalBufferSize is not too large.
   if (desc.buffer_size > kMaximalBufferSize) {
-    V8::FatalProcessOutOfMemory("Assembler::GrowBuffer");
+    V8::FatalProcessOutOfMemory(nullptr, "Assembler::GrowBuffer");
   }
 
   // Set up new buffer.
@@ -2224,8 +2223,7 @@ void Assembler::EmitRelocations() {
     } else if (RelocInfo::IsInternalReferenceEncoded(rmode)) {
       // mov sequence
       intptr_t pos = reinterpret_cast<intptr_t>(target_address_at(pc, nullptr));
-      set_target_address_at(nullptr, pc, nullptr, buffer_ + pos,
-                            SKIP_ICACHE_FLUSH);
+      set_target_address_at(pc, nullptr, buffer_ + pos, SKIP_ICACHE_FLUSH);
     }
 
     reloc_info_writer.Write(&rinfo);

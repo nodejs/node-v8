@@ -454,25 +454,6 @@ static inline v8::Local<v8::Value> CompileRun(
 }
 
 
-static inline v8::Local<v8::Value> ParserCacheCompileRun(const char* source) {
-  // Compile once just to get the preparse data, then compile the second time
-  // using the data.
-  v8::Isolate* isolate = v8::Isolate::GetCurrent();
-  v8::Local<v8::Context> context = isolate->GetCurrentContext();
-  v8::ScriptCompiler::Source script_source(v8_str(source));
-  v8::ScriptCompiler::Compile(context, &script_source,
-                              v8::ScriptCompiler::kProduceParserCache)
-      .ToLocalChecked();
-
-  // Check whether we received cached data, and if so use it.
-  v8::ScriptCompiler::CompileOptions options =
-      script_source.GetCachedData() ? v8::ScriptCompiler::kConsumeParserCache
-                                    : v8::ScriptCompiler::kNoCompileOptions;
-
-  return CompileRun(context, &script_source, options);
-}
-
-
 // Helper functions that compile and run the source with given origin.
 static inline v8::Local<v8::Value> CompileRunWithOrigin(const char* source,
                                                         const char* origin_url,
@@ -587,6 +568,13 @@ static inline void MakeAssemblerBufferExecutable(uint8_t* buffer,
   CHECK(result);
 }
 
+static inline void MakeAssemblerBufferWritable(uint8_t* buffer,
+                                               size_t allocated) {
+  bool result = v8::internal::SetPermissions(buffer, allocated,
+                                             v8::PageAllocator::kReadWrite);
+  CHECK(result);
+}
+
 static v8::debug::DebugDelegate dummy_delegate;
 
 static inline void EnableDebugger(v8::Isolate* isolate) {
@@ -697,14 +685,13 @@ class TestPlatform : public v8::Platform {
     return old_platform_->GetForegroundTaskRunner(isolate);
   }
 
-  std::shared_ptr<v8::TaskRunner> GetBackgroundTaskRunner(
+  std::shared_ptr<v8::TaskRunner> GetWorkerThreadsTaskRunner(
       v8::Isolate* isolate) override {
-    return old_platform_->GetBackgroundTaskRunner(isolate);
+    return old_platform_->GetWorkerThreadsTaskRunner(isolate);
   }
 
-  void CallOnBackgroundThread(v8::Task* task,
-                              ExpectedRuntime expected_runtime) override {
-    old_platform_->CallOnBackgroundThread(task, expected_runtime);
+  void CallOnWorkerThread(std::unique_ptr<v8::Task> task) override {
+    old_platform_->CallOnWorkerThread(std::move(task));
   }
 
   void CallOnForegroundThread(v8::Isolate* isolate, v8::Task* task) override {

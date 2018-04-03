@@ -53,9 +53,11 @@ void IncrementalMarking::Observer::Step(int bytes_allocated, Address addr,
 }
 
 IncrementalMarking::IncrementalMarking(
-    Heap* heap, MarkCompactCollector::MarkingWorklist* marking_worklist)
+    Heap* heap, MarkCompactCollector::MarkingWorklist* marking_worklist,
+    WeakObjects* weak_objects)
     : heap_(heap),
       marking_worklist_(marking_worklist),
+      weak_objects_(weak_objects),
       initial_old_generation_size_(0),
       bytes_marked_ahead_of_schedule_(0),
       bytes_marked_concurrently_(0),
@@ -91,8 +93,8 @@ bool IncrementalMarking::BaseRecordWrite(HeapObject* obj, Object* value) {
   return is_compacting_ && need_recording;
 }
 
-
-void IncrementalMarking::RecordWriteSlow(HeapObject* obj, Object** slot,
+void IncrementalMarking::RecordWriteSlow(HeapObject* obj,
+                                         HeapObjectReference** slot,
                                          Object* value) {
   if (BaseRecordWrite(obj, value) && slot != nullptr) {
     // Object is not going to be rescanned we need to record the slot.
@@ -203,11 +205,13 @@ class IncrementalMarkingRootMarkingVisitor : public RootVisitor {
       IncrementalMarking* incremental_marking)
       : heap_(incremental_marking->heap()) {}
 
-  void VisitRootPointer(Root root, Object** p) override {
+  void VisitRootPointer(Root root, const char* description,
+                        Object** p) override {
     MarkObjectByPointer(p);
   }
 
-  void VisitRootPointers(Root root, Object** start, Object** end) override {
+  void VisitRootPointers(Root root, const char* description, Object** start,
+                         Object** end) override {
     for (Object** p = start; p < end; p++) MarkObjectByPointer(p);
   }
 
@@ -420,7 +424,7 @@ void IncrementalMarking::StartMarking() {
   IncrementalMarkingRootMarkingVisitor visitor(this);
   heap_->IterateStrongRoots(&visitor, VISIT_ONLY_STRONG);
 
-  if (FLAG_concurrent_marking && heap_->use_tasks()) {
+  if (FLAG_concurrent_marking && !heap_->IsTearingDown()) {
     heap_->concurrent_marking()->ScheduleTasks();
   }
 
@@ -556,8 +560,6 @@ void IncrementalMarking::FinalizeIncrementally() {
   // objects to reduce the marking load in the final pause.
   // 1) We scan and mark the roots again to find all changes to the root set.
   // 2) Age and retain maps embedded in optimized code.
-  // 3) Remove weak cell with live values from the list of weak cells, they
-  // do not need processing during GC.
   MarkRoots();
 
   // Map retaining is needed for perfromance, not correctness,
@@ -636,6 +638,43 @@ void IncrementalMarking::UpdateMarkingWorklistAfterScavenge() {
       return false;
     }
   });
+
+  UpdateWeakReferencesAfterScavenge();
+}
+
+void IncrementalMarking::UpdateWeakReferencesAfterScavenge() {
+  weak_objects_->weak_references.Update(
+      [](std::pair<HeapObject*, HeapObjectReference**> slot_in,
+         std::pair<HeapObject*, HeapObjectReference**>* slot_out) -> bool {
+        HeapObject* heap_obj = slot_in.first;
+        MapWord map_word = heap_obj->map_word();
+        if (map_word.IsForwardingAddress()) {
+          ptrdiff_t distance_to_slot =
+              reinterpret_cast<Address>(slot_in.second) -
+              reinterpret_cast<Address>(slot_in.first);
+          Address new_slot =
+              reinterpret_cast<Address>(map_word.ToForwardingAddress()) +
+              distance_to_slot;
+          slot_out->first = map_word.ToForwardingAddress();
+          slot_out->second = reinterpret_cast<HeapObjectReference**>(new_slot);
+        } else {
+          *slot_out = slot_in;
+        }
+        return true;
+      });
+  weak_objects_->weak_objects_in_code.Update(
+      [](std::pair<HeapObject*, Code*> slot_in,
+         std::pair<HeapObject*, Code*>* slot_out) -> bool {
+        HeapObject* heap_obj = slot_in.first;
+        MapWord map_word = heap_obj->map_word();
+        if (map_word.IsForwardingAddress()) {
+          slot_out->first = map_word.ToForwardingAddress();
+          slot_out->second = slot_in.second;
+        } else {
+          *slot_out = slot_in;
+        }
+        return true;
+      });
 }
 
 void IncrementalMarking::UpdateMarkedBytesAfterScavenge(
@@ -653,15 +692,17 @@ bool IncrementalMarking::IsFixedArrayWithProgressBar(HeapObject* obj) {
 
 int IncrementalMarking::VisitObject(Map* map, HeapObject* obj) {
   DCHECK(marking_state()->IsGrey(obj) || marking_state()->IsBlack(obj));
-  // The object can already be black in two cases:
-  // 1. The object is a fixed array with the progress bar.
-  // 2. The object is a JSObject that was colored black before
-  //    unsafe layout change.
-  // 3. The object is a string that was colored black before
-  //    unsafe layout change.
   if (!marking_state()->GreyToBlack(obj)) {
-    DCHECK(IsFixedArrayWithProgressBar(obj) || obj->IsJSObject() ||
-           obj->IsString());
+    // The object can already be black in these cases:
+    // 1. The object is a fixed array with the progress bar.
+    // 2. The object is a JSObject that was colored black before
+    //    unsafe layout change.
+    // 3. The object is a string that was colored black before
+    //    unsafe layout change.
+    // 4. The object is materizalized by the deoptimizer.
+    DCHECK(obj->IsHashTable() || obj->IsPropertyArray() ||
+           obj->IsContextExtension() || obj->IsFixedArray() ||
+           obj->IsJSObject() || obj->IsString());
   }
   DCHECK(marking_state()->IsBlack(obj));
   WhiteToGreyAndPush(map);
@@ -904,7 +945,7 @@ size_t IncrementalMarking::StepSizeToMakeProgress() {
   const size_t kTargetStepCountAtOOM = 32;
   size_t oom_slack = heap()->new_space()->Capacity() + 64 * MB;
 
-  if (heap()->IsCloseToOutOfMemory(oom_slack)) {
+  if (!heap()->CanExpandOldGeneration(oom_slack)) {
     return heap()->PromotedSpaceSizeOfObjects() / kTargetStepCountAtOOM;
   }
 

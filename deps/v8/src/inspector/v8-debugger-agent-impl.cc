@@ -57,6 +57,8 @@ static const char kDebuggerNotPaused[] =
 static const size_t kBreakpointHintMaxLength = 128;
 static const intptr_t kBreakpointHintMaxSearchOffset = 80 * 10;
 
+static const int kMaxScriptFailedToParseScripts = 1000;
+
 namespace {
 
 void TranslateLocation(protocol::Debugger::Location* location,
@@ -95,25 +97,38 @@ String16 generateBreakpointId(BreakpointType type,
   return builder.toString();
 }
 
+String16 generateBreakpointId(BreakpointType type,
+                              v8::Local<v8::Function> function) {
+  String16Builder builder;
+  builder.appendNumber(static_cast<int>(type));
+  builder.append(':');
+  builder.appendNumber(v8::debug::GetDebuggingId(function));
+  return builder.toString();
+}
+
 bool parseBreakpointId(const String16& breakpointId, BreakpointType* type,
                        String16* scriptSelector = nullptr,
                        int* lineNumber = nullptr, int* columnNumber = nullptr) {
   size_t typeLineSeparator = breakpointId.find(':');
   if (typeLineSeparator == String16::kNotFound) return false;
+
+  int rawType = breakpointId.substring(0, typeLineSeparator).toInteger();
+  if (rawType < static_cast<int>(BreakpointType::kByUrl) ||
+      rawType > static_cast<int>(BreakpointType::kMonitorCommand)) {
+    return false;
+  }
+  if (type) *type = static_cast<BreakpointType>(rawType);
+  if (rawType == static_cast<int>(BreakpointType::kDebugCommand) ||
+      rawType == static_cast<int>(BreakpointType::kMonitorCommand)) {
+    // The script and source position is not encoded in this case.
+    return true;
+  }
+
   size_t lineColumnSeparator = breakpointId.find(':', typeLineSeparator + 1);
   if (lineColumnSeparator == String16::kNotFound) return false;
   size_t columnSelectorSeparator =
       breakpointId.find(':', lineColumnSeparator + 1);
   if (columnSelectorSeparator == String16::kNotFound) return false;
-
-  if (type) {
-    int rawType = breakpointId.substring(0, typeLineSeparator).toInteger();
-    if (rawType < static_cast<int>(BreakpointType::kByUrl) ||
-        rawType > static_cast<int>(BreakpointType::kMonitorCommand)) {
-      return false;
-    }
-    *type = static_cast<BreakpointType>(rawType);
-  }
   if (scriptSelector) {
     *scriptSelector = breakpointId.substring(columnSelectorSeparator + 1);
   }
@@ -820,6 +835,19 @@ V8DebuggerAgentImpl::setBreakpointImpl(const String16& breakpointId,
       .build();
 }
 
+void V8DebuggerAgentImpl::setBreakpointImpl(const String16& breakpointId,
+                                            v8::Local<v8::Function> function,
+                                            v8::Local<v8::String> condition) {
+  v8::debug::BreakpointId debuggerBreakpointId;
+  if (!v8::debug::SetFunctionBreakpoint(function, condition,
+                                        &debuggerBreakpointId)) {
+    return;
+  }
+  m_debuggerBreakpointIdToBreakpointId[debuggerBreakpointId] = breakpointId;
+  m_breakpointIdToDebuggerBreakpointIds[breakpointId].push_back(
+      debuggerBreakpointId);
+}
+
 Response V8DebuggerAgentImpl::searchInContent(
     const String16& scriptId, const String16& query,
     Maybe<bool> optionalCaseSensitive, Maybe<bool> optionalIsRegex,
@@ -1355,10 +1383,12 @@ bool V8DebuggerAgentImpl::isPaused() const {
 void V8DebuggerAgentImpl::didParseSource(
     std::unique_ptr<V8DebuggerScript> script, bool success) {
   v8::HandleScope handles(m_isolate);
-  String16 scriptSource = script->source();
-  if (!success) script->setSourceURL(findSourceURL(scriptSource, false));
-  if (!success)
+  if (!success) {
+    DCHECK(!script->isSourceLoadedLazily());
+    String16 scriptSource = script->source();
+    script->setSourceURL(findSourceURL(scriptSource, false));
     script->setSourceMappingURL(findSourceMapURL(scriptSource, false));
+  }
 
   int contextId = script->executionContextId();
   int contextGroupId = m_inspector->contextGroupId(contextId);
@@ -1400,13 +1430,23 @@ void V8DebuggerAgentImpl::didParseSource(
       stack && !stack->isEmpty() ? stack->buildInspectorObjectImpl(m_debugger)
                                  : nullptr;
   if (success) {
-    m_frontend.scriptParsed(
-        scriptId, scriptURL, scriptRef->startLine(), scriptRef->startColumn(),
-        scriptRef->endLine(), scriptRef->endColumn(), contextId,
-        scriptRef->hash(), std::move(executionContextAuxDataParam),
-        isLiveEditParam, std::move(sourceMapURLParam), hasSourceURLParam,
-        isModuleParam, static_cast<int>(scriptRef->source().length()),
-        std::move(stackTrace));
+    // TODO(herhut, dgozman): Report correct length for WASM if needed for
+    // coverage. Or do not send the length at all and change coverage instead.
+    if (scriptRef->isSourceLoadedLazily()) {
+      m_frontend.scriptParsed(
+          scriptId, scriptURL, 0, 0, 0, 0, contextId, scriptRef->hash(),
+          std::move(executionContextAuxDataParam), isLiveEditParam,
+          std::move(sourceMapURLParam), hasSourceURLParam, isModuleParam, 0,
+          std::move(stackTrace));
+    } else {
+      m_frontend.scriptParsed(
+          scriptId, scriptURL, scriptRef->startLine(), scriptRef->startColumn(),
+          scriptRef->endLine(), scriptRef->endColumn(), contextId,
+          scriptRef->hash(), std::move(executionContextAuxDataParam),
+          isLiveEditParam, std::move(sourceMapURLParam), hasSourceURLParam,
+          isModuleParam, static_cast<int>(scriptRef->source().length()),
+          std::move(stackTrace));
+    }
   } else {
     m_frontend.scriptFailedToParse(
         scriptId, scriptURL, scriptRef->startLine(), scriptRef->startColumn(),
@@ -1416,7 +1456,13 @@ void V8DebuggerAgentImpl::didParseSource(
         static_cast<int>(scriptRef->source().length()), std::move(stackTrace));
   }
 
-  if (!success) return;
+  if (!success) {
+    if (scriptURL.isEmpty()) {
+      m_failedToParseAnonymousScriptIds.push_back(scriptId);
+      cleanupOldFailedToParseAnonymousScriptsIfNeeded();
+    }
+    return;
+  }
 
   std::vector<protocol::DictionaryValue*> potentialBreakpoints;
   if (!scriptURL.isEmpty()) {
@@ -1584,29 +1630,26 @@ void V8DebuggerAgentImpl::breakProgram(
   }
 }
 
-void V8DebuggerAgentImpl::setBreakpointAt(const String16& scriptId,
-                                          int lineNumber, int columnNumber,
-                                          BreakpointSource source,
-                                          const String16& condition) {
+void V8DebuggerAgentImpl::setBreakpointFor(v8::Local<v8::Function> function,
+                                           v8::Local<v8::String> condition,
+                                           BreakpointSource source) {
   String16 breakpointId = generateBreakpointId(
       source == DebugCommandBreakpointSource ? BreakpointType::kDebugCommand
                                              : BreakpointType::kMonitorCommand,
-      scriptId, lineNumber, columnNumber);
+      function);
   if (m_breakpointIdToDebuggerBreakpointIds.find(breakpointId) !=
       m_breakpointIdToDebuggerBreakpointIds.end()) {
     return;
   }
-  setBreakpointImpl(breakpointId, scriptId, condition, lineNumber,
-                    columnNumber);
+  setBreakpointImpl(breakpointId, function, condition);
 }
 
-void V8DebuggerAgentImpl::removeBreakpointAt(const String16& scriptId,
-                                             int lineNumber, int columnNumber,
-                                             BreakpointSource source) {
+void V8DebuggerAgentImpl::removeBreakpointFor(v8::Local<v8::Function> function,
+                                              BreakpointSource source) {
   String16 breakpointId = generateBreakpointId(
       source == DebugCommandBreakpointSource ? BreakpointType::kDebugCommand
                                              : BreakpointType::kMonitorCommand,
-      scriptId, lineNumber, columnNumber);
+      function);
   removeBreakpointImpl(breakpointId);
 }
 
@@ -1616,6 +1659,20 @@ void V8DebuggerAgentImpl::reset() {
   resetBlackboxedStateCache();
   m_scripts.clear();
   m_breakpointIdToDebuggerBreakpointIds.clear();
+}
+
+void V8DebuggerAgentImpl::cleanupOldFailedToParseAnonymousScriptsIfNeeded() {
+  if (m_failedToParseAnonymousScriptIds.size() <=
+      kMaxScriptFailedToParseScripts)
+    return;
+  static_assert(kMaxScriptFailedToParseScripts > 100,
+                "kMaxScriptFailedToParseScripts should be greater then 100");
+  while (m_failedToParseAnonymousScriptIds.size() >
+         kMaxScriptFailedToParseScripts - 100 + 1) {
+    String16 scriptId = m_failedToParseAnonymousScriptIds.front();
+    m_failedToParseAnonymousScriptIds.pop_front();
+    m_scripts.erase(scriptId);
+  }
 }
 
 }  // namespace v8_inspector

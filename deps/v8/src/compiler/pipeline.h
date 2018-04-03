@@ -46,7 +46,7 @@ class Pipeline : public AllStatic {
   // Returns a new compilation job for the WebAssembly compilation info.
   static CompilationJob* NewWasmCompilationJob(
       CompilationInfo* info, Isolate* isolate, JSGraph* jsgraph,
-      CallDescriptor* descriptor, SourcePositionTable* source_positions,
+      CallDescriptor* call_descriptor, SourcePositionTable* source_positions,
       std::vector<trap_handler::ProtectedInstructionData>*
           protected_instructions,
       wasm::ModuleOrigin wasm_origin);
@@ -56,7 +56,8 @@ class Pipeline : public AllStatic {
   static Handle<Code> GenerateCodeForCodeStub(
       Isolate* isolate, CallDescriptor* call_descriptor, Graph* graph,
       Schedule* schedule, Code::Kind kind, const char* debug_name,
-      uint32_t stub_key, int32_t builtin_index, JumpOptimizationInfo* jump_opt);
+      uint32_t stub_key, int32_t builtin_index, JumpOptimizationInfo* jump_opt,
+      PoisoningMitigationLevel poisoning_enabled);
 
   // Run the entire pipeline and generate a handle to a code object suitable for
   // testing.

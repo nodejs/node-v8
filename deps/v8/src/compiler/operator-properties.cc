@@ -71,6 +71,7 @@ bool OperatorProperties::HasFrameStateInput(const Operator* op) {
     case IrOpcode::kJSCreate:
     case IrOpcode::kJSCreateArguments:
     case IrOpcode::kJSCreateArray:
+    case IrOpcode::kJSCreateTypedArray:
     case IrOpcode::kJSCreateLiteralArray:
     case IrOpcode::kJSCreateLiteralObject:
     case IrOpcode::kJSCreateLiteralRegExp:
@@ -115,6 +116,9 @@ bool OperatorProperties::HasFrameStateInput(const Operator* op) {
     case IrOpcode::kJSDecrement:
     case IrOpcode::kJSIncrement:
     case IrOpcode::kJSNegate:
+    case IrOpcode::kJSPromiseResolve:
+    case IrOpcode::kJSRejectPromise:
+    case IrOpcode::kJSResolvePromise:
       return true;
 
     default:

@@ -26,6 +26,7 @@ namespace internal {
   V(CodeDataContainer)     \
   V(ConsString)            \
   V(DataObject)            \
+  V(FeedbackCell)          \
   V(FeedbackVector)        \
   V(FixedArray)            \
   V(FixedDoubleArray)      \
@@ -37,7 +38,6 @@ namespace internal {
   V(JSFunction)            \
   V(JSObject)              \
   V(JSObjectFast)          \
-  V(JSRegExp)              \
   V(JSWeakCollection)      \
   V(Map)                   \
   V(NativeContext)         \
@@ -55,7 +55,9 @@ namespace internal {
   V(Symbol)                \
   V(ThinString)            \
   V(TransitionArray)       \
-  V(WeakCell)
+  V(WasmInstanceObject)    \
+  V(WeakCell)              \
+  V(WeakFixedArray)
 
 // For data objects, JS objects and structs along with generic visitor which
 // can visit object of any size we provide visitors specialized by
@@ -115,11 +117,12 @@ typedef std::vector<Handle<Map>> MapHandles;
 //      |          |   - is_undetectable (bit 4)                 |
 //      |          |   - is_access_check_needed (bit 5)          |
 //      |          |   - is_constructor (bit 6)                  |
-//      |          |   - unused (bit 7)                          |
+//      |          |   - has_prototype_slot (bit 7)              |
 //      +----------+---------------------------------------------+
 //      | Byte     | [bit_field2]                                |
 //      |          |   - is_extensible (bit 0)                   |
-//      |          |   - is_prototype_map (bit 2)                |
+//      |          |   - is_prototype_map (bit 1)                |
+//      |          |   - is_in_retained_map_list (bit 2)         |
 //      |          |   - elements_kind (bits 3..7)               |
 // +----+----------+---------------------------------------------+
 // | Int           | [bit_field3]                                |
@@ -238,10 +241,10 @@ class Map : public HeapObject {
   DECL_PRIMITIVE_ACCESSORS(bit_field2, byte)
 
 // Bit positions for |bit_field2|.
-#define MAP_BIT_FIELD2_FIELDS(V, _) \
-  /* One bit is still free here. */ \
-  V(IsExtensibleBit, bool, 1, _)    \
-  V(IsPrototypeMapBit, bool, 1, _)  \
+#define MAP_BIT_FIELD2_FIELDS(V, _)     \
+  V(IsExtensibleBit, bool, 1, _)        \
+  V(IsPrototypeMapBit, bool, 1, _)      \
+  V(IsInRetainedMapListBit, bool, 1, _) \
   V(ElementsKindBits, ElementsKind, 5, _)
 
   DEFINE_BIT_FIELDS(MAP_BIT_FIELD2_FIELDS)
@@ -367,6 +370,10 @@ class Map : public HeapObject {
   DECL_BOOLEAN_ACCESSORS(is_extensible)
   DECL_BOOLEAN_ACCESSORS(is_prototype_map)
   inline bool is_abandoned_prototype_map() const;
+
+  // Whether the instance has been added to the retained map list by
+  // Heap::AddRetainedMap.
+  DECL_BOOLEAN_ACCESSORS(is_in_retained_map_list)
 
   DECL_PRIMITIVE_ACCESSORS(elements_kind, ElementsKind)
 
@@ -558,6 +565,24 @@ class Map : public HeapObject {
   // [weak cell cache]: cache that stores a weak cell pointing to this map.
   DECL_ACCESSORS(weak_cell_cache, Object)
 
+  // [prototype_validity_cell]: Cell containing the validity bit for prototype
+  // chains or Smi(0) if uninitialized.
+  // The meaning of this validity cell is different for prototype maps and
+  // non-prototype maps.
+  // For prototype maps the validity bit "guards" modifications of prototype
+  // chains going through this object. When a prototype object changes, both its
+  // own validity cell and those of all "downstream" prototypes are invalidated;
+  // handlers for a given receiver embed the currently valid cell for that
+  // receiver's prototype during their creation and check it on execution.
+  // For non-prototype maps which are used as transitioning store handlers this
+  // field contains the validity cell which guards modifications of this map's
+  // prototype.
+  DECL_ACCESSORS(prototype_validity_cell, Object)
+
+  // Returns true if prototype validity cell value represents "valid" prototype
+  // chain state.
+  inline bool IsPrototypeValidityCellValid() const;
+
   inline PropertyDetails GetLastDescriptorDetails() const;
 
   inline int LastAdded() const;
@@ -713,6 +738,7 @@ class Map : public HeapObject {
   inline bool IsPrimitiveMap() const;
   inline bool IsJSReceiverMap() const;
   inline bool IsJSObjectMap() const;
+  inline bool IsJSPromiseMap() const;
   inline bool IsJSArrayMap() const;
   inline bool IsJSFunctionMap() const;
   inline bool IsStringMap() const;
@@ -771,6 +797,7 @@ class Map : public HeapObject {
   V(kLayoutDescriptorOffset, FLAG_unbox_double_fields ? kPointerSize : 0)   \
   V(kDependentCodeOffset, kPointerSize)                                     \
   V(kWeakCellCacheOffset, kPointerSize)                                     \
+  V(kPrototypeValidityCellOffset, kPointerSize)                             \
   V(kPointerFieldsEndOffset, 0)                                             \
   /* Total size. */                                                         \
   V(kSize, 0)

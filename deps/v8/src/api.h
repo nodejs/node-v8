@@ -124,7 +124,8 @@ class Utils {
     if (!condition) Utils::ReportApiFailure(location, message);
     return condition;
   }
-  static void ReportOOMFailure(const char* location, bool is_heap_oom);
+  static void ReportOOMFailure(v8::internal::Isolate* isolate,
+                               const char* location, bool is_heap_oom);
 
   static inline Local<Context> ToLocal(
       v8::internal::Handle<v8::internal::Context> obj);
@@ -180,6 +181,10 @@ class Utils {
       v8::internal::Handle<v8::internal::JSTypedArray> obj);
   static inline Local<Float64Array> ToLocalFloat64Array(
       v8::internal::Handle<v8::internal::JSTypedArray> obj);
+  static inline Local<BigInt64Array> ToLocalBigInt64Array(
+      v8::internal::Handle<v8::internal::JSTypedArray> obj);
+  static inline Local<BigUint64Array> ToLocalBigUint64Array(
+      v8::internal::Handle<v8::internal::JSTypedArray> obj);
 
   static inline Local<SharedArrayBuffer> ToLocalShared(
       v8::internal::Handle<v8::internal::JSArrayBuffer> obj);
@@ -198,6 +203,8 @@ class Utils {
       v8::internal::Handle<v8::internal::Object> obj);
   static inline Local<Uint32> Uint32ToLocal(
       v8::internal::Handle<v8::internal::Object> obj);
+  static inline Local<BigInt> ToLocal(
+      v8::internal::Handle<v8::internal::BigInt> obj);
   static inline Local<FunctionTemplate> ToLocal(
       v8::internal::Handle<v8::internal::FunctionTemplateInfo> obj);
   static inline Local<ObjectTemplate> ToLocal(
@@ -329,6 +336,7 @@ MAKE_TO_LOCAL(StackFrameToLocal, StackFrameInfo, StackFrame)
 MAKE_TO_LOCAL(NumberToLocal, Object, Number)
 MAKE_TO_LOCAL(IntegerToLocal, Object, Integer)
 MAKE_TO_LOCAL(Uint32ToLocal, Object, Uint32)
+MAKE_TO_LOCAL(ToLocal, BigInt, BigInt);
 MAKE_TO_LOCAL(ExternalToLocal, JSObject, External)
 MAKE_TO_LOCAL(CallableToLocal, JSReceiver, Function)
 MAKE_TO_LOCAL(ToLocalPrimitive, Object, Primitive)
@@ -626,7 +634,6 @@ void HandleScopeImplementer::EnterMicrotaskContext(Handle<Context> context) {
 }
 
 void HandleScopeImplementer::LeaveMicrotaskContext() {
-  DCHECK(microtask_context_);
   microtask_context_ = nullptr;
   entered_context_count_during_microtasks_ = 0;
 }

@@ -67,7 +67,9 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64Ror:
     case kArm64Ror32:
     case kArm64Mov32:
+    case kArm64Sxtb:
     case kArm64Sxtb32:
+    case kArm64Sxth:
     case kArm64Sxth32:
     case kArm64Sxtw:
     case kArm64Sbfx32:
@@ -275,13 +277,11 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64S1x8AllTrue:
     case kArm64S1x16AnyTrue:
     case kArm64S1x16AllTrue:
-      return kNoOpcodeFlags;
-
     case kArm64TestAndBranch32:
     case kArm64TestAndBranch:
     case kArm64CompareAndBranch32:
     case kArm64CompareAndBranch:
-      return kIsBlockTerminator;
+      return kNoOpcodeFlags;
 
     case kArm64LdrS:
     case kArm64LdrD:
@@ -306,6 +306,7 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64Strh:
     case kArm64StrW:
     case kArm64Str:
+    case kArm64DsbIsb:
       return kHasSideEffect;
 
 #define CASE(Name) case k##Name:

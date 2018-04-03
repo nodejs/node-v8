@@ -14,6 +14,7 @@
 #include "src/debug/debug.h"
 #include "src/external-reference-table.h"
 #include "src/frames-inl.h"
+#include "src/instruction-stream.h"
 #include "src/mips64/assembler-mips64-inl.h"
 #include "src/mips64/macro-assembler-mips64.h"
 #include "src/register-configuration.h"
@@ -34,6 +35,14 @@ TurboAssembler::TurboAssembler(Isolate* isolate, void* buffer, int buffer_size,
   if (create_code_object == CodeObjectRequired::kYes) {
     code_object_ =
         Handle<HeapObject>::New(isolate->heap()->undefined_value(), isolate);
+  }
+}
+
+static inline bool IsZero(const Operand& rt) {
+  if (rt.is_reg()) {
+    return rt.rm() == zero_reg;
+  } else {
+    return rt.immediate() == 0;
   }
 }
 
@@ -955,6 +964,70 @@ void TurboAssembler::Sltu(Register rd, Register rs, const Operand& rt) {
       li(scratch, rt);
       sltu(rd, rs, scratch);
     }
+  }
+}
+
+void TurboAssembler::Sle(Register rd, Register rs, const Operand& rt) {
+  if (rt.is_reg()) {
+    slt(rd, rt.rm(), rs);
+  } else {
+    // li handles the relocation.
+    UseScratchRegisterScope temps(this);
+    Register scratch = temps.hasAvailable() ? temps.Acquire() : t8;
+    DCHECK(rs != scratch);
+    li(scratch, rt);
+    slt(rd, scratch, rs);
+  }
+  xori(rd, rd, 1);
+}
+
+void TurboAssembler::Sleu(Register rd, Register rs, const Operand& rt) {
+  if (rt.is_reg()) {
+    sltu(rd, rt.rm(), rs);
+  } else {
+    // li handles the relocation.
+    UseScratchRegisterScope temps(this);
+    Register scratch = temps.hasAvailable() ? temps.Acquire() : t8;
+    DCHECK(rs != scratch);
+    li(scratch, rt);
+    sltu(rd, scratch, rs);
+  }
+  xori(rd, rd, 1);
+}
+
+void TurboAssembler::Sge(Register rd, Register rs, const Operand& rt) {
+  Slt(rd, rs, rt);
+  xori(rd, rd, 1);
+}
+
+void TurboAssembler::Sgeu(Register rd, Register rs, const Operand& rt) {
+  Sltu(rd, rs, rt);
+  xori(rd, rd, 1);
+}
+
+void TurboAssembler::Sgt(Register rd, Register rs, const Operand& rt) {
+  if (rt.is_reg()) {
+    slt(rd, rt.rm(), rs);
+  } else {
+    // li handles the relocation.
+    UseScratchRegisterScope temps(this);
+    Register scratch = temps.hasAvailable() ? temps.Acquire() : t8;
+    DCHECK(rs != scratch);
+    li(scratch, rt);
+    slt(rd, scratch, rs);
+  }
+}
+
+void TurboAssembler::Sgtu(Register rd, Register rs, const Operand& rt) {
+  if (rt.is_reg()) {
+    sltu(rd, rt.rm(), rs);
+  } else {
+    // li handles the relocation.
+    UseScratchRegisterScope temps(this);
+    Register scratch = temps.hasAvailable() ? temps.Acquire() : t8;
+    DCHECK(rs != scratch);
+    li(scratch, rt);
+    sltu(rd, scratch, rs);
   }
 }
 
@@ -2703,39 +2776,38 @@ void TurboAssembler::FmoveLow(FPURegister dst, Register src_low) {
   mthc1(scratch, dst);
 }
 
-void TurboAssembler::Move(FPURegister dst, float imm) {
+void TurboAssembler::Move(FPURegister dst, uint32_t src) {
   UseScratchRegisterScope temps(this);
   Register scratch = temps.Acquire();
-  li(scratch, Operand(bit_cast<int32_t>(imm)));
+  li(scratch, Operand(static_cast<int32_t>(src)));
   mtc1(scratch, dst);
 }
 
-void TurboAssembler::Move(FPURegister dst, double imm) {
-  int64_t imm_bits = bit_cast<int64_t>(imm);
+void TurboAssembler::Move(FPURegister dst, uint64_t src) {
   // Handle special values first.
-  if (imm_bits == bit_cast<int64_t>(0.0) && has_double_zero_reg_set_) {
+  if (src == bit_cast<uint64_t>(0.0) && has_double_zero_reg_set_) {
     mov_d(dst, kDoubleRegZero);
-  } else if (imm_bits == bit_cast<int64_t>(-0.0) && has_double_zero_reg_set_) {
+  } else if (src == bit_cast<uint64_t>(-0.0) && has_double_zero_reg_set_) {
     Neg_d(dst, kDoubleRegZero);
   } else {
-    uint32_t lo, hi;
-    DoubleAsTwoUInt32(imm, &lo, &hi);
-    // Move the low part of the double into the lower bits of the corresponding
-    // FPU register.
+    uint32_t lo = src & 0xFFFFFFFF;
+    uint32_t hi = src >> 32;
+    // Move the low part of the double into the lower of the corresponding FPU
+    // register of FPU register pair.
     if (lo != 0) {
       UseScratchRegisterScope temps(this);
       Register scratch = temps.Acquire();
-      li(scratch, lo);
+      li(scratch, Operand(lo));
       mtc1(scratch, dst);
     } else {
       mtc1(zero_reg, dst);
     }
-    // Move the high part of the double into the high bits of the corresponding
-    // FPU register.
+    // Move the high part of the double into the higher of the corresponding FPU
+    // register of FPU register pair.
     if (hi != 0) {
       UseScratchRegisterScope temps(this);
       Register scratch = temps.Acquire();
-      li(scratch, hi);
+      li(scratch, Operand(hi));
       mthc1(scratch, dst);
     } else {
       mthc1(zero_reg, dst);
@@ -2766,6 +2838,115 @@ void TurboAssembler::Movn(Register rd, Register rs, Register rt) {
   }
 }
 
+void TurboAssembler::LoadZeroOnCondition(Register rd, Register rs,
+                                         const Operand& rt, Condition cond) {
+  switch (cond) {
+    case cc_always:
+      mov(rd, zero_reg);
+      break;
+    case eq:
+      if (rs == zero_reg) {
+        if (rt.is_reg()) {
+          LoadZeroIfConditionZero(rd, rt.rm());
+        } else {
+          if (rt.immediate() == 0) {
+            mov(rd, zero_reg);
+          } else {
+            nop();
+          }
+        }
+      } else if (IsZero(rt)) {
+        LoadZeroIfConditionZero(rd, rs);
+      } else {
+        Dsubu(t9, rs, rt);
+        LoadZeroIfConditionZero(rd, t9);
+      }
+      break;
+    case ne:
+      if (rs == zero_reg) {
+        if (rt.is_reg()) {
+          LoadZeroIfConditionNotZero(rd, rt.rm());
+        } else {
+          if (rt.immediate() != 0) {
+            mov(rd, zero_reg);
+          } else {
+            nop();
+          }
+        }
+      } else if (IsZero(rt)) {
+        LoadZeroIfConditionNotZero(rd, rs);
+      } else {
+        Dsubu(t9, rs, rt);
+        LoadZeroIfConditionNotZero(rd, t9);
+      }
+      break;
+
+    // Signed comparison.
+    case greater:
+      Sgt(t9, rs, rt);
+      LoadZeroIfConditionNotZero(rd, t9);
+      break;
+    case greater_equal:
+      Sge(t9, rs, rt);
+      LoadZeroIfConditionNotZero(rd, t9);
+      // rs >= rt
+      break;
+    case less:
+      Slt(t9, rs, rt);
+      LoadZeroIfConditionNotZero(rd, t9);
+      // rs < rt
+      break;
+    case less_equal:
+      Sle(t9, rs, rt);
+      LoadZeroIfConditionNotZero(rd, t9);
+      // rs <= rt
+      break;
+
+    // Unsigned comparison.
+    case Ugreater:
+      Sgtu(t9, rs, rt);
+      LoadZeroIfConditionNotZero(rd, t9);
+      // rs > rt
+      break;
+
+    case Ugreater_equal:
+      Sgeu(t9, rs, rt);
+      LoadZeroIfConditionNotZero(rd, t9);
+      // rs >= rt
+      break;
+    case Uless:
+      Sltu(t9, rs, rt);
+      LoadZeroIfConditionNotZero(rd, t9);
+      // rs < rt
+      break;
+    case Uless_equal:
+      Sleu(t9, rs, rt);
+      LoadZeroIfConditionNotZero(rd, t9);
+      // rs <= rt
+      break;
+    default:
+      UNREACHABLE();
+  }
+}
+
+void TurboAssembler::LoadZeroIfConditionNotZero(Register dest,
+                                                Register condition) {
+  if (kArchVariant == kMips64r6) {
+    seleqz(dest, dest, condition);
+  } else {
+    Movn(dest, zero_reg, condition);
+  }
+}
+
+void TurboAssembler::LoadZeroIfConditionZero(Register dest,
+                                             Register condition) {
+  if (kArchVariant == kMips64r6) {
+    selnez(dest, dest, condition);
+  } else {
+    Movz(dest, zero_reg, condition);
+  }
+}
+
 void TurboAssembler::Movt(Register rd, Register rs, uint16_t cc) {
   movt(rd, rs, cc);
 }
@@ -2775,6 +2956,136 @@ void TurboAssembler::Movf(Register rd, Register rs, uint16_t cc) {
 }
 
 void TurboAssembler::Clz(Register rd, Register rs) { clz(rd, rs); }
+
+void TurboAssembler::Ctz(Register rd, Register rs) {
+  if (kArchVariant == kMips64r6) {
+    // We don't have an instruction to count the number of trailing zeroes.
+    // Start by flipping the bits end-for-end so we can count the number of
+    // leading zeroes instead.
+    rotr(rd, rs, 16);
+    wsbh(rd, rd);
+    bitswap(rd, rd);
+    Clz(rd, rd);
+  } else {
+    // Convert trailing zeroes to trailing ones, and bits to their left
+    // to zeroes.
+    UseScratchRegisterScope temps(this);
+    Register scratch = temps.Acquire();
+    Daddu(scratch, rs, -1);
+    Xor(rd, scratch, rs);
+    And(rd, rd, scratch);
+    // Count number of leading zeroes.
+    Clz(rd, rd);
+    // Subtract number of leading zeroes from 32 to get number of trailing
+    // ones. Remember that the trailing ones were formerly trailing zeroes.
+    li(scratch, 32);
+    Subu(rd, scratch, rd);
+  }
+}
+
+void TurboAssembler::Dctz(Register rd, Register rs) {
+  if (kArchVariant == kMips64r6) {
+    // We don't have an instruction to count the number of trailing zeroes.
+    // Start by flipping the bits end-for-end so we can count the number of
+    // leading zeroes instead.
+    dsbh(rd, rs);
+    dshd(rd, rd);
+    dbitswap(rd, rd);
+    dclz(rd, rd);
+  } else {
+    // Convert trailing zeroes to trailing ones, and bits to their left
+    // to zeroes.
+    UseScratchRegisterScope temps(this);
+    Register scratch = temps.Acquire();
+    Daddu(scratch, rs, -1);
+    Xor(rd, scratch, rs);
+    And(rd, rd, scratch);
+    // Count number of leading zeroes.
+    dclz(rd, rd);
+    // Subtract number of leading zeroes from 64 to get number of trailing
+    // ones. Remember that the trailing ones were formerly trailing zeroes.
+    li(scratch, 64);
+    Dsubu(rd, scratch, rd);
+  }
+}
+
+void TurboAssembler::Popcnt(Register rd, Register rs) {
+  // https://graphics.stanford.edu/~seander/bithacks.html#CountBitsSetParallel
+  //
+  // A generalization of the best bit counting method to integers of
+  // bit-widths up to 128 (parameterized by type T) is this:
+  //
+  // v = v - ((v >> 1) & (T)~(T)0/3);                           // temp
+  // v = (v & (T)~(T)0/15*3) + ((v >> 2) & (T)~(T)0/15*3);      // temp
+  // v = (v + (v >> 4)) & (T)~(T)0/255*15;                      // temp
+  // c = (T)(v * ((T)~(T)0/255)) >> (sizeof(T) - 1) * BITS_PER_BYTE; //count
+  //
+  // For comparison, for 32-bit quantities, this algorithm can be executed
+  // using 20 MIPS instructions (the calls to LoadConst32() generate two
+  // machine instructions each for the values being used in this algorithm).
+  // A(n unrolled) loop-based algorithm requires 25 instructions.
+  //
+  // For a 64-bit operand this can be performed in 24 instructions compared
+  // to a(n unrolled) loop based algorithm which requires 38 instructions.
+  //
+  // There are algorithms which are faster in the cases where very few
+  // bits are set but the algorithm here attempts to minimize the total
+  // number of instructions executed even when a large number of bits
+  // are set.
+  uint32_t B0 = 0x55555555;     // (T)~(T)0/3
+  uint32_t B1 = 0x33333333;     // (T)~(T)0/15*3
+  uint32_t B2 = 0x0F0F0F0F;     // (T)~(T)0/255*15
+  uint32_t value = 0x01010101;  // (T)~(T)0/255
+  uint32_t shift = 24;          // (sizeof(T) - 1) * BITS_PER_BYTE
+
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  Register scratch2 = t8;
+  srl(scratch, rs, 1);
+  li(scratch2, B0);
+  And(scratch, scratch, scratch2);
+  Subu(scratch, rs, scratch);
+  li(scratch2, B1);
+  And(rd, scratch, scratch2);
+  srl(scratch, scratch, 2);
+  And(scratch, scratch, scratch2);
+  Addu(scratch, rd, scratch);
+  srl(rd, scratch, 4);
+  Addu(rd, rd, scratch);
+  li(scratch2, B2);
+  And(rd, rd, scratch2);
+  li(scratch, value);
+  Mul(rd, rd, scratch);
+  srl(rd, rd, shift);
+}
+
+void TurboAssembler::Dpopcnt(Register rd, Register rs) {
+  uint64_t B0 = 0x5555555555555555l;     // (T)~(T)0/3
+  uint64_t B1 = 0x3333333333333333l;     // (T)~(T)0/15*3
+  uint64_t B2 = 0x0F0F0F0F0F0F0F0Fl;     // (T)~(T)0/255*15
+  uint64_t value = 0x0101010101010101l;  // (T)~(T)0/255
+  uint64_t shift = 24;                   // (sizeof(T) - 1) * BITS_PER_BYTE
+
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  Register scratch2 = t8;
+  dsrl(scratch, rs, 1);
+  li(scratch2, B0);
+  And(scratch, scratch, scratch2);
+  Dsubu(scratch, rs, scratch);
+  li(scratch2, B1);
+  And(rd, scratch, scratch2);
+  dsrl(scratch, scratch, 2);
+  And(scratch, scratch, scratch2);
+  Daddu(scratch, rd, scratch);
+  dsrl(rd, scratch, 4);
+  Daddu(rd, rd, scratch);
+  li(scratch2, B2);
+  And(rd, rd, scratch2);
+  li(scratch, value);
+  Dmul(rd, rd, scratch);
+  dsrl32(rd, rd, shift);
+}
 
 void MacroAssembler::EmitFPUTruncate(FPURoundingMode rounding_mode,
                                      Register result,
@@ -2992,14 +3303,6 @@ void TurboAssembler::BranchShort(Label* L, BranchDelaySlot bdslot) {
   }
 }
 
-
-static inline bool IsZero(const Operand& rt) {
-  if (rt.is_reg()) {
-    return rt.rm() == zero_reg;
-  } else {
-    return rt.immediate() == 0;
-  }
-}
 
 int32_t TurboAssembler::GetOffset(int32_t offset, Label* L, OffsetSize bits) {
   if (L) {
@@ -4268,11 +4571,13 @@ void MacroAssembler::CheckDebugHook(Register fun, Register new_target,
                                     const ParameterCount& expected,
                                     const ParameterCount& actual) {
   Label skip_hook;
+
   ExternalReference debug_hook_active =
       ExternalReference::debug_hook_on_function_call_address(isolate());
   li(t0, Operand(debug_hook_active));
   Lb(t0, MemOperand(t0));
   Branch(&skip_hook, eq, t0, Operand(zero_reg));
+
   {
     FrameScope frame(this,
                      has_frame() ? StackFrame::NONE : StackFrame::INTERNAL);
@@ -4330,7 +4635,7 @@ void MacroAssembler::InvokeFunctionCode(Register function, Register new_target,
     // We call indirectly through the code field in the function to
     // allow recompilation to take effect without changing any of the
     // call sites.
-    Register code = t0;
+    Register code = kJavaScriptCallCodeStartRegister;
     Ld(code, FieldMemOperand(function, JSFunction::kCodeOffset));
     if (flag == CALL_FUNCTION) {
       Daddu(code, code, Operand(Code::kHeaderSize - kHeapObjectTag));
@@ -4383,14 +4688,6 @@ void MacroAssembler::InvokeFunction(Register function,
   InvokeFunctionCode(a1, no_reg, expected, actual, flag);
 }
 
-void MacroAssembler::InvokeFunction(Handle<JSFunction> function,
-                                    const ParameterCount& expected,
-                                    const ParameterCount& actual,
-                                    InvokeFlag flag) {
-  li(a1, function);
-  InvokeFunction(a1, expected, actual, flag);
-}
-
 
 // ---------------------------------------------------------------------------
 // Support functions.
@@ -4440,231 +4737,90 @@ bool TurboAssembler::AllowThisStubCall(CodeStub* stub) {
   return has_frame() || !stub->SometimesSetsUpAFrame();
 }
 
-static inline void BranchOvfHelper(TurboAssembler* tasm, Register overflow_dst,
-                                   Label* overflow_label,
-                                   Label* no_overflow_label) {
-  DCHECK(overflow_label || no_overflow_label);
-  if (!overflow_label) {
-    DCHECK(no_overflow_label);
-    tasm->Branch(no_overflow_label, ge, overflow_dst, Operand(zero_reg));
+void TurboAssembler::DaddOverflow(Register dst, Register left,
+                                  const Operand& right, Register overflow) {
+  Register right_reg = no_reg;
+  Register scratch = t8;
+  if (!right.is_reg()) {
+    li(at, Operand(right));
+    right_reg = at;
   } else {
-    tasm->Branch(overflow_label, lt, overflow_dst, Operand(zero_reg));
-    if (no_overflow_label) tasm->Branch(no_overflow_label);
-  }
-}
-
-void TurboAssembler::DaddBranchOvf(Register dst, Register left,
-                                   const Operand& right, Label* overflow_label,
-                                   Label* no_overflow_label, Register scratch) {
-  if (right.is_reg()) {
-    DaddBranchOvf(dst, left, right.rm(), overflow_label, no_overflow_label,
-                  scratch);
-  } else {
-    Register overflow_dst = t9;
-    DCHECK(dst != scratch);
-    DCHECK(dst != overflow_dst);
-    DCHECK(scratch != overflow_dst);
-    DCHECK(left != overflow_dst);
-    li(overflow_dst, right);  // Load right.
-    if (dst == left) {
-      mov(scratch, left);              // Preserve left.
-      Daddu(dst, left, overflow_dst);  // Left is overwritten.
-      xor_(scratch, dst, scratch);     // Original left.
-      xor_(overflow_dst, dst, overflow_dst);
-      and_(overflow_dst, overflow_dst, scratch);
-    } else {
-      Daddu(dst, left, overflow_dst);
-      xor_(scratch, dst, overflow_dst);
-      xor_(overflow_dst, dst, left);
-      and_(overflow_dst, scratch, overflow_dst);
-    }
-    BranchOvfHelper(this, overflow_dst, overflow_label, no_overflow_label);
-  }
-}
-
-void TurboAssembler::DaddBranchOvf(Register dst, Register left, Register right,
-                                   Label* overflow_label,
-                                   Label* no_overflow_label, Register scratch) {
-  Register overflow_dst = t9;
-  DCHECK(dst != scratch);
-  DCHECK(dst != overflow_dst);
-  DCHECK(scratch != overflow_dst);
-  DCHECK(left != overflow_dst);
-  DCHECK(right != overflow_dst);
-  DCHECK(left != scratch);
-  DCHECK(right != scratch);
-
-  if (left == right && dst == left) {
-    mov(overflow_dst, right);
-    right = overflow_dst;
+    right_reg = right.rm();
   }
 
-  if (dst == left) {
-    mov(scratch, left);           // Preserve left.
-    daddu(dst, left, right);      // Left is overwritten.
-    xor_(scratch, dst, scratch);  // Original left.
-    xor_(overflow_dst, dst, right);
-    and_(overflow_dst, overflow_dst, scratch);
-  } else if (dst == right) {
-    mov(scratch, right);          // Preserve right.
-    daddu(dst, left, right);      // Right is overwritten.
-    xor_(scratch, dst, scratch);  // Original right.
-    xor_(overflow_dst, dst, left);
-    and_(overflow_dst, overflow_dst, scratch);
-  } else {
-    daddu(dst, left, right);
-    xor_(overflow_dst, dst, left);
-    xor_(scratch, dst, right);
-    and_(overflow_dst, scratch, overflow_dst);
-  }
-  BranchOvfHelper(this, overflow_dst, overflow_label, no_overflow_label);
-}
+  DCHECK(left != scratch && right_reg != scratch && dst != scratch &&
+         overflow != scratch);
+  DCHECK(overflow != left && overflow != right_reg);
 
-void TurboAssembler::DsubBranchOvf(Register dst, Register left,
-                                   const Operand& right, Label* overflow_label,
-                                   Label* no_overflow_label, Register scratch) {
-  DCHECK(overflow_label || no_overflow_label);
-  if (right.is_reg()) {
-    DsubBranchOvf(dst, left, right.rm(), overflow_label, no_overflow_label,
-                  scratch);
-  } else {
-    Register overflow_dst = t9;
-    DCHECK(dst != scratch);
-    DCHECK(dst != overflow_dst);
-    DCHECK(scratch != overflow_dst);
-    DCHECK(left != overflow_dst);
-    DCHECK(left != scratch);
-    li(overflow_dst, right);  // Load right.
-    if (dst == left) {
-      mov(scratch, left);                         // Preserve left.
-      Dsubu(dst, left, overflow_dst);             // Left is overwritten.
-      xor_(overflow_dst, scratch, overflow_dst);  // scratch is original left.
-      xor_(scratch, dst, scratch);                // scratch is original left.
-      and_(overflow_dst, scratch, overflow_dst);
-    } else {
-      Dsubu(dst, left, overflow_dst);
-      xor_(scratch, left, overflow_dst);
-      xor_(overflow_dst, dst, left);
-      and_(overflow_dst, scratch, overflow_dst);
-    }
-    BranchOvfHelper(this, overflow_dst, overflow_label, no_overflow_label);
-  }
-}
-
-void TurboAssembler::DsubBranchOvf(Register dst, Register left, Register right,
-                                   Label* overflow_label,
-                                   Label* no_overflow_label, Register scratch) {
-  DCHECK(overflow_label || no_overflow_label);
-  Register overflow_dst = t9;
-  DCHECK(dst != scratch);
-  DCHECK(dst != overflow_dst);
-  DCHECK(scratch != overflow_dst);
-  DCHECK(overflow_dst != left);
-  DCHECK(overflow_dst != right);
-  DCHECK(scratch != left);
-  DCHECK(scratch != right);
-
-  // This happens with some crankshaft code. Since Subu works fine if
-  // left == right, let's not make that restriction here.
-  if (left == right) {
-    mov(dst, zero_reg);
-    if (no_overflow_label) {
-      Branch(no_overflow_label);
-    }
-  }
-
-  if (dst == left) {
-    mov(scratch, left);                // Preserve left.
-    dsubu(dst, left, right);           // Left is overwritten.
-    xor_(overflow_dst, dst, scratch);  // scratch is original left.
-    xor_(scratch, scratch, right);     // scratch is original left.
-    and_(overflow_dst, scratch, overflow_dst);
-  } else if (dst == right) {
-    mov(scratch, right);      // Preserve right.
-    dsubu(dst, left, right);  // Right is overwritten.
-    xor_(overflow_dst, dst, left);
-    xor_(scratch, left, scratch);  // Original right.
-    and_(overflow_dst, scratch, overflow_dst);
-  } else {
-    dsubu(dst, left, right);
-    xor_(overflow_dst, dst, left);
-    xor_(scratch, left, right);
-    and_(overflow_dst, scratch, overflow_dst);
-  }
-  BranchOvfHelper(this, overflow_dst, overflow_label, no_overflow_label);
-}
-
-static inline void BranchOvfHelperMult(TurboAssembler* tasm,
-                                       Register overflow_dst,
-                                       Label* overflow_label,
-                                       Label* no_overflow_label) {
-  DCHECK(overflow_label || no_overflow_label);
-  if (!overflow_label) {
-    DCHECK(no_overflow_label);
-    tasm->Branch(no_overflow_label, eq, overflow_dst, Operand(zero_reg));
-  } else {
-    tasm->Branch(overflow_label, ne, overflow_dst, Operand(zero_reg));
-    if (no_overflow_label) tasm->Branch(no_overflow_label);
-  }
-}
-
-void TurboAssembler::MulBranchOvf(Register dst, Register left,
-                                  const Operand& right, Label* overflow_label,
-                                  Label* no_overflow_label, Register scratch) {
-  DCHECK(overflow_label || no_overflow_label);
-  if (right.is_reg()) {
-    MulBranchOvf(dst, left, right.rm(), overflow_label, no_overflow_label,
-                 scratch);
-  } else {
-    Register overflow_dst = t9;
-    DCHECK(dst != scratch);
-    DCHECK(dst != overflow_dst);
-    DCHECK(scratch != overflow_dst);
-    DCHECK(left != overflow_dst);
-    DCHECK(left != scratch);
-
-    if (dst == left) {
-      Mul(scratch, left, static_cast<int32_t>(right.immediate()));
-      Mulh(overflow_dst, left, static_cast<int32_t>(right.immediate()));
-      mov(dst, scratch);
-    } else {
-      Mul(dst, left, static_cast<int32_t>(right.immediate()));
-      Mulh(overflow_dst, left, static_cast<int32_t>(right.immediate()));
-    }
-
-    dsra32(scratch, dst, 0);
-    xor_(overflow_dst, overflow_dst, scratch);
-
-    BranchOvfHelperMult(this, overflow_dst, overflow_label, no_overflow_label);
-  }
-}
-
-void TurboAssembler::MulBranchOvf(Register dst, Register left, Register right,
-                                  Label* overflow_label,
-                                  Label* no_overflow_label, Register scratch) {
-  DCHECK(overflow_label || no_overflow_label);
-  Register overflow_dst = t9;
-  DCHECK(dst != scratch);
-  DCHECK(dst != overflow_dst);
-  DCHECK(scratch != overflow_dst);
-  DCHECK(overflow_dst != left);
-  DCHECK(overflow_dst != right);
-  DCHECK(scratch != left);
-  DCHECK(scratch != right);
-
-  if (dst == left || dst == right) {
-    Mul(scratch, left, right);
-    Mulh(overflow_dst, left, right);
+  if (dst == left || dst == right_reg) {
+    daddu(scratch, left, right_reg);
+    xor_(overflow, scratch, left);
+    xor_(at, scratch, right_reg);
+    and_(overflow, overflow, at);
     mov(dst, scratch);
   } else {
-    Mul(dst, left, right);
-    Mulh(overflow_dst, left, right);
+    daddu(dst, left, right_reg);
+    xor_(overflow, dst, left);
+    xor_(at, dst, right_reg);
+    and_(overflow, overflow, at);
+  }
+}
+
+void TurboAssembler::DsubOverflow(Register dst, Register left,
+                                  const Operand& right, Register overflow) {
+  Register right_reg = no_reg;
+  Register scratch = t8;
+  if (!right.is_reg()) {
+    li(at, Operand(right));
+    right_reg = at;
+  } else {
+    right_reg = right.rm();
+  }
+
+  DCHECK(left != scratch && right_reg != scratch && dst != scratch &&
+         overflow != scratch);
+  DCHECK(overflow != left && overflow != right_reg);
+
+  if (dst == left || dst == right_reg) {
+    dsubu(scratch, left, right_reg);
+    xor_(overflow, left, scratch);
+    xor_(at, left, right_reg);
+    and_(overflow, overflow, at);
+    mov(dst, scratch);
+  } else {
+    dsubu(dst, left, right_reg);
+    xor_(overflow, left, dst);
+    xor_(at, left, right_reg);
+    and_(overflow, overflow, at);
+  }
+}
+
+void TurboAssembler::MulOverflow(Register dst, Register left,
+                                 const Operand& right, Register overflow) {
+  Register right_reg = no_reg;
+  Register scratch = t8;
+  if (!right.is_reg()) {
+    li(at, Operand(right));
+    right_reg = at;
+  } else {
+    right_reg = right.rm();
+  }
+
+  DCHECK(left != scratch && right_reg != scratch && dst != scratch &&
+         overflow != scratch);
+  DCHECK(overflow != left && overflow != right_reg);
+
+  if (dst == left || dst == right_reg) {
+    Mul(scratch, left, right_reg);
+    Mulh(overflow, left, right_reg);
+    mov(dst, scratch);
+  } else {
+    Mul(dst, left, right_reg);
+    Mulh(overflow, left, right_reg);
   }
 
   dsra32(scratch, dst, 0);
-  xor_(overflow_dst, overflow_dst, scratch);
-
-  BranchOvfHelperMult(this, overflow_dst, overflow_label, no_overflow_label);
+  xor_(overflow, overflow, scratch);
 }
 
 void TurboAssembler::CallRuntimeDelayed(Zone* zone, Runtime::FunctionId fid,
@@ -4721,6 +4877,19 @@ void MacroAssembler::JumpToExternalReference(const ExternalReference& builtin,
        zero_reg,
        Operand(zero_reg),
        bd);
+}
+
+void MacroAssembler::JumpToInstructionStream(Address entry) {
+  li(kOffHeapTrampolineRegister,
+     Operand(reinterpret_cast<uint64_t>(entry), RelocInfo::OFF_HEAP_TARGET));
+  Jump(kOffHeapTrampolineRegister);
+}
+
+void MacroAssembler::LoadWeakValue(Register out, Register in,
+                                   Label* target_if_cleared) {
+  Branch(target_if_cleared, eq, in, Operand(kClearedWeakHeapObject));
+
+  And(out, in, Operand(~kWeakHeapObjectMask));
 }
 
 void MacroAssembler::IncrementCounter(StatsCounter* counter, int value,
@@ -5122,6 +5291,20 @@ void MacroAssembler::AssertFixedArray(Register object) {
     GetObjectType(object, t8, t8);
     Check(eq, AbortReason::kOperandIsNotAFixedArray, t8,
           Operand(FIXED_ARRAY_TYPE));
+  }
+}
+
+void MacroAssembler::AssertConstructor(Register object) {
+  if (emit_debug_code()) {
+    STATIC_ASSERT(kSmiTag == 0);
+    SmiTst(object, t8);
+    Check(ne, AbortReason::kOperandIsASmiAndNotAConstructor, t8,
+          Operand(zero_reg));
+
+    ld(t8, FieldMemOperand(object, HeapObject::kMapOffset));
+    Lbu(t8, FieldMemOperand(t8, Map::kBitFieldOffset));
+    And(t8, t8, Operand(Map::IsConstructorBit::kMask));
+    Check(ne, AbortReason::kOperandIsNotAConstructor, t8, Operand(zero_reg));
   }
 }
 
@@ -5541,6 +5724,28 @@ bool AreAliased(Register reg1, Register reg2, Register reg3, Register reg4,
   int n_of_non_aliasing_regs = NumRegs(regs);
 
   return n_of_valid_regs != n_of_non_aliasing_regs;
+}
+
+void TurboAssembler::ComputeCodeStartAddress(Register dst) {
+  // This push on ra and the pop below together ensure that we restore the
+  // register ra, which is needed while computing the code start address.
+  push(ra);
+
+  // The bal instruction puts the address of the current instruction into
+  // the return address (ra) register, which we can use later on.
+  Label current;
+  bal(&current);
+  nop();
+  int pc = pc_offset();
+  bind(&current);
+  li(dst, Operand(pc));
+  Dsubu(dst, ra, dst);
+
+  pop(ra);  // Restore ra
+}
+
+void TurboAssembler::ResetSpeculationPoisonRegister() {
+  li(kSpeculationPoisonRegister, -1);
 }
 
 }  // namespace internal

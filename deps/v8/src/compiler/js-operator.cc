@@ -258,7 +258,8 @@ std::ostream& operator<<(std::ostream& os, FeedbackParameter const& p) {
 FeedbackParameter const& FeedbackParameterOf(const Operator* op) {
   DCHECK(op->opcode() == IrOpcode::kJSCreateEmptyLiteralArray ||
          op->opcode() == IrOpcode::kJSInstanceOf ||
-         op->opcode() == IrOpcode::kJSStoreDataPropertyInLiteral);
+         op->opcode() == IrOpcode::kJSStoreDataPropertyInLiteral ||
+         op->opcode() == IrOpcode::kJSStoreInArrayLiteral);
   return OpParameter<FeedbackParameter>(op);
 }
 
@@ -411,10 +412,34 @@ std::ostream& operator<<(std::ostream& os, CreateArrayParameters const& p) {
   return os;
 }
 
-
 const CreateArrayParameters& CreateArrayParametersOf(const Operator* op) {
   DCHECK_EQ(IrOpcode::kJSCreateArray, op->opcode());
   return OpParameter<CreateArrayParameters>(op);
+}
+
+bool operator==(CreateArrayIteratorParameters const& lhs,
+                CreateArrayIteratorParameters const& rhs) {
+  return lhs.kind() == rhs.kind();
+}
+
+bool operator!=(CreateArrayIteratorParameters const& lhs,
+                CreateArrayIteratorParameters const& rhs) {
+  return !(lhs == rhs);
+}
+
+size_t hash_value(CreateArrayIteratorParameters const& p) {
+  return static_cast<size_t>(p.kind());
+}
+
+std::ostream& operator<<(std::ostream& os,
+                         CreateArrayIteratorParameters const& p) {
+  return os << p.kind();
+}
+
+const CreateArrayIteratorParameters& CreateArrayIteratorParametersOf(
+    const Operator* op) {
+  DCHECK_EQ(IrOpcode::kJSCreateArrayIterator, op->opcode());
+  return OpParameter<CreateArrayIteratorParameters>(op);
 }
 
 bool operator==(CreateBoundFunctionParameters const& lhs,
@@ -448,7 +473,8 @@ const CreateBoundFunctionParameters& CreateBoundFunctionParametersOf(
 bool operator==(CreateClosureParameters const& lhs,
                 CreateClosureParameters const& rhs) {
   return lhs.pretenure() == rhs.pretenure() &&
-         lhs.feedback() == rhs.feedback() &&
+         lhs.code().location() == rhs.code().location() &&
+         lhs.feedback_cell().location() == rhs.feedback_cell().location() &&
          lhs.shared_info().location() == rhs.shared_info().location();
 }
 
@@ -461,12 +487,13 @@ bool operator!=(CreateClosureParameters const& lhs,
 
 size_t hash_value(CreateClosureParameters const& p) {
   return base::hash_combine(p.pretenure(), p.shared_info().location(),
-                            p.feedback());
+                            p.feedback_cell().location());
 }
 
 
 std::ostream& operator<<(std::ostream& os, CreateClosureParameters const& p) {
-  return os << p.pretenure() << ", " << Brief(*p.shared_info());
+  return os << p.pretenure() << ", " << Brief(*p.shared_info()) << ", "
+            << Brief(*p.feedback_cell()) << ", " << Brief(*p.code());
 }
 
 
@@ -543,42 +570,51 @@ CompareOperationHint CompareOperationHintOf(const Operator* op) {
   return OpParameter<CompareOperationHint>(op);
 }
 
-#define CACHED_OP_LIST(V)                                       \
-  V(BitwiseOr, Operator::kNoProperties, 2, 1)                   \
-  V(BitwiseXor, Operator::kNoProperties, 2, 1)                  \
-  V(BitwiseAnd, Operator::kNoProperties, 2, 1)                  \
-  V(ShiftLeft, Operator::kNoProperties, 2, 1)                   \
-  V(ShiftRight, Operator::kNoProperties, 2, 1)                  \
-  V(ShiftRightLogical, Operator::kNoProperties, 2, 1)           \
-  V(Subtract, Operator::kNoProperties, 2, 1)                    \
-  V(Multiply, Operator::kNoProperties, 2, 1)                    \
-  V(Divide, Operator::kNoProperties, 2, 1)                      \
-  V(Modulus, Operator::kNoProperties, 2, 1)                     \
-  V(Exponentiate, Operator::kNoProperties, 2, 1)                \
-  V(BitwiseNot, Operator::kNoProperties, 1, 1)                  \
-  V(Decrement, Operator::kNoProperties, 1, 1)                   \
-  V(Increment, Operator::kNoProperties, 1, 1)                   \
-  V(Negate, Operator::kNoProperties, 1, 1)                      \
-  V(ToInteger, Operator::kNoProperties, 1, 1)                   \
-  V(ToLength, Operator::kNoProperties, 1, 1)                    \
-  V(ToName, Operator::kNoProperties, 1, 1)                      \
-  V(ToNumber, Operator::kNoProperties, 1, 1)                    \
-  V(ToNumeric, Operator::kNoProperties, 1, 1)                   \
-  V(ToObject, Operator::kFoldable, 1, 1)                        \
-  V(ToString, Operator::kNoProperties, 1, 1)                    \
-  V(Create, Operator::kNoProperties, 2, 1)                      \
-  V(CreateIterResultObject, Operator::kEliminatable, 2, 1)      \
-  V(CreateKeyValueArray, Operator::kEliminatable, 2, 1)         \
-  V(HasProperty, Operator::kNoProperties, 2, 1)                 \
-  V(HasInPrototypeChain, Operator::kNoProperties, 2, 1)         \
-  V(OrdinaryHasInstance, Operator::kNoProperties, 2, 1)         \
-  V(ForInEnumerate, Operator::kNoProperties, 1, 1)              \
-  V(LoadMessage, Operator::kNoThrow | Operator::kNoWrite, 0, 1) \
-  V(StoreMessage, Operator::kNoRead | Operator::kNoThrow, 1, 0) \
-  V(GeneratorRestoreContinuation, Operator::kNoThrow, 1, 1)     \
-  V(GeneratorRestoreInputOrDebugPos, Operator::kNoThrow, 1, 1)  \
-  V(StackCheck, Operator::kNoWrite, 0, 0)                       \
-  V(Debugger, Operator::kNoProperties, 0, 0)                    \
+#define CACHED_OP_LIST(V)                                              \
+  V(BitwiseOr, Operator::kNoProperties, 2, 1)                          \
+  V(BitwiseXor, Operator::kNoProperties, 2, 1)                         \
+  V(BitwiseAnd, Operator::kNoProperties, 2, 1)                         \
+  V(ShiftLeft, Operator::kNoProperties, 2, 1)                          \
+  V(ShiftRight, Operator::kNoProperties, 2, 1)                         \
+  V(ShiftRightLogical, Operator::kNoProperties, 2, 1)                  \
+  V(Subtract, Operator::kNoProperties, 2, 1)                           \
+  V(Multiply, Operator::kNoProperties, 2, 1)                           \
+  V(Divide, Operator::kNoProperties, 2, 1)                             \
+  V(Modulus, Operator::kNoProperties, 2, 1)                            \
+  V(Exponentiate, Operator::kNoProperties, 2, 1)                       \
+  V(BitwiseNot, Operator::kNoProperties, 1, 1)                         \
+  V(Decrement, Operator::kNoProperties, 1, 1)                          \
+  V(Increment, Operator::kNoProperties, 1, 1)                          \
+  V(Negate, Operator::kNoProperties, 1, 1)                             \
+  V(ToInteger, Operator::kNoProperties, 1, 1)                          \
+  V(ToLength, Operator::kNoProperties, 1, 1)                           \
+  V(ToName, Operator::kNoProperties, 1, 1)                             \
+  V(ToNumber, Operator::kNoProperties, 1, 1)                           \
+  V(ToNumeric, Operator::kNoProperties, 1, 1)                          \
+  V(ToObject, Operator::kFoldable, 1, 1)                               \
+  V(ToString, Operator::kNoProperties, 1, 1)                           \
+  V(Create, Operator::kNoProperties, 2, 1)                             \
+  V(CreateIterResultObject, Operator::kEliminatable, 2, 1)             \
+  V(CreateStringIterator, Operator::kEliminatable, 1, 1)               \
+  V(CreateKeyValueArray, Operator::kEliminatable, 2, 1)                \
+  V(CreatePromise, Operator::kEliminatable, 0, 1)                      \
+  V(CreateTypedArray, Operator::kNoProperties, 5, 1)                   \
+  V(HasProperty, Operator::kNoProperties, 2, 1)                        \
+  V(HasInPrototypeChain, Operator::kNoProperties, 2, 1)                \
+  V(OrdinaryHasInstance, Operator::kNoProperties, 2, 1)                \
+  V(ForInEnumerate, Operator::kNoProperties, 1, 1)                     \
+  V(LoadMessage, Operator::kNoThrow | Operator::kNoWrite, 0, 1)        \
+  V(StoreMessage, Operator::kNoRead | Operator::kNoThrow, 1, 0)        \
+  V(GeneratorRestoreContinuation, Operator::kNoThrow, 1, 1)            \
+  V(GeneratorRestoreContext, Operator::kNoThrow, 1, 1)                 \
+  V(GeneratorRestoreInputOrDebugPos, Operator::kNoThrow, 1, 1)         \
+  V(StackCheck, Operator::kNoWrite, 0, 0)                              \
+  V(Debugger, Operator::kNoProperties, 0, 0)                           \
+  V(FulfillPromise, Operator::kNoDeopt | Operator::kNoThrow, 2, 1)     \
+  V(PerformPromiseThen, Operator::kNoDeopt | Operator::kNoThrow, 4, 1) \
+  V(PromiseResolve, Operator::kNoProperties, 2, 1)                     \
+  V(RejectPromise, Operator::kNoDeopt | Operator::kNoThrow, 3, 1)      \
+  V(ResolvePromise, Operator::kNoDeopt | Operator::kNoThrow, 2, 1)     \
   V(GetSuperConstructor, Operator::kNoWrite, 1, 1)
 
 #define BINARY_OP_LIST(V) V(Add)
@@ -735,6 +771,17 @@ const Operator* JSOperatorBuilder::StoreDataPropertyInLiteral(
       parameters);                     // parameter
 }
 
+const Operator* JSOperatorBuilder::StoreInArrayLiteral(
+    const VectorSlotPair& feedback) {
+  FeedbackParameter parameters(feedback);
+  return new (zone()) Operator1<FeedbackParameter>(  // --
+      IrOpcode::kJSStoreInArrayLiteral,
+      Operator::kNoThrow,       // opcode
+      "JSStoreInArrayLiteral",  // name
+      3, 1, 1, 0, 1, 0,         // counts
+      parameters);              // parameter
+}
+
 const Operator* JSOperatorBuilder::CallForwardVarargs(size_t arity,
                                                       uint32_t start_index) {
   CallForwardVarargsParameters parameters(arity, start_index);
@@ -749,6 +796,8 @@ const Operator* JSOperatorBuilder::Call(size_t arity, CallFrequency frequency,
                                         VectorSlotPair const& feedback,
                                         ConvertReceiverMode convert_mode,
                                         SpeculationMode speculation_mode) {
+  DCHECK_IMPLIES(speculation_mode == SpeculationMode::kAllowSpeculation,
+                 feedback.IsValid());
   CallParameters parameters(arity, frequency, feedback, convert_mode,
                             speculation_mode);
   return new (zone()) Operator1<CallParameters>(   // --
@@ -769,6 +818,8 @@ const Operator* JSOperatorBuilder::CallWithArrayLike(CallFrequency frequency) {
 const Operator* JSOperatorBuilder::CallWithSpread(
     uint32_t arity, CallFrequency frequency, VectorSlotPair const& feedback,
     SpeculationMode speculation_mode) {
+  DCHECK_IMPLIES(speculation_mode == SpeculationMode::kAllowSpeculation,
+                 feedback.IsValid());
   CallParameters parameters(arity, frequency, feedback,
                             ConvertReceiverMode::kAny, speculation_mode);
   return new (zone()) Operator1<CallParameters>(             // --
@@ -897,12 +948,22 @@ const Operator* JSOperatorBuilder::GeneratorStore(int register_count) {
       register_count);                                  // parameter
 }
 
+int GeneratorStoreRegisterCountOf(const Operator* op) {
+  DCHECK_EQ(IrOpcode::kJSGeneratorStore, op->opcode());
+  return OpParameter<int>(op);
+}
+
 const Operator* JSOperatorBuilder::GeneratorRestoreRegister(int index) {
   return new (zone()) Operator1<int>(                             // --
       IrOpcode::kJSGeneratorRestoreRegister, Operator::kNoThrow,  // opcode
       "JSGeneratorRestoreRegister",                               // name
       1, 1, 1, 1, 1, 0,                                           // counts
       index);                                                     // parameter
+}
+
+int RestoreRegisterIndexOf(const Operator* op) {
+  DCHECK_EQ(IrOpcode::kJSGeneratorRestoreRegister, op->opcode());
+  return OpParameter<int>(op);
 }
 
 const Operator* JSOperatorBuilder::StoreNamed(LanguageMode language_mode,
@@ -1035,6 +1096,15 @@ const Operator* JSOperatorBuilder::CreateArray(size_t arity,
       parameters);                                        // parameter
 }
 
+const Operator* JSOperatorBuilder::CreateArrayIterator(IterationKind kind) {
+  CreateArrayIteratorParameters parameters(kind);
+  return new (zone()) Operator1<CreateArrayIteratorParameters>(   // --
+      IrOpcode::kJSCreateArrayIterator, Operator::kEliminatable,  // opcode
+      "JSCreateArrayIterator",                                    // name
+      1, 1, 1, 1, 1, 0,                                           // counts
+      parameters);                                                // parameter
+}
+
 const Operator* JSOperatorBuilder::CreateBoundFunction(size_t arity,
                                                        Handle<Map> map) {
   // bound_target_function, bound_this, arg1, ..., argN
@@ -1048,9 +1118,10 @@ const Operator* JSOperatorBuilder::CreateBoundFunction(size_t arity,
 }
 
 const Operator* JSOperatorBuilder::CreateClosure(
-    Handle<SharedFunctionInfo> shared_info, VectorSlotPair const& feedback,
-    PretenureFlag pretenure) {
-  CreateClosureParameters parameters(shared_info, feedback, pretenure);
+    Handle<SharedFunctionInfo> shared_info, Handle<FeedbackCell> feedback_cell,
+    Handle<Code> code, PretenureFlag pretenure) {
+  CreateClosureParameters parameters(shared_info, feedback_cell, code,
+                                     pretenure);
   return new (zone()) Operator1<CreateClosureParameters>(   // --
       IrOpcode::kJSCreateClosure, Operator::kEliminatable,  // opcode
       "JSCreateClosure",                                    // name
@@ -1154,6 +1225,16 @@ const Operator* JSOperatorBuilder::CreateBlockContext(
       1, 1, 1, 1, 1, 2,                                          // counts
       scope_info);                                               // parameter
 }
+
+Handle<ScopeInfo> ScopeInfoOf(const Operator* op) {
+  DCHECK(IrOpcode::kJSCreateBlockContext == op->opcode() ||
+         IrOpcode::kJSCreateWithContext == op->opcode());
+  return OpParameter<Handle<ScopeInfo>>(op);
+}
+
+#undef BINARY_OP_LIST
+#undef CACHED_OP_LIST
+#undef COMPARE_OP_LIST
 
 }  // namespace compiler
 }  // namespace internal

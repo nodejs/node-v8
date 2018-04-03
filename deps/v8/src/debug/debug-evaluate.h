@@ -18,7 +18,8 @@ class FrameInspector;
 
 class DebugEvaluate : public AllStatic {
  public:
-  static MaybeHandle<Object> Global(Isolate* isolate, Handle<String> source);
+  static MaybeHandle<Object> Global(Isolate* isolate, Handle<String> source,
+                                    bool throw_on_side_effect);
 
   // Evaluate a piece of JavaScript in the context of a stack frame for
   // debugging.  Things that need special attention are:
@@ -30,8 +31,14 @@ class DebugEvaluate : public AllStatic {
                                    Handle<String> source,
                                    bool throw_on_side_effect);
 
+  // This is used for break-at-entry for builtins and API functions.
+  // Evaluate a piece of JavaScript in the native context, but with the
+  // materialized arguments object and receiver of the current call.
+  static MaybeHandle<Object> WithTopmostArguments(Isolate* isolate,
+                                                  Handle<String> source);
+
   static bool FunctionHasNoSideEffect(Handle<SharedFunctionInfo> info);
-  static bool CallbackHasNoSideEffect(Address function_addr);
+  static bool CallbackHasNoSideEffect(Object* callback_info);
 
  private:
   // This class builds a context chain for evaluation of expressions

@@ -93,7 +93,9 @@ void Isolate::FireBeforeCallEnteredCallback() {
 }
 
 void Isolate::FireMicrotasksCompletedCallback() {
-  for (auto& callback : microtasks_completed_callbacks_) {
+  std::vector<MicrotasksCompletedCallback> callbacks(
+      microtasks_completed_callbacks_);
+  for (auto& callback : callbacks) {
     callback(reinterpret_cast<v8::Isolate*>(this));
   }
 }
@@ -131,7 +133,7 @@ bool Isolate::IsArrayConstructorIntact() {
   return array_constructor_cell->value() == Smi::FromInt(kProtectorValid);
 }
 
-bool Isolate::IsArraySpeciesLookupChainIntact() {
+bool Isolate::IsSpeciesLookupChainIntact() {
   // Note: It would be nice to have debug checks to make sure that the
   // species protector is accurate, but this would be hard to do for most of
   // what the protector stands for:
@@ -152,11 +154,6 @@ bool Isolate::IsArraySpeciesLookupChainIntact() {
 bool Isolate::IsStringLengthOverflowIntact() {
   Cell* string_length_cell = heap()->string_length_protector();
   return string_length_cell->value() == Smi::FromInt(kProtectorValid);
-}
-
-bool Isolate::IsFastArrayIterationIntact() {
-  Cell* fast_iteration_cell = heap()->fast_array_iteration_protector();
-  return fast_iteration_cell->value() == Smi::FromInt(kProtectorValid);
 }
 
 bool Isolate::IsArrayBufferNeuteringIntact() {

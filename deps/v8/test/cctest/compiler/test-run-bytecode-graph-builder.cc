@@ -618,9 +618,6 @@ TEST(BytecodeGraphBuilderCallRuntime) {
        {factory->true_value(), BytecodeGraphTester::NewObject("[1, 2, 3]")}},
       {"function f(arg0) { return %Add(arg0, 2) }\nf(1)",
        {factory->NewNumberFromInt(5), factory->NewNumberFromInt(3)}},
-      {"function f(arg0) { return %spread_arguments(arg0).length }\nf([])",
-       {factory->NewNumberFromInt(3),
-        BytecodeGraphTester::NewObject("[1, 2, 3]")}},
   };
 
   for (size_t i = 0; i < arraysize(snippets); i++) {
@@ -2971,7 +2968,6 @@ class CountBreakDebugDelegate : public v8::debug::DebugDelegate {
  public:
   void BreakProgramRequested(v8::Local<v8::Context> paused_context,
                              v8::Local<v8::Object> exec_state,
-                             v8::Local<v8::Value> break_points_hit,
                              const std::vector<int>&) override {
     debug_break_count++;
   }

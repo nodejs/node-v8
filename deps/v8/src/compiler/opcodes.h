@@ -136,11 +136,15 @@
   V(JSCreate)                   \
   V(JSCreateArguments)          \
   V(JSCreateArray)              \
+  V(JSCreateArrayIterator)      \
   V(JSCreateBoundFunction)      \
   V(JSCreateClosure)            \
   V(JSCreateGeneratorObject)    \
   V(JSCreateIterResultObject)   \
+  V(JSCreateStringIterator)     \
   V(JSCreateKeyValueArray)      \
+  V(JSCreatePromise)            \
+  V(JSCreateTypedArray)         \
   V(JSCreateLiteralArray)       \
   V(JSCreateEmptyLiteralArray)  \
   V(JSCreateLiteralObject)      \
@@ -157,6 +161,7 @@
   V(JSStoreNamedOwn)              \
   V(JSStoreGlobal)                \
   V(JSStoreDataPropertyInLiteral) \
+  V(JSStoreInArrayLiteral)        \
   V(JSDeleteProperty)             \
   V(JSHasProperty)                \
   V(JSGetSuperConstructor)
@@ -191,8 +196,14 @@
   V(JSStoreModule)                     \
   V(JSGeneratorStore)                  \
   V(JSGeneratorRestoreContinuation)    \
+  V(JSGeneratorRestoreContext)         \
   V(JSGeneratorRestoreRegister)        \
   V(JSGeneratorRestoreInputOrDebugPos) \
+  V(JSFulfillPromise)                  \
+  V(JSPerformPromiseThen)              \
+  V(JSPromiseResolve)                  \
+  V(JSRejectPromise)                   \
+  V(JSResolvePromise)                  \
   V(JSStackCheck)                      \
   V(JSDebugger)
 
@@ -331,17 +342,15 @@
   V(PlainPrimitiveToFloat64)            \
   V(BooleanNot)                         \
   V(StringToNumber)                     \
-  V(StringCharAt)                       \
   V(StringCharCodeAt)                   \
-  V(SeqStringCharCodeAt)                \
   V(StringCodePointAt)                  \
-  V(SeqStringCodePointAt)               \
-  V(StringFromCharCode)                 \
-  V(StringFromCodePoint)                \
+  V(StringFromSingleCharCode)           \
+  V(StringFromSingleCodePoint)          \
   V(StringIndexOf)                      \
   V(StringLength)                       \
   V(StringToLowerCaseIntl)              \
   V(StringToUpperCaseIntl)              \
+  V(StringSubstring)                    \
   V(CheckBounds)                        \
   V(CheckIf)                            \
   V(CheckMaps)                          \
@@ -349,7 +358,6 @@
   V(CheckInternalizedString)            \
   V(CheckReceiver)                      \
   V(CheckString)                        \
-  V(CheckSeqString)                     \
   V(CheckSymbol)                        \
   V(CheckSmi)                           \
   V(CheckHeapObject)                    \
@@ -361,7 +369,6 @@
   V(ConvertReceiver)                    \
   V(ConvertTaggedHoleToUndefined)       \
   V(TypeOf)                             \
-  V(ClassOf)                            \
   V(Allocate)                           \
   V(AllocateRaw)                        \
   V(LoadFieldByIndex)                   \
@@ -377,6 +384,12 @@
   V(TransitionAndStoreNonNumberElement) \
   V(ToBoolean)                          \
   V(NumberIsFloat64Hole)                \
+  V(NumberIsFinite)                     \
+  V(ObjectIsFiniteNumber)               \
+  V(NumberIsInteger)                    \
+  V(ObjectIsSafeInteger)                \
+  V(NumberIsSafeInteger)                \
+  V(ObjectIsInteger)                    \
   V(ObjectIsArrayBufferView)            \
   V(ObjectIsBigInt)                     \
   V(ObjectIsCallable)                   \
@@ -538,88 +551,106 @@
   V(Float64Mod)                       \
   V(Float64Pow)
 
-#define MACHINE_OP_LIST(V)      \
-  MACHINE_UNOP_32_LIST(V)       \
-  MACHINE_BINOP_32_LIST(V)      \
-  MACHINE_BINOP_64_LIST(V)      \
-  MACHINE_COMPARE_BINOP_LIST(V) \
-  MACHINE_FLOAT32_BINOP_LIST(V) \
-  MACHINE_FLOAT32_UNOP_LIST(V)  \
-  MACHINE_FLOAT64_BINOP_LIST(V) \
-  MACHINE_FLOAT64_UNOP_LIST(V)  \
-  V(DebugAbort)                 \
-  V(DebugBreak)                 \
-  V(Comment)                    \
-  V(Load)                       \
-  V(Store)                      \
-  V(StackSlot)                  \
-  V(Word32Popcnt)               \
-  V(Word64Popcnt)               \
-  V(Word64Clz)                  \
-  V(Word64Ctz)                  \
-  V(Word64ReverseBits)          \
-  V(Word64ReverseBytes)         \
-  V(Int64AbsWithOverflow)       \
-  V(BitcastTaggedToWord)        \
-  V(BitcastWordToTagged)        \
-  V(BitcastWordToTaggedSigned)  \
-  V(TruncateFloat64ToWord32)    \
-  V(ChangeFloat32ToFloat64)     \
-  V(ChangeFloat64ToInt32)       \
-  V(ChangeFloat64ToUint32)      \
-  V(ChangeFloat64ToUint64)      \
-  V(Float64SilenceNaN)          \
-  V(TruncateFloat64ToUint32)    \
-  V(TruncateFloat32ToInt32)     \
-  V(TruncateFloat32ToUint32)    \
-  V(TryTruncateFloat32ToInt64)  \
-  V(TryTruncateFloat64ToInt64)  \
-  V(TryTruncateFloat32ToUint64) \
-  V(TryTruncateFloat64ToUint64) \
-  V(ChangeInt32ToFloat64)       \
-  V(ChangeInt32ToInt64)         \
-  V(ChangeUint32ToFloat64)      \
-  V(ChangeUint32ToUint64)       \
-  V(TruncateFloat64ToFloat32)   \
-  V(TruncateInt64ToInt32)       \
-  V(RoundFloat64ToInt32)        \
-  V(RoundInt32ToFloat32)        \
-  V(RoundInt64ToFloat32)        \
-  V(RoundInt64ToFloat64)        \
-  V(RoundUint32ToFloat32)       \
-  V(RoundUint64ToFloat32)       \
-  V(RoundUint64ToFloat64)       \
-  V(BitcastFloat32ToInt32)      \
-  V(BitcastFloat64ToInt64)      \
-  V(BitcastInt32ToFloat32)      \
-  V(BitcastInt64ToFloat64)      \
-  V(Float64ExtractLowWord32)    \
-  V(Float64ExtractHighWord32)   \
-  V(Float64InsertLowWord32)     \
-  V(Float64InsertHighWord32)    \
-  V(LoadStackPointer)           \
-  V(LoadFramePointer)           \
-  V(LoadParentFramePointer)     \
-  V(UnalignedLoad)              \
-  V(UnalignedStore)             \
-  V(Int32PairAdd)               \
-  V(Int32PairSub)               \
-  V(Int32PairMul)               \
-  V(Word32PairShl)              \
-  V(Word32PairShr)              \
-  V(Word32PairSar)              \
-  V(ProtectedLoad)              \
-  V(ProtectedStore)             \
-  V(AtomicLoad)                 \
-  V(AtomicStore)                \
-  V(AtomicExchange)             \
-  V(AtomicCompareExchange)      \
-  V(AtomicAdd)                  \
-  V(AtomicSub)                  \
-  V(AtomicAnd)                  \
-  V(AtomicOr)                   \
-  V(AtomicXor)                  \
-  V(SpeculationFence)           \
+#define MACHINE_OP_LIST(V)       \
+  MACHINE_UNOP_32_LIST(V)        \
+  MACHINE_BINOP_32_LIST(V)       \
+  MACHINE_BINOP_64_LIST(V)       \
+  MACHINE_COMPARE_BINOP_LIST(V)  \
+  MACHINE_FLOAT32_BINOP_LIST(V)  \
+  MACHINE_FLOAT32_UNOP_LIST(V)   \
+  MACHINE_FLOAT64_BINOP_LIST(V)  \
+  MACHINE_FLOAT64_UNOP_LIST(V)   \
+  V(DebugAbort)                  \
+  V(DebugBreak)                  \
+  V(Comment)                     \
+  V(Load)                        \
+  V(PoisonedLoad)                \
+  V(Store)                       \
+  V(StackSlot)                   \
+  V(Word32Popcnt)                \
+  V(Word64Popcnt)                \
+  V(Word64Clz)                   \
+  V(Word64Ctz)                   \
+  V(Word64ReverseBits)           \
+  V(Word64ReverseBytes)          \
+  V(Int64AbsWithOverflow)        \
+  V(BitcastTaggedToWord)         \
+  V(BitcastWordToTagged)         \
+  V(BitcastWordToTaggedSigned)   \
+  V(TruncateFloat64ToWord32)     \
+  V(ChangeFloat32ToFloat64)      \
+  V(ChangeFloat64ToInt32)        \
+  V(ChangeFloat64ToUint32)       \
+  V(ChangeFloat64ToUint64)       \
+  V(Float64SilenceNaN)           \
+  V(TruncateFloat64ToUint32)     \
+  V(TruncateFloat32ToInt32)      \
+  V(TruncateFloat32ToUint32)     \
+  V(TryTruncateFloat32ToInt64)   \
+  V(TryTruncateFloat64ToInt64)   \
+  V(TryTruncateFloat32ToUint64)  \
+  V(TryTruncateFloat64ToUint64)  \
+  V(ChangeInt32ToFloat64)        \
+  V(ChangeInt32ToInt64)          \
+  V(ChangeUint32ToFloat64)       \
+  V(ChangeUint32ToUint64)        \
+  V(TruncateFloat64ToFloat32)    \
+  V(TruncateInt64ToInt32)        \
+  V(RoundFloat64ToInt32)         \
+  V(RoundInt32ToFloat32)         \
+  V(RoundInt64ToFloat32)         \
+  V(RoundInt64ToFloat64)         \
+  V(RoundUint32ToFloat32)        \
+  V(RoundUint64ToFloat32)        \
+  V(RoundUint64ToFloat64)        \
+  V(BitcastFloat32ToInt32)       \
+  V(BitcastFloat64ToInt64)       \
+  V(BitcastInt32ToFloat32)       \
+  V(BitcastInt64ToFloat64)       \
+  V(Float64ExtractLowWord32)     \
+  V(Float64ExtractHighWord32)    \
+  V(Float64InsertLowWord32)      \
+  V(Float64InsertHighWord32)     \
+  V(PoisonOnSpeculationTagged)   \
+  V(PoisonOnSpeculationWord)     \
+  V(LoadStackPointer)            \
+  V(LoadFramePointer)            \
+  V(LoadParentFramePointer)      \
+  V(LoadRootsPointer)            \
+  V(UnalignedLoad)               \
+  V(UnalignedStore)              \
+  V(Int32PairAdd)                \
+  V(Int32PairSub)                \
+  V(Int32PairMul)                \
+  V(Word32PairShl)               \
+  V(Word32PairShr)               \
+  V(Word32PairSar)               \
+  V(ProtectedLoad)               \
+  V(ProtectedStore)              \
+  V(Word32AtomicLoad)            \
+  V(Word32AtomicStore)           \
+  V(Word32AtomicExchange)        \
+  V(Word32AtomicCompareExchange) \
+  V(Word32AtomicAdd)             \
+  V(Word32AtomicSub)             \
+  V(Word32AtomicAnd)             \
+  V(Word32AtomicOr)              \
+  V(Word32AtomicXor)             \
+  V(Word64AtomicLoad)            \
+  V(Word64AtomicStore)           \
+  V(Word64AtomicAdd)             \
+  V(Word64AtomicSub)             \
+  V(Word64AtomicAnd)             \
+  V(Word64AtomicOr)              \
+  V(Word64AtomicXor)             \
+  V(Word64AtomicExchange)        \
+  V(Word64AtomicCompareExchange) \
+  V(SpeculationFence)            \
+  V(SignExtendWord8ToInt32)      \
+  V(SignExtendWord16ToInt32)     \
+  V(SignExtendWord8ToInt64)      \
+  V(SignExtendWord16ToInt64)     \
+  V(SignExtendWord32ToInt64)     \
   V(UnsafePointerAdd)
 
 #define MACHINE_SIMD_OP_LIST(V) \

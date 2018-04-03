@@ -5,6 +5,7 @@
 #ifndef V8_TEST_FEEDBACK_VECTOR_H_
 #define V8_TEST_FEEDBACK_VECTOR_H_
 
+#include "src/feedback-vector.h"
 #include "src/objects.h"
 #include "src/objects/shared-function-info.h"
 
@@ -42,8 +43,9 @@ class FeedbackVectorHelper {
 template <typename Spec>
 Handle<FeedbackVector> NewFeedbackVector(Isolate* isolate, Spec* spec) {
   Handle<FeedbackMetadata> metadata = FeedbackMetadata::New(isolate, spec);
-  Handle<SharedFunctionInfo> shared = isolate->factory()->NewSharedFunctionInfo(
-      isolate->factory()->empty_string(), MaybeHandle<Code>(), false);
+  Handle<SharedFunctionInfo> shared =
+      isolate->factory()->NewSharedFunctionInfoForBuiltin(
+          isolate->factory()->empty_string(), Builtins::kIllegal);
   shared->set_feedback_metadata(*metadata);
   return FeedbackVector::New(isolate, shared);
 }

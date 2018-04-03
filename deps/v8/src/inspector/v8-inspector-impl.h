@@ -28,8 +28,8 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef V8_INSPECTOR_V8INSPECTORIMPL_H_
-#define V8_INSPECTOR_V8INSPECTORIMPL_H_
+#ifndef V8_INSPECTOR_V8_INSPECTOR_IMPL_H_
+#define V8_INSPECTOR_V8_INSPECTOR_IMPL_H_
 
 #include <functional>
 #include <map>
@@ -61,6 +61,7 @@ class V8InspectorImpl : public V8Inspector {
   V8Debugger* debugger() { return m_debugger.get(); }
   int contextGroupId(v8::Local<v8::Context>) const;
   int contextGroupId(int contextId) const;
+  uint64_t isolateId() const { return m_isolateId; }
 
   v8::MaybeLocal<v8::Value> compileAndRunInternalScript(v8::Local<v8::Context>,
                                                         v8::Local<v8::String>);
@@ -128,6 +129,7 @@ class V8InspectorImpl : public V8Inspector {
   unsigned m_lastExceptionId;
   int m_lastContextId;
   int m_lastSessionId = 0;
+  uint64_t m_isolateId;
 
   using MuteExceptionsMap = protocol::HashMap<int, int>;
   MuteExceptionsMap m_muteExceptionsMap;
@@ -154,4 +156,4 @@ class V8InspectorImpl : public V8Inspector {
 
 }  // namespace v8_inspector
 
-#endif  // V8_INSPECTOR_V8INSPECTORIMPL_H_
+#endif  // V8_INSPECTOR_V8_INSPECTOR_IMPL_H_

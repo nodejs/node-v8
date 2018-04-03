@@ -100,6 +100,8 @@ class JSArray : public JSObject {
 Handle<Object> CacheInitialJSArrayMaps(Handle<Context> native_context,
                                        Handle<Map> initial_map);
 
+// The JSArrayIterator describes JavaScript Array Iterators Objects, as
+// defined in ES section #sec-array-iterator-objects.
 class JSArrayIterator : public JSObject {
  public:
   DECL_PRINTER(JSArrayIterator)
@@ -107,24 +109,20 @@ class JSArrayIterator : public JSObject {
 
   DECL_CAST(JSArrayIterator)
 
-  // [object]: the [[IteratedObject]] inobject property.
-  DECL_ACCESSORS(object, Object)
+  // [iterated_object]: the [[IteratedObject]] inobject property.
+  DECL_ACCESSORS(iterated_object, Object)
 
-  // [index]: The [[ArrayIteratorNextIndex]] inobject property.
-  DECL_ACCESSORS(index, Object)
+  // [next_index]: The [[ArrayIteratorNextIndex]] inobject property.
+  DECL_ACCESSORS(next_index, Object)
 
-  // [map]: The Map of the [[IteratedObject]] field at the time the iterator is
-  // allocated.
-  DECL_ACCESSORS(object_map, Object)
-
-  // Return the ElementsKind that a JSArrayIterator's [[IteratedObject]] is
-  // expected to have, based on its instance type.
-  static ElementsKind ElementsKindForInstanceType(InstanceType instance_type);
+  // [kind]: the [[ArrayIterationKind]] inobject property.
+  inline IterationKind kind() const;
+  inline void set_kind(IterationKind kind);
 
   static const int kIteratedObjectOffset = JSObject::kHeaderSize;
   static const int kNextIndexOffset = kIteratedObjectOffset + kPointerSize;
-  static const int kIteratedObjectMapOffset = kNextIndexOffset + kPointerSize;
-  static const int kSize = kIteratedObjectMapOffset + kPointerSize;
+  static const int kKindOffset = kNextIndexOffset + kPointerSize;
+  static const int kSize = kKindOffset + kPointerSize;
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(JSArrayIterator);
@@ -141,14 +139,8 @@ class JSArrayBuffer : public JSObject {
   // [backing_store]: backing memory for this array
   DECL_ACCESSORS(backing_store, void)
 
-  // [allocation_base]: the start of the memory allocation for this array,
-  // normally equal to backing_store
-  DECL_ACCESSORS(allocation_base, void)
-
-  // [allocation_length]: the size of the memory allocation for this array,
-  // normally equal to byte_length
   inline size_t allocation_length() const;
-  inline void set_allocation_length(size_t value);
+  inline void* allocation_base() const;
 
   inline uint32_t bit_field() const;
   inline void set_bit_field(uint32_t bits);
@@ -168,9 +160,6 @@ class JSArrayBuffer : public JSObject {
   inline bool is_shared();
   inline void set_is_shared(bool value);
 
-  inline bool has_guard_region() const;
-  inline void set_has_guard_region(bool value);
-
   inline bool is_growable();
   inline void set_is_growable(bool value);
 
@@ -183,13 +172,26 @@ class JSArrayBuffer : public JSObject {
   struct Allocation {
     using AllocationMode = ArrayBuffer::Allocator::AllocationMode;
 
-    Allocation(void* allocation_base, size_t length, AllocationMode mode)
-        : allocation_base(allocation_base), length(length), mode(mode) {}
+    Allocation(void* allocation_base, size_t length, void* backing_store,
+               AllocationMode mode, bool is_wasm_memory)
+        : allocation_base(allocation_base),
+          length(length),
+          backing_store(backing_store),
+          mode(mode),
+          is_wasm_memory(is_wasm_memory) {}
 
     void* allocation_base;
     size_t length;
+    void* backing_store;
     AllocationMode mode;
+    bool is_wasm_memory;
   };
+
+  // Returns whether the buffer is tracked by the WasmMemoryTracker.
+  inline bool is_wasm_memory() const;
+
+  // Sets whether the buffer is tracked by the WasmMemoryTracker.
+  void set_is_wasm_memory(bool is_wasm_memory);
 
   void FreeBackingStore();
   static void FreeBackingStore(Isolate* isolate, Allocation allocation);
@@ -197,12 +199,7 @@ class JSArrayBuffer : public JSObject {
   V8_EXPORT_PRIVATE static void Setup(
       Handle<JSArrayBuffer> array_buffer, Isolate* isolate, bool is_external,
       void* data, size_t allocated_length,
-      SharedFlag shared = SharedFlag::kNotShared);
-
-  V8_EXPORT_PRIVATE static void Setup(
-      Handle<JSArrayBuffer> array_buffer, Isolate* isolate, bool is_external,
-      void* allocation_base, size_t allocation_length, void* data,
-      size_t byte_length, SharedFlag shared = SharedFlag::kNotShared);
+      SharedFlag shared = SharedFlag::kNotShared, bool is_wasm_memory = false);
 
   // Returns false if array buffer contents could not be allocated.
   // In this case, |array_buffer| will not be set up.
@@ -219,10 +216,7 @@ class JSArrayBuffer : public JSObject {
   // The rest of the fields are not JSObjects, so they are not iterated over in
   // objects-body-descriptors-inl.h.
   static const int kBackingStoreOffset = kByteLengthOffset + kPointerSize;
-  static const int kAllocationBaseOffset = kBackingStoreOffset + kPointerSize;
-  static const int kAllocationLengthOffset =
-      kAllocationBaseOffset + kPointerSize;
-  static const int kBitFieldSlot = kAllocationLengthOffset + kSizetSize;
+  static const int kBitFieldSlot = kBackingStoreOffset + kPointerSize;
 #if V8_TARGET_LITTLE_ENDIAN || !V8_HOST_ARCH_64_BIT
   static const int kBitFieldOffset = kBitFieldSlot;
 #else
@@ -243,8 +237,8 @@ class JSArrayBuffer : public JSObject {
   class IsNeuterable : public BitField<bool, 2, 1> {};
   class WasNeutered : public BitField<bool, 3, 1> {};
   class IsShared : public BitField<bool, 4, 1> {};
-  class HasGuardRegion : public BitField<bool, 5, 1> {};
-  class IsGrowable : public BitField<bool, 6, 1> {};
+  class IsGrowable : public BitField<bool, 5, 1> {};
+  class IsWasmMemory : public BitField<bool, 6, 1> {};
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(JSArrayBuffer);
@@ -299,22 +293,9 @@ class JSTypedArray : public JSArrayBufferView {
 
   Handle<JSArrayBuffer> GetBuffer();
 
-  inline bool HasJSTypedArrayPrototype(Isolate* isolate);
   static inline MaybeHandle<JSTypedArray> Validate(Isolate* isolate,
                                                    Handle<Object> receiver,
                                                    const char* method_name);
-  static inline Handle<JSFunction> DefaultConstructor(
-      Isolate* isolate, Handle<JSTypedArray> exemplar);
-  // ES7 section 22.2.4.6 Create ( constructor, argumentList )
-  static MaybeHandle<JSTypedArray> Create(Isolate* isolate,
-                                          Handle<Object> default_ctor, int argc,
-                                          Handle<Object>* argv,
-                                          const char* method_name);
-  // ES7 section 22.2.4.7 TypedArraySpeciesCreate ( exemplar, argumentList )
-  static MaybeHandle<JSTypedArray> SpeciesCreate(Isolate* isolate,
-                                                 Handle<JSTypedArray> exemplar,
-                                                 int argc, Handle<Object>* argv,
-                                                 const char* method_name);
 
   // Dispatched behavior.
   DECL_PRINTER(JSTypedArray)

@@ -69,7 +69,7 @@ const int kAllocationTries = 2;
 void* Malloced::New(size_t size) {
   void* result = AllocWithRetry(size);
   if (result == nullptr) {
-    V8::FatalProcessOutOfMemory("Malloced operator new");
+    V8::FatalProcessOutOfMemory(nullptr, "Malloced operator new");
   }
   return result;
 }
@@ -115,7 +115,7 @@ void* AlignedAlloc(size_t size, size_t alignment) {
     if (!OnCriticalMemoryPressure(size + alignment)) break;
   }
   if (result == nullptr) {
-    V8::FatalProcessOutOfMemory("AlignedAlloc");
+    V8::FatalProcessOutOfMemory(nullptr, "AlignedAlloc");
   }
   return result;
 }
@@ -143,6 +143,8 @@ void* GetRandomMmapAddr() { return GetPageAllocator()->GetRandomMmapAddr(); }
 
 void* AllocatePages(void* address, size_t size, size_t alignment,
                     PageAllocator::Permission access) {
+  DCHECK_EQ(address, AlignedAddress(address, alignment));
+  DCHECK_EQ(0UL, size & (GetPageAllocator()->AllocatePageSize() - 1));
   void* result = nullptr;
   for (int i = 0; i < kAllocationTries; ++i) {
     result =
@@ -160,6 +162,7 @@ void* AllocatePages(void* address, size_t size, size_t alignment,
 }
 
 bool FreePages(void* address, const size_t size) {
+  DCHECK_EQ(0UL, size & (GetPageAllocator()->AllocatePageSize() - 1));
   bool result = GetPageAllocator()->FreePages(address, size);
 #if defined(LEAK_SANITIZER)
   if (result) {
@@ -260,7 +263,9 @@ void VirtualMemory::Free() {
   size_t size = size_;
   CHECK(InVM(address, size));
   Reset();
-  CHECK(FreePages(address, size));
+  // FreePages expects size to be aligned to allocation granularity. Trimming
+  // may leave size at only commit granularity. Align it here.
+  CHECK(FreePages(address, RoundUp(size, AllocatePageSize())));
 }
 
 void VirtualMemory::TakeControl(VirtualMemory* from) {

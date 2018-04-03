@@ -49,6 +49,10 @@ namespace v8_inspector {
 
 namespace {
 static const char privateKeyName[] = "v8-inspector#injectedScript";
+static const char kGlobalHandleLabel[] = "DevTools console";
+static bool isResolvableNumberLike(String16 query) {
+  return query == "Infinity" || query == "-Infinity" || query == "NaN";
+}
 }  // namespace
 
 using protocol::Array;
@@ -511,6 +515,7 @@ v8::Local<v8::Value> InjectedScript::lastEvaluationResult() const {
 
 void InjectedScript::setLastEvaluationResult(v8::Local<v8::Value> result) {
   m_lastEvaluationResult.Reset(m_context->isolate(), result);
+  m_lastEvaluationResult.AnnotateStrongRetainer(kGlobalHandleLabel);
 }
 
 Response InjectedScript::resolveCallArgument(
@@ -528,10 +533,17 @@ Response InjectedScript::resolveCallArgument(
     return findObject(*remoteObjectId, result);
   }
   if (callArgument->hasValue() || callArgument->hasUnserializableValue()) {
-    String16 value =
-        callArgument->hasValue()
-            ? "(" + callArgument->getValue(nullptr)->serialize() + ")"
-            : "Number(\"" + callArgument->getUnserializableValue("") + "\")";
+    String16 value;
+    if (callArgument->hasValue()) {
+      value = "(" + callArgument->getValue(nullptr)->serialize() + ")";
+    } else {
+      String16 unserializableValue = callArgument->getUnserializableValue("");
+      // Protect against potential identifier resolution for NaN and Infinity.
+      if (isResolvableNumberLike(unserializableValue))
+        value = "Number(\"" + unserializableValue + "\")";
+      else
+        value = unserializableValue;
+    }
     if (!m_context->inspector()
              ->compileAndRunInternalScript(
                  m_context->context(), toV8String(m_context->isolate(), value))
@@ -601,9 +613,14 @@ Response InjectedScript::wrapEvaluateResult(
     Response response = wrapObject(resultValue, objectGroup, returnByValue,
                                    generatePreview, result);
     if (!response.isSuccess()) return response;
-    if (objectGroup == "console")
+    if (objectGroup == "console") {
       m_lastEvaluationResult.Reset(m_context->isolate(), resultValue);
+      m_lastEvaluationResult.AnnotateStrongRetainer(kGlobalHandleLabel);
+    }
   } else {
+    if (tryCatch.HasTerminated() || !tryCatch.CanContinue()) {
+      return Response::Error("Execution was terminated");
+    }
     v8::Local<v8::Value> exception = tryCatch.Exception();
     Response response =
         wrapObject(exception, objectGroup, false,
@@ -624,6 +641,7 @@ v8::Local<v8::Object> InjectedScript::commandLineAPI() {
         m_context->isolate(),
         m_context->inspector()->console()->createCommandLineAPI(
             m_context->context(), m_sessionId));
+    m_commandLineAPI.AnnotateStrongRetainer(kGlobalHandleLabel);
   }
   return m_commandLineAPI.Get(m_context->isolate());
 }
@@ -769,6 +787,7 @@ int InjectedScript::bindObject(v8::Local<v8::Value> value,
   if (m_lastBoundObjectId <= 0) m_lastBoundObjectId = 1;
   int id = m_lastBoundObjectId++;
   m_idToWrappedObject[id].Reset(m_context->isolate(), value);
+  m_idToWrappedObject[id].AnnotateStrongRetainer(kGlobalHandleLabel);
 
   if (!groupName.isEmpty() && id > 0) {
     m_idToObjectGroupName[id] = groupName;

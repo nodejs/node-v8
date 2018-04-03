@@ -483,7 +483,7 @@ Node* RepresentationChanger::GetFloat32RepresentationFor(
   switch (node->opcode()) {
     case IrOpcode::kNumberConstant:
       return jsgraph()->Float32Constant(
-          DoubleToFloat32(OpParameter<double>(node)));
+          DoubleToFloat32(OpParameter<double>(node->op())));
     case IrOpcode::kInt32Constant:
     case IrOpcode::kFloat64Constant:
     case IrOpcode::kFloat32Constant:
@@ -543,7 +543,7 @@ Node* RepresentationChanger::GetFloat64RepresentationFor(
     // TODO(jarin) Handle checked constant conversions.
     switch (node->opcode()) {
       case IrOpcode::kNumberConstant:
-        return jsgraph()->Float64Constant(OpParameter<double>(node));
+        return jsgraph()->Float64Constant(OpParameter<double>(node->op()));
       case IrOpcode::kInt32Constant:
       case IrOpcode::kFloat64Constant:
       case IrOpcode::kFloat32Constant:
@@ -588,10 +588,11 @@ Node* RepresentationChanger::GetFloat64RepresentationFor(
     } else if (use_info.type_check() == TypeCheckKind::kNumber ||
                (use_info.type_check() == TypeCheckKind::kNumberOrOddball &&
                 !output_type->Maybe(Type::BooleanOrNullOrNumber()))) {
-      op = simplified()->CheckedTaggedToFloat64(CheckTaggedInputMode::kNumber);
+      op = simplified()->CheckedTaggedToFloat64(CheckTaggedInputMode::kNumber,
+                                                use_info.feedback());
     } else if (use_info.type_check() == TypeCheckKind::kNumberOrOddball) {
       op = simplified()->CheckedTaggedToFloat64(
-          CheckTaggedInputMode::kNumberOrOddball);
+          CheckTaggedInputMode::kNumberOrOddball, use_info.feedback());
     }
   } else if (output_rep == MachineRepresentation::kFloat32) {
     op = machine()->ChangeFloat32ToFloat64();
@@ -618,7 +619,7 @@ Node* RepresentationChanger::GetWord32RepresentationFor(
       UNREACHABLE();
       break;
     case IrOpcode::kNumberConstant: {
-      double const fv = OpParameter<double>(node);
+      double const fv = OpParameter<double>(node->op());
       if (use_info.type_check() == TypeCheckKind::kNone ||
           ((use_info.type_check() == TypeCheckKind::kSignedSmall ||
             use_info.type_check() == TypeCheckKind::kSigned32) &&
@@ -767,6 +768,7 @@ Node* RepresentationChanger::GetBitRepresentationFor(
       } else if (m.Is(factory()->true_value())) {
         return jsgraph()->Int32Constant(1);
       }
+      break;
     }
     default:
       break;
@@ -1062,11 +1064,11 @@ Node* RepresentationChanger::TypeError(Node* node,
     std::ostringstream use_str;
     use_str << use;
 
-    V8_Fatal(__FILE__, __LINE__,
-             "RepresentationChangerError: node #%d:%s of "
-             "%s cannot be changed to %s",
-             node->id(), node->op()->mnemonic(), out_str.str().c_str(),
-             use_str.str().c_str());
+    FATAL(
+        "RepresentationChangerError: node #%d:%s of "
+        "%s cannot be changed to %s",
+        node->id(), node->op()->mnemonic(), out_str.str().c_str(),
+        use_str.str().c_str());
   }
   return node;
 }

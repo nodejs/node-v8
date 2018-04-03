@@ -270,13 +270,6 @@ bool NeedsImplicitReceiver(Handle<SharedFunctionInfo> shared_info) {
   }
 }
 
-bool IsNonConstructible(Handle<SharedFunctionInfo> shared_info) {
-  DisallowHeapAllocation no_gc;
-  Isolate* const isolate = shared_info->GetIsolate();
-  Code* const construct_stub = shared_info->construct_stub();
-  return construct_stub == *BUILTIN_CODE(isolate, ConstructedNonConstructable);
-}
-
 }  // namespace
 
 // Determines whether the call target of the given call {node} is statically
@@ -323,8 +316,7 @@ bool JSInliner::DetermineCallTarget(
     // target.
     // TODO(turbofan): We might consider to eagerly create the feedback vector
     // in such a case (in {DetermineCallContext} below) eventually.
-    FeedbackSlot slot = p.feedback().slot();
-    Handle<Cell> cell(Cell::cast(p.feedback().vector()->Get(slot)));
+    Handle<FeedbackCell> cell = p.feedback_cell();
     if (!cell->value()->IsFeedbackVector()) return false;
 
     shared_info_out = p.shared_info();
@@ -348,9 +340,9 @@ void JSInliner::DetermineCallContext(
   if (match.HasValue() && match.Value()->IsJSFunction()) {
     Handle<JSFunction> function = Handle<JSFunction>::cast(match.Value());
 
-    // If the target function was never invoked, its literals array might not
-    // contain a feedback vector. We ensure at this point that it is created.
-    JSFunction::EnsureLiterals(function);
+    // If the target function was never invoked, its feedback cell array might
+    // not contain a feedback vector. We ensure at this point that it's created.
+    JSFunction::EnsureFeedbackVector(function);
 
     // The inlinee specializes to the context from the JSFunction object.
     context_out = jsgraph()->Constant(handle(function->context()));
@@ -363,8 +355,7 @@ void JSInliner::DetermineCallContext(
 
     // Load the feedback vector of the target by looking up its vector cell at
     // the instantiation site (we only decide to inline if it's populated).
-    FeedbackSlot slot = p.feedback().slot();
-    Handle<Cell> cell(Cell::cast(p.feedback().vector()->Get(slot)));
+    Handle<FeedbackCell> cell = p.feedback_cell();
     DCHECK(cell->value()->IsFeedbackVector());
 
     // The inlinee uses the locally provided context at instantiation.
@@ -404,7 +395,7 @@ Reduction JSInliner::ReduceJSCall(Node* node) {
 
   // Constructor must be constructable.
   if (node->opcode() == IrOpcode::kJSConstruct &&
-      IsNonConstructible(shared_info)) {
+      !IsConstructable(shared_info->kind())) {
     TRACE("Not inlining %s into %s because constructor is not constructable.\n",
           shared_info->DebugName()->ToCString().get(),
           info_->shared_info()->DebugName()->ToCString().get());
@@ -498,7 +489,7 @@ Reduction JSInliner::ReduceJSCall(Node* node) {
     BytecodeGraphBuilder graph_builder(
         zone(), shared_info, feedback_vector, BailoutId::None(), jsgraph(),
         call.frequency(), source_positions_, native_context(), inlining_id,
-        flags, false);
+        flags, false, info_->is_analyze_environment_liveness());
     graph_builder.CreateGraph();
 
     // Extract the inlinee start/end nodes.

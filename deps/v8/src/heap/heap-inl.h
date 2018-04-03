@@ -23,6 +23,8 @@
 #include "src/log.h"
 #include "src/msan.h"
 #include "src/objects-inl.h"
+#include "src/objects/descriptor-array.h"
+#include "src/objects/literal-objects.h"
 #include "src/objects/scope-info.h"
 #include "src/objects/script-inl.h"
 #include "src/profiler/heap-profiler.h"
@@ -245,6 +247,42 @@ AllocationResult Heap::AllocateFixedArray(int length, PretenureFlag pretenure) {
                                       pretenure, undefined_value());
 }
 
+AllocationResult Heap::AllocateWeakFixedArray(int length,
+                                              PretenureFlag pretenure) {
+  // Zero-length case must be handled outside, where the knowledge about
+  // the map is.
+  DCHECK_LT(0, length);
+  HeapObject* result = nullptr;
+  {
+    AllocationResult allocation = AllocateRawWeakFixedArray(length, pretenure);
+    if (!allocation.To(&result)) return allocation;
+  }
+  DCHECK(RootIsImmortalImmovable(Heap::kWeakFixedArrayMapRootIndex));
+  Map* map = Map::cast(root(Heap::kWeakFixedArrayMapRootIndex));
+  result->set_map_after_allocation(map, SKIP_WRITE_BARRIER);
+  WeakFixedArray* array = WeakFixedArray::cast(result);
+  array->set_length(length);
+  MemsetPointer(array->data_start(),
+                HeapObjectReference::Strong(undefined_value()), length);
+  return array;
+}
+
+AllocationResult Heap::AllocateRawFixedArray(int length,
+                                             PretenureFlag pretenure) {
+  if (length < 0 || length > FixedArray::kMaxLength) {
+    FatalProcessOutOfMemory("invalid array length");
+  }
+  return AllocateRawArray(FixedArray::SizeFor(length), pretenure);
+}
+
+AllocationResult Heap::AllocateRawWeakFixedArray(int length,
+                                                 PretenureFlag pretenure) {
+  if (length < 0 || length > WeakFixedArray::kMaxLength) {
+    FatalProcessOutOfMemory("invalid array length");
+  }
+  return AllocateRawArray(WeakFixedArray::SizeFor(length), pretenure);
+}
+
 AllocationResult Heap::AllocateRaw(int size_in_bytes, AllocationSpace space,
                                    AllocationAlignment alignment) {
   DCHECK(AllowHandleAllocation::IsAllowed());
@@ -295,11 +333,24 @@ AllocationResult Heap::AllocateRaw(int size_in_bytes, AllocationSpace space,
     allocation = lo_space_->AllocateRaw(size_in_bytes, NOT_EXECUTABLE);
   } else if (MAP_SPACE == space) {
     allocation = map_space_->AllocateRawUnaligned(size_in_bytes);
+  } else if (RO_SPACE == space) {
+#ifdef V8_USE_SNAPSHOT
+    DCHECK(isolate_->serializer_enabled());
+#endif
+    DCHECK(!large_object);
+    allocation = read_only_space_->AllocateRaw(size_in_bytes, alignment);
   } else {
     // NEW_SPACE is not allowed here.
     UNREACHABLE();
   }
+
   if (allocation.To(&object)) {
+    if (space == CODE_SPACE) {
+      // Unprotect the memory chunk of the object if it was not unprotected
+      // already.
+      UnprotectAndRegisterMemoryChunk(object);
+      ZapCodeObject(object->address(), size_in_bytes);
+    }
     OnAllocationEvent(object, size_in_bytes);
   }
 
@@ -410,26 +461,42 @@ void Heap::FinalizeExternalString(String* string) {
 Address Heap::NewSpaceTop() { return new_space_->top(); }
 
 bool Heap::InNewSpace(Object* object) {
+  DCHECK(!HasWeakHeapObjectTag(object));
+  return InNewSpace(MaybeObject::FromObject(object));
+}
+
+bool Heap::InFromSpace(Object* object) {
+  DCHECK(!HasWeakHeapObjectTag(object));
+  return InFromSpace(MaybeObject::FromObject(object));
+}
+
+bool Heap::InToSpace(Object* object) {
+  DCHECK(!HasWeakHeapObjectTag(object));
+  return InToSpace(MaybeObject::FromObject(object));
+}
+
+bool Heap::InNewSpace(MaybeObject* object) {
   // Inlined check from NewSpace::Contains.
-  bool result =
-      object->IsHeapObject() &&
-      Page::FromAddress(HeapObject::cast(object)->address())->InNewSpace();
+  HeapObject* heap_object;
+  bool result = object->ToStrongOrWeakHeapObject(&heap_object) &&
+                Page::FromAddress(heap_object->address())->InNewSpace();
   DCHECK(!result ||                 // Either not in new space
          gc_state_ != NOT_IN_GC ||  // ... or in the middle of GC
          InToSpace(object));        // ... or in to-space (where we allocate).
   return result;
 }
 
-bool Heap::InFromSpace(Object* object) {
-  return object->IsHeapObject() &&
-         MemoryChunk::FromAddress(HeapObject::cast(object)->address())
+bool Heap::InFromSpace(MaybeObject* object) {
+  HeapObject* heap_object;
+  return object->ToStrongOrWeakHeapObject(&heap_object) &&
+         MemoryChunk::FromAddress(heap_object->address())
              ->IsFlagSet(Page::IN_FROM_SPACE);
 }
 
-
-bool Heap::InToSpace(Object* object) {
-  return object->IsHeapObject() &&
-         MemoryChunk::FromAddress(HeapObject::cast(object)->address())
+bool Heap::InToSpace(MaybeObject* object) {
+  HeapObject* heap_object;
+  return object->ToStrongOrWeakHeapObject(&heap_object) &&
+         MemoryChunk::FromAddress(heap_object->address())
              ->IsFlagSet(Page::IN_TO_SPACE);
 }
 
@@ -451,6 +518,13 @@ bool Heap::ShouldBePromoted(Address old_address) {
 }
 
 void Heap::RecordWrite(Object* object, Object** slot, Object* value) {
+  DCHECK(!HasWeakHeapObjectTag(*slot));
+  DCHECK(!HasWeakHeapObjectTag(value));
+  RecordWrite(object, reinterpret_cast<MaybeObject**>(slot),
+              reinterpret_cast<MaybeObject*>(value));
+}
+
+void Heap::RecordWrite(Object* object, MaybeObject** slot, MaybeObject* value) {
   if (!InNewSpace(value) || !object->IsHeapObject() || InNewSpace(object)) {
     return;
   }
@@ -594,12 +668,19 @@ uint32_t Heap::HashSeed() {
 
 int Heap::NextScriptId() {
   int last_id = last_script_id()->value();
-  if (last_id == Smi::kMaxValue) {
-    last_id = 1;
-  } else {
-    last_id++;
-  }
+  if (last_id == Smi::kMaxValue) last_id = v8::UnboundScript::kNoScriptId;
+  last_id++;
   set_last_script_id(Smi::FromInt(last_id));
+  return last_id;
+}
+
+int Heap::NextDebuggingId() {
+  int last_id = last_debugging_id()->value();
+  if (last_id == SharedFunctionInfo::DebuggingIdBits::kMax) {
+    last_id = SharedFunctionInfo::kNoDebuggingId;
+  }
+  last_id++;
+  set_last_debugging_id(Smi::FromInt(last_id));
   return last_id;
 }
 
@@ -620,12 +701,14 @@ AlwaysAllocateScope::~AlwaysAllocateScope() {
 
 CodeSpaceMemoryModificationScope::CodeSpaceMemoryModificationScope(Heap* heap)
     : heap_(heap) {
+  DCHECK(!heap_->unprotected_memory_chunks_registry_enabled());
   if (heap_->write_protect_code_memory()) {
     heap_->increment_code_space_memory_modification_scope_depth();
     heap_->code_space()->SetReadAndWritable();
     LargePage* page = heap_->lo_space()->first_page();
     while (page != nullptr) {
       if (page->IsFlagSet(MemoryChunk::IS_EXECUTABLE)) {
+        CHECK(heap_->memory_allocator()->IsMemoryChunkExecutable(page));
         page->SetReadAndWritable();
       }
       page = page->next_page();
@@ -634,16 +717,36 @@ CodeSpaceMemoryModificationScope::CodeSpaceMemoryModificationScope(Heap* heap)
 }
 
 CodeSpaceMemoryModificationScope::~CodeSpaceMemoryModificationScope() {
+  DCHECK(!heap_->unprotected_memory_chunks_registry_enabled());
   if (heap_->write_protect_code_memory()) {
     heap_->decrement_code_space_memory_modification_scope_depth();
     heap_->code_space()->SetReadAndExecutable();
     LargePage* page = heap_->lo_space()->first_page();
     while (page != nullptr) {
       if (page->IsFlagSet(MemoryChunk::IS_EXECUTABLE)) {
+        CHECK(heap_->memory_allocator()->IsMemoryChunkExecutable(page));
         page->SetReadAndExecutable();
       }
       page = page->next_page();
     }
+  }
+}
+
+CodePageCollectionMemoryModificationScope::
+    CodePageCollectionMemoryModificationScope(Heap* heap)
+    : heap_(heap) {
+  if (heap_->write_protect_code_memory() &&
+      !heap_->code_space_memory_modification_scope_depth()) {
+    heap_->EnableUnprotectedMemoryChunksRegistry();
+  }
+}
+
+CodePageCollectionMemoryModificationScope::
+    ~CodePageCollectionMemoryModificationScope() {
+  if (heap_->write_protect_code_memory() &&
+      !heap_->code_space_memory_modification_scope_depth()) {
+    heap_->ProtectUnprotectedMemoryChunks();
+    heap_->DisableUnprotectedMemoryChunksRegistry();
   }
 }
 

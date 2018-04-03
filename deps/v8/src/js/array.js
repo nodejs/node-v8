@@ -11,8 +11,6 @@
 // -------------------------------------------------------------------
 // Imports
 
-var GetIterator;
-var GetMethod;
 var GlobalArray = global.Array;
 var InternalArray = utils.InternalArray;
 var MathMax = global.Math.max;
@@ -21,11 +19,6 @@ var ObjectHasOwnProperty = global.Object.prototype.hasOwnProperty;
 var ObjectToString = global.Object.prototype.toString;
 var iteratorSymbol = utils.ImportNow("iterator_symbol");
 var unscopablesSymbol = utils.ImportNow("unscopables_symbol");
-
-utils.Import(function(from) {
-  GetIterator = from.GetIterator;
-  GetMethod = from.GetMethod;
-});
 
 // -------------------------------------------------------------------
 
@@ -585,45 +578,13 @@ function ArrayUnshiftFallback(arg1) {  // length == 1
 }
 
 
+// Oh the humanity... don't remove the following function because js2c for some
+// reason gets symbol minifiation wrong if it's not there. Instead of spending
+// the time fixing js2c (which will go away when all of the internal .js runtime
+// files are gone), just keep this work-around.
 function ArraySliceFallback(start, end) {
-  var array = TO_OBJECT(this);
-  var len = TO_LENGTH(array.length);
-  var start_i = TO_INTEGER(start);
-  var end_i = len;
-
-  if (!IS_UNDEFINED(end)) end_i = TO_INTEGER(end);
-
-  if (start_i < 0) {
-    start_i += len;
-    if (start_i < 0) start_i = 0;
-  } else {
-    if (start_i > len) start_i = len;
-  }
-
-  if (end_i < 0) {
-    end_i += len;
-    if (end_i < 0) end_i = 0;
-  } else {
-    if (end_i > len) end_i = len;
-  }
-
-  var result = ArraySpeciesCreate(array, MathMax(end_i - start_i, 0));
-
-  if (end_i < start_i) return result;
-
-  if (UseSparseVariant(array, len, IS_ARRAY(array), end_i - start_i)) {
-    %NormalizeElements(array);
-    if (IS_ARRAY(result)) %NormalizeElements(result);
-    SparseSlice(array, start_i, end_i - start_i, len, result);
-  } else {
-    SimpleSlice(array, start_i, end_i - start_i, len, result);
-  }
-
-  result.length = end_i - start_i;
-
-  return result;
+  return null;
 }
-
 
 function ComputeSpliceStartIndex(start_i, len) {
   if (start_i < 0) {
@@ -1153,81 +1114,6 @@ DEFINE_METHOD_LEN(
   1  /* Set function length */
 );
 
-
-// ES6, draft 10-14-14, section 22.1.2.1
-DEFINE_METHOD_LEN(
-  GlobalArray,
-  'from'(arrayLike, mapfn, receiver) {
-    var items = TO_OBJECT(arrayLike);
-    var mapping = !IS_UNDEFINED(mapfn);
-
-    if (mapping) {
-      if (!IS_CALLABLE(mapfn)) {
-        throw %make_type_error(kCalledNonCallable, mapfn);
-      }
-    }
-
-    var iterable = GetMethod(items, iteratorSymbol);
-    var k;
-    var result;
-    var mappedValue;
-    var nextValue;
-
-    if (!IS_UNDEFINED(iterable)) {
-      result = %IsConstructor(this) ? new this() : [];
-      k = 0;
-
-      for (nextValue of
-           { [iteratorSymbol]() { return GetIterator(items, iterable) } }) {
-        if (mapping) {
-          mappedValue = %_Call(mapfn, receiver, nextValue, k);
-        } else {
-          mappedValue = nextValue;
-        }
-        %CreateDataProperty(result, k, mappedValue);
-        k++;
-      }
-      result.length = k;
-      return result;
-    } else {
-      var len = TO_LENGTH(items.length);
-      result = %IsConstructor(this) ? new this(len) : new GlobalArray(len);
-
-      for (k = 0; k < len; ++k) {
-        nextValue = items[k];
-        if (mapping) {
-          mappedValue = %_Call(mapfn, receiver, nextValue, k);
-        } else {
-          mappedValue = nextValue;
-        }
-        %CreateDataProperty(result, k, mappedValue);
-      }
-
-      result.length = k;
-      return result;
-    }
-  },
-  1  /* Set function length. */
-);
-
-// ES6, draft 05-22-14, section 22.1.2.3
-DEFINE_METHOD(
-  GlobalArray,
-  of(...args) {
-    var length = args.length;
-    var constructor = this;
-    // TODO: Implement IsConstructor (ES6 section 7.2.5)
-    var array = %IsConstructor(constructor) ? new constructor(length) : [];
-    for (var i = 0; i < length; i++) {
-      %CreateDataProperty(array, i, args[i]);
-    }
-    array.length = length;
-    return array;
-  }
-);
-
-// -------------------------------------------------------------------
-
 // Set up unscopable properties on the Array.prototype object.
 var unscopables = {
   __proto__: null,
@@ -1311,7 +1197,6 @@ utils.Export(function(to) {
   "array_push", ArrayPushFallback,
   "array_shift", ArrayShiftFallback,
   "array_splice", ArraySpliceFallback,
-  "array_slice", ArraySliceFallback,
   "array_unshift", ArrayUnshiftFallback,
 ]);
 
