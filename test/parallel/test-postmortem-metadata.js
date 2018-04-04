@@ -94,7 +94,7 @@ function getExpectedSymbols() {
     'v8dbg_class_SeqOneByteString__chars__char',
     'v8dbg_class_SeqTwoByteString__chars__char',
     'v8dbg_class_SharedFunctionInfo__function_data__Object',
-    'v8dbg_class_SharedFunctionInfo__compiler_hints__int',
+    'v8dbg_class_SharedFunctionInfo__flags__int',
     'v8dbg_class_SharedFunctionInfo__end_position__int',
     'v8dbg_class_SharedFunctionInfo__function_identifier__Object',
     'v8dbg_class_SharedFunctionInfo__internal_formal_parameter_count__int',
