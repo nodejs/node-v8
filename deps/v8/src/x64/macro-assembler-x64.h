@@ -20,9 +20,9 @@ constexpr Register kReturnRegister2 = r8;
 constexpr Register kJSFunctionRegister = rdi;
 constexpr Register kContextRegister = rsi;
 constexpr Register kAllocateSizeRegister = rdx;
-constexpr Register kSpeculationPoisonRegister = r9;
+constexpr Register kSpeculationPoisonRegister = r12;
 constexpr Register kInterpreterAccumulatorRegister = rax;
-constexpr Register kInterpreterBytecodeOffsetRegister = r12;
+constexpr Register kInterpreterBytecodeOffsetRegister = r9;
 constexpr Register kInterpreterBytecodeArrayRegister = r14;
 constexpr Register kInterpreterDispatchTableRegister = r15;
 constexpr Register kJavaScriptCallArgCountRegister = rax;
@@ -30,6 +30,7 @@ constexpr Register kJavaScriptCallCodeStartRegister = rcx;
 constexpr Register kJavaScriptCallNewTargetRegister = rdx;
 constexpr Register kRuntimeCallFunctionRegister = rbx;
 constexpr Register kRuntimeCallArgCountRegister = rax;
+constexpr Register kWasmInstanceRegister = rsi;
 
 // Default scratch register used by MacroAssembler (and other code that needs
 // a spare register). The register isn't callee save, and not used by the
@@ -187,7 +188,9 @@ class TurboAssembler : public Assembler {
   AVX_OP(Movss, movss)
   AVX_OP(Movsd, movsd)
   AVX_OP(Pcmpeqd, pcmpeqd)
+  AVX_OP(Pslld, pslld)
   AVX_OP(Psllq, psllq)
+  AVX_OP(Psrld, psrld)
   AVX_OP(Psrlq, psrlq)
   AVX_OP(Addsd, addsd)
   AVX_OP(Mulsd, mulsd)
@@ -208,6 +211,7 @@ class TurboAssembler : public Assembler {
   AVX_OP(Cmpnlepd, cmpnlepd)
   AVX_OP(Roundss, roundss)
   AVX_OP(Roundsd, roundsd)
+  AVX_OP(Sqrtss, sqrtss)
   AVX_OP(Sqrtsd, sqrtsd)
   AVX_OP(Ucomiss, ucomiss)
   AVX_OP(Ucomisd, ucomisd)
@@ -285,6 +289,10 @@ class TurboAssembler : public Assembler {
   void Cvtlsi2ss(XMMRegister dst, Operand src);
   void Cvtqui2ss(XMMRegister dst, Register src, Register tmp);
   void Cvtqui2sd(XMMRegister dst, Register src, Register tmp);
+  void Cvttsd2uiq(Register dst, Operand src, Label* fail = nullptr);
+  void Cvttsd2uiq(Register dst, XMMRegister src, Label* fail = nullptr);
+  void Cvttss2uiq(Register dst, Operand src, Label* fail = nullptr);
+  void Cvttss2uiq(Register dst, XMMRegister src, Label* fail = nullptr);
 
   // cvtsi2sd instruction only writes to the low 64-bit of dst register, which
   // hinders register renaming and makes dependence chains longer. So we use
@@ -321,8 +329,7 @@ class TurboAssembler : public Assembler {
   }
 
   void Move(Register dst, ExternalReference ext) {
-    movp(dst, reinterpret_cast<void*>(ext.address()),
-         RelocInfo::EXTERNAL_REFERENCE);
+    movp(dst, ext.address(), RelocInfo::EXTERNAL_REFERENCE);
   }
 
   void Move(XMMRegister dst, uint32_t src);
@@ -339,7 +346,7 @@ class TurboAssembler : public Assembler {
             RelocInfo::Mode rmode = RelocInfo::EMBEDDED_OBJECT);
 
   // Loads a pointer into a register with a relocation mode.
-  void Move(Register dst, void* ptr, RelocInfo::Mode rmode) {
+  void Move(Register dst, Address ptr, RelocInfo::Mode rmode) {
     // This method must not be used with heap object references. The stored
     // address is not GC safe. Use the handle version instead.
     DCHECK(rmode > RelocInfo::LAST_GCED_ENUM);
@@ -354,6 +361,15 @@ class TurboAssembler : public Assembler {
   // Loads the address of the external reference into the destination
   // register.
   void LoadAddress(Register destination, ExternalReference source);
+
+  // Operand pointing to an external reference.
+  // May emit code to set up the scratch register. The operand is
+  // only guaranteed to be correct as long as the scratch register
+  // isn't changed.
+  // If the operand is used more than once, use a scratch register
+  // that is guaranteed not to be clobbered.
+  Operand ExternalOperand(ExternalReference reference,
+                          Register scratch = kScratchRegister);
 
   void Call(Operand op);
   void Call(Handle<Code> code_object, RelocInfo::Mode rmode);
@@ -445,8 +461,6 @@ class TurboAssembler : public Assembler {
   // trigger generation of the stub's code object but instead files a
   // HeapObjectRequest that will be fulfilled after code assembly.
   void CallStubDelayed(CodeStub* stub);
-
-  void SlowTruncateToIDelayed(Zone* zone, Register result_reg);
 
   // Call a runtime routine.
   void CallRuntimeDelayed(Zone* zone, Runtime::FunctionId fid,
@@ -541,14 +555,6 @@ class MacroAssembler : public TurboAssembler {
     bool old_value_;
   };
 
-  // Operand pointing to an external reference.
-  // May emit code to set up the scratch register. The operand is
-  // only guaranteed to be correct as long as the scratch register
-  // isn't changed.
-  // If the operand is used more than once, use a scratch register
-  // that is guaranteed not to be clobbered.
-  Operand ExternalOperand(ExternalReference reference,
-                          Register scratch = kScratchRegister);
   // Loads and stores the value of an external reference.
   // Special case code for load and store to take advantage of
   // load_rax/store_rax if possible/necessary.
@@ -766,7 +772,7 @@ class MacroAssembler : public TurboAssembler {
   void Jump(Handle<Code> code_object, RelocInfo::Mode rmode);
 
   // Generates a trampoline to jump to the off-heap instruction stream.
-  void JumpToInstructionStream(const InstructionStream* stream);
+  void JumpToInstructionStream(Address entry);
 
   // Non-x64 instructions.
   // Push/pop all general purpose registers.
@@ -808,6 +814,9 @@ class MacroAssembler : public TurboAssembler {
 
   // Abort execution if argument is not a FixedArray, enabled via --debug-code.
   void AssertFixedArray(Register object);
+
+  // Abort execution if argument is not a Constructor, enabled via --debug-code.
+  void AssertConstructor(Register object);
 
   // Abort execution if argument is not a JSFunction, enabled via --debug-code.
   void AssertFunction(Register object);
@@ -885,6 +894,9 @@ class MacroAssembler : public TurboAssembler {
   void IncrementCounter(StatsCounter* counter, int value);
   void DecrementCounter(StatsCounter* counter, int value);
 
+  // ---------------------------------------------------------------------------
+  // In-place weak references.
+  void LoadWeakValue(Register in_out, Label* target_if_cleared);
 
   // ---------------------------------------------------------------------------
   // Debugging

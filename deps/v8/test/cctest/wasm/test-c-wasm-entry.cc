@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "src/assembler-inl.h"
+#include "src/macro-assembler-inl.h"
 #include "src/objects-inl.h"
 #include "src/wasm/wasm-objects.h"
 #include "test/cctest/cctest.h"
@@ -44,37 +45,35 @@ class CWasmEntryArgTester {
   }
 
   template <typename... Rest>
-  void WriteToBuffer(uint8_t* buf, Rest... rest) {
+  void WriteToBuffer(Address buf, Rest... rest) {
     static_assert(sizeof...(rest) == 0, "this is the base case");
   }
 
   template <typename First, typename... Rest>
-  void WriteToBuffer(uint8_t* buf, First first, Rest... rest) {
+  void WriteToBuffer(Address buf, First first, Rest... rest) {
     WriteUnalignedValue(buf, first);
     WriteToBuffer(buf + sizeof(first), rest...);
   }
 
   void CheckCall(Args... args) {
     std::vector<uint8_t> arg_buffer(sizeof...(args) * 8);
-    WriteToBuffer(arg_buffer.data(), args...);
+    WriteToBuffer(reinterpret_cast<Address>(arg_buffer.data()), args...);
 
     Handle<Object> receiver = isolate_->factory()->undefined_value();
     Handle<Object> buffer_obj(reinterpret_cast<Object*>(arg_buffer.data()),
                               isolate_);
     CHECK(!buffer_obj->IsHeapObject());
     Handle<Object> call_args[]{
-        (FLAG_wasm_jit_to_native
-             ? Handle<Object>::cast(isolate_->factory()->NewForeign(
-                   wasm_code_.GetWasmCode()->instructions().start(), TENURED))
-             : Handle<Object>::cast(wasm_code_.GetCode())),
-        handle(reinterpret_cast<Object*>(wasm_code_.wasm_context()), isolate_),
+        Handle<Object>::cast(isolate_->factory()->NewForeign(
+            wasm_code_->instruction_start(), TENURED)),
+        handle(
+            wasm_code_->native_module()->compiled_module()->owning_instance(),
+            isolate_),
         buffer_obj};
     static_assert(
         arraysize(call_args) == compiler::CWasmEntryParameters::kNumParameters,
         "adapt this test");
-    if (FLAG_wasm_jit_to_native) {
-      wasm_code_.GetWasmCode()->owner()->SetExecutable(true);
-    }
+    wasm_code_->native_module()->SetExecutable(true);
     MaybeHandle<Object> return_obj = Execution::Call(
         isolate_, c_wasm_entry_fn_, receiver, arraysize(call_args), call_args);
     CHECK(!return_obj.is_null());
@@ -82,7 +81,8 @@ class CWasmEntryArgTester {
     CHECK_EQ(0, Smi::ToInt(*return_obj.ToHandleChecked()));
 
     // Check the result.
-    ReturnType result = ReadUnalignedValue<ReturnType>(arg_buffer.data());
+    ReturnType result = ReadUnalignedValue<ReturnType>(
+        reinterpret_cast<Address>(arg_buffer.data()));
     ReturnType expected = expected_fn_(args...);
     if (std::is_floating_point<ReturnType>::value) {
       CHECK_DOUBLE_EQ(expected, result);
@@ -97,7 +97,7 @@ class CWasmEntryArgTester {
   std::function<ReturnType(Args...)> expected_fn_;
   FunctionSig* sig_;
   Handle<JSFunction> c_wasm_entry_fn_;
-  WasmCodeWrapper wasm_code_;
+  wasm::WasmCode* wasm_code_;
 };
 
 }  // namespace

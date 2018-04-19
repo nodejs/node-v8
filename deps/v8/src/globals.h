@@ -11,6 +11,7 @@
 #include <limits>
 #include <ostream>
 
+#include "include/v8.h"
 #include "src/base/build_config.h"
 #include "src/base/flags.h"
 #include "src/base/logging.h"
@@ -49,7 +50,6 @@ namespace v8 {
 namespace base {
 class Mutex;
 class RecursiveMutex;
-class VirtualMemory;
 }
 
 namespace internal {
@@ -126,7 +126,8 @@ class AllStatic {
 #define BASE_EMBEDDED
 
 typedef uint8_t byte;
-typedef byte* Address;
+typedef uintptr_t Address;
+static const Address kNullAddress = 0;
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -273,20 +274,19 @@ constexpr int kUC16Size = sizeof(uc16);  // NOLINT
 // 128 bit SIMD value size.
 constexpr int kSimd128Size = 16;
 
-// Round up n to be a multiple of sz, where sz is a power of 2.
-#define ROUND_UP(n, sz) (((n) + ((sz) - 1)) & ~((sz) - 1))
-
-
 // FUNCTION_ADDR(f) gets the address of a C function f.
-#define FUNCTION_ADDR(f)                                        \
-  (reinterpret_cast<v8::internal::Address>(reinterpret_cast<intptr_t>(f)))
-
+#define FUNCTION_ADDR(f) (reinterpret_cast<v8::internal::Address>(f))
 
 // FUNCTION_CAST<F>(addr) casts an address into a function
 // of type F. Used to invoke generated code from within C.
 template <typename F>
+F FUNCTION_CAST(byte* addr) {
+  return reinterpret_cast<F>(reinterpret_cast<Address>(addr));
+}
+
+template <typename F>
 F FUNCTION_CAST(Address addr) {
-  return reinterpret_cast<F>(reinterpret_cast<intptr_t>(addr));
+  return reinterpret_cast<F>(addr);
 }
 
 
@@ -413,14 +413,13 @@ constexpr int kCodeAlignmentBits = 5;
 constexpr intptr_t kCodeAlignment = 1 << kCodeAlignmentBits;
 constexpr intptr_t kCodeAlignmentMask = kCodeAlignment - 1;
 
-// Weak references are tagged using the second bit in a pointer.
-constexpr int kWeakReferenceTag = 3;
-constexpr int kWeakReferenceTagSize = 2;
-constexpr intptr_t kWeakReferenceTagMask = (1 << kWeakReferenceTagSize) - 1;
+const intptr_t kWeakHeapObjectMask = 1 << 1;
+const intptr_t kClearedWeakHeapObject = 3;
 
 // Zap-value: The value used for zapping dead objects.
 // Should be a recognizable hex value tagged as a failure.
 #ifdef V8_HOST_ARCH_64_BIT
+constexpr uint64_t kClearedFreeMemoryValue = 0;
 constexpr uint64_t kZapValue = uint64_t{0xdeadbeedbeadbeef};
 constexpr uint64_t kHandleZapValue = uint64_t{0x1baddead0baddeaf};
 constexpr uint64_t kGlobalHandleZapValue = uint64_t{0x1baffed00baffedf};
@@ -429,6 +428,7 @@ constexpr uint64_t kDebugZapValue = uint64_t{0xbadbaddbbadbaddb};
 constexpr uint64_t kSlotsZapValue = uint64_t{0xbeefdeadbeefdeef};
 constexpr uint64_t kFreeListZapValue = 0xfeed1eaffeed1eaf;
 #else
+constexpr uint32_t kClearedFreeMemoryValue = 0;
 constexpr uint32_t kZapValue = 0xdeadbeef;
 constexpr uint32_t kHandleZapValue = 0xbaddeaf;
 constexpr uint32_t kGlobalHandleZapValue = 0xbaffedf;
@@ -477,6 +477,7 @@ template <typename T> class MaybeHandle;
 template <typename T> class Handle;
 class Heap;
 class HeapObject;
+class HeapObjectReference;
 class IC;
 class InterceptorInfo;
 class Isolate;
@@ -489,10 +490,12 @@ class MacroAssembler;
 class Map;
 class MapSpace;
 class MarkCompactCollector;
+class MaybeObject;
 class NewSpace;
 class Object;
 class OldSpace;
 class ParameterCount;
+class ReadOnlySpace;
 class Foreign;
 class Scope;
 class DeclarationScope;
@@ -520,20 +523,22 @@ typedef bool (*WeakSlotCallbackWithHeap)(Heap* heap, Object** pointer);
 
 // NOTE: SpaceIterator depends on AllocationSpace enumeration values being
 // consecutive.
-// Keep this enum in sync with the ObjectSpace enum in v8.h
 enum AllocationSpace {
+  // TODO(v8:7464): Actually map this space's memory as read-only.
+  RO_SPACE,    // Immortal, immovable and immutable objects,
   NEW_SPACE,   // Semispaces collected with copying collector.
   OLD_SPACE,   // May contain pointers to new space.
   CODE_SPACE,  // No pointers to new space, marked executable.
   MAP_SPACE,   // Only and all map objects.
   LO_SPACE,    // Promoted large objects.
 
-  FIRST_SPACE = NEW_SPACE,
+  FIRST_SPACE = RO_SPACE,
   LAST_SPACE = LO_SPACE,
-  FIRST_PAGED_SPACE = OLD_SPACE,
-  LAST_PAGED_SPACE = MAP_SPACE
+  FIRST_GROWABLE_PAGED_SPACE = OLD_SPACE,
+  LAST_GROWABLE_PAGED_SPACE = MAP_SPACE
 };
-constexpr int kSpaceTagSize = 3;
+constexpr int kSpaceTagSize = 4;
+STATIC_ASSERT(FIRST_SPACE == 0);
 
 enum AllocationAlignment { kWordAligned, kDoubleAligned, kDoubleUnaligned };
 
@@ -566,10 +571,10 @@ inline std::ostream& operator<<(std::ostream& os, WriteBarrierKind kind) {
 }
 
 // A flag that indicates whether objects should be pretenured when
-// allocated (allocated directly into the old generation) or not
-// (allocated in the young generation if the object size and type
+// allocated (allocated directly into either the old generation or read-only
+// space), or not (allocated in the young generation if the object size and type
 // allows).
-enum PretenureFlag { NOT_TENURED, TENURED };
+enum PretenureFlag { NOT_TENURED, TENURED, TENURED_READ_ONLY };
 
 inline std::ostream& operator<<(std::ostream& os, const PretenureFlag& flag) {
   switch (flag) {
@@ -577,6 +582,8 @@ inline std::ostream& operator<<(std::ostream& os, const PretenureFlag& flag) {
       return os << "NotTenured";
     case TENURED:
       return os << "Tenured";
+    case TENURED_READ_ONLY:
+      return os << "TenuredReadOnly";
   }
   UNREACHABLE();
 }
@@ -866,6 +873,26 @@ enum ScopeType : uint8_t {
   BLOCK_SCOPE,     // The scope introduced by a new block.
   WITH_SCOPE       // The scope introduced by with.
 };
+
+inline std::ostream& operator<<(std::ostream& os, ScopeType type) {
+  switch (type) {
+    case ScopeType::EVAL_SCOPE:
+      return os << "EVAL_SCOPE";
+    case ScopeType::FUNCTION_SCOPE:
+      return os << "FUNCTION_SCOPE";
+    case ScopeType::MODULE_SCOPE:
+      return os << "MODULE_SCOPE";
+    case ScopeType::SCRIPT_SCOPE:
+      return os << "SCRIPT_SCOPE";
+    case ScopeType::CATCH_SCOPE:
+      return os << "CATCH_SCOPE";
+    case ScopeType::BLOCK_SCOPE:
+      return os << "BLOCK_SCOPE";
+    case ScopeType::WITH_SCOPE:
+      return os << "WITH_SCOPE";
+  }
+  UNREACHABLE();
+}
 
 // AllocationSiteMode controls whether allocations are tracked by an allocation
 // site.
@@ -1178,7 +1205,7 @@ inline std::ostream& operator<<(std::ostream& os, FunctionKind kind) {
 }
 
 enum class InterpreterPushArgsMode : unsigned {
-  kJSFunction,
+  kArrayFunction,
   kWithFinalSpread,
   kOther
 };
@@ -1190,8 +1217,8 @@ inline size_t hash_value(InterpreterPushArgsMode mode) {
 inline std::ostream& operator<<(std::ostream& os,
                                 InterpreterPushArgsMode mode) {
   switch (mode) {
-    case InterpreterPushArgsMode::kJSFunction:
-      return os << "JSFunction";
+    case InterpreterPushArgsMode::kArrayFunction:
+      return os << "ArrayFunction";
     case InterpreterPushArgsMode::kWithFinalSpread:
       return os << "WithFinalSpread";
     case InterpreterPushArgsMode::kOther:
@@ -1203,8 +1230,7 @@ inline std::ostream& operator<<(std::ostream& os,
 inline uint32_t ObjectHash(Address address) {
   // All objects are at least pointer aligned, so we can remove the trailing
   // zeros.
-  return static_cast<uint32_t>(bit_cast<uintptr_t>(address) >>
-                               kPointerSizeLog2);
+  return static_cast<uint32_t>(address >> kPointerSizeLog2);
 }
 
 // Type feedback is encoded in such a way that, we can combine the feedback
@@ -1346,6 +1372,18 @@ inline std::ostream& operator<<(std::ostream& os, IterationKind kind) {
   UNREACHABLE();
 }
 
+enum class CollectionKind { kMap, kSet };
+
+inline std::ostream& operator<<(std::ostream& os, CollectionKind kind) {
+  switch (kind) {
+    case CollectionKind::kMap:
+      return os << "CollectionKind::kMap";
+    case CollectionKind::kSet:
+      return os << "CollectionKind::kSet";
+  }
+  UNREACHABLE();
+}
+
 // Flags for the runtime function kDefineDataPropertyInLiteral. A property can
 // be enumerable or not, and, in case of functions, the function name
 // can be set or not.
@@ -1449,6 +1487,46 @@ enum IsolateAddressId {
 #undef DECLARE_ENUM
       kIsolateAddressCount
 };
+
+V8_INLINE static bool HasWeakHeapObjectTag(const internal::MaybeObject* value) {
+  return ((reinterpret_cast<intptr_t>(value) & kHeapObjectTagMask) ==
+          kWeakHeapObjectTag);
+}
+
+// Object* should never have the weak tag; this variant is for overzealous
+// checking.
+V8_INLINE static bool HasWeakHeapObjectTag(const Object* value) {
+  return ((reinterpret_cast<intptr_t>(value) & kHeapObjectTagMask) ==
+          kWeakHeapObjectTag);
+}
+
+V8_INLINE static bool IsClearedWeakHeapObject(MaybeObject* value) {
+  return reinterpret_cast<intptr_t>(value) == kClearedWeakHeapObject;
+}
+
+V8_INLINE static HeapObject* RemoveWeakHeapObjectMask(
+    HeapObjectReference* value) {
+  return reinterpret_cast<HeapObject*>(reinterpret_cast<intptr_t>(value) &
+                                       ~kWeakHeapObjectMask);
+}
+
+V8_INLINE static HeapObjectReference* AddWeakHeapObjectMask(HeapObject* value) {
+  return reinterpret_cast<HeapObjectReference*>(
+      reinterpret_cast<intptr_t>(value) | kWeakHeapObjectMask);
+}
+
+V8_INLINE static MaybeObject* AddWeakHeapObjectMask(MaybeObject* value) {
+  return reinterpret_cast<MaybeObject*>(reinterpret_cast<intptr_t>(value) |
+                                        kWeakHeapObjectMask);
+}
+
+enum class HeapObjectReferenceType {
+  WEAK,
+  STRONG,
+};
+
+enum class PoisoningMitigationLevel { kOff, kOn };
+enum class LoadSensitivity { kSafe, kNeedsPoisoning };
 
 }  // namespace internal
 }  // namespace v8

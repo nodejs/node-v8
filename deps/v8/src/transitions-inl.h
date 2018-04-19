@@ -15,23 +15,9 @@
 namespace v8 {
 namespace internal {
 
-template <TransitionsAccessor::Encoding enc>
-WeakCell* TransitionsAccessor::GetTargetCell() {
-  DCHECK(!needs_reload_);
-  if (target_cell_ != nullptr) return target_cell_;
-  if (enc == kWeakCell) {
-    target_cell_ = WeakCell::cast(raw_transitions_);
-  } else if (enc == kHandler) {
-    target_cell_ = StoreHandler::GetTransitionCell(raw_transitions_);
-  } else {
-    UNREACHABLE();
-  }
-  return target_cell_;
-}
-
 TransitionArray* TransitionsAccessor::transitions() {
   DCHECK_EQ(kFullTransitionArray, encoding());
-  return TransitionArray::cast(raw_transitions_);
+  return TransitionArray::cast(raw_transitions_->ToStrongHeapObject());
 }
 
 CAST_ACCESSOR(TransitionArray)
@@ -71,23 +57,19 @@ Name* TransitionArray::GetKey(int transition_number) {
 }
 
 Name* TransitionsAccessor::GetKey(int transition_number) {
-  WeakCell* cell = nullptr;
   switch (encoding()) {
     case kPrototypeInfo:
     case kUninitialized:
       UNREACHABLE();
       return nullptr;
-    case kWeakCell:
-      cell = GetTargetCell<kWeakCell>();
-      break;
-    case kHandler:
-      cell = GetTargetCell<kHandler>();
-      break;
+    case kWeakRef: {
+      Map* map = Map::cast(raw_transitions_->ToWeakHeapObject());
+      return GetSimpleTransitionKey(map);
+    }
     case kFullTransitionArray:
       return transitions()->GetKey(transition_number);
   }
-  DCHECK(!cell->cleared());
-  return GetSimpleTransitionKey(Map::cast(cell->value()));
+  UNREACHABLE();
 }
 
 void TransitionArray::SetKey(int transition_number, Name* key) {
@@ -112,8 +94,7 @@ PropertyDetails TransitionsAccessor::GetTargetDetails(Name* name, Map* target) {
 
 // static
 Map* TransitionsAccessor::GetTargetFromRaw(Object* raw) {
-  if (raw->IsWeakCell()) return Map::cast(WeakCell::cast(raw)->value());
-  return Map::cast(StoreHandler::GetTransitionCell(raw)->value());
+  return Map::cast(WeakCell::cast(raw)->value());
 }
 
 Object* TransitionArray::GetRawTarget(int transition_number) {
@@ -127,23 +108,17 @@ Map* TransitionArray::GetTarget(int transition_number) {
 }
 
 Map* TransitionsAccessor::GetTarget(int transition_number) {
-  WeakCell* cell = nullptr;
   switch (encoding()) {
     case kPrototypeInfo:
     case kUninitialized:
       UNREACHABLE();
       return nullptr;
-    case kWeakCell:
-      cell = GetTargetCell<kWeakCell>();
-      break;
-    case kHandler:
-      cell = GetTargetCell<kHandler>();
-      break;
+    case kWeakRef:
+      return Map::cast(raw_transitions_->ToWeakHeapObject());
     case kFullTransitionArray:
       return transitions()->GetTarget(transition_number);
   }
-  DCHECK(!cell->cleared());
-  return Map::cast(cell->value());
+  UNREACHABLE();
 }
 
 void TransitionArray::SetTarget(int transition_number, Object* value) {
@@ -152,6 +127,15 @@ void TransitionArray::SetTarget(int transition_number, Object* value) {
   set(ToTargetIndex(transition_number), value);
 }
 
+bool TransitionArray::GetTargetIfExists(int transition_number, Isolate* isolate,
+                                        Map** target) {
+  Object* raw = GetRawTarget(transition_number);
+  if (raw->IsUndefined(isolate)) {
+    return false;
+  }
+  *target = TransitionsAccessor::GetTargetFromRaw(raw);
+  return true;
+}
 
 int TransitionArray::SearchName(Name* name, int* out_insertion_index) {
   DCHECK(name->IsUniqueName());
@@ -202,7 +186,7 @@ void TransitionArray::Set(int transition_number, Name* key, Object* target) {
 
 int TransitionArray::Capacity() {
   if (length() <= kFirstIndex) return 0;
-  return (length() - kFirstIndex) / kTransitionSize;
+  return (length() - kFirstIndex) / kEntrySize;
 }
 
 void TransitionArray::SetNumberOfTransitions(int number_of_transitions) {

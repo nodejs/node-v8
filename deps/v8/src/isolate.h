@@ -10,6 +10,7 @@
 #include <queue>
 #include <vector>
 
+#include "include/v8-inspector.h"
 #include "include/v8.h"
 #include "src/allocation.h"
 #include "src/base/atomicops.h"
@@ -22,9 +23,11 @@
 #include "src/futex-emulation.h"
 #include "src/globals.h"
 #include "src/handles.h"
+#include "src/heap/factory.h"
 #include "src/heap/heap.h"
 #include "src/messages.h"
 #include "src/objects/code.h"
+#include "src/objects/debug-objects.h"
 #include "src/runtime/runtime.h"
 #include "src/unicode.h"
 
@@ -70,8 +73,6 @@ class DescriptorLookupCache;
 class EmptyStatement;
 class EternalHandles;
 class ExternalCallbackScope;
-class ExternalReferenceTable;
-class Factory;
 class HandleScopeImplementer;
 class HeapObjectToIndexHashMap;
 class HeapProfiler;
@@ -99,14 +100,10 @@ class SweeperThread;
 class ThreadManager;
 class ThreadState;
 class ThreadVisitor;  // Defined in v8threads.h
+class TracingCpuProfilerImpl;
 class UnicodeCache;
 
 template <StateTag Tag> class VMState;
-
-// 'void function pointer', used to roundtrip the
-// ExternalReference::ExternalReferenceRedirector since we can not include
-// assembler.h, where it is defined, here.
-typedef void* ExternalReferenceRedirectorPointer();
 
 namespace interpreter {
 class Interpreter;
@@ -415,13 +412,10 @@ typedef std::vector<HeapObject*> DebugObjectCache;
   V(ExtensionCallback, wasm_module_callback, &NoExtension)                    \
   V(ExtensionCallback, wasm_instance_callback, &NoExtension)                  \
   V(ApiImplementationCallback, wasm_compile_streaming_callback, nullptr)      \
-  V(ExternalReferenceRedirectorPointer*, external_reference_redirector,       \
-    nullptr)                                                                  \
   /* State for Relocatable. */                                                \
   V(Relocatable*, relocatable_top, nullptr)                                   \
   V(DebugObjectCache*, string_stream_debug_object_cache, nullptr)             \
   V(Object*, string_stream_current_security_token, nullptr)                   \
-  V(ExternalReferenceTable*, external_reference_table, nullptr)               \
   V(const intptr_t*, api_external_references, nullptr)                        \
   V(AddressToIndexHashMap*, external_reference_map, nullptr)                  \
   V(HeapObjectToIndexHashMap*, root_index_map, nullptr)                       \
@@ -438,12 +432,13 @@ typedef std::vector<HeapObject*> DebugObjectCache;
   /* true if a trace is being formatted through Error.prepareStackTrace. */   \
   V(bool, formatting_stack_trace, false)                                      \
   /* Perform side effect checks on function call and API callbacks. */        \
-  V(bool, needs_side_effect_check, false)                                     \
+  V(DebugInfo::ExecutionMode, debug_execution_mode, DebugInfo::kBreakpoints)  \
   /* Current code coverage mode */                                            \
   V(debug::Coverage::Mode, code_coverage_mode, debug::Coverage::kBestEffort)  \
   V(debug::TypeProfile::Mode, type_profile_mode, debug::TypeProfile::kNone)   \
   V(int, last_stack_frame_info_id, 0)                                         \
-  V(int, last_console_context_id, 0)
+  V(int, last_console_context_id, 0)                                          \
+  V(v8_inspector::V8Inspector*, inspector, nullptr)
 
 #define THREAD_LOCAL_TOP_ACCESSOR(type, name)                        \
   inline void set_##name(type v) { thread_local_top_.name##_ = v; }  \
@@ -452,8 +447,11 @@ typedef std::vector<HeapObject*> DebugObjectCache;
 #define THREAD_LOCAL_TOP_ADDRESS(type, name) \
   type* name##_address() { return &thread_local_top_.name##_; }
 
+// HiddenFactory exists so Isolate can privately inherit from it without making
+// Factory's members available to Isolate directly.
+class V8_EXPORT_PRIVATE HiddenFactory : private Factory {};
 
-class Isolate {
+class Isolate : private HiddenFactory {
   // These forward declarations are required to make the friend declarations in
   // PerIsolateThreadData work on some older versions of gcc.
   class ThreadDataTable;
@@ -752,8 +750,8 @@ class Isolate {
   Object* ThrowIllegalOperation();
 
   template <typename T>
-  MUST_USE_RESULT MaybeHandle<T> Throw(Handle<Object> exception,
-                                       MessageLocation* location = nullptr) {
+  V8_WARN_UNUSED_RESULT MaybeHandle<T> Throw(
+      Handle<Object> exception, MessageLocation* location = nullptr) {
     Throw(*exception, location);
     return MaybeHandle<T>();
   }
@@ -981,7 +979,11 @@ class Isolate {
   }
 #endif
 
-  Factory* factory() { return reinterpret_cast<Factory*>(this); }
+  v8::internal::Factory* factory() {
+    // Upcast to the privately inherited base-class using c-style casts to avoid
+    // undefined behavior (as static_cast cannot cast across private bases).
+    return (v8::internal::Factory*)this;  // NOLINT(readability/casting)
+  }
 
   static const int kJSRegexpStaticOffsetsVectorSize = 128;
 
@@ -1081,9 +1083,6 @@ class Isolate {
   inline bool IsStringLengthOverflowIntact();
   inline bool IsArrayIteratorLookupChainIntact();
 
-  // Avoid deopt loops if fast Array Iterators migrate to slow Array Iterators.
-  inline bool IsFastArrayIterationIntact();
-
   // Make sure we do check for neutered array buffers.
   inline bool IsArrayBufferNeuteringIntact();
 
@@ -1091,8 +1090,15 @@ class Isolate {
   // active.
   bool IsPromiseHookProtectorIntact();
 
+  // Make sure a lookup of "resolve" on the %Promise% intrinsic object
+  // yeidls the initial Promise.resolve method.
+  bool IsPromiseResolveLookupChainIntact();
+
   // Make sure a lookup of "then" on any JSPromise whose [[Prototype]] is the
-  // initial %PromisePrototype% yields the initial method.
+  // initial %PromisePrototype% yields the initial method. In addition this
+  // protector also guards the negative lookup of "then" on the intrinsic
+  // %ObjectPrototype%, meaning that such lookups are guaranteed to yield
+  // undefined without triggering any side-effects.
   bool IsPromiseThenLookupChainIntact();
   bool IsPromiseThenLookupChainIntact(Handle<JSReceiver> receiver);
 
@@ -1117,6 +1123,7 @@ class Isolate {
   void InvalidateArrayIteratorProtector();
   void InvalidateArrayBufferNeuteringProtector();
   V8_EXPORT_PRIVATE void InvalidatePromiseHookProtector();
+  void InvalidatePromiseResolveProtector();
   void InvalidatePromiseThenProtector();
 
   // Returns true if array is the initial array prototype in any native context.
@@ -1184,6 +1191,9 @@ class Isolate {
     return id;
   }
 
+  void AddNearHeapLimitCallback(v8::NearHeapLimitCallback, void* data);
+  void RemoveNearHeapLimitCallback(v8::NearHeapLimitCallback callback,
+                                   size_t heap_limit);
   void AddCallCompletedCallback(CallCompletedCallback callback);
   void RemoveCallCompletedCallback(CallCompletedCallback callback);
   void FireCallCompletedCallback();
@@ -1231,6 +1241,10 @@ class Isolate {
     return reinterpret_cast<Address>(&handle_scope_implementer_);
   }
 
+  Address debug_execution_mode_address() {
+    return reinterpret_cast<Address>(&debug_execution_mode_);
+  }
+
   void DebugStateUpdated();
 
   void SetPromiseHook(PromiseHook hook);
@@ -1244,14 +1258,22 @@ class Isolate {
     return &partial_snapshot_cache_;
   }
 
-  void PushOffHeapCode(InstructionStream* stream) {
-    off_heap_code_.emplace_back(stream);
-  }
-
 #ifdef V8_EMBEDDED_BUILTINS
+  // Called only prior to serialization.
+  // This function copies off-heap-safe builtins off the heap, creates off-heap
+  // trampolines, and sets up this isolate's embedded blob.
+  void PrepareEmbeddedBlobForSerialization();
+
   BuiltinsConstantsTableBuilder* builtins_constants_table_builder() const {
     return builtins_constants_table_builder_;
   }
+
+  static const uint8_t* CurrentEmbeddedBlob();
+  static uint32_t CurrentEmbeddedBlobSize();
+
+  // TODO(jgruber): Remove these in favor of the static methods above.
+  const uint8_t* embedded_blob() const;
+  uint32_t embedded_blob_size() const;
 #endif
 
   void set_array_buffer_allocator(v8::ArrayBuffer::Allocator* allocator) {
@@ -1357,6 +1379,8 @@ class Isolate {
     top_backup_incumbent_scope_ = top_backup_incumbent_scope;
   }
 
+  void SetIdle(bool is_idle);
+
  protected:
   explicit Isolate(bool enable_serializer);
   bool IsArrayOrObjectOrStringPrototype(Object* object);
@@ -1459,6 +1483,8 @@ class Isolate {
   // If there is no external try-catch or message was successfully propagated,
   // then return true.
   bool PropagatePendingExceptionToExternalTryCatch();
+
+  void SetTerminationOnExternalTryCatch();
 
   const char* RAILModeName(RAILMode rail_mode) const {
     switch (rail_mode) {
@@ -1621,16 +1647,15 @@ class Isolate {
 
   std::vector<Object*> partial_snapshot_cache_;
 
-  // Stores off-heap instruction streams. Only used if --stress-off-heap-code
-  // is enabled.
-  // TODO(jgruber,v8:6666): Remove once isolate-independent builtins are
-  // implemented. Also remove friend class below.
-  std::vector<InstructionStream*> off_heap_code_;
-
 #ifdef V8_EMBEDDED_BUILTINS
   // Used during builtins compilation to build the builtins constants table,
   // which is stored on the root list prior to serialization.
   BuiltinsConstantsTableBuilder* builtins_constants_table_builder_ = nullptr;
+
+  void SetEmbeddedBlob(const uint8_t* blob, uint32_t blob_size);
+
+  const uint8_t* embedded_blob_ = nullptr;
+  uint32_t embedded_blob_size_ = 0;
 #endif
 
   v8::ArrayBuffer::Allocator* array_buffer_allocator_;
@@ -1654,6 +1679,8 @@ class Isolate {
 
   std::unique_ptr<wasm::WasmEngine> wasm_engine_;
 
+  std::unique_ptr<TracingCpuProfilerImpl> tracing_cpu_profiler_;
+
   // The top entry of the v8::Context::BackupIncumbentScope stack.
   const v8::Context::BackupIncumbentScope* top_backup_incumbent_scope_ =
       nullptr;
@@ -1661,7 +1688,6 @@ class Isolate {
   friend class ExecutionAccess;
   friend class HandleScopeImplementer;
   friend class heap::HeapTester;
-  friend class InstructionStream;
   friend class OptimizingCompileDispatcher;
   friend class Simulator;
   friend class StackGuard;

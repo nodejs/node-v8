@@ -143,14 +143,14 @@ void TurboAssembler::Jump(intptr_t target, RelocInfo::Mode rmode,
 void TurboAssembler::Jump(Address target, RelocInfo::Mode rmode, Condition cond,
                           CRegister cr) {
   DCHECK(!RelocInfo::IsCodeTarget(rmode));
-  Jump(reinterpret_cast<intptr_t>(target), rmode, cond, cr);
+  Jump(static_cast<intptr_t>(target), rmode, cond, cr);
 }
 
 void TurboAssembler::Jump(Handle<Code> code, RelocInfo::Mode rmode,
                           Condition cond, CRegister cr) {
   DCHECK(RelocInfo::IsCodeTarget(rmode));
   // 'code' is always generated ppc code, never THUMB code
-  Jump(reinterpret_cast<intptr_t>(code.address()), rmode, cond, cr);
+  Jump(static_cast<intptr_t>(code.address()), rmode, cond, cr);
 }
 
 int TurboAssembler::CallSize(Register target) { return 2 * kInstrSize; }
@@ -168,13 +168,13 @@ void TurboAssembler::Call(Register target) {
 }
 
 void MacroAssembler::CallJSEntry(Register target) {
-  DCHECK(target == ip);
+  CHECK(target == r5);
   Call(target);
 }
 
 int TurboAssembler::CallSize(Address target, RelocInfo::Mode rmode,
                              Condition cond) {
-  Operand mov_operand = Operand(reinterpret_cast<intptr_t>(target), rmode);
+  Operand mov_operand = Operand(target, rmode);
   return (2 + instructions_required_for_mov(ip, mov_operand)) * kInstrSize;
 }
 
@@ -202,7 +202,7 @@ void TurboAssembler::Call(Address target, RelocInfo::Mode rmode,
   // bc( BA, .... offset, LKset);
   //
 
-  mov(ip, Operand(reinterpret_cast<intptr_t>(target), rmode));
+  mov(ip, Operand(target, rmode));
   mtctr(ip);
   bctrl();
 
@@ -825,7 +825,7 @@ void TurboAssembler::ShiftRightAlgPair(Register dst_low, Register dst_high,
 }
 #endif
 
-void MacroAssembler::LoadConstantPoolPointerRegisterFromCodeTargetAddress(
+void TurboAssembler::LoadConstantPoolPointerRegisterFromCodeTargetAddress(
     Register code_target_address) {
   lwz(kConstantPoolRegister,
       MemOperand(code_target_address,
@@ -833,8 +833,24 @@ void MacroAssembler::LoadConstantPoolPointerRegisterFromCodeTargetAddress(
   add(kConstantPoolRegister, kConstantPoolRegister, code_target_address);
 }
 
+void TurboAssembler::LoadPC(Register dst) {
+  b(4, SetLK);
+  mflr(dst);
+}
+
+void TurboAssembler::ComputeCodeStartAddress(Register dst) {
+  Label current_pc;
+  mov_label_addr(dst, &current_pc);
+
+  bind(&current_pc);
+  subi(dst, dst, Operand(pc_offset()));
+}
+
 void TurboAssembler::LoadConstantPoolPointerRegister() {
-  mov_label_addr(kConstantPoolRegister, ConstantPoolPosition());
+  LoadPC(kConstantPoolRegister);
+  int32_t delta = -pc_offset() + 4;
+  add_label_offset(kConstantPoolRegister, kConstantPoolRegister,
+                   ConstantPoolPosition(), delta);
 }
 
 void TurboAssembler::StubPrologue(StackFrame::Type type) {
@@ -850,7 +866,6 @@ void TurboAssembler::StubPrologue(StackFrame::Type type) {
 }
 
 void TurboAssembler::Prologue() {
-  DCHECK(base != no_reg);
   PushStandardFrame(r4);
   if (FLAG_enable_embedded_constant_pool) {
     // base contains prologue address
@@ -1178,15 +1193,7 @@ void MacroAssembler::InvokePrologue(const ParameterCount& expected,
 void MacroAssembler::CheckDebugHook(Register fun, Register new_target,
                                     const ParameterCount& expected,
                                     const ParameterCount& actual) {
-  Label skip_hook, call_hook;
-
-  ExternalReference debug_is_active =
-      ExternalReference::debug_is_active_address(isolate());
-  mov(r7, Operand(debug_is_active));
-  LoadByte(r7, MemOperand(r7), r0);
-  extsb(r7, r7);
-  CmpSmiLiteral(r7, Smi::kZero, r0);
-  beq(&skip_hook);
+  Label skip_hook;
 
   ExternalReference debug_hook_avtive =
       ExternalReference::debug_hook_on_function_call_address(isolate());
@@ -1194,18 +1201,17 @@ void MacroAssembler::CheckDebugHook(Register fun, Register new_target,
   LoadByte(r7, MemOperand(r7), r0);
   extsb(r7, r7);
   CmpSmiLiteral(r7, Smi::kZero, r0);
-  bne(&call_hook);
+  beq(&skip_hook);
 
-  LoadP(r7, FieldMemOperand(fun, JSFunction::kSharedFunctionInfoOffset));
-  LoadP(r7, FieldMemOperand(r7, SharedFunctionInfo::kDebugInfoOffset));
-  JumpIfSmi(r7, &skip_hook);
-  LoadP(r7, FieldMemOperand(r7, DebugInfo::kFlagsOffset));
-  SmiUntag(r0, r7);
-  andi(r0, r0, Operand(DebugInfo::kBreakAtEntry));
-  beq(&skip_hook, cr0);
-
-  bind(&call_hook);
   {
+    // Load receiver to pass it later to DebugOnFunctionCall hook.
+    if (actual.is_reg()) {
+      mr(r7, actual.reg());
+    } else {
+      mov(r7, Operand(actual.immediate()));
+    }
+    ShiftLeftImm(r7, r7, Operand(kPointerSizeLog2));
+    LoadPX(r7, MemOperand(sp, r7));
     FrameScope frame(this,
                      has_frame() ? StackFrame::NONE : StackFrame::INTERNAL);
     if (expected.is_reg()) {
@@ -1219,7 +1225,7 @@ void MacroAssembler::CheckDebugHook(Register fun, Register new_target,
     if (new_target.is_valid()) {
       Push(new_target);
     }
-    Push(fun, fun);
+    Push(fun, fun, r7);
     CallRuntime(Runtime::kDebugOnFunctionCall);
     Pop(fun);
     if (new_target.is_valid()) {
@@ -1521,8 +1527,9 @@ void MacroAssembler::TryDoubleToInt32Exact(Register result,
   bind(&done);
 }
 
-void TurboAssembler::TruncateDoubleToIDelayed(Zone* zone, Register result,
-                                              DoubleRegister double_input) {
+void TurboAssembler::TruncateDoubleToI(Isolate* isolate, Zone* zone,
+                                       Register result,
+                                       DoubleRegister double_input) {
   Label done;
 
   TryInlineTruncateDoubleToI(result, double_input, &done);
@@ -1533,8 +1540,9 @@ void TurboAssembler::TruncateDoubleToIDelayed(Zone* zone, Register result,
   // Put input on stack.
   stfdu(double_input, MemOperand(sp, -kDoubleSize));
 
-  CallStubDelayed(new (zone) DoubleToIStub(nullptr, result));
+  Call(BUILTIN_CODE(isolate, DoubleToI), RelocInfo::CODE_TARGET);
 
+  LoadP(result, MemOperand(sp));
   addi(sp, sp, Operand(kDoubleSize));
   pop(r0);
   mtlr(r0);
@@ -1626,10 +1634,18 @@ void MacroAssembler::JumpToExternalReference(const ExternalReference& builtin,
   Jump(stub.GetCode(), RelocInfo::CODE_TARGET);
 }
 
-void MacroAssembler::JumpToInstructionStream(const InstructionStream* stream) {
-  intptr_t bytes_address = reinterpret_cast<intptr_t>(stream->bytes());
-  mov(kOffHeapTrampolineRegister, Operand(bytes_address, RelocInfo::NONE));
+void MacroAssembler::JumpToInstructionStream(Address entry) {
+  mov(kOffHeapTrampolineRegister, Operand(entry, RelocInfo::OFF_HEAP_TARGET));
   Jump(kOffHeapTrampolineRegister);
+}
+
+void MacroAssembler::LoadWeakValue(Register out, Register in,
+                                   Label* target_if_cleared) {
+  cmpi(in, Operand(kClearedWeakHeapObject));
+  beq(target_if_cleared);
+
+  mov(r0, Operand(~kWeakHeapObjectMask));
+  and_(out, in, r0);
 }
 
 void MacroAssembler::IncrementCounter(StatsCounter* counter, int value,
@@ -1745,6 +1761,20 @@ void MacroAssembler::AssertFixedArray(Register object) {
     CompareObjectType(object, object, object, FIXED_ARRAY_TYPE);
     pop(object);
     Check(eq, AbortReason::kOperandIsNotAFixedArray);
+  }
+}
+
+void MacroAssembler::AssertConstructor(Register object) {
+  if (emit_debug_code()) {
+    STATIC_ASSERT(kSmiTag == 0);
+    TestIfSmi(object, r0);
+    Check(ne, AbortReason::kOperandIsASmiAndNotAConstructor, cr0);
+    push(object);
+    LoadP(object, FieldMemOperand(object, HeapObject::kMapOffset));
+    lbz(object, FieldMemOperand(object, Map::kBitFieldOffset));
+    andi(object, object, Operand(Map::IsConstructorBit::kMask));
+    pop(object);
+    Check(ne, AbortReason::kOperandIsNotAConstructor, cr0);
   }
 }
 
@@ -2393,11 +2423,12 @@ void MacroAssembler::AndSmiLiteral(Register dst, Register src, Smi* smi,
 // Load a "pointer" sized value from the memory location
 void TurboAssembler::LoadP(Register dst, const MemOperand& mem,
                            Register scratch) {
+  DCHECK_EQ(mem.rb(), no_reg);
   int offset = mem.offset();
 
   if (!is_int16(offset)) {
     /* cannot use d-form */
-    DCHECK(scratch != no_reg);
+    DCHECK_NE(scratch, no_reg);
     mov(scratch, Operand(offset));
     LoadPX(dst, MemOperand(mem.ra(), scratch));
   } else {
@@ -2805,8 +2836,8 @@ void TurboAssembler::SwapP(Register src, MemOperand dst, Register scratch) {
   if (dst.rb() != r0) DCHECK(!AreAliased(src, dst.rb(), scratch));
   DCHECK(!AreAliased(src, scratch));
   mr(scratch, src);
-  LoadP(src, dst);
-  StoreP(scratch, dst);
+  LoadP(src, dst, r0);
+  StoreP(scratch, dst, r0);
 }
 
 void TurboAssembler::SwapP(MemOperand src, MemOperand dst, Register scratch_0,
@@ -2816,10 +2847,25 @@ void TurboAssembler::SwapP(MemOperand src, MemOperand dst, Register scratch_0,
   if (dst.ra() != r0) DCHECK(!AreAliased(dst.ra(), scratch_0, scratch_1));
   if (dst.rb() != r0) DCHECK(!AreAliased(dst.rb(), scratch_0, scratch_1));
   DCHECK(!AreAliased(scratch_0, scratch_1));
-  LoadP(scratch_0, src);
-  LoadP(scratch_1, dst);
-  StoreP(scratch_0, dst);
-  StoreP(scratch_1, src);
+  if (is_int16(src.offset()) || is_int16(dst.offset())) {
+    if (!is_int16(src.offset())) {
+      // swap operand
+      MemOperand temp = src;
+      src = dst;
+      dst = temp;
+    }
+    LoadP(scratch_1, dst, scratch_0);
+    LoadP(scratch_0, src);
+    StoreP(scratch_1, src);
+    StoreP(scratch_0, dst, scratch_1);
+  } else {
+    LoadP(scratch_1, dst, scratch_0);
+    push(scratch_1);
+    LoadP(scratch_0, src, scratch_1);
+    StoreP(scratch_0, dst, scratch_1);
+    pop(scratch_1);
+    StoreP(scratch_1, src, scratch_0);
+  }
 }
 
 void TurboAssembler::SwapFloat32(DoubleRegister src, DoubleRegister dst,
@@ -2835,18 +2881,18 @@ void TurboAssembler::SwapFloat32(DoubleRegister src, MemOperand dst,
                                  DoubleRegister scratch) {
   DCHECK(!AreAliased(src, scratch));
   fmr(scratch, src);
-  LoadSingle(src, dst);
-  StoreSingle(scratch, dst);
+  LoadSingle(src, dst, r0);
+  StoreSingle(scratch, dst, r0);
 }
 
 void TurboAssembler::SwapFloat32(MemOperand src, MemOperand dst,
                                  DoubleRegister scratch_0,
                                  DoubleRegister scratch_1) {
   DCHECK(!AreAliased(scratch_0, scratch_1));
-  LoadSingle(scratch_0, src);
-  LoadSingle(scratch_1, dst);
-  StoreSingle(scratch_0, dst);
-  StoreSingle(scratch_1, src);
+  LoadSingle(scratch_0, src, r0);
+  LoadSingle(scratch_1, dst, r0);
+  StoreSingle(scratch_0, dst, r0);
+  StoreSingle(scratch_1, src, r0);
 }
 
 void TurboAssembler::SwapDouble(DoubleRegister src, DoubleRegister dst,
@@ -2862,18 +2908,18 @@ void TurboAssembler::SwapDouble(DoubleRegister src, MemOperand dst,
                                 DoubleRegister scratch) {
   DCHECK(!AreAliased(src, scratch));
   fmr(scratch, src);
-  LoadDouble(src, dst);
-  StoreDouble(scratch, dst);
+  LoadDouble(src, dst, r0);
+  StoreDouble(scratch, dst, r0);
 }
 
 void TurboAssembler::SwapDouble(MemOperand src, MemOperand dst,
                                 DoubleRegister scratch_0,
                                 DoubleRegister scratch_1) {
   DCHECK(!AreAliased(scratch_0, scratch_1));
-  LoadDouble(scratch_0, src);
-  LoadDouble(scratch_1, dst);
-  StoreDouble(scratch_0, dst);
-  StoreDouble(scratch_1, src);
+  LoadDouble(scratch_0, src, r0);
+  LoadDouble(scratch_1, dst, r0);
+  StoreDouble(scratch_0, dst, r0);
+  StoreDouble(scratch_1, src, r0);
 }
 
 #ifdef DEBUG

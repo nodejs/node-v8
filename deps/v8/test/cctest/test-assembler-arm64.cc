@@ -41,7 +41,7 @@
 #include "src/arm64/utils-arm64.h"
 #include "src/base/platform/platform.h"
 #include "src/base/utils/random-number-generator.h"
-#include "src/factory.h"
+#include "src/heap/factory.h"
 #include "src/macro-assembler.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/test-utils-arm64.h"
@@ -182,12 +182,12 @@ static void InitializeVM() {
                       v8::internal::CodeObjectRequired::kYes);   \
   RegisterDump core;
 
-#define RESET()                                                                \
-  __ Reset();                                                                  \
-  /* Reset the machine state (like simulator.ResetState()). */                 \
-  __ Msr(NZCV, xzr);                                                           \
+#define RESET()                                                \
+  MakeAssemblerBufferWritable(buf, allocated);                 \
+  __ Reset();                                                  \
+  /* Reset the machine state (like simulator.ResetState()). */ \
+  __ Msr(NZCV, xzr);                                           \
   __ Msr(FPCR, xzr);
-
 
 #define START_AFTER_RESET()                                                    \
   __ PushCalleeSavedRegisters();
@@ -15073,6 +15073,7 @@ TEST(call_no_relocation) {
   SETUP();
 
   START();
+  Address buf_addr = reinterpret_cast<Address>(buf);
 
   Label function;
   Label test;
@@ -15088,9 +15089,9 @@ TEST(call_no_relocation) {
   __ Push(lr, xzr);
   {
     Assembler::BlockConstPoolScope scope(&masm);
-    call_start = buf + __ pc_offset();
-    __ Call(buf + function.pos(), RelocInfo::NONE);
-    return_address = buf + __ pc_offset();
+    call_start = buf_addr + __ pc_offset();
+    __ Call(buf_addr + function.pos(), RelocInfo::NONE);
+    return_address = buf_addr + __ pc_offset();
   }
   __ Pop(xzr, lr);
   END();

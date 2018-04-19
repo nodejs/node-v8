@@ -139,7 +139,7 @@ void TurboAssembler::Jump(intptr_t target, RelocInfo::Mode rmode,
 void TurboAssembler::Jump(Address target, RelocInfo::Mode rmode, Condition cond,
                           CRegister cr) {
   DCHECK(!RelocInfo::IsCodeTarget(rmode));
-  Jump(reinterpret_cast<intptr_t>(target), rmode, cond, cr);
+  Jump(static_cast<intptr_t>(target), rmode, cond, cr);
 }
 
 void TurboAssembler::Jump(Handle<Code> code, RelocInfo::Mode rmode,
@@ -161,7 +161,7 @@ void TurboAssembler::Call(Register target) {
 }
 
 void MacroAssembler::CallJSEntry(Register target) {
-  DCHECK(target == ip);
+  DCHECK(target == r4);
   Call(target);
 }
 
@@ -202,7 +202,7 @@ void TurboAssembler::Call(Address target, RelocInfo::Mode rmode,
   bind(&start);
 #endif
 
-  mov(ip, Operand(reinterpret_cast<intptr_t>(target), rmode));
+  mov(ip, Operand(target, rmode));
   basr(r14, ip);
 
   DCHECK_EQ(expected_size, SizeOfCodeGeneratedSince(&start));
@@ -1216,30 +1216,23 @@ void MacroAssembler::InvokePrologue(const ParameterCount& expected,
 void MacroAssembler::CheckDebugHook(Register fun, Register new_target,
                                     const ParameterCount& expected,
                                     const ParameterCount& actual) {
-  Label skip_hook, call_hook;
-
-  ExternalReference debug_is_active =
-      ExternalReference::debug_is_active_address(isolate());
-  mov(r6, Operand(debug_is_active));
-  tm(MemOperand(r6), Operand::Zero());
-  bne(&skip_hook);
+  Label skip_hook;
 
   ExternalReference debug_hook_avtive =
       ExternalReference::debug_hook_on_function_call_address(isolate());
   mov(r6, Operand(debug_hook_avtive));
   tm(MemOperand(r6), Operand::Zero());
-  beq(&call_hook);
+  bne(&skip_hook);
 
-  LoadP(r6, FieldMemOperand(fun, JSFunction::kSharedFunctionInfoOffset));
-  LoadP(r6, FieldMemOperand(r6, SharedFunctionInfo::kDebugInfoOffset));
-  JumpIfSmi(r6, &skip_hook);
-  LoadP(r6, FieldMemOperand(r6, DebugInfo::kFlagsOffset));
-  SmiUntag(r0, r6);
-  tmll(r0, Operand(DebugInfo::kBreakAtEntry));
-  beq(&skip_hook);
-
-  bind(&call_hook);
   {
+    // Load receiver to pass it later to DebugOnFunctionCall hook.
+    if (actual.is_reg()) {
+      LoadRR(r6, actual.reg());
+    } else {
+      mov(r6, Operand(actual.immediate()));
+    }
+    ShiftLeftP(r6, r6, Operand(kPointerSizeLog2));
+    LoadP(r6, MemOperand(sp, r6));
     FrameScope frame(this,
                      has_frame() ? StackFrame::NONE : StackFrame::INTERNAL);
     if (expected.is_reg()) {
@@ -1253,7 +1246,7 @@ void MacroAssembler::CheckDebugHook(Register fun, Register new_target,
     if (new_target.is_valid()) {
       Push(new_target);
     }
-    Push(fun, fun);
+    Push(fun, fun, r6);
     CallRuntime(Runtime::kDebugOnFunctionCall);
     Pop(fun);
     if (new_target.is_valid()) {
@@ -1452,8 +1445,9 @@ void MacroAssembler::TryDoubleToInt32Exact(Register result,
   bind(&done);
 }
 
-void TurboAssembler::TruncateDoubleToIDelayed(Zone* zone, Register result,
-                                              DoubleRegister double_input) {
+void TurboAssembler::TruncateDoubleToI(Isolate* isolate, Zone* zone,
+                                       Register result,
+                                       DoubleRegister double_input) {
   Label done;
 
   TryInlineTruncateDoubleToI(result, double_input, &done);
@@ -1464,8 +1458,9 @@ void TurboAssembler::TruncateDoubleToIDelayed(Zone* zone, Register result,
   lay(sp, MemOperand(sp, -kDoubleSize));
   StoreDouble(double_input, MemOperand(sp));
 
-  CallStubDelayed(new (zone) DoubleToIStub(nullptr, result));
+  Call(BUILTIN_CODE(isolate, DoubleToI), RelocInfo::CODE_TARGET);
 
+  LoadP(result, MemOperand(sp, 0));
   la(sp, MemOperand(sp, kDoubleSize));
   pop(r14);
 
@@ -1538,10 +1533,17 @@ void MacroAssembler::JumpToExternalReference(const ExternalReference& builtin,
   Jump(stub.GetCode(), RelocInfo::CODE_TARGET);
 }
 
-void MacroAssembler::JumpToInstructionStream(const InstructionStream* stream) {
-  intptr_t bytes_address = reinterpret_cast<intptr_t>(stream->bytes());
-  mov(kOffHeapTrampolineRegister, Operand(bytes_address));
+void MacroAssembler::JumpToInstructionStream(Address entry) {
+  mov(kOffHeapTrampolineRegister, Operand(entry, RelocInfo::OFF_HEAP_TARGET));
   Jump(kOffHeapTrampolineRegister);
+}
+
+void MacroAssembler::LoadWeakValue(Register out, Register in,
+                                   Label* target_if_cleared) {
+  CmpP(in, Operand(kClearedWeakHeapObject));
+  beq(target_if_cleared);
+
+  AndP(out, in, Operand(~kWeakHeapObjectMask));
 }
 
 void MacroAssembler::IncrementCounter(StatsCounter* counter, int value,
@@ -1658,6 +1660,18 @@ void MacroAssembler::AssertFixedArray(Register object) {
     CompareObjectType(object, object, object, FIXED_ARRAY_TYPE);
     pop(object);
     Check(eq, AbortReason::kOperandIsNotAFixedArray);
+  }
+}
+
+void MacroAssembler::AssertConstructor(Register object, Register scratch) {
+  if (emit_debug_code()) {
+    STATIC_ASSERT(kSmiTag == 0);
+    TestIfSmi(object);
+    Check(ne, AbortReason::kOperandIsASmiAndNotAConstructor);
+    LoadP(scratch, FieldMemOperand(object, HeapObject::kMapOffset));
+    tm(FieldMemOperand(scratch, Map::kBitFieldOffset),
+       Operand(Map::IsConstructorBit::kMask));
+    Check(ne, AbortReason::kOperandIsNotAConstructor);
   }
 }
 
@@ -4286,6 +4300,10 @@ bool AreAliased(DoubleRegister reg1, DoubleRegister reg2, DoubleRegister reg3,
 
 void TurboAssembler::ResetSpeculationPoisonRegister() {
   mov(kSpeculationPoisonRegister, Operand(-1));
+}
+
+void TurboAssembler::ComputeCodeStartAddress(Register dst) {
+  larl(dst, Operand(-pc_offset() / 2));
 }
 
 }  // namespace internal

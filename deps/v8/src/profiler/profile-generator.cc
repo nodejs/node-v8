@@ -18,27 +18,23 @@
 namespace v8 {
 namespace internal {
 
-
-JITLineInfoTable::JITLineInfoTable() {}
-
-
-JITLineInfoTable::~JITLineInfoTable() {}
-
-
-void JITLineInfoTable::SetPosition(int pc_offset, int line) {
+void SourcePositionTable::SetPosition(int pc_offset, int line) {
   DCHECK_GE(pc_offset, 0);
   DCHECK_GT(line, 0);  // The 1-based number of the source line.
   if (GetSourceLineNumber(pc_offset) != line) {
-    pc_offset_map_.insert(std::make_pair(pc_offset, line));
+    auto result = pc_offset_map_.insert(std::make_pair(pc_offset, line));
+    // Check that a new element was inserted.
+    USE(result);
+    DCHECK(result.second);
   }
 }
 
+int SourcePositionTable::GetSourceLineNumber(int pc_offset) const {
+  if (pc_offset_map_.empty()) return v8::CpuProfileNode::kNoLineNumberInfo;
 
-int JITLineInfoTable::GetSourceLineNumber(int pc_offset) const {
-  PcOffsetMap::const_iterator it = pc_offset_map_.lower_bound(pc_offset);
-  if (it == pc_offset_map_.end()) {
-    if (pc_offset_map_.empty()) return v8::CpuProfileNode::kNoLineNumberInfo;
-    return (--pc_offset_map_.end())->second;
+  PcOffsetMap::const_iterator it = pc_offset_map_.upper_bound(pc_offset);
+  if (it != pc_offset_map_.begin()) {
+    return (--it)->second;
   }
   return it->second;
 }
@@ -121,9 +117,7 @@ void CodeEntry::SetBuiltinId(Builtins::Name id) {
 
 
 int CodeEntry::GetSourceLine(int pc_offset) const {
-  if (line_info_ && !line_info_->empty()) {
-    return line_info_->GetSourceLineNumber(pc_offset);
-  }
+  if (line_info_) return line_info_->GetSourceLineNumber(pc_offset);
   return v8::CpuProfileNode::kNoLineNumberInfo;
 }
 
@@ -152,7 +146,7 @@ void CodeEntry::FillFunctionInfo(SharedFunctionInfo* shared) {
   if (!shared->script()->IsScript()) return;
   Script* script = Script::cast(shared->script());
   set_script_id(script->id());
-  set_position(shared->start_position());
+  set_position(shared->StartPosition());
   set_bailout_reason(GetBailoutReason(shared->disable_optimization_reason()));
 }
 
@@ -520,7 +514,7 @@ void CodeMap::MoveCode(Address from, Address to) {
 
 void CodeMap::Print() {
   for (const auto& pair : code_map_) {
-    base::OS::Print("%p %5d %s\n", static_cast<void*>(pair.first),
+    base::OS::Print("%p %5d %s\n", reinterpret_cast<void*>(pair.first),
                     pair.second.size, pair.second.entry->name());
   }
 }
@@ -631,14 +625,15 @@ void ProfileGenerator::RecordTickSample(const TickSample& sample) {
       // Don't use PC when in external callback code, as it can point
       // inside callback's code, and we will erroneously report
       // that a callback calls itself.
-      entries.push_back(FindEntry(sample.external_callback_entry));
+      entries.push_back(
+          FindEntry(reinterpret_cast<Address>(sample.external_callback_entry)));
     } else {
-      CodeEntry* pc_entry = FindEntry(sample.pc);
+      CodeEntry* pc_entry = FindEntry(reinterpret_cast<Address>(sample.pc));
       // If there is no pc_entry we're likely in native code.
       // Find out, if top of stack was pointing inside a JS function
       // meaning that we have encountered a frameless invocation.
       if (!pc_entry && !sample.has_external_callback) {
-        pc_entry = FindEntry(sample.tos);
+        pc_entry = FindEntry(reinterpret_cast<Address>(sample.tos));
       }
       // If pc is in the function code before it set up stack frame or after the
       // frame was destroyed SafeStackFrameIterator incorrectly thinks that
@@ -714,10 +709,6 @@ void ProfileGenerator::RecordTickSample(const TickSample& sample) {
 
   profiles_->AddPathToCurrentProfiles(sample.timestamp, entries, src_line,
                                       sample.update_stats);
-}
-
-CodeEntry* ProfileGenerator::FindEntry(void* address) {
-  return code_map_.FindEntry(reinterpret_cast<Address>(address));
 }
 
 CodeEntry* ProfileGenerator::EntryForVMState(StateTag tag) {

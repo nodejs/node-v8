@@ -32,6 +32,7 @@ constexpr Register kJavaScriptCallCodeStartRegister = r5;
 constexpr Register kOffHeapTrampolineRegister = ip;
 constexpr Register kRuntimeCallFunctionRegister = r4;
 constexpr Register kRuntimeCallArgCountRegister = r3;
+constexpr Register kWasmInstanceRegister = r10;
 
 // ----------------------------------------------------------------------------
 // Static helper functions
@@ -216,6 +217,8 @@ class TurboAssembler : public Assembler {
                   Register scratch = no_reg);
   void LoadSingleU(DoubleRegister dst, const MemOperand& mem,
                    Register scratch = no_reg);
+  void LoadPC(Register dst);
+  void ComputeCodeStartAddress(Register dst);
 
   void StoreDouble(DoubleRegister src, const MemOperand& mem,
                    Register scratch = no_reg);
@@ -504,10 +507,18 @@ class TurboAssembler : public Assembler {
   void Move(Register dst, Register src, Condition cond = al);
   void Move(DoubleRegister dst, DoubleRegister src);
 
-  void SmiUntag(Register reg, RCBit rc = LeaveRC) { SmiUntag(reg, reg, rc); }
+  void SmiUntag(Register reg, RCBit rc = LeaveRC, int scale = 0) {
+    SmiUntag(reg, reg, rc, scale);
+  }
 
-  void SmiUntag(Register dst, Register src, RCBit rc = LeaveRC) {
-    ShiftRightArithImm(dst, src, kSmiShift, rc);
+  void SmiUntag(Register dst, Register src, RCBit rc = LeaveRC, int scale = 0) {
+    if (scale > kSmiShift) {
+      ShiftLeftImm(dst, src, Operand(scale - kSmiShift), rc);
+    } else if (scale < kSmiShift) {
+      ShiftRightArithImm(dst, src, kSmiShift - scale, rc);
+    } else {
+      // do nothing
+    }
   }
   // ---------------------------------------------------------------------------
   // Bit testing/extraction
@@ -634,13 +645,17 @@ class TurboAssembler : public Assembler {
   // Only public for the test code in test-code-stubs-arm.cc.
   void TryInlineTruncateDoubleToI(Register result, DoubleRegister input,
                                   Label* done);
-  void TruncateDoubleToIDelayed(Zone* zone, Register result,
-                                DoubleRegister double_input);
+  void TruncateDoubleToI(Isolate* isolate, Zone* zone, Register result,
+                         DoubleRegister double_input);
 
   // Call a code stub.
   void CallStubDelayed(CodeStub* stub);
 
   void LoadConstantPoolPointerRegister();
+
+  // Loads the constant pool pointer (kConstantPoolRegister).
+  void LoadConstantPoolPointerRegisterFromCodeTargetAddress(
+      Register code_target_address);
   void AbortConstantPoolBuilding() {
 #ifdef DEBUG
     // Avoid DCHECK(!is_linked()) failure in ~Label()
@@ -734,10 +749,6 @@ class MacroAssembler : public TurboAssembler {
   // RegList constant kSafepointSavedRegisters.
   void PushSafepointRegisters();
   void PopSafepointRegisters();
-
-  // Loads the constant pool pointer (kConstantPoolRegister).
-  void LoadConstantPoolPointerRegisterFromCodeTargetAddress(
-      Register code_target_address);
 
   // Flush the I-cache from asm code. You should use CpuFeatures::FlushICache
   // from C.
@@ -933,7 +944,11 @@ class MacroAssembler : public TurboAssembler {
                                bool builtin_exit_frame = false);
 
   // Generates a trampoline to jump to the off-heap instruction stream.
-  void JumpToInstructionStream(const InstructionStream* stream);
+  void JumpToInstructionStream(Address entry);
+
+  // ---------------------------------------------------------------------------
+  // In-place weak references.
+  void LoadWeakValue(Register out, Register in, Label* target_if_cleared);
 
   // ---------------------------------------------------------------------------
   // StatsCounter support
@@ -995,6 +1010,10 @@ class MacroAssembler : public TurboAssembler {
   // Abort execution if argument is not a FixedArray, enabled via --debug-code.
   void AssertFixedArray(Register object);
 
+  // Abort execution if argument is not a Constructor, enabled via --debug-code.
+  void AssertConstructor(Register object);
+
+  // Abort execution if argument is not a JSFunction, enabled via --debug-code.
   void AssertFunction(Register object);
 
   // Abort execution if argument is not a JSBoundFunction,

@@ -261,8 +261,8 @@ class Register : public RegisterBase<Register, kRegAfterLast> {
   explicit constexpr Register(int code) : RegisterBase(code) {}
 };
 
-static_assert(IS_TRIVIALLY_COPYABLE(Register) &&
-                  sizeof(Register) == sizeof(int),
+ASSERT_TRIVIALLY_COPYABLE(Register);
+static_assert(sizeof(Register) == sizeof(int),
               "Register can efficiently be passed by value");
 
 #define DEFINE_REGISTER(R) \
@@ -303,8 +303,8 @@ class DoubleRegister : public RegisterBase<DoubleRegister, kDoubleAfterLast> {
   explicit constexpr DoubleRegister(int code) : RegisterBase(code) {}
 };
 
-static_assert(IS_TRIVIALLY_COPYABLE(DoubleRegister) &&
-                  sizeof(DoubleRegister) == sizeof(int),
+ASSERT_TRIVIALLY_COPYABLE(DoubleRegister);
+static_assert(sizeof(DoubleRegister) == sizeof(int),
               "DoubleRegister can efficiently be passed by value");
 
 typedef DoubleRegister FloatRegister;
@@ -370,7 +370,7 @@ class Operand BASE_EMBEDDED {
   INLINE(static Operand Zero()) { return Operand(static_cast<intptr_t>(0)); }
   INLINE(explicit Operand(const ExternalReference& f)
          : rmode_(RelocInfo::EXTERNAL_REFERENCE)) {
-    value_.immediate = reinterpret_cast<intptr_t>(f.address());
+    value_.immediate = static_cast<intptr_t>(f.address());
   }
   explicit Operand(Handle<HeapObject> handle);
   INLINE(explicit Operand(Smi* value) : rmode_(RelocInfo::NONE)) {

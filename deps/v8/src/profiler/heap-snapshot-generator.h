@@ -99,7 +99,8 @@ class HeapEntry BASE_EMBEDDED {
     kSynthetic = v8::HeapGraphNode::kSynthetic,
     kConsString = v8::HeapGraphNode::kConsString,
     kSlicedString = v8::HeapGraphNode::kSlicedString,
-    kSymbol = v8::HeapGraphNode::kSymbol
+    kSymbol = v8::HeapGraphNode::kSymbol,
+    kBigInt = v8::HeapGraphNode::kBigInt
   };
   static const int kNoEntry;
 
@@ -264,6 +265,7 @@ class HeapObjectsMap {
   };
 
   SnapshotObjectId next_id_;
+  // TODO(jkummerow): Use a map that uses {Address} as the key type.
   base::HashMap entries_map_;
   std::vector<EntryInfo> entries_;
   std::vector<TimeInterval> time_intervals_;
@@ -355,7 +357,7 @@ class V8HeapExplorer : public HeapEntriesAllocator {
   typedef bool (V8HeapExplorer::*ExtractReferencesMethod)(int entry,
                                                           HeapObject* object);
 
-  void MarkVisitedField(HeapObject* obj, int offset);
+  void MarkVisitedField(int offset);
 
   HeapEntry* AddEntry(HeapObject* object);
   HeapEntry* AddEntry(HeapObject* object,
@@ -392,6 +394,10 @@ class V8HeapExplorer : public HeapEntriesAllocator {
   void ExtractJSArrayBufferReferences(int entry, JSArrayBuffer* buffer);
   void ExtractJSPromiseReferences(int entry, JSPromise* promise);
   void ExtractFixedArrayReferences(int entry, FixedArray* array);
+  void ExtractFeedbackVectorReferences(int entry,
+                                       FeedbackVector* feedback_vector);
+  template <typename T>
+  void ExtractWeakArrayReferences(int header_size, int entry, T* array);
   void ExtractPropertyReferences(JSObject* js_obj, int entry);
   void ExtractAccessorPairProperty(JSObject* js_obj, int entry, Name* key,
                                    Object* callback_obj, int field_offset = -1);
@@ -469,7 +475,7 @@ class V8HeapExplorer : public HeapEntriesAllocator {
   std::unordered_map<const FixedArray*, FixedArraySubInstanceType> array_types_;
   v8::HeapProfiler::ObjectNameResolver* global_object_name_resolver_;
 
-  std::vector<bool> marks_;
+  std::vector<bool> visited_fields_;
 
   friend class IndexedReferencesExtractor;
   friend class RootsReferencesExtractor;

@@ -74,12 +74,17 @@ LookupIterator LookupIterator::PropertyOrElement(Isolate* isolate,
   return LookupIterator(receiver, name, configuration);
 }
 
+// TODO(ishell): Consider removing this way of LookupIterator creation.
 // static
 LookupIterator LookupIterator::ForTransitionHandler(
     Isolate* isolate, Handle<Object> receiver, Handle<Name> name,
-    Handle<Object> value, MaybeHandle<Object> handler,
-    Handle<Map> transition_map) {
-  if (handler.is_null()) return LookupIterator(receiver, name);
+    Handle<Object> value, MaybeHandle<Map> maybe_transition_map) {
+  Handle<Map> transition_map;
+  if (!maybe_transition_map.ToHandle(&transition_map) ||
+      !transition_map->IsPrototypeValidityCellValid()) {
+    // This map is not a valid transition handler, so full lookup is required.
+    return LookupIterator(receiver, name);
+  }
 
   PropertyDetails details = PropertyDetails::Empty();
   bool has_property;
@@ -90,6 +95,13 @@ LookupIterator LookupIterator::ForTransitionHandler(
     details = transition_map->GetLastDescriptorDetails();
     has_property = true;
   }
+#ifdef DEBUG
+  if (name->IsPrivate()) {
+    DCHECK_EQ(DONT_ENUM, details.attributes());
+  } else {
+    DCHECK_EQ(NONE, details.attributes());
+  }
+#endif
   LookupIterator it(isolate, receiver, name, transition_map, details,
                     has_property);
 
@@ -286,6 +298,14 @@ void LookupIterator::InternalUpdateProtector() {
         isolate_->InvalidateSpeciesProtector();
       }
     }
+  } else if (*name_ == heap()->next_string()) {
+    if (!isolate_->IsArrayIteratorLookupChainIntact()) return;
+    // Setting the next property of %ArrayIteratorPrototype% also needs to
+    // invalidate the array iterator protector.
+    if (isolate_->IsInAnyContext(
+            *holder_, Context::INITIAL_ARRAY_ITERATOR_PROTOTYPE_INDEX)) {
+      isolate_->InvalidateArrayIteratorProtector();
+    }
   } else if (*name_ == heap()->species_symbol()) {
     if (!isolate_->IsSpeciesLookupChainIntact()) return;
     // Setting the Symbol.species property of any Array, Promise or TypedArray
@@ -305,11 +325,25 @@ void LookupIterator::InternalUpdateProtector() {
     if (holder_->IsJSArray()) {
       isolate_->InvalidateArrayIteratorProtector();
     }
+  } else if (*name_ == heap()->resolve_string()) {
+    if (!isolate_->IsPromiseResolveLookupChainIntact()) return;
+    // Setting the "resolve" property on any %Promise% intrinsic object
+    // invalidates the Promise.resolve protector.
+    if (isolate_->IsInAnyContext(*holder_, Context::PROMISE_FUNCTION_INDEX)) {
+      isolate_->InvalidatePromiseResolveProtector();
+    }
   } else if (*name_ == heap()->then_string()) {
     if (!isolate_->IsPromiseThenLookupChainIntact()) return;
     // Setting the "then" property on any JSPromise instance or on the
     // initial %PromisePrototype% invalidates the Promise#then protector.
+    // Also setting the "then" property on the initial %ObjectPrototype%
+    // invalidates the Promise#then protector, since we use this protector
+    // to guard the fast-path in AsyncGeneratorResolve, where we can skip
+    // the ResolvePromise step and go directly to FulfillPromise if we
+    // know that the Object.prototype doesn't contain a "then" method.
     if (holder_->IsJSPromise() ||
+        isolate_->IsInAnyContext(*holder_,
+                                 Context::INITIAL_OBJECT_PROTOTYPE_INDEX) ||
         isolate_->IsInAnyContext(*holder_, Context::PROMISE_PROTOTYPE_INDEX)) {
       isolate_->InvalidatePromiseThenProtector();
     }
@@ -421,6 +455,14 @@ void LookupIterator::ReconfigureDataProperty(Handle<Object> value,
 
   if (!IsElement() && !holder_obj->HasFastProperties()) {
     PropertyDetails details(kData, attributes, PropertyCellType::kMutable);
+    if (holder_obj->map()->is_prototype_map() &&
+        (property_details_.attributes() & READ_ONLY) == 0 &&
+        (attributes & READ_ONLY) != 0) {
+      // Invalidate prototype validity cell when a property is reconfigured
+      // from writable to read-only as this may invalidate transitioning store
+      // IC handlers.
+      JSObject::InvalidatePrototypeChains(holder->map());
+    }
     if (holder_obj->IsJSGlobalObject()) {
       Handle<GlobalDictionary> dictionary(
           JSGlobalObject::cast(*holder_obj)->global_dictionary());
@@ -453,14 +495,12 @@ void LookupIterator::ReconfigureDataProperty(Handle<Object> value,
 
 // Can only be called when the receiver is a JSObject. JSProxy has to be handled
 // via a trap. Adding properties to primitive values is not observable.
-// Returns true if a new transition has been created, or false if an existing
-// transition was followed.
-bool LookupIterator::PrepareTransitionToDataProperty(
+void LookupIterator::PrepareTransitionToDataProperty(
     Handle<JSReceiver> receiver, Handle<Object> value,
     PropertyAttributes attributes, Object::StoreFromKeyed store_mode) {
   DCHECK_IMPLIES(receiver->IsJSProxy(), name()->IsPrivate());
   DCHECK(receiver.is_identical_to(GetStoreTarget<JSReceiver>()));
-  if (state_ == TRANSITION) return false;
+  if (state_ == TRANSITION) return;
 
   if (!IsElement() && name()->IsPrivate()) {
     attributes = static_cast<PropertyAttributes>(attributes | DONT_ENUM);
@@ -506,13 +546,11 @@ bool LookupIterator::PrepareTransitionToDataProperty(
           PropertyDetails(kData, attributes, PropertyCellType::kNoCell);
       transition_ = map;
     }
-    return false;
+    return;
   }
 
-  bool created_new_map;
   Handle<Map> transition = Map::TransitionToDataProperty(
-      map, name_, value, attributes, kDefaultFieldConstness, store_mode,
-      &created_new_map);
+      map, name_, value, attributes, kDefaultFieldConstness, store_mode);
   state_ = TRANSITION;
   transition_ = transition;
 
@@ -524,7 +562,6 @@ bool LookupIterator::PrepareTransitionToDataProperty(
     property_details_ = transition->GetLastDescriptorDetails();
     has_property_ = true;
   }
-  return created_new_map;
 }
 
 void LookupIterator::ApplyTransitionToDataProperty(
@@ -540,6 +577,15 @@ void LookupIterator::ApplyTransitionToDataProperty(
   }
   Handle<Map> transition = transition_map();
   bool simple_transition = transition->GetBackPointer() == receiver->map();
+
+  if (configuration_ == DEFAULT && !transition->is_dictionary_map() &&
+      !transition->IsPrototypeValidityCellValid()) {
+    // Only LookupIterator instances with DEFAULT (full prototype chain)
+    // configuration can produce valid transition handler maps.
+    Handle<Object> validity_cell =
+        Map::GetOrCreatePrototypeChainValidityCell(transition, isolate());
+    transition->set_prototype_validity_cell(*validity_cell);
+  }
 
   if (!receiver->IsJSProxy()) {
     JSObject::MigrateToMap(Handle<JSObject>::cast(receiver), transition);

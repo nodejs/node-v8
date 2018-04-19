@@ -1625,6 +1625,21 @@ void MacroAssembler::AssertFixedArray(Register object) {
   }
 }
 
+void MacroAssembler::AssertConstructor(Register object) {
+  if (emit_debug_code()) {
+    AssertNotSmi(object, AbortReason::kOperandIsASmiAndNotAConstructor);
+
+    UseScratchRegisterScope temps(this);
+    Register temp = temps.AcquireX();
+
+    Ldr(temp, FieldMemOperand(object, HeapObject::kMapOffset));
+    Ldrb(temp, FieldMemOperand(temp, Map::kBitFieldOffset));
+    Tst(temp, Operand(Map::IsConstructorBit::kMask));
+
+    Check(ne, AbortReason::kOperandIsNotAConstructor);
+  }
+}
+
 void MacroAssembler::AssertFunction(Register object) {
   if (emit_debug_code()) {
     AssertNotSmi(object, AbortReason::kOperandIsASmiAndNotAFunction);
@@ -1759,9 +1774,8 @@ void MacroAssembler::JumpToExternalReference(const ExternalReference& builtin,
   Jump(stub.GetCode(), RelocInfo::CODE_TARGET);
 }
 
-void MacroAssembler::JumpToInstructionStream(const InstructionStream* stream) {
-  uint64_t bytes_address = reinterpret_cast<uint64_t>(stream->bytes());
-  Mov(kOffHeapTrampolineRegister, bytes_address);
+void MacroAssembler::JumpToInstructionStream(Address entry) {
+  Mov(kOffHeapTrampolineRegister, Operand(entry, RelocInfo::OFF_HEAP_TARGET));
   Br(kOffHeapTrampolineRegister);
 }
 
@@ -1854,13 +1868,13 @@ void TurboAssembler::Jump(intptr_t target, RelocInfo::Mode rmode,
 void TurboAssembler::Jump(Address target, RelocInfo::Mode rmode,
                           Condition cond) {
   DCHECK(!RelocInfo::IsCodeTarget(rmode));
-  Jump(reinterpret_cast<intptr_t>(target), rmode, cond);
+  Jump(static_cast<intptr_t>(target), rmode, cond);
 }
 
 void TurboAssembler::Jump(Handle<Code> code, RelocInfo::Mode rmode,
                           Condition cond) {
   DCHECK(RelocInfo::IsCodeTarget(rmode));
-  Jump(reinterpret_cast<intptr_t>(code.address()), rmode, cond);
+  Jump(static_cast<intptr_t>(code.address()), rmode, cond);
 }
 
 void TurboAssembler::Call(Register target) {
@@ -1905,14 +1919,14 @@ void TurboAssembler::Call(Address target, RelocInfo::Mode rmode) {
 
   if (RelocInfo::IsNone(rmode)) {
     // Addresses are 48 bits so we never need to load the upper 16 bits.
-    uint64_t imm = reinterpret_cast<uint64_t>(target);
+    uint64_t imm = static_cast<uint64_t>(target);
     // If we don't use ARM tagged addresses, the 16 higher bits must be 0.
     DCHECK_EQ((imm >> 48) & 0xFFFF, 0);
     movz(temp, (imm >> 0) & 0xFFFF, 0);
     movk(temp, (imm >> 16) & 0xFFFF, 16);
     movk(temp, (imm >> 32) & 0xFFFF, 32);
   } else {
-    Ldr(temp, Immediate(reinterpret_cast<intptr_t>(target), rmode));
+    Ldr(temp, Immediate(static_cast<intptr_t>(target), rmode));
   }
   Blr(temp);
 #ifdef DEBUG
@@ -1958,7 +1972,7 @@ void TurboAssembler::CallForDeoptimization(Address target,
   // Deoptimisation table entries require the call address to be in x16, in
   // order to compute the entry id.
   DCHECK(temp.Is(x16));
-  Ldr(temp, Immediate(reinterpret_cast<intptr_t>(target), rmode));
+  Ldr(temp, Immediate(static_cast<intptr_t>(target), rmode));
   Blr(temp);
 
 #ifdef DEBUG
@@ -2144,29 +2158,20 @@ void MacroAssembler::InvokePrologue(const ParameterCount& expected,
 void MacroAssembler::CheckDebugHook(Register fun, Register new_target,
                                     const ParameterCount& expected,
                                     const ParameterCount& actual) {
-  Label skip_hook, call_hook;
-
-  ExternalReference debug_is_active =
-      ExternalReference::debug_is_active_address(isolate());
-  Mov(x4, Operand(debug_is_active));
-  Ldrsb(x4, MemOperand(x4));
-  Cbz(x4, &skip_hook);
+  Label skip_hook;
 
   ExternalReference debug_hook_active =
       ExternalReference::debug_hook_on_function_call_address(isolate());
   Mov(x4, Operand(debug_hook_active));
   Ldrsb(x4, MemOperand(x4));
-  Cbnz(x4, &call_hook);
+  Cbz(x4, &skip_hook);
 
-  Ldr(x4, FieldMemOperand(fun, JSFunction::kSharedFunctionInfoOffset));
-  Ldr(x4, FieldMemOperand(x4, SharedFunctionInfo::kDebugInfoOffset));
-  JumpIfSmi(x4, &skip_hook);
-  Ldr(x4, FieldMemOperand(x4, DebugInfo::kFlagsOffset));
-  Tst(x4, Operand(Smi::FromInt(DebugInfo::kBreakAtEntry)));
-  B(eq, &skip_hook);
-
-  bind(&call_hook);
   {
+    // Load receiver to pass it later to DebugOnFunctionCall hook.
+    Operand actual_op = actual.is_immediate() ? Operand(actual.immediate())
+                                              : Operand(actual.reg());
+    Mov(x4, actual_op);
+    Ldr(x4, MemOperand(sp, x4, LSL, kPointerSizeLog2));
     FrameScope frame(this,
                      has_frame() ? StackFrame::NONE : StackFrame::INTERNAL);
 
@@ -2180,8 +2185,7 @@ void MacroAssembler::CheckDebugHook(Register fun, Register new_target,
     SmiTag(expected_reg);
     SmiTag(actual_reg);
     Push(expected_reg, actual_reg, new_target, fun);
-
-    PushArgument(fun);
+    Push(fun, x4);
     CallRuntime(Runtime::kDebugOnFunctionCall);
 
     // Restore values from stack.
@@ -2303,8 +2307,9 @@ void TurboAssembler::TryConvertDoubleToInt64(Register result,
   B(vc, done);
 }
 
-void TurboAssembler::TruncateDoubleToIDelayed(Zone* zone, Register result,
-                                              DoubleRegister double_input) {
+void TurboAssembler::TruncateDoubleToI(Isolate* isolate, Zone* zone,
+                                       Register result,
+                                       DoubleRegister double_input) {
   Label done;
 
   // Try to convert the double to an int64. If successful, the bottom 32 bits
@@ -2314,9 +2319,9 @@ void TurboAssembler::TruncateDoubleToIDelayed(Zone* zone, Register result,
   // If we fell through then inline version didn't succeed - call stub instead.
   Push(lr, double_input);
 
-  auto stub = new (zone) DoubleToIStub(nullptr, result);
-  // DoubleToIStub preserves any registers it needs to clobber.
-  CallStubDelayed(stub);
+  // DoubleToI preserves any registers it needs to clobber.
+  Call(BUILTIN_CODE(isolate, DoubleToI), RelocInfo::CODE_TARGET);
+  Ldr(result, MemOperand(sp, 0));
 
   DCHECK_EQ(xzr.SizeInBytes(), double_input.SizeInBytes());
   Pop(xzr, lr);  // xzr to drop the double input on the stack.
@@ -2503,6 +2508,12 @@ void MacroAssembler::LeaveExitFrame(bool restore_doubles,
   Pop(fp, lr);
 }
 
+void MacroAssembler::LoadWeakValue(Register out, Register in,
+                                   Label* target_if_cleared) {
+  CompareAndBranch(in, Operand(kClearedWeakHeapObject), eq, target_if_cleared);
+
+  and_(out, in, Operand(~kWeakHeapObjectMask));
+}
 
 void MacroAssembler::IncrementCounter(StatsCounter* counter, int value,
                                       Register scratch1, Register scratch2) {

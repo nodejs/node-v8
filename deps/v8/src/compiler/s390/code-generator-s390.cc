@@ -6,11 +6,11 @@
 
 #include "src/assembler-inl.h"
 #include "src/callable.h"
-#include "src/compilation-info.h"
 #include "src/compiler/code-generator-impl.h"
 #include "src/compiler/gap-resolver.h"
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/osr.h"
+#include "src/optimized-compilation-info.h"
 #include "src/s390/macro-assembler-s390.h"
 
 namespace v8 {
@@ -1041,8 +1041,7 @@ void CodeGenerator::AssembleTailCallAfterGap(Instruction* instr,
 // Check that {kJavaScriptCallCodeStartRegister} is correct.
 void CodeGenerator::AssembleCodeStartRegisterCheck() {
   Register scratch = r1;
-  int pc_offset = __ pc_offset();
-  __ larl(scratch, Operand(-pc_offset/2));
+  __ ComputeCodeStartAddress(scratch);
   __ CmpP(scratch, kJavaScriptCallCodeStartRegister);
   __ Assert(eq, AbortReason::kWrongFunctionCodeStart);
 }
@@ -1057,8 +1056,7 @@ void CodeGenerator::AssembleCodeStartRegisterCheck() {
 void CodeGenerator::BailoutIfDeoptimized() {
   if (FLAG_debug_code) {
     // Check that {kJavaScriptCallCodeStartRegister} is correct.
-    int pc_offset = __ pc_offset();
-    __ larl(ip, Operand(-pc_offset/2));
+    __ ComputeCodeStartAddress(ip);
     __ CmpP(ip, kJavaScriptCallCodeStartRegister);
     __ Assert(eq, AbortReason::kWrongFunctionCodeStart);
   }
@@ -1073,7 +1071,7 @@ void CodeGenerator::BailoutIfDeoptimized() {
   __ Jump(code, RelocInfo::CODE_TARGET, ne);
 }
 
-void CodeGenerator::GenerateSpeculationPoison() {
+void CodeGenerator::GenerateSpeculationPoisonFromCodeStartRegister() {
   Register scratch = r1;
 
   Label current_pc;
@@ -1084,18 +1082,10 @@ void CodeGenerator::GenerateSpeculationPoison() {
 
   // Calculate a mask which has all bits set in the normal case, but has all
   // bits cleared if we are speculatively executing the wrong PC.
-  //    difference = (current - expected) | (expected - current)
-  //    poison = ~(difference >> (kBitsPerPointer - 1))
-  __ LoadRR(kSpeculationPoisonRegister, scratch);
-  __ SubP(kSpeculationPoisonRegister, kSpeculationPoisonRegister,
-          kJavaScriptCallCodeStartRegister);
-  __ SubP(kJavaScriptCallCodeStartRegister, kJavaScriptCallCodeStartRegister,
-          scratch);
-  __ OrP(kSpeculationPoisonRegister, kSpeculationPoisonRegister,
-         kJavaScriptCallCodeStartRegister);
-  __ ShiftRightArithP(kSpeculationPoisonRegister, kSpeculationPoisonRegister,
-                      Operand(kBitsPerPointer - 1));
-  __ NotP(kSpeculationPoisonRegister, kSpeculationPoisonRegister);
+  __ LoadImmP(kSpeculationPoisonRegister, Operand::Zero());
+  __ LoadImmP(r0, Operand(-1));
+  __ CmpP(kJavaScriptCallCodeStartRegister, scratch);
+  __ LoadOnConditionP(eq, kSpeculationPoisonRegister, r0);
 }
 
 void CodeGenerator::AssembleRegisterArgumentPoisoning() {
@@ -1138,11 +1128,11 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
 
       if (instr->InputAt(0)->IsImmediate()) {
 #ifdef V8_TARGET_ARCH_S390X
-        Address wasm_code = reinterpret_cast<Address>(
-            i.ToConstant(instr->InputAt(0)).ToInt64());
+        Address wasm_code =
+            static_cast<Address>(i.ToConstant(instr->InputAt(0)).ToInt64());
 #else
-        Address wasm_code = reinterpret_cast<Address>(
-            i.ToConstant(instr->InputAt(0)).ToInt32());
+        Address wasm_code =
+            static_cast<Address>(i.ToConstant(instr->InputAt(0)).ToInt32());
 #endif
         __ Call(wasm_code, rmode);
       } else {
@@ -1182,8 +1172,8 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       }
 
       if (instr->InputAt(0)->IsImmediate()) {
-        Address wasm_code = reinterpret_cast<Address>(
-            i.ToConstant(instr->InputAt(0)).ToInt32());
+        Address wasm_code =
+            static_cast<Address>(i.ToConstant(instr->InputAt(0)).ToInt32());
         __ Jump(wasm_code, rmode);
       } else {
         __ Jump(i.InputRegister(0));
@@ -1333,10 +1323,12 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         __ LoadRR(i.OutputRegister(), fp);
       }
       break;
+    case kArchRootsPointer:
+      __ LoadRR(i.OutputRegister(), kRootRegister);
+      break;
     case kArchTruncateDoubleToI:
-      // TODO(mbrandy): move slow call to stub out of line.
-      __ TruncateDoubleToIDelayed(zone(), i.OutputRegister(),
-                                  i.InputDoubleRegister(0));
+      __ TruncateDoubleToI(isolate(), zone(), i.OutputRegister(),
+                           i.InputDoubleRegister(0));
       break;
     case kArchStoreWithWriteBarrier: {
       RecordWriteMode mode =
@@ -1374,6 +1366,10 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
               Operand(offset.offset()));
       break;
     }
+    case kArchPoisonOnSpeculationWord:
+      DCHECK_EQ(i.OutputRegister(), i.InputRegister(0));
+      __ AndP(i.InputRegister(0), kSpeculationPoisonRegister);
+      break;
     case kS390_Abs32:
       // TODO(john.yan): zero-ext
       __ lpr(i.OutputRegister(0), i.InputRegister(0));
@@ -1802,8 +1798,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       ASSEMBLE_IEEE754_UNOP(log10);
       break;
     case kIeee754Float64Pow: {
-      __ CallStubDelayed(new (zone())
-                             MathPowStub(nullptr, MathPowStub::DOUBLE));
+      __ Call(BUILTIN_CODE(isolate(), MathPowInternal), RelocInfo::CODE_TARGET);
       __ Move(d1, d3);
       break;
     }
@@ -2467,7 +2462,7 @@ void CodeGenerator::AssembleBranchPoisoning(FlagsCondition condition,
   }
 
   condition = NegateFlagsCondition(condition);
-  __ XorP(r0, r0);
+  __ LoadImmP(r0, Operand::Zero());
   __ LoadOnConditionP(FlagsConditionToCondition(condition, kArchNop),
                       kSpeculationPoisonRegister, r0);
 }
@@ -2659,6 +2654,9 @@ void CodeGenerator::AssembleConstructFrame() {
       // TODO(mbrandy): Detect cases where ip is the entrypoint (for
       // efficient intialization of the constant pool pointer register).
       __ StubPrologue(type);
+      if (call_descriptor->IsWasmFunctionCall()) {
+        __ Push(kWasmInstanceRegister);
+      }
     }
   }
 
@@ -2675,7 +2673,7 @@ void CodeGenerator::AssembleConstructFrame() {
     if (FLAG_code_comments) __ RecordComment("-- OSR entrypoint --");
     osr_pc_offset_ = __ pc_offset();
     shrink_slots -= osr_helper()->UnoptimizedFrameSlots();
-    InitializePoisonForLoadsIfNeeded();
+    ResetSpeculationPoison();
   }
 
   const RegList double_saves = call_descriptor->CalleeSavedFPRegisters();
@@ -2775,7 +2773,7 @@ void CodeGenerator::AssembleMove(InstructionOperand* source,
       switch (src.type()) {
         case Constant::kInt32:
 #if V8_TARGET_ARCH_S390X
-          if (RelocInfo::IsWasmSizeReference(src.rmode())) {
+          if (false) {
 #else
           if (RelocInfo::IsWasmReference(src.rmode())) {
 #endif
@@ -2789,7 +2787,6 @@ void CodeGenerator::AssembleMove(InstructionOperand* source,
           if (RelocInfo::IsWasmPtrReference(src.rmode())) {
             __ mov(dst, Operand(src.ToInt64(), src.rmode()));
           } else {
-            DCHECK(!RelocInfo::IsWasmSizeReference(src.rmode()));
             __ Load(dst, Operand(src.ToInt64()));
           }
 #else

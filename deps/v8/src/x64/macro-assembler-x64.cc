@@ -91,28 +91,12 @@ int64_t TurboAssembler::RootRegisterDelta(ExternalReference other) {
     delta = other.address() - roots_register_value;
   } else {
     // For x32, zero extend the address to 64-bit and calculate the delta.
-    uint64_t o = static_cast<uint32_t>(
-        reinterpret_cast<intptr_t>(other.address()));
-    uint64_t r = static_cast<uint32_t>(
-        reinterpret_cast<intptr_t>(roots_register_value));
+    uint64_t o = static_cast<uint32_t>(other.address());
+    uint64_t r = static_cast<uint32_t>(roots_register_value);
     delta = o - r;
   }
   return delta;
 }
-
-
-Operand MacroAssembler::ExternalOperand(ExternalReference target,
-                                        Register scratch) {
-  if (root_array_available_ && !serializer_enabled()) {
-    int64_t delta = RootRegisterDelta(target);
-    if (delta != kInvalidRootRegisterDelta && is_int32(delta)) {
-      return Operand(kRootRegister, static_cast<int32_t>(delta));
-    }
-  }
-  Move(scratch, target);
-  return Operand(scratch, 0);
-}
-
 
 void MacroAssembler::Load(Register destination, ExternalReference source) {
   if (root_array_available_ && !serializer_enabled()) {
@@ -162,6 +146,18 @@ void TurboAssembler::LoadAddress(Register destination,
   Move(destination, source);
 }
 
+Operand TurboAssembler::ExternalOperand(ExternalReference target,
+                                        Register scratch) {
+  if (root_array_available_ && !serializer_enabled()) {
+    int64_t delta = RootRegisterDelta(target);
+    if (delta != kInvalidRootRegisterDelta && is_int32(delta)) {
+      return Operand(kRootRegister, static_cast<int32_t>(delta));
+    }
+  }
+  Move(scratch, target);
+  return Operand(scratch, 0);
+}
+
 int TurboAssembler::LoadAddressSize(ExternalReference source) {
   if (root_array_available_ && !serializer_enabled()) {
     // This calculation depends on the internals of LoadAddress.
@@ -184,11 +180,10 @@ int TurboAssembler::LoadAddressSize(ExternalReference source) {
 
 
 void MacroAssembler::PushAddress(ExternalReference source) {
-  int64_t address = reinterpret_cast<int64_t>(source.address());
+  Address address = source.address();
   if (is_int32(address) && !serializer_enabled()) {
     if (emit_debug_code()) {
-      Move(kScratchRegister, reinterpret_cast<Address>(kZapValue),
-           RelocInfo::NONE);
+      Move(kScratchRegister, kZapValue, RelocInfo::NONE);
     }
     Push(Immediate(static_cast<int32_t>(address)));
     return;
@@ -256,8 +251,8 @@ void MacroAssembler::RecordWriteField(Register object, int offset,
   // Clobber clobbered input registers when running with the debug-code flag
   // turned on to provoke errors.
   if (emit_debug_code()) {
-    Move(value, reinterpret_cast<Address>(kZapValue), RelocInfo::NONE);
-    Move(dst, reinterpret_cast<Address>(kZapValue), RelocInfo::NONE);
+    Move(value, kZapValue, RelocInfo::NONE);
+    Move(dst, kZapValue, RelocInfo::NONE);
   }
 }
 
@@ -387,8 +382,8 @@ void MacroAssembler::RecordWrite(Register object, Register address,
   // Clobber clobbered registers when running with the debug-code flag
   // turned on to provoke errors.
   if (emit_debug_code()) {
-    Move(address, reinterpret_cast<Address>(kZapValue), RelocInfo::NONE);
-    Move(value, reinterpret_cast<Address>(kZapValue), RelocInfo::NONE);
+    Move(address, kZapValue, RelocInfo::NONE);
+    Move(value, kZapValue, RelocInfo::NONE);
   }
 }
 
@@ -835,6 +830,62 @@ void TurboAssembler::Cvttsd2siq(Register dst, Operand src) {
   }
 }
 
+namespace {
+template <typename OperandOrXMMRegister, bool is_double>
+void ConvertFloatToUint64(TurboAssembler* tasm, Register dst,
+                          OperandOrXMMRegister src, Label* fail) {
+  Label success;
+  // There does not exist a native float-to-uint instruction, so we have to use
+  // a float-to-int, and postprocess the result.
+  if (is_double) {
+    tasm->Cvttsd2siq(dst, src);
+  } else {
+    tasm->Cvttss2siq(dst, src);
+  }
+  // If the result of the conversion is positive, we are already done.
+  tasm->testq(dst, dst);
+  tasm->j(positive, &success);
+  // The result of the first conversion was negative, which means that the
+  // input value was not within the positive int64 range. We subtract 2^63
+  // and convert it again to see if it is within the uint64 range.
+  if (is_double) {
+    tasm->Move(kScratchDoubleReg, -9223372036854775808.0);
+    tasm->addsd(kScratchDoubleReg, src);
+    tasm->Cvttsd2siq(dst, kScratchDoubleReg);
+  } else {
+    tasm->Move(kScratchDoubleReg, -9223372036854775808.0f);
+    tasm->addss(kScratchDoubleReg, src);
+    tasm->Cvttss2siq(dst, kScratchDoubleReg);
+  }
+  tasm->testq(dst, dst);
+  // The only possible negative value here is 0x80000000000000000, which is
+  // used on x64 to indicate an integer overflow.
+  tasm->j(negative, fail ? fail : &success);
+  // The input value is within uint64 range and the second conversion worked
+  // successfully, but we still have to undo the subtraction we did
+  // earlier.
+  tasm->Set(kScratchRegister, 0x8000000000000000);
+  tasm->orq(dst, kScratchRegister);
+  tasm->bind(&success);
+}
+}  // namespace
+
+void TurboAssembler::Cvttsd2uiq(Register dst, Operand src, Label* success) {
+  ConvertFloatToUint64<Operand, true>(this, dst, src, success);
+}
+
+void TurboAssembler::Cvttsd2uiq(Register dst, XMMRegister src, Label* success) {
+  ConvertFloatToUint64<XMMRegister, true>(this, dst, src, success);
+}
+
+void TurboAssembler::Cvttss2uiq(Register dst, Operand src, Label* success) {
+  ConvertFloatToUint64<Operand, false>(this, dst, src, success);
+}
+
+void TurboAssembler::Cvttss2uiq(Register dst, XMMRegister src, Label* success) {
+  ConvertFloatToUint64<XMMRegister, false>(this, dst, src, success);
+}
+
 void MacroAssembler::Load(Register dst, Operand src, Representation r) {
   DCHECK(!r.IsDouble());
   if (r.IsInteger8()) {
@@ -916,7 +967,7 @@ void TurboAssembler::Move(Register dst, Smi* source) {
   if (value == 0) {
     xorl(dst, dst);
   } else {
-    Move(dst, source, RelocInfo::NONE);
+    Move(dst, reinterpret_cast<Address>(source), RelocInfo::NONE);
   }
 }
 
@@ -1133,15 +1184,19 @@ void TurboAssembler::MoveNumber(Register dst, double value) {
 
 void TurboAssembler::Move(XMMRegister dst, uint32_t src) {
   if (src == 0) {
-    Xorpd(dst, dst);
+    Xorps(dst, dst);
   } else {
+    unsigned nlz = base::bits::CountLeadingZeros(src);
+    unsigned ntz = base::bits::CountTrailingZeros(src);
     unsigned pop = base::bits::CountPopulation(src);
     DCHECK_NE(0u, pop);
-    if (pop == 32) {
+    if (pop + ntz + nlz == 32) {
       Pcmpeqd(dst, dst);
+      if (ntz) Pslld(dst, static_cast<byte>(ntz + nlz));
+      if (nlz) Psrld(dst, static_cast<byte>(nlz));
     } else {
       movl(kScratchRegister, Immediate(src));
-      Movq(dst, kScratchRegister);
+      Movd(dst, kScratchRegister);
     }
   }
 }
@@ -1154,14 +1209,10 @@ void TurboAssembler::Move(XMMRegister dst, uint64_t src) {
     unsigned ntz = base::bits::CountTrailingZeros(src);
     unsigned pop = base::bits::CountPopulation(src);
     DCHECK_NE(0u, pop);
-    if (pop == 64) {
+    if (pop + ntz + nlz == 64) {
       Pcmpeqd(dst, dst);
-    } else if (pop + ntz == 64) {
-      Pcmpeqd(dst, dst);
-      Psllq(dst, static_cast<byte>(ntz));
-    } else if (pop + nlz == 64) {
-      Pcmpeqd(dst, dst);
-      Psrlq(dst, static_cast<byte>(nlz));
+      if (ntz) Psllq(dst, static_cast<byte>(ntz + nlz));
+      if (nlz) Psrlq(dst, static_cast<byte>(nlz));
     } else {
       uint32_t lower = static_cast<uint32_t>(src);
       uint32_t upper = static_cast<uint32_t>(src >> 32);
@@ -1178,23 +1229,23 @@ void TurboAssembler::Move(XMMRegister dst, uint64_t src) {
 // ----------------------------------------------------------------------------
 
 void MacroAssembler::Absps(XMMRegister dst) {
-  Andps(dst,
-        ExternalOperand(ExternalReference::address_of_float_abs_constant()));
+  Andps(dst, ExternalOperand(
+                 ExternalReference::address_of_float_abs_constant(isolate())));
 }
 
 void MacroAssembler::Negps(XMMRegister dst) {
-  Xorps(dst,
-        ExternalOperand(ExternalReference::address_of_float_neg_constant()));
+  Xorps(dst, ExternalOperand(
+                 ExternalReference::address_of_float_neg_constant(isolate())));
 }
 
 void MacroAssembler::Abspd(XMMRegister dst) {
-  Andps(dst,
-        ExternalOperand(ExternalReference::address_of_double_abs_constant()));
+  Andps(dst, ExternalOperand(
+                 ExternalReference::address_of_double_abs_constant(isolate())));
 }
 
 void MacroAssembler::Negpd(XMMRegister dst) {
-  Xorps(dst,
-        ExternalOperand(ExternalReference::address_of_double_neg_constant()));
+  Xorps(dst, ExternalOperand(
+                 ExternalReference::address_of_double_neg_constant(isolate())));
 }
 
 void MacroAssembler::Cmp(Register dst, Handle<Object> source) {
@@ -1224,7 +1275,7 @@ void TurboAssembler::Push(Handle<HeapObject> source) {
 
 void TurboAssembler::Move(Register result, Handle<HeapObject> object,
                           RelocInfo::Mode rmode) {
-  movp(result, reinterpret_cast<void*>(object.address()), rmode);
+  movp(result, object.address(), rmode);
 }
 
 void TurboAssembler::Move(Operand dst, Handle<HeapObject> object,
@@ -1366,9 +1417,8 @@ void MacroAssembler::Jump(Handle<Code> code_object, RelocInfo::Mode rmode) {
   jmp(code_object, rmode);
 }
 
-void MacroAssembler::JumpToInstructionStream(const InstructionStream* stream) {
-  Address bytes_address = reinterpret_cast<Address>(stream->bytes());
-  Move(kOffHeapTrampolineRegister, bytes_address, RelocInfo::NONE);
+void MacroAssembler::JumpToInstructionStream(Address entry) {
+  Move(kOffHeapTrampolineRegister, entry, RelocInfo::OFF_HEAP_TARGET);
   jmp(kOffHeapTrampolineRegister);
 }
 
@@ -1768,10 +1818,6 @@ void MacroAssembler::CmpInstanceType(Register map, InstanceType type) {
   cmpw(FieldOperand(map, Map::kInstanceTypeOffset), Immediate(type));
 }
 
-void TurboAssembler::SlowTruncateToIDelayed(Zone* zone, Register result_reg) {
-  CallStubDelayed(new (zone) DoubleToIStub(nullptr, result_reg));
-}
-
 void MacroAssembler::DoubleToI(Register result_reg, XMMRegister input_reg,
                                XMMRegister scratch, Label* lost_precision,
                                Label* is_nan, Label::Distance dst) {
@@ -1825,6 +1871,18 @@ void TurboAssembler::AssertZeroExtended(Register int32_register) {
   }
 }
 
+void MacroAssembler::AssertConstructor(Register object) {
+  if (emit_debug_code()) {
+    testb(object, Immediate(kSmiTagMask));
+    Check(not_equal, AbortReason::kOperandIsASmiAndNotAConstructor);
+    Push(object);
+    movq(object, FieldOperand(object, HeapObject::kMapOffset));
+    testb(FieldOperand(object, Map::kBitFieldOffset),
+          Immediate(Map::IsConstructorBit::kMask));
+    Pop(object);
+    Check(not_zero, AbortReason::kOperandIsNotAConstructor);
+  }
+}
 
 void MacroAssembler::AssertFunction(Register object) {
   if (emit_debug_code()) {
@@ -1883,6 +1941,13 @@ void MacroAssembler::AssertUndefinedOrAllocationSite(Register object) {
     Assert(equal, AbortReason::kExpectedUndefinedOrCell);
     bind(&done_checking);
   }
+}
+
+void MacroAssembler::LoadWeakValue(Register in_out, Label* target_if_cleared) {
+  cmpp(in_out, Immediate(kClearedWeakHeapObject));
+  j(equal, target_if_cleared);
+
+  andp(in_out, Immediate(~kWeakHeapObjectMask));
 }
 
 void MacroAssembler::IncrementCounter(StatsCounter* counter, int value) {
@@ -2109,31 +2174,13 @@ void MacroAssembler::InvokePrologue(const ParameterCount& expected,
 void MacroAssembler::CheckDebugHook(Register fun, Register new_target,
                                     const ParameterCount& expected,
                                     const ParameterCount& actual) {
-  Label skip_hook, call_hook;
-  ExternalReference debug_is_active =
-      ExternalReference::debug_is_active_address(isolate());
-  Operand debug_is_active_operand = ExternalOperand(debug_is_active);
-  cmpb(debug_is_active_operand, Immediate(0));
-  j(equal, &skip_hook);
-
+  Label skip_hook;
   ExternalReference debug_hook_active =
       ExternalReference::debug_hook_on_function_call_address(isolate());
   Operand debug_hook_active_operand = ExternalOperand(debug_hook_active);
   cmpb(debug_hook_active_operand, Immediate(0));
-  j(not_equal, &call_hook);
+  j(equal, &skip_hook);
 
-  movp(kScratchRegister,
-       FieldOperand(fun, JSFunction::kSharedFunctionInfoOffset));
-  movp(kScratchRegister,
-       FieldOperand(kScratchRegister, SharedFunctionInfo::kDebugInfoOffset));
-  JumpIfSmi(kScratchRegister, &skip_hook);
-  movp(kScratchRegister,
-       FieldOperand(kScratchRegister, DebugInfo::kFlagsOffset));
-  SmiToInteger32(kScratchRegister, kScratchRegister);
-  testp(kScratchRegister, Immediate(DebugInfo::kBreakAtEntry));
-  j(zero, &skip_hook);
-
-  bind(&call_hook);
   {
     FrameScope frame(this,
                      has_frame() ? StackFrame::NONE : StackFrame::INTERNAL);
@@ -2144,12 +2191,14 @@ void MacroAssembler::CheckDebugHook(Register fun, Register new_target,
     if (actual.is_reg()) {
       Integer32ToSmi(actual.reg(), actual.reg());
       Push(actual.reg());
+      SmiToInteger64(actual.reg(), actual.reg());
     }
     if (new_target.is_valid()) {
       Push(new_target);
     }
     Push(fun);
     Push(fun);
+    Push(StackArgumentsAccessor(rbp, actual).GetReceiverOperand());
     CallRuntime(Runtime::kDebugOnFunctionCall);
     Pop(fun);
     if (new_target.is_valid()) {
@@ -2493,6 +2542,7 @@ void TurboAssembler::ComputeCodeStartAddress(Register dst) {
 }
 
 void TurboAssembler::ResetSpeculationPoisonRegister() {
+  // TODO(tebbi): Perhaps, we want to put an lfence here.
   Set(kSpeculationPoisonRegister, -1);
 }
 

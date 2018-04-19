@@ -45,8 +45,8 @@ namespace v8 {
 namespace internal {
 namespace trap_handler {
 
-const size_t kInitialCodeObjectSize = 1024;
-const size_t kCodeObjectGrowthFactor = 2;
+constexpr size_t kInitialCodeObjectSize = 1024;
+constexpr size_t kCodeObjectGrowthFactor = 2;
 
 constexpr size_t HandlerDataSize(size_t num_protected_instructions) {
   return offsetof(CodeProtectionInfo, instructions) +
@@ -59,11 +59,7 @@ bool IsDisjoint(const CodeProtectionInfo* a, const CodeProtectionInfo* b) {
   if (a == nullptr || b == nullptr) {
     return true;
   }
-
-  const auto a_base = reinterpret_cast<uintptr_t>(a->base);
-  const auto b_base = reinterpret_cast<uintptr_t>(b->base);
-
-  return a_base >= b_base + b->size || b_base >= a_base + a->size;
+  return a->base >= b->base + b->size || b->base >= a->base + a->size;
 }
 #endif
 
@@ -115,7 +111,7 @@ void ValidateCodeObjects() {
 }  // namespace
 
 CodeProtectionInfo* CreateHandlerData(
-    void* base, size_t size, size_t num_protected_instructions,
+    Address base, size_t size, size_t num_protected_instructions,
     const ProtectedInstructionData* protected_instructions) {
   const size_t alloc_size = HandlerDataSize(num_protected_instructions);
   CodeProtectionInfo* data =
@@ -135,17 +131,8 @@ CodeProtectionInfo* CreateHandlerData(
   return data;
 }
 
-void UpdateHandlerDataCodePointer(int index, void* base) {
-  MetadataLock lock;
-  if (static_cast<size_t>(index) >= gNumCodeObjects) {
-    abort();
-  }
-  CodeProtectionInfo* data = gCodeObjects[index].code_info;
-  data->base = base;
-}
-
 int RegisterHandlerData(
-    void* base, size_t size, size_t num_protected_instructions,
+    Address base, size_t size, size_t num_protected_instructions,
     const ProtectedInstructionData* protected_instructions) {
   // TODO(eholk): in debug builds, make sure this data isn't already registered.
 
@@ -264,6 +251,26 @@ bool RegisterDefaultSignalHandler() {
     return false;
   }
 
+// Sanitizers often prevent us from installing our own signal handler. Attempt
+// to detect this and if so, refuse to enable trap handling.
+//
+// TODO(chromium:830894): Remove this once all bots support custom signal
+// handlers.
+#if defined(ADDRESS_SANITIZER) || defined(MEMORY_SANITIZER) || \
+    defined(THREAD_SANITIZER) || defined(LEAK_SANITIZER) ||    \
+    defined(UNDEFINED_SANITIZER)
+  struct sigaction installed_handler;
+  CHECK_EQ(sigaction(SIGSEGV, NULL, &installed_handler), 0);
+  // If the installed handler does not point to HandleSignal, then
+  // allow_user_segv_handler is 0.
+  if (installed_handler.sa_sigaction != HandleSignal) {
+    printf(
+        "WARNING: sanitizers are preventing signal handler installation. "
+        "Trap handlers are disabled.");
+    return false;
+  }
+#endif
+
   g_is_default_signal_handler_registered = true;
   return true;
 #else
@@ -273,6 +280,20 @@ bool RegisterDefaultSignalHandler() {
 
 size_t GetRecoveredTrapCount() {
   return gRecoveredTrapCount.load(std::memory_order_relaxed);
+}
+
+bool g_is_trap_handler_enabled;
+
+bool EnableTrapHandler(bool use_v8_signal_handler) {
+  if (!V8_TRAP_HANDLER_SUPPORTED) {
+    return false;
+  }
+  if (use_v8_signal_handler) {
+    g_is_trap_handler_enabled = RegisterDefaultSignalHandler();
+    return g_is_trap_handler_enabled;
+  }
+  g_is_trap_handler_enabled = true;
+  return true;
 }
 
 }  // namespace trap_handler

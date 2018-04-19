@@ -112,6 +112,8 @@ int GetProtectionFromMemoryPermission(OS::MemoryPermission access) {
   switch (access) {
     case OS::MemoryPermission::kNoAccess:
       return PROT_NONE;
+    case OS::MemoryPermission::kRead:
+      return PROT_READ;
     case OS::MemoryPermission::kReadWrite:
       return PROT_READ | PROT_WRITE;
     case OS::MemoryPermission::kReadWriteExecute:
@@ -491,6 +493,13 @@ int OS::GetCurrentThreadId() {
 #endif
 }
 
+void OS::ExitProcess(int exit_code) {
+  // Use _exit instead of exit to avoid races between isolate
+  // threads and static destructors.
+  fflush(stdout);
+  fflush(stderr);
+  _exit(exit_code);
+}
 
 // ----------------------------------------------------------------------------
 // POSIX date/time support.

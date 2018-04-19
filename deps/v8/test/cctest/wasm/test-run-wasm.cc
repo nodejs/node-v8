@@ -8,6 +8,7 @@
 
 #include "src/assembler-inl.h"
 #include "src/base/platform/elapsed-timer.h"
+#include "src/macro-assembler-inl.h"
 #include "src/utils.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/compiler/value-helper.h"
@@ -1056,10 +1057,8 @@ WASM_EXEC_TEST(SignallingNanSurvivesI32ReinterpretF32) {
 #endif
 
 WASM_EXEC_TEST(LoadMaxUint32Offset) {
-  // TODO(eholk): Fix this test for the trap handler.
-  if (trap_handler::IsTrapHandlerEnabled()) return;
   WasmRunner<int32_t> r(execution_mode);
-  r.builder().AddMemoryElems<int32_t>(8);
+  r.builder().AddMemoryElems<int32_t>(kWasmPageSize / sizeof(int32_t));
 
   BUILD(r, WASM_LOAD_MEM_OFFSET(MachineType::Int32(),  // type
                                 U32V_5(0xFFFFFFFF),    // offset
@@ -1497,17 +1496,17 @@ WASM_EXEC_TEST(LoadMemI32_alignment) {
 }
 
 WASM_EXEC_TEST(LoadMemI32_oob) {
-  // TODO(eholk): Fix this test for the trap handler.
-  if (trap_handler::IsTrapHandlerEnabled()) return;
   WasmRunner<int32_t, uint32_t> r(execution_mode);
-  int32_t* memory = r.builder().AddMemoryElems<int32_t>(8);
+  int32_t* memory =
+      r.builder().AddMemoryElems<int32_t>(kWasmPageSize / sizeof(int32_t));
   r.builder().RandomizeMemory(1111);
 
   BUILD(r, WASM_LOAD_MEM(MachineType::Int32(), WASM_GET_LOCAL(0)));
 
   r.builder().WriteMemory(&memory[0], 88888888);
   CHECK_EQ(88888888, r.Call(0u));
-  for (uint32_t offset = 29; offset < 40; ++offset) {
+  for (uint32_t offset = kWasmPageSize - 3; offset < kWasmPageSize + 40;
+       ++offset) {
     CHECK_TRAP(r.Call(offset));
   }
 
@@ -1517,22 +1516,24 @@ WASM_EXEC_TEST(LoadMemI32_oob) {
 }
 
 WASM_EXEC_TEST(LoadMem_offset_oob) {
-  // TODO(eholk): Fix this test for the trap handler.
-  if (trap_handler::IsTrapHandlerEnabled()) return;
   static const MachineType machineTypes[] = {
       MachineType::Int8(),   MachineType::Uint8(),  MachineType::Int16(),
       MachineType::Uint16(), MachineType::Int32(),  MachineType::Uint32(),
       MachineType::Int64(),  MachineType::Uint64(), MachineType::Float32(),
       MachineType::Float64()};
 
+  constexpr size_t num_bytes = kWasmPageSize;
+
   for (size_t m = 0; m < arraysize(machineTypes); ++m) {
     WasmRunner<int32_t, uint32_t> r(execution_mode);
-    r.builder().AddMemoryElems<int32_t>(8);
+    r.builder().AddMemoryElems<byte>(num_bytes);
     r.builder().RandomizeMemory(1116 + static_cast<int>(m));
 
-    uint32_t boundary = 24 - WasmOpcodes::MemSize(machineTypes[m]);
+    constexpr byte offset = 8;
+    uint32_t boundary =
+        num_bytes - offset - WasmOpcodes::MemSize(machineTypes[m]);
 
-    BUILD(r, WASM_LOAD_MEM_OFFSET(machineTypes[m], 8, WASM_GET_LOCAL(0)),
+    BUILD(r, WASM_LOAD_MEM_OFFSET(machineTypes[m], offset, WASM_GET_LOCAL(0)),
           WASM_DROP, WASM_ZERO);
 
     CHECK_EQ(0, r.Call(boundary));  // in bounds.
@@ -1568,20 +1569,21 @@ WASM_EXEC_TEST(LoadMemI32_offset) {
 }
 
 WASM_EXEC_TEST(LoadMemI32_const_oob_misaligned) {
-  // TODO(eholk): Fix this test for the trap handler.
-  if (trap_handler::IsTrapHandlerEnabled()) return;
-  constexpr byte kMemSize = 12;
+  // This test accesses memory starting at kRunwayLength bytes before the end of
+  // the memory until a few bytes beyond.
+  constexpr byte kRunwayLength = 12;
   // TODO(titzer): Fix misaligned accesses on MIPS and re-enable.
-  for (byte offset = 0; offset < kMemSize + 5; ++offset) {
-    for (byte index = 0; index < kMemSize + 5; ++index) {
+  for (byte offset = 0; offset < kRunwayLength + 5; ++offset) {
+    for (uint32_t index = kWasmPageSize - kRunwayLength;
+         index < kWasmPageSize + 5; ++index) {
       WasmRunner<int32_t> r(execution_mode);
-      r.builder().AddMemoryElems<byte>(kMemSize);
+      r.builder().AddMemoryElems<byte>(kWasmPageSize);
       r.builder().RandomizeMemory();
 
       BUILD(r, WASM_LOAD_MEM_OFFSET(MachineType::Int32(), offset,
-                                    WASM_I32V_2(index)));
+                                    WASM_I32V_3(index)));
 
-      if (offset + index <= (kMemSize - sizeof(int32_t))) {
+      if (offset + index + sizeof(int32_t) <= kWasmPageSize) {
         CHECK_EQ(r.builder().raw_val_at<int32_t>(offset + index), r.Call());
       } else {
         CHECK_TRAP(r.Call());
@@ -1591,19 +1593,20 @@ WASM_EXEC_TEST(LoadMemI32_const_oob_misaligned) {
 }
 
 WASM_EXEC_TEST(LoadMemI32_const_oob) {
-  // TODO(eholk): Fix this test for the trap handler.
-  if (trap_handler::IsTrapHandlerEnabled()) return;
-  constexpr byte kMemSize = 24;
-  for (byte offset = 0; offset < kMemSize + 5; offset += 4) {
-    for (byte index = 0; index < kMemSize + 5; index += 4) {
+  // This test accesses memory starting at kRunwayLength bytes before the end of
+  // the memory until a few bytes beyond.
+  constexpr byte kRunwayLength = 24;
+  for (byte offset = 0; offset < kRunwayLength + 5; offset += 4) {
+    for (uint32_t index = kWasmPageSize - kRunwayLength;
+         index < kWasmPageSize + 5; index += 4) {
       WasmRunner<int32_t> r(execution_mode);
-      r.builder().AddMemoryElems<byte>(kMemSize);
+      r.builder().AddMemoryElems<byte>(kWasmPageSize);
       r.builder().RandomizeMemory();
 
       BUILD(r, WASM_LOAD_MEM_OFFSET(MachineType::Int32(), offset,
-                                    WASM_I32V_2(index)));
+                                    WASM_I32V_3(index)));
 
-      if (offset + index <= (kMemSize - sizeof(int32_t))) {
+      if (offset + index + sizeof(int32_t) <= kWasmPageSize) {
         CHECK_EQ(r.builder().raw_val_at<int32_t>(offset + index), r.Call());
       } else {
         CHECK_TRAP(r.Call());
@@ -1653,17 +1656,17 @@ WASM_EXEC_TEST(StoreMemI32_offset) {
 }
 
 WASM_EXEC_TEST(StoreMem_offset_oob) {
-  // TODO(eholk): Fix this test for the trap handler.
-  if (trap_handler::IsTrapHandlerEnabled()) return;
   // 64-bit cases are handled in test-run-wasm-64.cc
   static const MachineType machineTypes[] = {
       MachineType::Int8(),    MachineType::Uint8(),  MachineType::Int16(),
       MachineType::Uint16(),  MachineType::Int32(),  MachineType::Uint32(),
       MachineType::Float32(), MachineType::Float64()};
 
+  constexpr size_t num_bytes = kWasmPageSize;
+
   for (size_t m = 0; m < arraysize(machineTypes); ++m) {
     WasmRunner<int32_t, uint32_t> r(execution_mode);
-    byte* memory = r.builder().AddMemoryElems<byte>(32);
+    byte* memory = r.builder().AddMemoryElems<byte>(num_bytes);
 
     r.builder().RandomizeMemory(1119 + static_cast<int>(m));
 
@@ -1672,7 +1675,7 @@ WASM_EXEC_TEST(StoreMem_offset_oob) {
           WASM_ZERO);
 
     byte memsize = WasmOpcodes::MemSize(machineTypes[m]);
-    uint32_t boundary = 24 - memsize;
+    uint32_t boundary = num_bytes - 8 - memsize;
     CHECK_EQ(0, r.Call(boundary));  // in bounds.
     CHECK_EQ(0, memcmp(&memory[0], &memory[8 + boundary], memsize));
 
@@ -1952,6 +1955,9 @@ static void TestBuildGraphForSimpleExpression(WasmOpcode opcode) {
   // TODO(gdeepti): Enable this test for sign extension opcodes when lowering
   // is enabled.
   if (WasmOpcodes::IsSignExtensionOpcode(opcode)) return;
+  // TODO(ahaas): Enable this test for anyref opcodes when code generation for
+  // them is implemented.
+  if (WasmOpcodes::IsAnyRefOpcode(opcode)) return;
   // Enable all optional operators.
   compiler::CommonOperatorBuilder common(&zone);
   compiler::MachineOperatorBuilder machine(
@@ -3155,6 +3161,203 @@ WASM_EXEC_TEST(IfInsideUnreachable) {
       r, WASM_RETURN1(WASM_I32V_1(17)),
       WASM_IF_ELSE_I(WASM_ONE, WASM_BRV(0, WASM_ONE), WASM_RETURN1(WASM_ONE)));
   CHECK_EQ(17, r.Call());
+}
+
+// This test targets binops in Liftoff.
+// Initialize a number of local variables to force them into different
+// registers, then perform a binary operation on two of the locals.
+template <typename ctype>
+void BinOpOnDifferentRegisters(WasmExecutionMode execution_mode, ValueType type,
+                               Vector<const ctype> inputs, WasmOpcode opcode,
+                               std::function<ctype(ctype, ctype)> expect_fn) {
+  static constexpr int kMaxNumLocals = 8;
+  for (int num_locals = 1; num_locals < kMaxNumLocals; ++num_locals) {
+    // {init_locals_code} is shared by all code generated in the loop below.
+    std::vector<byte> init_locals_code;
+    // Load from memory into the locals.
+    for (int i = 0; i < num_locals; ++i) {
+      ADD_CODE(
+          init_locals_code,
+          WASM_SET_LOCAL(i, WASM_LOAD_MEM(WasmOpcodes::MachineTypeFor(type),
+                                          WASM_I32V_2(sizeof(ctype) * i))));
+    }
+    for (int lhs = 0; lhs < num_locals; ++lhs) {
+      for (int rhs = 0; rhs < num_locals; ++rhs) {
+        WasmRunner<int32_t> r(execution_mode);
+        ctype* memory = r.builder().AddMemoryElems<ctype>(num_locals);
+        for (int i = 0; i < num_locals; ++i) {
+          r.AllocateLocal(type);
+        }
+        std::vector<byte> code(init_locals_code);
+        ADD_CODE(code,
+                 // Store the result of the binary operation at memory 0.
+                 WASM_STORE_MEM(WasmOpcodes::MachineTypeFor(type), WASM_ZERO,
+                                WASM_BINOP(opcode, WASM_GET_LOCAL(lhs),
+                                           WASM_GET_LOCAL(rhs))),
+                 // Return 0.
+                 WASM_ZERO);
+        r.Build(code.data(), code.data() + code.size());
+        for (ctype lhs_value : inputs) {
+          for (ctype rhs_value : inputs) {
+            if (lhs == rhs) lhs_value = rhs_value;
+            WriteLittleEndianValue<ctype>(
+                reinterpret_cast<Address>(&memory[lhs]), lhs_value);
+            WriteLittleEndianValue<ctype>(
+                reinterpret_cast<Address>(&memory[rhs]), rhs_value);
+            int64_t expect = expect_fn(lhs_value, rhs_value);
+            CHECK_EQ(0, r.Call());
+            CHECK_EQ(expect, ReadLittleEndianValue<ctype>(
+                                 reinterpret_cast<Address>(&memory[0])));
+          }
+        }
+      }
+    }
+  }
+}
+
+// Keep this list small, the BinOpOnDifferentRegisters test is running long
+// enough already.
+static constexpr int32_t kSome32BitInputs[] = {0, 1, 31, 0xff112233};
+static constexpr int64_t kSome64BitInputs[] = {
+    0, 1, 31, 63, 0x100000000, 0xff11223344556677};
+
+WASM_EXEC_TEST(I32AddOnDifferentRegisters) {
+  BinOpOnDifferentRegisters<int32_t>(
+      execution_mode, kWasmI32, ArrayVector(kSome32BitInputs), kExprI32Add,
+      [](int32_t lhs, int32_t rhs) { return lhs + rhs; });
+}
+
+WASM_EXEC_TEST(I32SubOnDifferentRegisters) {
+  BinOpOnDifferentRegisters<int32_t>(
+      execution_mode, kWasmI32, ArrayVector(kSome32BitInputs), kExprI32Sub,
+      [](int32_t lhs, int32_t rhs) { return lhs - rhs; });
+}
+
+WASM_EXEC_TEST(I32MulOnDifferentRegisters) {
+  BinOpOnDifferentRegisters<int32_t>(
+      execution_mode, kWasmI32, ArrayVector(kSome32BitInputs), kExprI32Mul,
+      [](int32_t lhs, int32_t rhs) { return lhs * rhs; });
+}
+
+WASM_EXEC_TEST(I32ShlOnDifferentRegisters) {
+  BinOpOnDifferentRegisters<int32_t>(
+      execution_mode, kWasmI32, ArrayVector(kSome32BitInputs), kExprI32Shl,
+      [](int32_t lhs, int32_t rhs) { return lhs << (rhs & 31); });
+}
+
+WASM_EXEC_TEST(I32ShrSOnDifferentRegisters) {
+  BinOpOnDifferentRegisters<int32_t>(
+      execution_mode, kWasmI32, ArrayVector(kSome32BitInputs), kExprI32ShrS,
+      [](int32_t lhs, int32_t rhs) { return lhs >> (rhs & 31); });
+}
+
+WASM_EXEC_TEST(I32ShrUOnDifferentRegisters) {
+  BinOpOnDifferentRegisters<int32_t>(
+      execution_mode, kWasmI32, ArrayVector(kSome32BitInputs), kExprI32ShrU,
+      [](int32_t lhs, int32_t rhs) {
+        return static_cast<uint32_t>(lhs) >> (rhs & 31);
+      });
+}
+
+WASM_EXEC_TEST(I64AddOnDifferentRegisters) {
+  BinOpOnDifferentRegisters<int64_t>(
+      execution_mode, kWasmI64, ArrayVector(kSome64BitInputs), kExprI64Add,
+      [](int64_t lhs, int64_t rhs) { return lhs + rhs; });
+}
+
+WASM_EXEC_TEST(I64SubOnDifferentRegisters) {
+  BinOpOnDifferentRegisters<int64_t>(
+      execution_mode, kWasmI64, ArrayVector(kSome64BitInputs), kExprI64Sub,
+      [](int64_t lhs, int64_t rhs) { return lhs - rhs; });
+}
+
+WASM_EXEC_TEST(I64MulOnDifferentRegisters) {
+  BinOpOnDifferentRegisters<int64_t>(
+      execution_mode, kWasmI64, ArrayVector(kSome64BitInputs), kExprI64Mul,
+      [](int64_t lhs, int64_t rhs) { return lhs * rhs; });
+}
+
+WASM_EXEC_TEST(I64ShlOnDifferentRegisters) {
+  BinOpOnDifferentRegisters<int64_t>(
+      execution_mode, kWasmI64, ArrayVector(kSome64BitInputs), kExprI64Shl,
+      [](int64_t lhs, int64_t rhs) { return lhs << (rhs & 63); });
+}
+
+WASM_EXEC_TEST(I64ShrSOnDifferentRegisters) {
+  BinOpOnDifferentRegisters<int64_t>(
+      execution_mode, kWasmI64, ArrayVector(kSome64BitInputs), kExprI64ShrS,
+      [](int64_t lhs, int64_t rhs) { return lhs >> (rhs & 63); });
+}
+
+WASM_EXEC_TEST(I64ShrUOnDifferentRegisters) {
+  BinOpOnDifferentRegisters<int64_t>(
+      execution_mode, kWasmI64, ArrayVector(kSome64BitInputs), kExprI64ShrU,
+      [](int64_t lhs, int64_t rhs) {
+        return static_cast<uint64_t>(lhs) >> (rhs & 63);
+      });
+}
+
+TEST(Liftoff_prologue) {
+  // The tested prologue is only inserted in tiering mode. The prologue
+  // is responsible for jumping to the optimized, tiered up code if
+  // it exists.
+  FlagScope<bool> tier_up_scope(&v8::internal::FLAG_wasm_tier_up, true);
+
+  // The number of parameters define how many registers are used
+  // on a function call. The Liftoff-prologue has to make sure to
+  // correctly save prior, and restore all parameters
+  // after the prologue.
+  const uint8_t kNumParams = 4;
+  ValueType int_types[kNumParams + 1];
+  for (int i = 0; i < kNumParams + 1; i++) int_types[i] = kWasmI32;
+  FunctionSig sig_i_x(1, kNumParams, int_types);
+
+  WasmRunner<int32_t, int32_t, int32_t, int32_t, int32_t> r(
+      WasmExecutionMode::kExecuteLiftoff);
+
+  // Define two functions: {add_locals} and {sub_locals}, whereas
+  // {sub_locals} shall be our mockup optimized code.
+  std::vector<byte> add_locals, sub_locals;
+  ADD_CODE(add_locals, WASM_I32_ADD(WASM_GET_LOCAL(0), WASM_GET_LOCAL(1)));
+  ADD_CODE(sub_locals, WASM_I32_SUB(WASM_GET_LOCAL(0), WASM_GET_LOCAL(1)));
+
+  for (int i = 2; i < kNumParams; ++i) {
+    ADD_CODE(add_locals, WASM_GET_LOCAL(i), kExprI32Add);
+    ADD_CODE(sub_locals, WASM_GET_LOCAL(i), kExprI32Sub);
+  }
+
+  WasmFunctionCompiler& add_compiler = r.NewFunction(&sig_i_x);
+  add_compiler.Build(&add_locals[0], &add_locals[0] + add_locals.size());
+
+  WasmFunctionCompiler& sub_compiler = r.NewFunction(&sig_i_x);
+  sub_compiler.Build(&sub_locals[0], &sub_locals[0] + sub_locals.size());
+
+  // Create a calling function, which shall call {add_locals}.
+  std::vector<byte> call;
+  for (int i = 0; i < kNumParams; ++i) {
+    ADD_CODE(call, WASM_GET_LOCAL(i));
+  }
+  ADD_CODE(call, kExprCallFunction,
+           static_cast<byte>(add_compiler.function_index()));
+  r.Build(&call[0], &call[0] + call.size());
+
+  NativeModule* native_module =
+      r.builder().instance_object()->compiled_module()->GetNativeModule();
+
+  // This test only works if we managed to compile with Liftoff.
+  if (native_module->GetCode(add_compiler.function_index())->is_liftoff()) {
+    // First run should execute {add_locals}.
+    CHECK_EQ(10, r.Call(1, 2, 3, 4));
+
+    // Update the native_module to contain the "optimized" code ({sub_locals}).
+    native_module->SetCode(
+        add_compiler.function_index(),
+        native_module->GetCode(sub_compiler.function_index()));
+
+    // Second run should execute {add_locals}, which should detect that
+    // the code was updated, and run {sub_locals}.
+    CHECK_EQ(-8, r.Call(1, 2, 3, 4));
+  }
 }
 
 #undef B1

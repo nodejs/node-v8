@@ -28,9 +28,10 @@ constexpr Register kInterpreterDispatchTableRegister = r8;
 constexpr Register kJavaScriptCallArgCountRegister = r0;
 constexpr Register kJavaScriptCallCodeStartRegister = r2;
 constexpr Register kJavaScriptCallNewTargetRegister = r3;
-constexpr Register kOffHeapTrampolineRegister = r4;
+constexpr Register kOffHeapTrampolineRegister = r6;
 constexpr Register kRuntimeCallFunctionRegister = r1;
 constexpr Register kRuntimeCallArgCountRegister = r0;
+constexpr Register kWasmInstanceRegister = r3;
 
 // ----------------------------------------------------------------------------
 // Static helper functions
@@ -520,8 +521,8 @@ class TurboAssembler : public Assembler {
   // Performs a truncating conversion of a floating point number as used by
   // the JS bitwise operations. See ECMA-262 9.5: ToInt32.
   // Exits with 'result' holding the answer.
-  void TruncateDoubleToIDelayed(Zone* zone, Register result,
-                                DwVfpRegister double_input);
+  void TruncateDoubleToI(Isolate* isolate, Zone* zone, Register result,
+                         DwVfpRegister double_input);
 
   // EABI variant for double arguments in use.
   bool use_eabi_hardfloat() {
@@ -799,7 +800,11 @@ class MacroAssembler : public TurboAssembler {
                                bool builtin_exit_frame = false);
 
   // Generates a trampoline to jump to the off-heap instruction stream.
-  void JumpToInstructionStream(const InstructionStream* stream);
+  void JumpToInstructionStream(Address entry);
+
+  // ---------------------------------------------------------------------------
+  // In-place weak references.
+  void LoadWeakValue(Register out, Register in, Label* target_if_cleared);
 
   // ---------------------------------------------------------------------------
   // StatsCounter support
@@ -832,6 +837,9 @@ class MacroAssembler : public TurboAssembler {
 
   // Abort execution if argument is not a FixedArray, enabled via --debug-code.
   void AssertFixedArray(Register object);
+
+  // Abort execution if argument is not a Constructor, enabled via --debug-code.
+  void AssertConstructor(Register object);
 
   // Abort execution if argument is not a JSFunction, enabled via --debug-code.
   void AssertFunction(Register object);

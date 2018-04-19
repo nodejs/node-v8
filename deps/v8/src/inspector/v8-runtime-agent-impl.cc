@@ -30,6 +30,8 @@
 
 #include "src/inspector/v8-runtime-agent-impl.h"
 
+#include <inttypes.h>
+
 #include "src/debug/debug-interface.h"
 #include "src/inspector/injected-script.h"
 #include "src/inspector/inspected-context.h"
@@ -134,6 +136,9 @@ void innerCallFunctionOn(
   if (silent) scope.ignoreExceptionsAndMuteConsole();
   if (userGesture) scope.pretendUserGesture();
 
+  // Temporarily enable allow evals for inspector.
+  scope.allowCodeGenerationFromStrings();
+
   v8::MaybeLocal<v8::Value> maybeFunctionValue;
   v8::Local<v8::Script> functionScript;
   if (inspector
@@ -209,6 +214,31 @@ Response ensureContext(V8InspectorImpl* inspector, int contextGroupId,
   return Response::OK();
 }
 
+class TerminateTask : public v8::Task {
+ public:
+  TerminateTask(V8InspectorImpl* inspector, intptr_t evaluateId)
+      : m_inspector(inspector), m_evaluateId(evaluateId) {}
+
+  void Run() {
+    if (!m_inspector->evaluateStillRunning(m_evaluateId)) return;
+    // We should call terminateExecution on the main thread.
+    m_inspector->isolate()->RequestInterrupt(
+        InterruptCallback, reinterpret_cast<void*>(m_evaluateId));
+  }
+
+  static void InterruptCallback(v8::Isolate* isolate, void* rawEvaluateId) {
+    intptr_t evaluateId = reinterpret_cast<intptr_t>(rawEvaluateId);
+    V8InspectorImpl* inspector =
+        static_cast<V8InspectorImpl*>(v8::debug::GetInspector(isolate));
+    if (!inspector->evaluateStillRunning(evaluateId)) return;
+    inspector->debugger()->terminateExecution(nullptr);
+  }
+
+ private:
+  V8InspectorImpl* m_inspector;
+  intptr_t m_evaluateId;
+};
+
 }  // namespace
 
 V8RuntimeAgentImpl::V8RuntimeAgentImpl(
@@ -227,7 +257,8 @@ void V8RuntimeAgentImpl::evaluate(
     Maybe<bool> includeCommandLineAPI, Maybe<bool> silent,
     Maybe<int> executionContextId, Maybe<bool> returnByValue,
     Maybe<bool> generatePreview, Maybe<bool> userGesture,
-    Maybe<bool> awaitPromise, std::unique_ptr<EvaluateCallback> callback) {
+    Maybe<bool> awaitPromise, Maybe<bool> throwOnSideEffect,
+    Maybe<double> timeout, std::unique_ptr<EvaluateCallback> callback) {
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("devtools.timeline"),
                "EvaluateScript");
   int contextId = 0;
@@ -250,19 +281,33 @@ void V8RuntimeAgentImpl::evaluate(
 
   if (includeCommandLineAPI.fromMaybe(false)) scope.installCommandLineAPI();
 
-  bool evalIsDisabled = !scope.context()->IsCodeGenerationFromStringsAllowed();
   // Temporarily enable allow evals for inspector.
-  if (evalIsDisabled) scope.context()->AllowCodeGenerationFromStrings(true);
+  scope.allowCodeGenerationFromStrings();
 
+  V8InspectorImpl* inspector = m_inspector;
+  intptr_t evaluateId = inspector->evaluateStarted();
+  if (timeout.isJust()) {
+    std::shared_ptr<v8::TaskRunner> taskRunner =
+        v8::debug::GetCurrentPlatform()->GetWorkerThreadsTaskRunner(
+            m_inspector->isolate());
+    if (!taskRunner) {
+      callback->sendFailure(
+          Response::Error("Timeout is not supported by embedder"));
+      return;
+    }
+    taskRunner->PostDelayedTask(
+        v8::base::make_unique<TerminateTask>(m_inspector, evaluateId),
+        timeout.fromJust() / 1000.0);
+  }
   v8::MaybeLocal<v8::Value> maybeResultValue;
   {
     v8::MicrotasksScope microtasksScope(m_inspector->isolate(),
                                         v8::MicrotasksScope::kRunMicrotasks);
     maybeResultValue = v8::debug::EvaluateGlobal(
-        m_inspector->isolate(), toV8String(m_inspector->isolate(), expression));
+        m_inspector->isolate(), toV8String(m_inspector->isolate(), expression),
+        throwOnSideEffect.fromMaybe(false));
   }  // Run microtasks before returning result.
-
-  if (evalIsDisabled) scope.context()->AllowCodeGenerationFromStrings(false);
+  inspector->evaluateFinished(evaluateId);
 
   // Re-initialize after running client's code, as it could have destroyed
   // context or session.
@@ -571,7 +616,7 @@ void V8RuntimeAgentImpl::runScript(
 }
 
 Response V8RuntimeAgentImpl::queryObjects(
-    const String16& prototypeObjectId,
+    const String16& prototypeObjectId, Maybe<String16> objectGroup,
     std::unique_ptr<protocol::Runtime::RemoteObject>* objects) {
   InjectedScript::ObjectScope scope(m_session, prototypeObjectId);
   Response response = scope.initialize();
@@ -582,7 +627,8 @@ Response V8RuntimeAgentImpl::queryObjects(
   v8::Local<v8::Array> resultArray = m_inspector->debugger()->queryObjects(
       scope.context(), v8::Local<v8::Object>::Cast(scope.object()));
   return scope.injectedScript()->wrapObject(
-      resultArray, scope.objectGroupName(), false, false, objects);
+      resultArray, objectGroup.fromMaybe(scope.objectGroupName()), false, false,
+      objects);
 }
 
 Response V8RuntimeAgentImpl::globalLexicalScopeNames(
@@ -604,6 +650,27 @@ Response V8RuntimeAgentImpl::globalLexicalScopeNames(
     (*outNames)->addItem(toProtocolString(names.Get(i)));
   }
   return Response::OK();
+}
+
+Response V8RuntimeAgentImpl::getIsolateId(String16* outIsolateId) {
+  char buf[40];
+  std::snprintf(buf, sizeof(buf), "%" PRIx64, m_inspector->isolateId());
+  *outIsolateId = buf;
+  return Response::OK();
+}
+
+Response V8RuntimeAgentImpl::getHeapUsage(double* out_usedSize,
+                                          double* out_totalSize) {
+  v8::HeapStatistics stats;
+  m_inspector->isolate()->GetHeapStatistics(&stats);
+  *out_usedSize = stats.used_heap_size();
+  *out_totalSize = stats.total_heap_size();
+  return Response::OK();
+}
+
+void V8RuntimeAgentImpl::terminateExecution(
+    std::unique_ptr<TerminateExecutionCallback> callback) {
+  m_inspector->debugger()->terminateExecution(std::move(callback));
 }
 
 void V8RuntimeAgentImpl::restore() {
