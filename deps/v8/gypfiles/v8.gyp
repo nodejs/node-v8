@@ -2489,6 +2489,12 @@
       'toolsets': ['host'],
       'dependencies': ['v8_libbase'],
       'cflags_cc!': ['-fno-exceptions', '-fno-rtti'],
+      'msvs_settings': {
+        'VCCLCompilerTool': {
+          'ExceptionHandling': 1,     # /EHsc
+          'RuntimeTypeInfo': 'true',  # /GR
+        },
+      },
       'xcode_settings': {
         'GCC_ENABLE_CPP_EXCEPTIONS': 'YES',  # -fexceptions
         'GCC_ENABLE_CPP_RTTI': 'YES',        # -frtti

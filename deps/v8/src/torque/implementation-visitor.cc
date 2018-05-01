@@ -4,8 +4,6 @@
 
 #include "src/torque/implementation-visitor.h"
 
-#include "include/v8.h"
-
 namespace v8 {
 namespace internal {
 namespace torque {
@@ -411,7 +409,8 @@ VisitResult ImplementationVisitor::Visit(NumberLiteralExpression* expr) {
   int32_t i = static_cast<int32_t>(d);
   Type result_type = GetTypeOracle().GetType(CONST_FLOAT64_TYPE_STRING);
   if (i == d) {
-    if (Internals::IsValidSmi(i)) {
+    bool is_valid_smi = static_cast<uint64_t>(i) + 0x40000000U < 0x80000000U;
+    if (is_valid_smi) {
       if (sizeof(void*) == sizeof(double) && ((i >> 30) != (i >> 31))) {
         result_type = GetTypeOracle().GetType(CONST_INT32_TYPE_STRING);
       } else {
