@@ -35,10 +35,9 @@
 #include "src/v8.h"
 
 #include "src/api.h"
-#include "src/factory.h"
+#include "src/heap/factory.h"
 #include "src/messages.h"
 #include "src/objects-inl.h"
-#include "src/objects.h"
 #include "src/unicode-decoder.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/heap/heap-utils.h"
@@ -1191,9 +1190,11 @@ class OneByteVectorResource : public v8::String::ExternalOneByteStringResource {
 };
 
 TEST(InternalizeExternal) {
+#ifdef ENABLE_MINOR_MC
   // TODO(mlippautz): Remove once we add support for forwarding ThinStrings in
-  // minor MC.
+  // minor MC
   if (FLAG_minor_mc) return;
+#endif  // ENABLE_MINOR_MC
   FLAG_stress_incremental_marking = false;
   FLAG_thin_strings = true;
   CcTest::InitializeVM();
@@ -1201,7 +1202,7 @@ TEST(InternalizeExternal) {
   Factory* factory = isolate->factory();
   // This won't leak; the external string mechanism will call Dispose() on it.
   OneByteVectorResource* resource =
-      new OneByteVectorResource(i::Vector<const char>("prop", 4));
+      new OneByteVectorResource(i::Vector<const char>("prop-1234", 9));
   {
     v8::HandleScope scope(CcTest::isolate());
     v8::Local<v8::String> ext_string =
@@ -1210,11 +1211,13 @@ TEST(InternalizeExternal) {
     Handle<String> string = v8::Utils::OpenHandle(*ext_string);
     CHECK(string->IsExternalString());
     CHECK(!string->IsInternalizedString());
-    CHECK(isolate->heap()->InNewSpace(*string));
+    CHECK(!isolate->heap()->InNewSpace(*string));
+    CHECK_EQ(
+        isolate->factory()->string_table()->LookupStringIfExists_NoAllocate(
+            *string),
+        Smi::FromInt(ResultSentinel::kNotFound));
     factory->InternalizeName(string);
-    CHECK(string->IsThinString());
-    CcTest::CollectGarbage(i::NEW_SPACE);
-    CcTest::CollectGarbage(i::NEW_SPACE);
+    CHECK(string->IsExternalString());
     CHECK(string->IsInternalizedString());
     CHECK(!isolate->heap()->InNewSpace(*string));
   }

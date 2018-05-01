@@ -12,13 +12,8 @@
 namespace v8 {
 namespace internal {
 
-StartupSerializer::StartupSerializer(
-    Isolate* isolate,
-    v8::SnapshotCreator::FunctionCodeHandling function_code_handling)
-    : Serializer(isolate),
-      clear_function_code_(function_code_handling ==
-                           v8::SnapshotCreator::FunctionCodeHandling::kClear),
-      can_be_rehashed_(true) {
+StartupSerializer::StartupSerializer(Isolate* isolate)
+    : Serializer(isolate), can_be_rehashed_(true) {
   InitializeCodeAddressMap();
 }
 
@@ -33,13 +28,7 @@ void StartupSerializer::SerializeObject(HeapObject* obj, HowToCode how_to_code,
   DCHECK(!ObjectIsBytecodeHandler(obj));  // Only referenced in dispatch table.
   DCHECK(!obj->IsJSFunction());
 
-  if (clear_function_code() && obj->IsBytecodeArray()) {
-    obj = isolate()->heap()->undefined_value();
-  }
-
-  BuiltinReferenceSerializationMode mode =
-      clear_function_code() ? kCanonicalizeCompileLazy : kDefault;
-  if (SerializeBuiltinReference(obj, how_to_code, where_to_point, skip, mode)) {
+  if (SerializeBuiltinReference(obj, how_to_code, where_to_point, skip)) {
     return;
   }
   if (SerializeHotObject(obj, how_to_code, where_to_point, skip)) return;
@@ -57,15 +46,18 @@ void StartupSerializer::SerializeObject(HeapObject* obj, HowToCode how_to_code,
   if (SerializeBackReference(obj, how_to_code, where_to_point, skip)) return;
 
   FlushSkip(skip);
+  bool use_simulator = false;
+#ifdef USE_SIMULATOR
+  use_simulator = true;
+#endif
 
-  if (isolate()->external_reference_redirector() && obj->IsAccessorInfo()) {
+  if (use_simulator && obj->IsAccessorInfo()) {
     // Wipe external reference redirects in the accessor info.
     AccessorInfo* info = AccessorInfo::cast(obj);
     Address original_address = Foreign::cast(info->getter())->foreign_address();
     Foreign::cast(info->js_getter())->set_foreign_address(original_address);
     accessor_infos_.push_back(info);
-  } else if (isolate()->external_reference_redirector() &&
-             obj->IsCallHandlerInfo()) {
+  } else if (use_simulator && obj->IsCallHandlerInfo()) {
     CallHandlerInfo* info = CallHandlerInfo::cast(obj);
     Address original_address =
         Foreign::cast(info->callback())->foreign_address();

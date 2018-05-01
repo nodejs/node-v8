@@ -9,7 +9,6 @@
 #include <string>
 
 #include "src/code-stubs.h"
-#include "src/compilation-info.h"
 #include "src/compiler/all-nodes.h"
 #include "src/compiler/compiler-source-position-table.h"
 #include "src/compiler/graph.h"
@@ -23,13 +22,14 @@
 #include "src/compiler/scheduler.h"
 #include "src/interpreter/bytecodes.h"
 #include "src/objects/script-inl.h"
+#include "src/optimized-compilation-info.h"
 #include "src/ostreams.h"
 
 namespace v8 {
 namespace internal {
 namespace compiler {
 
-std::unique_ptr<char[]> GetVisualizerLogFileName(CompilationInfo* info,
+std::unique_ptr<char[]> GetVisualizerLogFileName(OptimizedCompilationInfo* info,
                                                  const char* phase,
                                                  const char* suffix) {
   EmbeddedVector<char, 256> filename(0);
@@ -39,7 +39,7 @@ std::unique_ptr<char[]> GetVisualizerLogFileName(CompilationInfo* info,
     SNPrintF(filename, "turbo-%s-%i", debug_name.get(), optimization_id);
   } else if (info->has_shared_info()) {
     SNPrintF(filename, "turbo-%p-%i",
-             static_cast<void*>(info->shared_info()->address()),
+             reinterpret_cast<void*>(info->shared_info()->address()),
              optimization_id);
   } else {
     SNPrintF(filename, "turbo-none-%i", optimization_id);
@@ -169,9 +169,9 @@ class JSONGraphNodeWriter {
         << node->op()->EffectOutputCount() << " eff "
         << node->op()->ControlOutputCount() << " ctrl out\"";
     if (NodeProperties::IsTyped(node)) {
-      Type* type = NodeProperties::GetType(node);
+      Type type = NodeProperties::GetType(node);
       std::ostringstream type_out;
-      type->PrintTo(type_out);
+      type.PrintTo(type_out);
       os_ << ",\"type\":\"" << JSONEscaped(type_out) << "\"";
     }
     os_ << "}";
@@ -255,7 +255,7 @@ class GraphC1Visualizer {
  public:
   GraphC1Visualizer(std::ostream& os, Zone* zone);  // NOLINT
 
-  void PrintCompilation(const CompilationInfo* info);
+  void PrintCompilation(const OptimizedCompilationInfo* info);
   void PrintSchedule(const char* phase, const Schedule* schedule,
                      const SourcePositionTable* positions,
                      const InstructionSequence* instructions);
@@ -343,8 +343,7 @@ void GraphC1Visualizer::PrintIntProperty(const char* name, int value) {
   os_ << name << " " << value << "\n";
 }
 
-
-void GraphC1Visualizer::PrintCompilation(const CompilationInfo* info) {
+void GraphC1Visualizer::PrintCompilation(const OptimizedCompilationInfo* info) {
   Tag tag(this, "compilation");
   std::unique_ptr<char[]> name = info->GetDebugName();
   if (info->IsOptimizing()) {
@@ -401,9 +400,8 @@ void GraphC1Visualizer::PrintInputs(Node* node) {
 
 void GraphC1Visualizer::PrintType(Node* node) {
   if (NodeProperties::IsTyped(node)) {
-    Type* type = NodeProperties::GetType(node);
-    os_ << " type:";
-    type->PrintTo(os_);
+    Type type = NodeProperties::GetType(node);
+    os_ << " type:" << type;
   }
 }
 
@@ -709,9 +707,7 @@ std::ostream& operator<<(std::ostream& os, const AsRPO& ar) {
       os << ")";
       // Print the node type, if any.
       if (NodeProperties::IsTyped(n)) {
-        os << "  [Type: ";
-        NodeProperties::GetType(n)->PrintTo(os);
-        os << "]";
+        os << "  [Type: " << NodeProperties::GetType(n) << "]";
       }
       os << std::endl;
     }
@@ -740,9 +736,7 @@ void PrintScheduledNode(std::ostream& os, int indent, Node* n) {
   os << ")";
   // Print the node type, if any.
   if (NodeProperties::IsTyped(n)) {
-    os << "  [Type: ";
-    NodeProperties::GetType(n)->PrintTo(os);
-    os << "]";
+    os << "  [Type: " << NodeProperties::GetType(n) << "]";
   }
 }
 

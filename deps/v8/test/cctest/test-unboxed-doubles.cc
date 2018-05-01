@@ -11,9 +11,9 @@
 #include "src/api.h"
 #include "src/compilation-cache.h"
 #include "src/execution.h"
-#include "src/factory.h"
 #include "src/field-type.h"
 #include "src/global-handles.h"
+#include "src/heap/factory.h"
 #include "src/heap/incremental-marking.h"
 #include "src/heap/spaces.h"
 #include "src/ic/ic.h"
@@ -936,7 +936,7 @@ TEST(Regress436816) {
 
   Handle<JSObject> object = factory->NewJSObjectFromMap(map, TENURED);
 
-  Address fake_address = reinterpret_cast<Address>(~kHeapObjectTagMask);
+  Address fake_address = static_cast<Address>(~kHeapObjectTagMask);
   HeapObject* fake_object = HeapObject::FromAddress(fake_address);
   CHECK(fake_object->IsHeapObject());
 

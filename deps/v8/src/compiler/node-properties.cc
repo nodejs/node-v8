@@ -589,7 +589,6 @@ bool NodeProperties::CanBeNullOrUndefined(Node* receiver, Node* effect) {
     switch (receiver->opcode()) {
       case IrOpcode::kCheckInternalizedString:
       case IrOpcode::kCheckNumber:
-      case IrOpcode::kCheckSeqString:
       case IrOpcode::kCheckSmi:
       case IrOpcode::kCheckString:
       case IrOpcode::kCheckSymbol:
@@ -625,7 +624,7 @@ Node* NodeProperties::GetOuterContext(Node* node, size_t* depth) {
 }
 
 // static
-Type* NodeProperties::GetTypeOrAny(Node* node) {
+Type NodeProperties::GetTypeOrAny(Node* node) {
   return IsTyped(node) ? node->type() : Type::Any();
 }
 

@@ -55,6 +55,9 @@ class V8DebuggerAgentImpl : public protocol::Debugger::Backend {
       std::unique_ptr<protocol::Debugger::Location>,
       Maybe<String16> optionalCondition, String16*,
       std::unique_ptr<protocol::Debugger::Location>* actualLocation) override;
+  Response setBreakpointOnFunctionCall(const String16& functionObjectId,
+                                       Maybe<String16> optionalCondition,
+                                       String16* outBreakpointId) override;
   Response removeBreakpoint(const String16& breakpointId) override;
   Response continueToLocation(std::unique_ptr<protocol::Debugger::Location>,
                               Maybe<String16> targetCallFrames) override;
@@ -102,6 +105,7 @@ class V8DebuggerAgentImpl : public protocol::Debugger::Backend {
       Maybe<String16> objectGroup, Maybe<bool> includeCommandLineAPI,
       Maybe<bool> silent, Maybe<bool> returnByValue,
       Maybe<bool> generatePreview, Maybe<bool> throwOnSideEffect,
+      Maybe<double> timeout,
       std::unique_ptr<protocol::Runtime::RemoteObject>* result,
       Maybe<protocol::Runtime::ExceptionDetails>*) override;
   Response setVariableValue(
@@ -120,11 +124,11 @@ class V8DebuggerAgentImpl : public protocol::Debugger::Backend {
 
   bool enabled() const { return m_enabled; }
 
-  void setBreakpointAt(const String16& scriptId, int lineNumber,
-                       int columnNumber, BreakpointSource,
-                       const String16& condition = String16());
-  void removeBreakpointAt(const String16& scriptId, int lineNumber,
-                          int columnNumber, BreakpointSource);
+  void setBreakpointFor(v8::Local<v8::Function> function,
+                        v8::Local<v8::String> condition,
+                        BreakpointSource source);
+  void removeBreakpointFor(v8::Local<v8::Function> function,
+                           BreakpointSource source);
   void schedulePauseOnNextStatement(
       const String16& breakReason,
       std::unique_ptr<protocol::DictionaryValue> data);
@@ -164,6 +168,9 @@ class V8DebuggerAgentImpl : public protocol::Debugger::Backend {
   std::unique_ptr<protocol::Debugger::Location> setBreakpointImpl(
       const String16& breakpointId, const String16& scriptId,
       const String16& condition, int lineNumber, int columnNumber);
+  void setBreakpointImpl(const String16& breakpointId,
+                         v8::Local<v8::Function> function,
+                         v8::Local<v8::String> condition);
   void removeBreakpointImpl(const String16& breakpointId);
   void clearBreakDetails();
 

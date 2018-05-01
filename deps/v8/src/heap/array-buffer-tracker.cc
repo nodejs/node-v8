@@ -55,9 +55,10 @@ void LocalArrayBufferTracker::Process(Callback callback) {
       void* allocation_base = old_buffer->allocation_base();
       DCHECK_NOT_NULL(allocation_base);
 
-      backing_stores_to_free->emplace_back(allocation_base,
-                                           old_buffer->allocation_length(),
-                                           old_buffer->allocation_mode());
+      backing_stores_to_free->emplace_back(
+          allocation_base, old_buffer->allocation_length(),
+          old_buffer->backing_store(), old_buffer->allocation_mode(),
+          old_buffer->is_wasm_memory());
       it = array_buffers_.erase(it);
     } else {
       UNREACHABLE();
@@ -133,6 +134,26 @@ bool ArrayBufferTracker::IsTracked(JSArrayBuffer* buffer) {
     if (tracker == nullptr) return false;
     return tracker->IsTracked(buffer);
   }
+}
+
+void ArrayBufferTracker::TearDown(Heap* heap) {
+  // ArrayBuffers can only be found in NEW_SPACE and OLD_SPACE.
+  for (Page* p : *heap->old_space()) {
+    FreeAll(p);
+  }
+  NewSpace* new_space = heap->new_space();
+  if (new_space->to_space().is_committed()) {
+    for (Page* p : new_space->to_space()) {
+      FreeAll(p);
+    }
+  }
+#ifdef DEBUG
+  if (new_space->from_space().is_committed()) {
+    for (Page* p : new_space->from_space()) {
+      DCHECK(!p->contains_array_buffers());
+    }
+  }
+#endif  // DEBUG
 }
 
 }  // namespace internal

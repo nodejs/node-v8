@@ -75,9 +75,9 @@
 #define WASM_BLOCK_F(...) kExprBlock, kLocalF32, __VA_ARGS__, kExprEnd
 #define WASM_BLOCK_D(...) kExprBlock, kLocalF64, __VA_ARGS__, kExprEnd
 
-#define WASM_BLOCK_T(t, ...)                                       \
-  kExprBlock, static_cast<byte>(WasmOpcodes::ValueTypeCodeFor(t)), \
-      __VA_ARGS__, kExprEnd
+#define WASM_BLOCK_T(t, ...)                                                   \
+  kExprBlock, static_cast<byte>(ValueTypes::ValueTypeCodeFor(t)), __VA_ARGS__, \
+      kExprEnd
 
 #define WASM_BLOCK_X(index, ...)                                  \
   kExprBlock, static_cast<byte>(index), __VA_ARGS__, kExprEnd
@@ -90,17 +90,17 @@
 #define WASM_LOOP_F(...) kExprLoop, kLocalF32, __VA_ARGS__, kExprEnd
 #define WASM_LOOP_D(...) kExprLoop, kLocalF64, __VA_ARGS__, kExprEnd
 
-#define WASM_LOOP_T(t, ...)                                       \
-  kExprLoop, static_cast<byte>(WasmOpcodes::ValueTypeCodeFor(t)), \
-      __VA_ARGS__, kExprEnd
+#define WASM_LOOP_T(t, ...)                                                   \
+  kExprLoop, static_cast<byte>(ValueTypes::ValueTypeCodeFor(t)), __VA_ARGS__, \
+      kExprEnd
 
 #define WASM_LOOP_X(index, ...)                                   \
   kExprLoop, static_cast<byte>(index), __VA_ARGS__, kExprEnd
 
 #define WASM_IF(cond, ...) cond, kExprIf, kLocalVoid, __VA_ARGS__, kExprEnd
 
-#define WASM_IF_T(t, cond, ...)                                       \
-  cond, kExprIf, static_cast<byte>(WasmOpcodes::ValueTypeCodeFor(t)), \
+#define WASM_IF_T(t, cond, ...)                                      \
+  cond, kExprIf, static_cast<byte>(ValueTypes::ValueTypeCodeFor(t)), \
       __VA_ARGS__, kExprEnd
 
 #define WASM_IF_X(index, cond, ...)                                   \
@@ -118,8 +118,8 @@
 #define WASM_IF_ELSE_D(cond, tstmt, fstmt) \
   cond, kExprIf, kLocalF64, tstmt, kExprElse, fstmt, kExprEnd
 
-#define WASM_IF_ELSE_T(t, cond, tstmt, fstmt)                                \
-  cond, kExprIf, static_cast<byte>(WasmOpcodes::ValueTypeCodeFor(t)), tstmt, \
+#define WASM_IF_ELSE_T(t, cond, tstmt, fstmt)                               \
+  cond, kExprIf, static_cast<byte>(ValueTypes::ValueTypeCodeFor(t)), tstmt, \
       kExprElse, fstmt, kExprEnd
 
 #define WASM_IF_ELSE_X(index, cond, tstmt, fstmt)                            \
@@ -328,6 +328,9 @@ inline WasmOpcode LoadStoreOpcodeOf(MachineType type, bool store) {
       static_cast<byte>(bit_cast<uint64_t>(static_cast<double>(val)) >> 40), \
       static_cast<byte>(bit_cast<uint64_t>(static_cast<double>(val)) >> 48), \
       static_cast<byte>(bit_cast<uint64_t>(static_cast<double>(val)) >> 56)
+
+#define WASM_REF_NULL kExprRefNull
+
 #define WASM_GET_LOCAL(index) kExprGetLocal, static_cast<byte>(index)
 #define WASM_SET_LOCAL(index, val) val, kExprSetLocal, static_cast<byte>(index)
 #define WASM_TEE_LOCAL(index, val) val, kExprTeeLocal, static_cast<byte>(index)

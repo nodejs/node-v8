@@ -6,7 +6,7 @@
 
 #include "src/api-arguments-inl.h"
 #include "src/elements.h"
-#include "src/factory.h"
+#include "src/heap/factory.h"
 #include "src/identity-map.h"
 #include "src/isolate-inl.h"
 #include "src/objects-inl.h"
@@ -77,7 +77,14 @@ void KeyAccumulator::AddKey(Handle<Object> key, AddKeyConversion convert) {
       Handle<String>::cast(key)->AsArrayIndex(&index)) {
     key = isolate_->factory()->NewNumberFromUint(index);
   }
-  keys_ = OrderedHashSet::Add(keys(), key);
+  Handle<OrderedHashSet> new_set = OrderedHashSet::Add(keys(), key);
+  if (*new_set != *keys_) {
+    // The keys_ Set is converted directly to a FixedArray in GetKeys which can
+    // be left-trimmer. Hence the previous Set should not keep a pointer to the
+    // new one.
+    keys_->set(OrderedHashTableBase::kNextTableIndex, Smi::kZero);
+    keys_ = new_set;
+  }
 }
 
 void KeyAccumulator::AddKeys(Handle<FixedArray> array,
@@ -366,10 +373,6 @@ MaybeHandle<FixedArray> GetOwnKeysWithElements(Isolate* isolate,
   return result;
 }
 
-bool OnlyHasSimpleProperties(Map* map) {
-  return map->instance_type() > LAST_CUSTOM_ELEMENTS_RECEIVER;
-}
-
 }  // namespace
 
 MaybeHandle<FixedArray> FastKeyAccumulator::GetKeys(
@@ -389,7 +392,7 @@ MaybeHandle<FixedArray> FastKeyAccumulator::GetKeysFast(
     GetKeysConversion keys_conversion) {
   bool own_only = has_empty_prototype_ || mode_ == KeyCollectionMode::kOwnOnly;
   Map* map = receiver_->map();
-  if (!own_only || !OnlyHasSimpleProperties(map)) {
+  if (!own_only || map->IsCustomElementsReceiverMap()) {
     return MaybeHandle<FixedArray>();
   }
 
@@ -652,6 +655,16 @@ Maybe<bool> KeyAccumulator::CollectOwnPropertyNames(Handle<JSReceiver> receiver,
     } else {
       enum_keys = GetOwnEnumPropertyDictionaryKeys(
           isolate_, mode_, this, object, object->property_dictionary());
+    }
+    if (object->IsJSModuleNamespace()) {
+      // Simulate [[GetOwnProperty]] for establishing enumerability, which
+      // throws for uninitialized exports.
+      for (int i = 0, n = enum_keys->length(); i < n; ++i) {
+        Handle<String> key(String::cast(enum_keys->get(i)), isolate_);
+        if (Handle<JSModuleNamespace>::cast(object)->GetExport(key).is_null()) {
+          return Nothing<bool>();
+        }
+      }
     }
     AddKeys(enum_keys, DO_NOT_CONVERT);
   } else {
