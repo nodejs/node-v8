@@ -162,8 +162,8 @@ class Register : public RegisterBase<Register, kRegAfterLast> {
   explicit constexpr Register(int code) : RegisterBase(code) {}
 };
 
-static_assert(IS_TRIVIALLY_COPYABLE(Register) &&
-                  sizeof(Register) == sizeof(int),
+ASSERT_TRIVIALLY_COPYABLE(Register);
+static_assert(sizeof(Register) == sizeof(int),
               "Register can efficiently be passed by value");
 
 // r7: context register
@@ -218,8 +218,8 @@ class SwVfpRegister : public RegisterBase<SwVfpRegister, kSwVfpAfterLast> {
   explicit constexpr SwVfpRegister(int code) : RegisterBase(code) {}
 };
 
-static_assert(IS_TRIVIALLY_COPYABLE(SwVfpRegister) &&
-                  sizeof(SwVfpRegister) == sizeof(int),
+ASSERT_TRIVIALLY_COPYABLE(SwVfpRegister);
+static_assert(sizeof(SwVfpRegister) == sizeof(int),
               "SwVfpRegister can efficiently be passed by value");
 
 typedef SwVfpRegister FloatRegister;
@@ -256,8 +256,8 @@ class DwVfpRegister : public RegisterBase<DwVfpRegister, kDoubleAfterLast> {
   explicit constexpr DwVfpRegister(int code) : RegisterBase(code) {}
 };
 
-static_assert(IS_TRIVIALLY_COPYABLE(DwVfpRegister) &&
-                  sizeof(DwVfpRegister) == sizeof(int),
+ASSERT_TRIVIALLY_COPYABLE(DwVfpRegister);
+static_assert(sizeof(DwVfpRegister) == sizeof(int),
               "DwVfpRegister can efficiently be passed by value");
 
 typedef DwVfpRegister DoubleRegister;
@@ -689,10 +689,17 @@ class Assembler : public AssemblerBase {
   inline static void deserialization_set_special_target_at(
       Address constant_pool_entry, Code* code, Address target);
 
+  // Get the size of the special target encoded at 'location'.
+  inline static int deserialization_special_target_size(Address location);
+
   // This sets the internal reference at the pc.
   inline static void deserialization_set_target_internal_reference_at(
       Address pc, Address target,
       RelocInfo::Mode mode = RelocInfo::INTERNAL_REFERENCE);
+
+  // TODO(arm64): This is only needed until direct calls are supported in
+  // WebAssembly for ARM64.
+  void set_code_in_js_code_space(bool) {}
 
   // Here we are patching the address in the constant pool, not the actual call
   // instruction.  The address in the constant pool is the same size as a
@@ -1491,16 +1498,13 @@ class Assembler : public AssemblerBase {
   void dq(uint64_t data);
   void dp(uintptr_t data) { dd(data); }
 
-  // Emits the address of the code stub's first instruction.
-  void emit_code_stub_address(Code* stub);
-
   // Read/patch instructions
   Instr instr_at(int pos) { return *reinterpret_cast<Instr*>(buffer_ + pos); }
   void instr_at_put(int pos, Instr instr) {
     *reinterpret_cast<Instr*>(buffer_ + pos) = instr;
   }
-  static Instr instr_at(byte* pc) { return *reinterpret_cast<Instr*>(pc); }
-  static void instr_at_put(byte* pc, Instr instr) {
+  static Instr instr_at(Address pc) { return *reinterpret_cast<Instr*>(pc); }
+  static void instr_at_put(Address pc, Instr instr) {
     *reinterpret_cast<Instr*>(pc) = instr;
   }
   static Condition GetCondition(Instr instr);
@@ -1820,15 +1824,14 @@ class UseScratchRegisterScope {
     return reg;
   }
 
+  // Check if we have registers available to acquire.
+  bool CanAcquire() const { return *assembler_->GetScratchRegisterList() != 0; }
+  bool CanAcquireD() const { return CanAcquireVfp<DwVfpRegister>(); }
+
  private:
   friend class Assembler;
   friend class TurboAssembler;
 
-  // Check if we have registers available to acquire.
-  // These methods are kept private intentionally to restrict their usage to the
-  // assemblers. Choosing to emit a difference instruction sequence depending on
-  // the availability of scratch registers is generally their job.
-  bool CanAcquire() const { return *assembler_->GetScratchRegisterList() != 0; }
   template <typename T>
   bool CanAcquireVfp() const;
 

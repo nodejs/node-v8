@@ -9,7 +9,7 @@
 #include "src/contexts.h"
 #include "src/debug/debug-interface.h"
 #include "src/detachable-vector.h"
-#include "src/factory.h"
+#include "src/heap/factory.h"
 #include "src/isolate.h"
 #include "src/objects/js-collection.h"
 
@@ -31,10 +31,14 @@ template <typename T> inline T ToCData(v8::internal::Object* obj) {
   STATIC_ASSERT(sizeof(T) == sizeof(v8::internal::Address));
   if (obj == v8::internal::Smi::kZero) return nullptr;
   return reinterpret_cast<T>(
-      reinterpret_cast<intptr_t>(
-          v8::internal::Foreign::cast(obj)->foreign_address()));
+      v8::internal::Foreign::cast(obj)->foreign_address());
 }
 
+template <>
+inline v8::internal::Address ToCData(v8::internal::Object* obj) {
+  if (obj == v8::internal::Smi::kZero) return v8::internal::kNullAddress;
+  return v8::internal::Foreign::cast(obj)->foreign_address();
+}
 
 template <typename T>
 inline v8::internal::Handle<v8::internal::Object> FromCData(
@@ -42,9 +46,17 @@ inline v8::internal::Handle<v8::internal::Object> FromCData(
   STATIC_ASSERT(sizeof(T) == sizeof(v8::internal::Address));
   if (obj == nullptr) return handle(v8::internal::Smi::kZero, isolate);
   return isolate->factory()->NewForeign(
-      reinterpret_cast<v8::internal::Address>(reinterpret_cast<intptr_t>(obj)));
+      reinterpret_cast<v8::internal::Address>(obj));
 }
 
+template <>
+inline v8::internal::Handle<v8::internal::Object> FromCData(
+    v8::internal::Isolate* isolate, v8::internal::Address obj) {
+  if (obj == v8::internal::kNullAddress) {
+    return handle(v8::internal::Smi::kZero, isolate);
+  }
+  return isolate->factory()->NewForeign(obj);
+}
 
 class ApiFunction {
  public:
@@ -124,7 +136,8 @@ class Utils {
     if (!condition) Utils::ReportApiFailure(location, message);
     return condition;
   }
-  static void ReportOOMFailure(const char* location, bool is_heap_oom);
+  static void ReportOOMFailure(v8::internal::Isolate* isolate,
+                               const char* location, bool is_heap_oom);
 
   static inline Local<Context> ToLocal(
       v8::internal::Handle<v8::internal::Context> obj);
@@ -202,6 +215,8 @@ class Utils {
       v8::internal::Handle<v8::internal::Object> obj);
   static inline Local<Uint32> Uint32ToLocal(
       v8::internal::Handle<v8::internal::Object> obj);
+  static inline Local<BigInt> ToLocal(
+      v8::internal::Handle<v8::internal::BigInt> obj);
   static inline Local<FunctionTemplate> ToLocal(
       v8::internal::Handle<v8::internal::FunctionTemplateInfo> obj);
   static inline Local<ObjectTemplate> ToLocal(
@@ -333,6 +348,7 @@ MAKE_TO_LOCAL(StackFrameToLocal, StackFrameInfo, StackFrame)
 MAKE_TO_LOCAL(NumberToLocal, Object, Number)
 MAKE_TO_LOCAL(IntegerToLocal, Object, Integer)
 MAKE_TO_LOCAL(Uint32ToLocal, Object, Uint32)
+MAKE_TO_LOCAL(ToLocal, BigInt, BigInt);
 MAKE_TO_LOCAL(ExternalToLocal, JSObject, External)
 MAKE_TO_LOCAL(CallableToLocal, JSReceiver, Function)
 MAKE_TO_LOCAL(ToLocalPrimitive, Object, Primitive)
@@ -359,9 +375,6 @@ OPEN_HANDLE_LIST(MAKE_OPEN_HANDLE)
 
 #undef MAKE_OPEN_HANDLE
 #undef OPEN_HANDLE_LIST
-
-extern Isolate* IsolateNewImpl(internal::Isolate* isolate,
-                               const Isolate::CreateParams& params);
 
 namespace internal {
 
@@ -630,7 +643,6 @@ void HandleScopeImplementer::EnterMicrotaskContext(Handle<Context> context) {
 }
 
 void HandleScopeImplementer::LeaveMicrotaskContext() {
-  DCHECK(microtask_context_);
   microtask_context_ = nullptr;
   entered_context_count_during_microtasks_ = 0;
 }

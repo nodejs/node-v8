@@ -12,8 +12,8 @@
 #include "src/compiler/machine-operator.h"
 #include "src/compiler/node.h"
 #include "src/compiler/operator.h"
-#include "src/factory.h"
 #include "src/globals.h"
+#include "src/heap/factory.h"
 
 namespace v8 {
 namespace internal {
@@ -44,7 +44,9 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
           MachineOperatorBuilder::Flag::kNoFlags,
       MachineOperatorBuilder::AlignmentRequirements alignment_requirements =
           MachineOperatorBuilder::AlignmentRequirements::
-              FullUnalignedAccessSupport());
+              FullUnalignedAccessSupport(),
+      PoisoningMitigationLevel poisoning_level =
+          PoisoningMitigationLevel::kPoisonCriticalOnly);
   ~RawMachineAssembler() {}
 
   Isolate* isolate() const { return isolate_; }
@@ -53,6 +55,7 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   MachineOperatorBuilder* machine() { return &machine_; }
   CommonOperatorBuilder* common() { return &common_; }
   CallDescriptor* call_descriptor() const { return call_descriptor_; }
+  PoisoningMitigationLevel poisoning_level() const { return poisoning_level_; }
 
   // Finalizes the schedule and exports it to be used for code generation. Note
   // that this RawMachineAssembler becomes invalid after export.
@@ -116,11 +119,19 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   }
 
   // Memory Operations.
-  Node* Load(MachineType rep, Node* base) {
-    return Load(rep, base, IntPtrConstant(0));
+  Node* Load(MachineType rep, Node* base,
+             LoadSensitivity needs_poisoning = LoadSensitivity::kSafe) {
+    return Load(rep, base, IntPtrConstant(0), needs_poisoning);
   }
-  Node* Load(MachineType rep, Node* base, Node* index) {
-    return AddNode(machine()->Load(rep), base, index);
+  Node* Load(MachineType rep, Node* base, Node* index,
+             LoadSensitivity needs_poisoning = LoadSensitivity::kSafe) {
+    const Operator* op = machine()->Load(rep);
+    CHECK_NE(PoisoningMitigationLevel::kPoisonAll, poisoning_level_);
+    if (needs_poisoning == LoadSensitivity::kCritical &&
+        poisoning_level_ == PoisoningMitigationLevel::kPoisonCriticalOnly) {
+      op = machine()->PoisonedLoad(rep);
+    }
+    return AddNode(op, base, index);
   }
   Node* Store(MachineRepresentation rep, Node* base, Node* value,
               WriteBarrierKind write_barrier) {
@@ -568,6 +579,13 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
     return a;
 #endif
   }
+  Node* BitcastMaybeObjectToWord(Node* a) {
+#ifdef ENABLE_VERIFY_CSA
+    return AddNode(machine()->BitcastMaybeObjectToWord(), a);
+#else
+    return a;
+#endif
+  }
   Node* BitcastWordToTagged(Node* a) {
     return AddNode(machine()->BitcastWordToTagged(), a);
   }
@@ -723,6 +741,9 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
     return AddNode(machine()->LoadParentFramePointer());
   }
 
+  // Root pointer operations.
+  Node* LoadRootsPointer() { return AddNode(machine()->LoadRootsPointer()); }
+
   // Parameters.
   Node* Parameter(size_t index);
 
@@ -744,8 +765,19 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   Node* StringConstant(const char* string) {
     return HeapConstant(isolate()->factory()->InternalizeUtf8String(string));
   }
-  Node* SpeculationPoison() {
-    return AddNode(machine()->SpeculationPoison(), graph()->start());
+
+  Node* TaggedPoisonOnSpeculation(Node* value) {
+    if (poisoning_level_ != PoisoningMitigationLevel::kDontPoison) {
+      return AddNode(machine()->TaggedPoisonOnSpeculation(), value);
+    }
+    return value;
+  }
+
+  Node* WordPoisonOnSpeculation(Node* value) {
+    if (poisoning_level_ != PoisoningMitigationLevel::kDontPoison) {
+      return AddNode(machine()->WordPoisonOnSpeculation(), value);
+    }
+    return value;
   }
 
   // Call a given call descriptor and the given arguments.
@@ -908,8 +940,8 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   CommonOperatorBuilder common_;
   CallDescriptor* call_descriptor_;
   NodeVector parameters_;
-  Node* speculation_poison_;
   BasicBlock* current_block_;
+  PoisoningMitigationLevel poisoning_level_;
 
   DISALLOW_COPY_AND_ASSIGN(RawMachineAssembler);
 };

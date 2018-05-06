@@ -18,27 +18,23 @@
 namespace v8 {
 namespace internal {
 
-
-JITLineInfoTable::JITLineInfoTable() {}
-
-
-JITLineInfoTable::~JITLineInfoTable() {}
-
-
-void JITLineInfoTable::SetPosition(int pc_offset, int line) {
+void SourcePositionTable::SetPosition(int pc_offset, int line) {
   DCHECK_GE(pc_offset, 0);
   DCHECK_GT(line, 0);  // The 1-based number of the source line.
   if (GetSourceLineNumber(pc_offset) != line) {
-    pc_offset_map_.insert(std::make_pair(pc_offset, line));
+    auto result = pc_offset_map_.insert(std::make_pair(pc_offset, line));
+    // Check that a new element was inserted.
+    USE(result);
+    DCHECK(result.second);
   }
 }
 
+int SourcePositionTable::GetSourceLineNumber(int pc_offset) const {
+  if (pc_offset_map_.empty()) return v8::CpuProfileNode::kNoLineNumberInfo;
 
-int JITLineInfoTable::GetSourceLineNumber(int pc_offset) const {
-  PcOffsetMap::const_iterator it = pc_offset_map_.lower_bound(pc_offset);
-  if (it == pc_offset_map_.end()) {
-    if (pc_offset_map_.empty()) return v8::CpuProfileNode::kNoLineNumberInfo;
-    return (--pc_offset_map_.end())->second;
+  PcOffsetMap::const_iterator it = pc_offset_map_.upper_bound(pc_offset);
+  if (it != pc_offset_map_.begin()) {
+    return (--it)->second;
   }
   return it->second;
 }
@@ -102,8 +98,7 @@ uint32_t CodeEntry::GetHash() const {
   return hash;
 }
 
-
-bool CodeEntry::IsSameFunctionAs(CodeEntry* entry) const {
+bool CodeEntry::IsSameFunctionAs(const CodeEntry* entry) const {
   if (this == entry) return true;
   if (script_id_ != v8::UnboundScript::kNoScriptId) {
     return script_id_ == entry->script_id_ && position_ == entry->position_;
@@ -121,9 +116,7 @@ void CodeEntry::SetBuiltinId(Builtins::Name id) {
 
 
 int CodeEntry::GetSourceLine(int pc_offset) const {
-  if (line_info_ && !line_info_->empty()) {
-    return line_info_->GetSourceLineNumber(pc_offset);
-  }
+  if (line_info_) return line_info_->GetSourceLineNumber(pc_offset);
   return v8::CpuProfileNode::kNoLineNumberInfo;
 }
 
@@ -152,7 +145,7 @@ void CodeEntry::FillFunctionInfo(SharedFunctionInfo* shared) {
   if (!shared->script()->IsScript()) return;
   Script* script = Script::cast(shared->script());
   set_script_id(script->id());
-  set_position(shared->start_position());
+  set_position(shared->StartPosition());
   set_bailout_reason(GetBailoutReason(shared->disable_optimization_reason()));
 }
 
@@ -179,23 +172,21 @@ void ProfileNode::CollectDeoptInfo(CodeEntry* entry) {
 
 
 ProfileNode* ProfileNode::FindChild(CodeEntry* entry) {
-  base::HashMap::Entry* map_entry =
-      children_.Lookup(entry, CodeEntryHash(entry));
-  return map_entry != nullptr ? reinterpret_cast<ProfileNode*>(map_entry->value)
-                              : nullptr;
+  auto map_entry = children_.find(entry);
+  return map_entry != children_.end() ? map_entry->second : nullptr;
 }
 
 
 ProfileNode* ProfileNode::FindOrAddChild(CodeEntry* entry) {
-  base::HashMap::Entry* map_entry =
-      children_.LookupOrInsert(entry, CodeEntryHash(entry));
-  ProfileNode* node = reinterpret_cast<ProfileNode*>(map_entry->value);
-  if (!node) {
-    node = new ProfileNode(tree_, entry, this);
-    map_entry->value = node;
+  auto map_entry = children_.find(entry);
+  if (map_entry == children_.end()) {
+    ProfileNode* node = new ProfileNode(tree_, entry, this);
+    children_[entry] = node;
     children_list_.push_back(node);
+    return node;
+  } else {
+    return map_entry->second;
   }
-  return node;
 }
 
 
@@ -203,10 +194,12 @@ void ProfileNode::IncrementLineTicks(int src_line) {
   if (src_line == v8::CpuProfileNode::kNoLineNumberInfo) return;
   // Increment a hit counter of a certain source line.
   // Add a new source line if not found.
-  base::HashMap::Entry* e =
-      line_ticks_.LookupOrInsert(reinterpret_cast<void*>(src_line), src_line);
-  DCHECK(e);
-  e->value = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(e->value) + 1);
+  auto map_entry = line_ticks_.find(src_line);
+  if (map_entry == line_ticks_.end()) {
+    line_ticks_[src_line] = 1;
+  } else {
+    line_ticks_[src_line]++;
+  }
 }
 
 
@@ -214,19 +207,16 @@ bool ProfileNode::GetLineTicks(v8::CpuProfileNode::LineTick* entries,
                                unsigned int length) const {
   if (entries == nullptr || length == 0) return false;
 
-  unsigned line_count = line_ticks_.occupancy();
+  unsigned line_count = static_cast<unsigned>(line_ticks_.size());
 
   if (line_count == 0) return true;
   if (length < line_count) return false;
 
   v8::CpuProfileNode::LineTick* entry = entries;
 
-  for (base::HashMap::Entry *p = line_ticks_.Start(); p != nullptr;
-       p = line_ticks_.Next(p), entry++) {
-    entry->line =
-        static_cast<unsigned int>(reinterpret_cast<uintptr_t>(p->key));
-    entry->hit_count =
-        static_cast<unsigned int>(reinterpret_cast<uintptr_t>(p->value));
+  for (auto p = line_ticks_.begin(); p != line_ticks_.end(); p++, entry++) {
+    entry->line = p->first;
+    entry->hit_count = p->second;
   }
 
   return true;
@@ -259,9 +249,8 @@ void ProfileNode::Print(int indent) {
     base::OS::Print("%*s bailed out due to '%s'\n", indent + 10, "",
                     bailout_reason);
   }
-  for (base::HashMap::Entry* p = children_.Start(); p != nullptr;
-       p = children_.Next(p)) {
-    reinterpret_cast<ProfileNode*>(p->value)->Print(indent + 2);
+  for (auto child : children_) {
+    child.second->Print(indent + 2);
   }
 }
 
@@ -282,8 +271,7 @@ ProfileTree::ProfileTree(Isolate* isolate)
       next_node_id_(1),
       root_(new ProfileNode(this, &root_entry_, nullptr)),
       isolate_(isolate),
-      next_function_id_(1),
-      function_ids_(ProfileNode::CodeEntriesMatch) {}
+      next_function_id_(1) {}
 
 ProfileTree::~ProfileTree() {
   DeleteNodesCallback cb;
@@ -293,12 +281,11 @@ ProfileTree::~ProfileTree() {
 
 unsigned ProfileTree::GetFunctionId(const ProfileNode* node) {
   CodeEntry* code_entry = node->entry();
-  base::HashMap::Entry* entry =
-      function_ids_.LookupOrInsert(code_entry, code_entry->GetHash());
-  if (!entry->value) {
-    entry->value = reinterpret_cast<void*>(next_function_id_++);
+  auto map_entry = function_ids_.find(code_entry);
+  if (map_entry == function_ids_.end()) {
+    return function_ids_[code_entry] = next_function_id_++;
   }
-  return static_cast<unsigned>(reinterpret_cast<uintptr_t>(entry->value));
+  return function_ids_[code_entry];
 }
 
 ProfileNode* ProfileTree::AddPathFromEnd(const std::vector<CodeEntry*>& path,
@@ -485,6 +472,8 @@ void CpuProfile::Print() {
   top_down_.Print();
 }
 
+CodeMap::CodeMap() = default;
+
 void CodeMap::AddCode(Address addr, CodeEntry* entry, unsigned size) {
   DeleteAllCoveredCode(addr, addr + size);
   code_map_.insert({addr, CodeEntryInfo(entry, size)});
@@ -520,13 +509,13 @@ void CodeMap::MoveCode(Address from, Address to) {
 
 void CodeMap::Print() {
   for (const auto& pair : code_map_) {
-    base::OS::Print("%p %5d %s\n", static_cast<void*>(pair.first),
+    base::OS::Print("%p %5d %s\n", reinterpret_cast<void*>(pair.first),
                     pair.second.size, pair.second.entry->name());
   }
 }
 
 CpuProfilesCollection::CpuProfilesCollection(Isolate* isolate)
-    : resource_names_(isolate->heap()),
+    : resource_names_(isolate->heap()->HashSeed()),
       profiler_(nullptr),
       current_profiles_semaphore_(1) {}
 
@@ -631,14 +620,15 @@ void ProfileGenerator::RecordTickSample(const TickSample& sample) {
       // Don't use PC when in external callback code, as it can point
       // inside callback's code, and we will erroneously report
       // that a callback calls itself.
-      entries.push_back(FindEntry(sample.external_callback_entry));
+      entries.push_back(
+          FindEntry(reinterpret_cast<Address>(sample.external_callback_entry)));
     } else {
-      CodeEntry* pc_entry = FindEntry(sample.pc);
+      CodeEntry* pc_entry = FindEntry(reinterpret_cast<Address>(sample.pc));
       // If there is no pc_entry we're likely in native code.
       // Find out, if top of stack was pointing inside a JS function
       // meaning that we have encountered a frameless invocation.
       if (!pc_entry && !sample.has_external_callback) {
-        pc_entry = FindEntry(sample.tos);
+        pc_entry = FindEntry(reinterpret_cast<Address>(sample.tos));
       }
       // If pc is in the function code before it set up stack frame or after the
       // frame was destroyed SafeStackFrameIterator incorrectly thinks that
@@ -714,10 +704,6 @@ void ProfileGenerator::RecordTickSample(const TickSample& sample) {
 
   profiles_->AddPathToCurrentProfiles(sample.timestamp, entries, src_line,
                                       sample.update_stats);
-}
-
-CodeEntry* ProfileGenerator::FindEntry(void* address) {
-  return code_map_.FindEntry(reinterpret_cast<Address>(address));
 }
 
 CodeEntry* ProfileGenerator::EntryForVMState(StateTag tag) {

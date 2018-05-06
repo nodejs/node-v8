@@ -71,7 +71,6 @@ class LowLevelLogger;
 class PerfBasicLogger;
 class PerfJitLogger;
 class Profiler;
-class ProfilerListener;
 class RuntimeCallTimer;
 class Ticker;
 class WasmCompiledModule;
@@ -107,15 +106,7 @@ class Logger : public CodeEventListener {
   void SetCodeEventHandler(uint32_t options,
                            JitCodeEventHandler event_handler);
 
-  // Sets up ProfilerListener.
-  void SetUpProfilerListener();
-
-  // Tear down ProfilerListener if it has no observers.
-  void TearDownProfilerListener();
-
   sampler::Sampler* sampler();
-
-  ProfilerListener* profiler_listener() { return profiler_listener_.get(); }
 
   // Frees resources acquired in SetUp.
   // When a temporary file is used for the log, returns its stream descriptor,
@@ -163,8 +154,8 @@ class Logger : public CodeEventListener {
   void ApiEntryCall(const char* name);
 
   // ==== Events logged by --log-code. ====
-  void addCodeEventListener(CodeEventListener* listener);
-  void removeCodeEventListener(CodeEventListener* listener);
+  void AddCodeEventListener(CodeEventListener* listener);
+  void RemoveCodeEventListener(CodeEventListener* listener);
 
   // Emits a code event for a callback function.
   void CallbackEvent(Name* name, Address entry_point);
@@ -182,20 +173,19 @@ class Logger : public CodeEventListener {
                        AbstractCode* code, SharedFunctionInfo* shared,
                        Name* source, int line, int column);
   void CodeCreateEvent(CodeEventListener::LogEventsAndTags tag,
-                       wasm::WasmCode* code, wasm::WasmName name);
+                       const wasm::WasmCode* code, wasm::WasmName name);
   // Emits a code deoptimization event.
   void CodeDisableOptEvent(AbstractCode* code, SharedFunctionInfo* shared);
   void CodeMovingGCEvent();
   // Emits a code create event for a RegExp.
   void RegExpCodeCreateEvent(AbstractCode* code, String* source);
-  void InstructionStreamCreateEvent(LogEventsAndTags tag,
-                                    const InstructionStream* stream,
-                                    const char* description);
   // Emits a code move event.
   void CodeMoveEvent(AbstractCode* from, Address to);
   // Emits a code line info record event.
   void CodeLinePosInfoRecordEvent(Address code_start,
                                   ByteArray* source_position_table);
+  void CodeLinePosInfoRecordEvent(Address code_start,
+                                  Vector<const byte> source_position_table);
 
   void SharedFunctionInfoMoveEvent(Address from, Address to);
 
@@ -268,9 +258,6 @@ class Logger : public CodeEventListener {
   // Used for logging stubs found in the snapshot.
   void LogCodeObject(Object* code_object);
 
-  // Used for logging off-heap instruction streams.
-  void LogInstructionStream(Code* code, const InstructionStream* stream);
-
  private:
   explicit Logger(Isolate* isolate);
   ~Logger();
@@ -328,7 +315,6 @@ class Logger : public CodeEventListener {
   PerfJitLogger* perf_jit_logger_;
   LowLevelLogger* ll_logger_;
   JitLogger* jit_logger_;
-  std::unique_ptr<ProfilerListener> profiler_listener_;
   std::set<int> logged_source_code_;
   uint32_t next_source_info_id_ = 0;
 
@@ -393,13 +379,10 @@ class CodeEventLogger : public CodeEventListener {
   void CodeCreateEvent(LogEventsAndTags tag, AbstractCode* code,
                        SharedFunctionInfo* shared, Name* source, int line,
                        int column) override;
-  void CodeCreateEvent(LogEventsAndTags tag, wasm::WasmCode* code,
+  void CodeCreateEvent(LogEventsAndTags tag, const wasm::WasmCode* code,
                        wasm::WasmName name) override;
 
   void RegExpCodeCreateEvent(AbstractCode* code, String* source) override;
-  void InstructionStreamCreateEvent(LogEventsAndTags tag,
-                                    const InstructionStream* stream,
-                                    const char* description) override;
   void CallbackEvent(Name* name, Address entry_point) override {}
   void GetterCallbackEvent(Name* name, Address entry_point) override {}
   void SetterCallbackEvent(Name* name, Address entry_point) override {}
@@ -413,9 +396,7 @@ class CodeEventLogger : public CodeEventListener {
 
   virtual void LogRecordedBuffer(AbstractCode* code, SharedFunctionInfo* shared,
                                  const char* name, int length) = 0;
-  virtual void LogRecordedBuffer(const InstructionStream* stream,
-                                 const char* name, int length) = 0;
-  virtual void LogRecordedBuffer(wasm::WasmCode* code, const char* name,
+  virtual void LogRecordedBuffer(const wasm::WasmCode* code, const char* name,
                                  int length) = 0;
 
   NameBuffer* name_buffer_;

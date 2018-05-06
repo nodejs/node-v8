@@ -8,6 +8,8 @@
 #include "src/isolate-inl.h"
 #include "src/lookup.h"
 #include "src/messages.h"
+#include "src/objects/api-callbacks.h"
+#include "src/objects/templates.h"
 
 namespace v8 {
 namespace internal {
@@ -626,7 +628,7 @@ Handle<JSFunction> ApiNatives::CreateApiFunction(
       FunctionTemplateInfo::GetOrCreateSharedFunctionInfo(isolate, obj,
                                                           maybe_name);
   // To simplify things, API functions always have shared name.
-  DCHECK(shared->has_shared_name());
+  DCHECK(shared->HasSharedName());
 
   Handle<JSFunction> result =
       isolate->factory()->NewFunctionFromSharedFunctionInfo(

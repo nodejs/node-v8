@@ -11,6 +11,11 @@ var set = new Set([1, 2]);
 var weak_key = [];
 var weak_map = new WeakMap().set(weak_key, "a").set({}, "b");
 var weak_set = new WeakSet([weak_key, {}]);
+var add = function (a, b) { return a + b; };
+var number_value = 13;
+function get_number() {
+  return typeof(number_value);
+};
 
 function listener(event, exec_state, event_data, data) {
   if (event != Debug.DebugEvent.Break) return;
@@ -23,6 +28,13 @@ function listener(event, exec_state, event_data, data) {
       assertThrows(() => exec_state.frame(0).evaluate(source, true),
                    EvalError);
     }
+
+    // Test Function-related functions.
+    success("func", `(function func(){}).prototype.constructor.name`);
+    success("[object Object]", `(function func(){}).prototype.toString()`);
+    success(12, `add.bind(null, 10)(2)`);
+    success(3, `add.call(null, 1, 2)`);
+    success(3, `add.apply(null, [1, 2])`);
 
     // Test Date.prototype functions.
     success(undefined, `Date()`);
@@ -59,6 +71,8 @@ function listener(event, exec_state, event_data, data) {
     success("abc", `unescape("abc")`);
     success(true, `isFinite(0)`);
     success(true, `isNaN(0/0)`);
+    success("object", `typeof date`);
+    success("number", `get_number()`);
 
     // Test Map functions.
     success(undefined, `new Map()`);
@@ -71,7 +85,7 @@ function listener(event, exec_state, event_data, data) {
     success(undefined, `map.forEach(()=>1)`);
     success(true, `map.has("c")`);
     success(2, `map.size`);
-    fail(`new Map([[1, 2]])`);
+    success(undefined, `new Map([[1, 2]])`);
     fail(`map.delete("a")`);
     fail(`map.clear()`);
     fail(`map.set("x", "y")`);
@@ -85,7 +99,7 @@ function listener(event, exec_state, event_data, data) {
     success(undefined, `set.forEach(()=>1)`);
     success(true, `set.has(1)`);
     success(2, `set.size`);
-    fail(`new Set([1])`);
+    success(1, `new Set([1]).size`);
     fail(`set.add(2)`);
     fail(`set.delete(1)`);
     fail(`set.clear()`);
@@ -108,6 +122,12 @@ function listener(event, exec_state, event_data, data) {
     fail(`weak_set.add([])`);
     fail(`weak_set.delete("a")`);
 
+    // Test BigInt functions.
+    success(10n, `BigInt('10')`);
+    success(10n, `BigInt.asIntN(10, 10n)`);
+    success(10n, `BigInt.asUintN(10, 10n)`);
+    success("10", `10n.toString()`);
+    success(10n, `10n.valueOf()`);
   } catch (e) {
     exception = e;
     print(e, e.stack);

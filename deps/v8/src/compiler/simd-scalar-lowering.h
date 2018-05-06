@@ -14,6 +14,10 @@
 
 namespace v8 {
 namespace internal {
+
+template <typename T>
+class Signature;
+
 namespace compiler {
 
 class SimdScalarLowering {
@@ -87,6 +91,8 @@ class SimdScalarLowering {
   void LowerIntMinMax(Node* node, const Operator* op, bool is_max,
                       SimdType type);
   void LowerConvertFromFloat(Node* node, bool is_signed);
+  void LowerPack(Node* node, SimdType input_rep_type, SimdType output_rep_type,
+                 bool is_signed);
   void LowerShiftOp(Node* node, SimdType type);
   Node* BuildF64Trunc(Node* input);
   void LowerNotEqual(Node* node, SimdType input_rep_type, const Operator* op);

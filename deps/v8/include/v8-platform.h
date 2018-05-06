@@ -5,9 +5,9 @@
 #ifndef V8_V8_PLATFORM_H_
 #define V8_V8_PLATFORM_H_
 
-#include <cstdlib>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>  // For abort.
 #include <memory>
 #include <string>
 
@@ -207,6 +207,7 @@ class PageAllocator {
    */
   enum Permission {
     kNoAccess,
+    kRead,
     kReadWrite,
     // TODO(hpayer): Remove this flag. Memory should never be rwx.
     kReadWriteExecute,
@@ -288,16 +289,21 @@ class Platform {
    */
   virtual bool OnCriticalMemoryPressure(size_t length) { return false; }
 
+  /**
+   * Gets the number of worker threads used by
+   * Call(BlockingTask)OnWorkerThread(). This can be used to estimate the number
+   * of tasks a work package should be split into. A return value of 0 means
+   * that there are no worker threads available. Note that a value of 0 won't
+   * prohibit V8 from posting tasks using |CallOnWorkerThread|.
+   */
   virtual int NumberOfWorkerThreads() {
     return static_cast<int>(NumberOfAvailableBackgroundThreads());
   }
 
   /**
-   * Gets the number of threads that are used to execute background tasks. Is
-   * used to estimate the number of tasks a work package should be split into.
-   * A return value of 0 means that there are no background threads available.
-   * Note that a value of 0 won't prohibit V8 from posting tasks using
-   * |CallOnBackgroundThread|.
+   * Deprecated. Use NumberOfWorkerThreads() instead.
+   * TODO(gab): Remove this when all embedders override
+   * NumberOfWorkerThreads() instead.
    */
   V8_DEPRECATE_SOON(
       "NumberOfAvailableBackgroundThreads() is deprecated, use "
@@ -323,26 +329,12 @@ class Platform {
    */
   V8_DEPRECATE_SOON(
       "GetBackgroundTaskRunner() is deprecated, use "
-      "GetWorkerThreadsTaskRunner() "
-      "instead.",
+      "CallOnWorkerThread() instead.",
       virtual std::shared_ptr<v8::TaskRunner> GetBackgroundTaskRunner(
           Isolate* isolate)) {
-    // TODO(gab): Remove this method when all embedders have moved to
-    // GetWorkerThreadsTaskRunner().
-
-    // An implementation needs to be provided here because this is called by the
-    // default GetWorkerThreadsTaskRunner() implementation below. In practice
-    // however, all code either:
-    //  - Overrides GetWorkerThreadsTaskRunner() (thus not making this call) --
-    //    i.e. all v8 code.
-    //  - Overrides this method (thus not making this call) -- i.e. all
-    //    unadapted embedders.
+    // Deprecated and unused.
+    // TODO(gab): Remove this when embedders no longer override it.
     abort();
-  }
-
-  virtual std::shared_ptr<v8::TaskRunner> GetWorkerThreadsTaskRunner(
-      Isolate* isolate) {
-    return GetBackgroundTaskRunner(isolate);
   }
 
   /**
@@ -365,14 +357,35 @@ class Platform {
     abort();
   }
 
+  /**
+   * Schedules a task to be invoked on a worker thread.
+   * TODO(gab): Make pure virtual when all embedders override this instead of
+   * CallOnBackgroundThread().
+   */
   virtual void CallOnWorkerThread(std::unique_ptr<Task> task) {
     CallOnBackgroundThread(task.release(), kShortRunningTask);
   }
 
+  /**
+   * Schedules a task that blocks the main thread to be invoked with
+   * high-priority on a worker thread.
+   */
   virtual void CallBlockingTaskOnWorkerThread(std::unique_ptr<Task> task) {
     // Embedders may optionally override this to process these tasks in a high
     // priority pool.
     CallOnWorkerThread(std::move(task));
+  }
+
+  /**
+   * Schedules a task to be invoked on a worker thread after |delay_in_seconds|
+   * expires.
+   * TODO(gab): Make pure virtual when all embedders override this instead of
+   * GetBackgroundTaskRunner().
+   */
+  virtual void CallDelayedOnWorkerThread(std::unique_ptr<Task> task,
+                                         double delay_in_seconds) {
+    GetBackgroundTaskRunner(nullptr)->PostDelayedTask(std::move(task),
+                                                      delay_in_seconds);
   }
 
   /**

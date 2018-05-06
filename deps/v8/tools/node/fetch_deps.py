@@ -22,10 +22,10 @@ GCLIENT_SOLUTION = [
     "managed"     : False,
     "custom_deps" : {
       # These deps are already part of Node.js.
-      "v8/base/trace_event/common" : None,
-      "v8/testing/gtest"           : None,
-      "v8/third_party/jinja2"      : None,
-      "v8/third_party/markupsafe"  : None,
+      "v8/base/trace_event/common"            : None,
+      "v8/third_party/googletest/src"         : None,
+      "v8/third_party/jinja2"                 : None,
+      "v8/third_party/markupsafe"             : None,
       # These deps are unnecessary for building.
       "v8/test/benchmarks/data"               : None,
       "v8/testing/gmock"                      : None,
@@ -36,7 +36,6 @@ GCLIENT_SOLUTION = [
       "v8/third_party/catapult"               : None,
       "v8/third_party/colorama/src"           : None,
       "v8/third_party/instrumented_libraries" : None,
-      "v8/tools/gyp"                          : None,
       "v8/tools/luci-go"                      : None,
       "v8/tools/swarming_client"              : None,
     },
@@ -44,18 +43,21 @@ GCLIENT_SOLUTION = [
 ]
 
 def EnsureGit(v8_path):
+  def git(args):
+    # shell=True needed on Windows to resolve git.bat.
+    return subprocess.check_output(
+        "git " + args, cwd=v8_path, shell=True).strip()
+
   expected_git_dir = os.path.join(v8_path, ".git")
-  actual_git_dir = subprocess.check_output(
-      ["git", "rev-parse", "--absolute-git-dir"], cwd=v8_path).strip()
+  actual_git_dir = git("rev-parse --absolute-git-dir")
   if expected_git_dir == actual_git_dir:
     print "V8 is tracked stand-alone by git."
     return False
   print "Initializing temporary git repository in v8."
-  subprocess.check_call(["git", "init"], cwd=v8_path)
-  subprocess.check_call(["git", "config", "user.name", "\"Ada Lovelace\""], cwd=v8_path)
-  subprocess.check_call(["git", "config", "user.email", "\"ada@lovela.ce\""], cwd=v8_path)
-  subprocess.check_call(["git", "commit", "--allow-empty", "-m", "init"],
-                        cwd=v8_path)
+  git("init")
+  git("config user.name \"Ada Lovelace\"")
+  git("config user.email ada@lovela.ce")
+  git("commit --allow-empty -m init")
   return True
 
 def FetchDeps(v8_path):
@@ -72,10 +74,11 @@ def FetchDeps(v8_path):
     env = os.environ.copy()
     # gclient needs to have depot_tools in the PATH.
     env["PATH"] = depot_tools + os.pathsep + env["PATH"]
+    gclient = os.path.join(depot_tools, "gclient.py")
     spec = "solutions = %s" % GCLIENT_SOLUTION
-    subprocess.check_call(["gclient", "sync", "--spec", spec],
-                          cwd=os.path.join(v8_path, os.path.pardir),
-                          env=env)
+    subprocess.check_call([sys.executable, gclient, "sync", "--spec", spec],
+                           cwd=os.path.join(v8_path, os.path.pardir),
+                           env=env)
   except:
     raise
   finally:
@@ -86,8 +89,8 @@ def FetchDeps(v8_path):
         os.path.join(v8_path, os.pardir, ".gclient_entries"))
     if os.path.isfile(gclient_entries):
       os.remove(gclient_entries)
-  # Enable building with GN for configure script.
-  return True
+
+  return depot_tools
 
 
 if __name__ == "__main__":

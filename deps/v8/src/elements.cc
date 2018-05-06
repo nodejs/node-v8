@@ -6,8 +6,8 @@
 
 #include "src/arguments.h"
 #include "src/conversions.h"
-#include "src/factory.h"
 #include "src/frames.h"
+#include "src/heap/factory.h"
 #include "src/isolate-inl.h"
 #include "src/messages.h"
 #include "src/objects-inl.h"
@@ -111,13 +111,17 @@ template<ElementsKind Kind> class ElementsKindTraits {
 ELEMENTS_LIST(ELEMENTS_TRAITS)
 #undef ELEMENTS_TRAITS
 
-
-MUST_USE_RESULT
+V8_WARN_UNUSED_RESULT
 MaybeHandle<Object> ThrowArrayLengthRangeError(Isolate* isolate) {
   THROW_NEW_ERROR(isolate, NewRangeError(MessageTemplate::kInvalidArrayLength),
                   Object);
 }
 
+WriteBarrierMode GetWriteBarrierMode(ElementsKind kind) {
+  if (IsSmiElementsKind(kind)) return SKIP_WRITE_BARRIER;
+  if (IsDoubleElementsKind(kind)) return SKIP_WRITE_BARRIER;
+  return UPDATE_WRITE_BARRIER;
+}
 
 void CopyObjectToObjectElements(FixedArrayBase* from_base,
                                 ElementsKind from_kind, uint32_t from_start,
@@ -189,8 +193,7 @@ static void CopyDictionaryToObjectElements(
   if (to_start + copy_size > to_length) {
     copy_size = to_length - to_start;
   }
-  WriteBarrierMode write_barrier_mode =
-      IsObjectElementsKind(to_kind) ? UPDATE_WRITE_BARRIER : SKIP_WRITE_BARRIER;
+  WriteBarrierMode write_barrier_mode = GetWriteBarrierMode(to_kind);
   Isolate* isolate = from->GetIsolate();
   for (int i = 0; i < copy_size; i++) {
     int entry = from->FindEntry(isolate, i + from_start);
@@ -2259,26 +2262,6 @@ class FastElementsAccessor : public ElementsAccessorBase<Subclass, KindTraits> {
     return deleted_elements;
   }
 
-  static Maybe<bool> CollectValuesOrEntriesImpl(
-      Isolate* isolate, Handle<JSObject> object,
-      Handle<FixedArray> values_or_entries, bool get_entries, int* nof_items,
-      PropertyFilter filter) {
-    Handle<BackingStore> elements(BackingStore::cast(object->elements()),
-                                  isolate);
-    int count = 0;
-    uint32_t length = elements->length();
-    for (uint32_t index = 0; index < length; ++index) {
-      if (!HasEntryImpl(isolate, *elements, index)) continue;
-      Handle<Object> value = Subclass::GetImpl(isolate, *elements, index);
-      if (get_entries) {
-        value = MakeEntryPair(isolate, index, value);
-      }
-      values_or_entries->set(count++, *value);
-    }
-    *nof_items = count;
-    return Just(true);
-  }
-
   static void MoveElements(Isolate* isolate, Handle<JSArray> receiver,
                            Handle<FixedArrayBase> backing_store, int dst_index,
                            int src_index, int len, int hole_start,
@@ -2301,8 +2284,9 @@ class FastElementsAccessor : public ElementsAccessorBase<Subclass, KindTraits> {
                 dst_elms->data_start() + src_index, len * kDoubleSize);
       } else {
         DisallowHeapAllocation no_gc;
+        WriteBarrierMode mode = GetWriteBarrierMode(KindTraits::Kind);
         heap->MoveElements(FixedArray::cast(*dst_elms), dst_index, src_index,
-                           len);
+                           len, mode);
       }
     }
     if (hole_start != hole_end) {
@@ -2672,6 +2656,37 @@ class FastSmiOrObjectElementsAccessor
     }
   }
 
+  static Maybe<bool> CollectValuesOrEntriesImpl(
+      Isolate* isolate, Handle<JSObject> object,
+      Handle<FixedArray> values_or_entries, bool get_entries, int* nof_items,
+      PropertyFilter filter) {
+    int count = 0;
+    if (get_entries) {
+      // Collecting entries needs to allocate, so this code must be handlified.
+      Handle<FixedArray> elements(FixedArray::cast(object->elements()),
+                                  isolate);
+      uint32_t length = elements->length();
+      for (uint32_t index = 0; index < length; ++index) {
+        if (!Subclass::HasEntryImpl(isolate, *elements, index)) continue;
+        Handle<Object> value = Subclass::GetImpl(isolate, *elements, index);
+        value = MakeEntryPair(isolate, index, value);
+        values_or_entries->set(count++, *value);
+      }
+    } else {
+      // No allocations here, so we can avoid handlification overhead.
+      DisallowHeapAllocation no_gc;
+      FixedArray* elements = FixedArray::cast(object->elements());
+      uint32_t length = elements->length();
+      for (uint32_t index = 0; index < length; ++index) {
+        if (!Subclass::HasEntryImpl(isolate, elements, index)) continue;
+        Object* value = GetRaw(elements, index);
+        values_or_entries->set(count++, value);
+      }
+    }
+    *nof_items = count;
+    return Just(true);
+  }
+
   static Maybe<int64_t> IndexOfValueImpl(Isolate* isolate,
                                          Handle<JSObject> receiver,
                                          Handle<Object> search_value,
@@ -2809,6 +2824,26 @@ class FastDoubleElementsAccessor
       UNREACHABLE();
       break;
     }
+  }
+
+  static Maybe<bool> CollectValuesOrEntriesImpl(
+      Isolate* isolate, Handle<JSObject> object,
+      Handle<FixedArray> values_or_entries, bool get_entries, int* nof_items,
+      PropertyFilter filter) {
+    Handle<FixedDoubleArray> elements(
+        FixedDoubleArray::cast(object->elements()), isolate);
+    int count = 0;
+    uint32_t length = elements->length();
+    for (uint32_t index = 0; index < length; ++index) {
+      if (!Subclass::HasEntryImpl(isolate, *elements, index)) continue;
+      Handle<Object> value = Subclass::GetImpl(isolate, *elements, index);
+      if (get_entries) {
+        value = MakeEntryPair(isolate, index, value);
+      }
+      values_or_entries->set(count++, *value);
+    }
+    *nof_items = count;
+    return Just(true);
   }
 
   static Maybe<int64_t> IndexOfValueImpl(Isolate* isolate,

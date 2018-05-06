@@ -1257,7 +1257,8 @@ TEST(RunInt32AddP) {
   FOR_INT32_INPUTS(i) {
     FOR_INT32_INPUTS(j) {
       // Use uint32_t because signed overflow is UB in C.
-      int expected = static_cast<int32_t>(*i + *j);
+      int expected = static_cast<int32_t>(static_cast<uint32_t>(*i) +
+                                          static_cast<uint32_t>(*j));
       CHECK_EQ(expected, bt.call(*i, *j));
     }
   }
@@ -1721,7 +1722,7 @@ TEST(RunInt32SubP) {
 
   FOR_UINT32_INPUTS(i) {
     FOR_UINT32_INPUTS(j) {
-      uint32_t expected = static_cast<int32_t>(*i - *j);
+      uint32_t expected = *i - *j;
       CHECK_EQ(expected, bt.call(*i, *j));
     }
   }
@@ -6897,29 +6898,6 @@ TEST(Regression738952) {
   m.Return(m.Load(MachineType::Int32(), m.PointerConstant(&sentinel),
                   m.TruncateFloat64ToWord32(m.Float64Constant(d))));
   CHECK_EQ(sentinel, m.Call());
-}
-
-TEST(Regression6640) {
-  RawMachineAssemblerTester<int32_t> m;
-
-  int32_t old_value = 0;
-  int32_t new_value = 1;
-  Node* c = m.RelocatableInt32Constant(
-      old_value, RelocInfo::WASM_FUNCTION_TABLE_SIZE_REFERENCE);
-  m.Return(m.Word32Equal(c, c));
-
-  // Patch the code.
-  Handle<Code> code = m.GetCode();
-  for (RelocIterator it(*code,
-                        1 << RelocInfo::WASM_FUNCTION_TABLE_SIZE_REFERENCE);
-       !it.done(); it.next()) {
-    // TODO(6792): No longer needed once WebAssembly code is off heap.
-    CodeSpaceMemoryModificationScope modification_scope(code->GetHeap());
-    it.rinfo()->update_wasm_function_table_size_reference(
-        old_value, new_value, FLUSH_ICACHE_IF_NEEDED);
-  }
-
-  CHECK(m.Call());
 }
 
 }  // namespace compiler

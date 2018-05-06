@@ -28,7 +28,7 @@
 #include <stdlib.h>
 
 #include "src/base/platform/platform.h"
-#include "src/factory.h"
+#include "src/heap/factory.h"
 #include "src/heap/spaces-inl.h"
 #include "src/objects-inl.h"
 #include "src/snapshot/snapshot.h"
@@ -138,7 +138,7 @@ TEST(Regress3540) {
   address = code_range->AllocateRawMemory(
       request_size, request_size - (2 * MemoryAllocator::CodePageGuardSize()),
       &size);
-  CHECK_NOT_NULL(address);
+  CHECK_NE(address, kNullAddress);
 
   Address null_address;
   size_t null_size;
@@ -146,7 +146,7 @@ TEST(Regress3540) {
   null_address = code_range->AllocateRawMemory(
       request_size, request_size - (2 * MemoryAllocator::CodePageGuardSize()),
       &null_size);
-  CHECK_NULL(null_address);
+  CHECK_EQ(null_address, kNullAddress);
 
   code_range->FreeRawMemory(address, size);
   delete code_range;
@@ -264,7 +264,7 @@ TEST(NewSpace) {
   }
 
   new_space.TearDown();
-  memory_allocator->unmapper()->WaitUntilCompleted();
+  memory_allocator->unmapper()->EnsureUnmappingCompleted();
   memory_allocator->TearDown();
   delete memory_allocator;
 }
@@ -365,8 +365,9 @@ TEST(SizeOfInitialHeap) {
   // Freshly initialized VM gets by with the snapshot size (which is below
   // kMaxInitialSizePerSpace per space).
   Heap* heap = isolate->heap();
-  int page_count[LAST_PAGED_SPACE + 1] = {0, 0, 0, 0};
-  for (int i = FIRST_PAGED_SPACE; i <= LAST_PAGED_SPACE; i++) {
+  int page_count[LAST_GROWABLE_PAGED_SPACE + 1] = {0, 0, 0, 0};
+  for (int i = FIRST_GROWABLE_PAGED_SPACE; i <= LAST_GROWABLE_PAGED_SPACE;
+       i++) {
     // Debug code can be very large, so skip CODE_SPACE if we are generating it.
     if (i == CODE_SPACE && i::FLAG_debug_code) continue;
 
@@ -378,7 +379,8 @@ TEST(SizeOfInitialHeap) {
   // Executing the empty script gets by with the same number of pages, i.e.,
   // requires no extra space.
   CompileRun("/*empty*/");
-  for (int i = FIRST_PAGED_SPACE; i <= LAST_PAGED_SPACE; i++) {
+  for (int i = FIRST_GROWABLE_PAGED_SPACE; i <= LAST_GROWABLE_PAGED_SPACE;
+       i++) {
     // Skip CODE_SPACE, since we had to generate code even for an empty script.
     if (i == CODE_SPACE) continue;
     CHECK_EQ(page_count[i], isolate->heap()->paged_space(i)->CountTotalPages());

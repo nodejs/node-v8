@@ -1492,6 +1492,7 @@ void DeclarationScope::ResetAfterPreparsing(AstValueFactory* ast_value_factory,
   unresolved_ = nullptr;
   sloppy_block_function_map_ = nullptr;
   rare_data_ = nullptr;
+  has_rest_ = false;
 
   if (aborted) {
     // Prepare scope for use in the outer zone.
@@ -2233,6 +2234,8 @@ void Scope::AllocateNonParameterLocal(Variable* var) {
   if (var->IsUnallocated() && MustAllocate(var)) {
     if (MustAllocateInContext(var)) {
       AllocateHeapSlot(var);
+      DCHECK_IMPLIES(is_catch_scope(),
+                     var->index() == Context::THROWN_OBJECT_INDEX);
     } else {
       AllocateStackSlot(var);
     }

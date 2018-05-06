@@ -58,6 +58,7 @@ namespace internal {
 #define kOffHeapTrampolineRegister ip0
 #define kRuntimeCallFunctionRegister x1
 #define kRuntimeCallArgCountRegister x0
+#define kWasmInstanceRegister x7
 
 #define LS_MACRO_LIST(V)                                     \
   V(Ldrb, Register&, rt, LDRB_w)                             \
@@ -219,6 +220,12 @@ class TurboAssembler : public Assembler {
   bool allow_macro_instructions() const { return allow_macro_instructions_; }
 #endif
 
+  // We should avoid using near calls or jumps when generating WebAssembly code
+  // or calls to WebAssembly from JavaScript.
+  bool CanUseNearCallOrJump(RelocInfo::Mode rmode) {
+    return near_branches_allowed() && rmode != RelocInfo::JS_TO_WASM_CALL;
+  }
+
   // Activation support.
   void EnterFrame(StackFrame::Type type);
   void EnterFrame(StackFrame::Type type, bool load_constant_pool_pointer_reg) {
@@ -231,6 +238,7 @@ class TurboAssembler : public Assembler {
 
   void Mov(const Register& rd, const Operand& operand,
            DiscardMoveMode discard_mode = kDontDiscardForSameWReg);
+  void Mov(const Register& rd, ExternalReference reference);
   void Mov(const Register& rd, uint64_t imm);
   inline void Mov(const Register& rd, const Register& rm);
   void Mov(const VRegister& vd, int vd_index, const VRegister& vn,
@@ -582,6 +590,10 @@ class TurboAssembler : public Assembler {
   // Use --debug_code to enable.
   void Assert(Condition cond, AbortReason reason);
 
+  // Like Assert(), but without condition.
+  // Use --debug_code to enable.
+  void AssertUnreachable(AbortReason reason);
+
   void AssertSmi(Register object,
                  AbortReason reason = AbortReason::kOperandIsNotASmi);
 
@@ -867,26 +879,32 @@ class TurboAssembler : public Assembler {
             int shift_amount = 0);
   void Movi(const VRegister& vd, uint64_t hi, uint64_t lo);
 
-  void Jump(Register target);
+#ifdef V8_EMBEDDED_BUILTINS
+  void LookupConstant(Register destination, Handle<Object> object);
+  void LookupExternalReference(Register destination,
+                               ExternalReference reference);
+#endif  // V8_EMBEDDED_BUILTINS
+
+  void Jump(Register target, Condition cond = al);
   void Jump(Address target, RelocInfo::Mode rmode, Condition cond = al);
   void Jump(Handle<Code> code, RelocInfo::Mode rmode, Condition cond = al);
-  void Jump(intptr_t target, RelocInfo::Mode rmode, Condition cond = al);
 
   void Call(Register target);
-  void Call(Label* target);
   void Call(Address target, RelocInfo::Mode rmode);
   void Call(Handle<Code> code, RelocInfo::Mode rmode = RelocInfo::CODE_TARGET);
   void Call(ExternalReference target);
+
+  // Generate an indirect call (for when a direct call's range is not adequate).
+  void IndirectCall(Address target, RelocInfo::Mode rmode);
 
   void CallForDeoptimization(Address target, RelocInfo::Mode rmode);
 
   // For every Call variant, there is a matching CallSize function that returns
   // the size (in bytes) of the call sequence.
   static int CallSize(Register target);
-  static int CallSize(Label* target);
-  static int CallSize(Address target, RelocInfo::Mode rmode);
-  static int CallSize(Handle<Code> code,
-                      RelocInfo::Mode rmode = RelocInfo::CODE_TARGET);
+  int CallSize(Address target, RelocInfo::Mode rmode);
+  int CallSize(Handle<Code> code,
+               RelocInfo::Mode rmode = RelocInfo::CODE_TARGET);
 
   // Calls a C function.
   // The called function is not allowed to trigger a
@@ -902,8 +920,8 @@ class TurboAssembler : public Assembler {
   // Performs a truncating conversion of a floating point number as used by
   // the JS bitwise operations. See ECMA-262 9.5: ToInt32.
   // Exits with 'result' holding the answer.
-  void TruncateDoubleToIDelayed(Zone* zone, Register result,
-                                DoubleRegister double_input);
+  void TruncateDoubleToI(Isolate* isolate, Zone* zone, Register result,
+                         DoubleRegister double_input);
 
   inline void Mul(const Register& rd, const Register& rn, const Register& rm);
 
@@ -1206,6 +1224,9 @@ class TurboAssembler : public Assembler {
 
   void ResetSpeculationPoisonRegister();
 
+  bool root_array_available() const { return root_array_available_; }
+  void set_root_array_available(bool v) { root_array_available_ = v; }
+
  protected:
   // The actual Push and Pop implementations. These don't generate any code
   // other than that required for the push or pop. This allows
@@ -1238,8 +1259,12 @@ class TurboAssembler : public Assembler {
   // have mixed types. The format string (x0) should not be included.
   void CallPrintf(int arg_count = 0, const CPURegister* args = nullptr);
 
+  // This handle will be patched with the code object on installation.
+  Handle<HeapObject> code_object_;
+
  private:
   bool has_frame_ = false;
+  bool root_array_available_ = true;
   Isolate* const isolate_;
 #if DEBUG
   // Tell whether any of the macro instruction can be used. When false the
@@ -1247,8 +1272,7 @@ class TurboAssembler : public Assembler {
   // of instructions is called.
   bool allow_macro_instructions_;
 #endif
-  // This handle will be patched with the code object on installation.
-  Handle<HeapObject> code_object_;
+
 
   // Scratch registers available for use by the MacroAssembler.
   CPURegList tmp_list_;
@@ -1276,6 +1300,9 @@ class TurboAssembler : public Assembler {
 
   void LoadStorePairMacro(const CPURegister& rt, const CPURegister& rt2,
                           const MemOperand& addr, LoadStorePairOp op);
+
+  static bool IsNearCallOffset(int64_t offset);
+  void JumpHelper(int64_t offset, RelocInfo::Mode rmode, Condition cond = al);
 };
 
 class MacroAssembler : public TurboAssembler {
@@ -1713,6 +1740,9 @@ class MacroAssembler : public TurboAssembler {
   // Abort execution if argument is not a FixedArray, enabled via --debug-code.
   void AssertFixedArray(Register object);
 
+  // Abort execution if argument is not a Constructor, enabled via --debug-code.
+  void AssertConstructor(Register object);
+
   // Abort execution if argument is not a JSFunction, enabled via --debug-code.
   void AssertFunction(Register object);
 
@@ -1771,7 +1801,7 @@ class MacroAssembler : public TurboAssembler {
                                bool builtin_exit_frame = false);
 
   // Generates a trampoline to jump to the off-heap instruction stream.
-  void JumpToInstructionStream(const InstructionStream* stream);
+  void JumpToInstructionStream(Address entry);
 
   // Registers used through the invocation chain are hard-coded.
   // We force passing the parameters to ensure the contracts are correctly
@@ -1920,6 +1950,10 @@ class MacroAssembler : public TurboAssembler {
   void LoadGlobalProxy(Register dst) {
     LoadNativeContextSlot(Context::GLOBAL_PROXY_INDEX, dst);
   }
+
+  // ---------------------------------------------------------------------------
+  // In-place weak references.
+  void LoadWeakValue(Register out, Register in, Label* target_if_cleared);
 
   // ---------------------------------------------------------------------------
   // StatsCounter support

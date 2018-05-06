@@ -11,6 +11,7 @@ var symbol_for_a = Symbol.for("a");
 var typed_array = new Uint8Array([1, 2, 3]);
 var array_buffer = new ArrayBuffer(3);
 var data_view = new DataView(new ArrayBuffer(8), 0, 8);
+var array = [1,2,3];
 
 function listener(event, exec_state, event_data, data) {
   if (event != Debug.DebugEvent.Break) return;
@@ -76,14 +77,14 @@ function listener(event, exec_state, event_data, data) {
       if (typeof Array.prototype[f] === "function") {
         if (fails.includes(f)) {
           if (function_param.includes(f)) {
-            fail(`[1, 2, 3].${f}(()=>{});`);
+            fail(`array.${f}(()=>{});`);
           } else {
-            fail(`[1, 2, 3].${f}();`);
+            fail(`array.${f}();`);
           }
         } else if (function_param.includes(f)) {
-          exec_state.frame(0).evaluate(`[1, 2, 3].${f}(()=>{});`, true);
+          exec_state.frame(0).evaluate(`array.${f}(()=>{});`, true);
         } else {
-          exec_state.frame(0).evaluate(`[1, 2, 3].${f}();`, true);
+          exec_state.frame(0).evaluate(`array.${f}();`, true);
         }
       }
     }
@@ -99,8 +100,13 @@ function listener(event, exec_state, event_data, data) {
     success(undefined, `data_view.byteLength`);
     success(undefined, `data_view.byteOffset`);
     for (f of Object.getOwnPropertyNames(DataView.prototype)) {
-      if (typeof data_view[f] === 'function' && f.startsWith('get'))
-        success(0, `data_view.${f}()`);
+      if (typeof data_view[f] === 'function') {
+        if (f.startsWith('getBig')) {
+          success(0n, `data_view.${f}()`);
+        } else if (f.startsWith('get')) {
+          success(0, `data_view.${f}()`);
+        }
+      }
     }
 
     // Test TypedArray functions.
@@ -191,12 +197,11 @@ function listener(event, exec_state, event_data, data) {
     fail("'abcd'.match(/a/)");
     fail("'abcd'.replace(/a/)");
     fail("'abcd'.search(/a/)");
-    fail("'abcd'.split(/a/)");
 
     // Test RegExp functions.
     fail(`/a/.compile()`);
-    fail(`/a/.exec('abc')`);
-    fail(`/a/.test('abc')`);
+    success('a', `/a/.exec('abc')[0]`);
+    success(true, `/a/.test('abc')`);
     fail(`/a/.toString()`);
 
     // Test JSON functions.

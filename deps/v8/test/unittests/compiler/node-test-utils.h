@@ -5,6 +5,7 @@
 #ifndef V8_UNITTESTS_COMPILER_NODE_TEST_UTILS_H_
 #define V8_UNITTESTS_COMPILER_NODE_TEST_UTILS_H_
 
+#include "src/compiler/common-operator.h"
 #include "src/compiler/machine-operator.h"
 #include "src/compiler/simplified-operator.h"
 #include "src/machine-type.h"
@@ -68,7 +69,7 @@ Matcher<Node*> IsIfFalse(const Matcher<Node*>& control_matcher);
 Matcher<Node*> IsIfSuccess(const Matcher<Node*>& control_matcher);
 Matcher<Node*> IsSwitch(const Matcher<Node*>& value_matcher,
                         const Matcher<Node*>& control_matcher);
-Matcher<Node*> IsIfValue(const Matcher<int32_t>& value_matcher,
+Matcher<Node*> IsIfValue(const Matcher<IfValueParameters>& value_matcher,
                          const Matcher<Node*>& control_matcher);
 Matcher<Node*> IsIfDefault(const Matcher<Node*>& control_matcher);
 Matcher<Node*> IsBeginRegion(const Matcher<Node*>& effect_matcher);
@@ -271,7 +272,7 @@ Matcher<Node*> IsNumberSqrt(const Matcher<Node*>& value_matcher);
 Matcher<Node*> IsNumberTan(const Matcher<Node*>& value_matcher);
 Matcher<Node*> IsNumberTanh(const Matcher<Node*>& value_matcher);
 Matcher<Node*> IsNumberTrunc(const Matcher<Node*>& value_matcher);
-Matcher<Node*> IsStringFromCharCode(const Matcher<Node*>& value_matcher);
+Matcher<Node*> IsStringFromSingleCharCode(const Matcher<Node*>& value_matcher);
 Matcher<Node*> IsStringLength(const Matcher<Node*>& value_matcher);
 Matcher<Node*> IsAllocate(const Matcher<Node*>& size_matcher,
                           const Matcher<Node*>& effect_matcher,
@@ -309,7 +310,13 @@ Matcher<Node*> IsStoreElement(const Matcher<ElementAccess>& access_matcher,
                               const Matcher<Node*>& value_matcher,
                               const Matcher<Node*>& effect_matcher,
                               const Matcher<Node*>& control_matcher);
+
+Matcher<Node*> IsObjectIsFiniteNumber(const Matcher<Node*>& value_matcher);
+Matcher<Node*> IsNumberIsFinite(const Matcher<Node*>& value_matcher);
+Matcher<Node*> IsObjectIsInteger(const Matcher<Node*>& value_matcher);
+Matcher<Node*> IsObjectIsSafeInteger(const Matcher<Node*>& value_matcher);
 Matcher<Node*> IsObjectIsNaN(const Matcher<Node*>& value_matcher);
+Matcher<Node*> IsNumberIsNaN(const Matcher<Node*>& value_matcher);
 Matcher<Node*> IsObjectIsReceiver(const Matcher<Node*>& value_matcher);
 Matcher<Node*> IsObjectIsSmi(const Matcher<Node*>& value_matcher);
 Matcher<Node*> IsObjectIsUndetectable(const Matcher<Node*>& value_matcher);
@@ -319,11 +326,16 @@ Matcher<Node*> IsLoad(const Matcher<LoadRepresentation>& rep_matcher,
                       const Matcher<Node*>& index_matcher,
                       const Matcher<Node*>& effect_matcher,
                       const Matcher<Node*>& control_matcher);
-Matcher<Node*> IsUnalignedLoad(
-    const Matcher<UnalignedLoadRepresentation>& rep_matcher,
-    const Matcher<Node*>& base_matcher, const Matcher<Node*>& index_matcher,
-    const Matcher<Node*>& effect_matcher,
-    const Matcher<Node*>& control_matcher);
+Matcher<Node*> IsPoisonedLoad(const Matcher<LoadRepresentation>& rep_matcher,
+                              const Matcher<Node*>& base_matcher,
+                              const Matcher<Node*>& index_matcher,
+                              const Matcher<Node*>& effect_matcher,
+                              const Matcher<Node*>& control_matcher);
+Matcher<Node*> IsUnalignedLoad(const Matcher<LoadRepresentation>& rep_matcher,
+                               const Matcher<Node*>& base_matcher,
+                               const Matcher<Node*>& index_matcher,
+                               const Matcher<Node*>& effect_matcher,
+                               const Matcher<Node*>& control_matcher);
 Matcher<Node*> IsStore(const Matcher<StoreRepresentation>& rep_matcher,
                        const Matcher<Node*>& base_matcher,
                        const Matcher<Node*>& index_matcher,
@@ -396,6 +408,8 @@ Matcher<Node*> IsInt64Mul(const Matcher<Node*>& lhs_matcher,
                           const Matcher<Node*>& rhs_matcher);
 Matcher<Node*> IsJSAdd(const Matcher<Node*>& lhs_matcher,
                        const Matcher<Node*>& rhs_matcher);
+Matcher<Node*> IsJSParseInt(const Matcher<Node*>& lhs_matcher,
+                            const Matcher<Node*>& rhs_matcher);
 Matcher<Node*> IsBitcastTaggedToWord(const Matcher<Node*>& input_matcher);
 Matcher<Node*> IsBitcastWordToTagged(const Matcher<Node*>& input_matcher);
 Matcher<Node*> IsBitcastWordToTaggedSigned(const Matcher<Node*>& input_matcher);

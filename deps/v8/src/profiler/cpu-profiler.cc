@@ -70,9 +70,9 @@ void ProfilerEventsProcessor::AddDeoptStack(Isolate* isolate, Address from,
   TickSampleEventRecord record(last_code_event_id_.Value());
   RegisterState regs;
   Address fp = isolate->c_entry_fp(isolate->thread_local_top());
-  regs.sp = fp - fp_to_sp_delta;
-  regs.fp = fp;
-  regs.pc = from;
+  regs.sp = reinterpret_cast<void*>(fp - fp_to_sp_delta);
+  regs.fp = reinterpret_cast<void*>(fp);
+  regs.pc = reinterpret_cast<void*>(from);
   record.sample.Init(isolate, regs, TickSample::kSkipCEntryFrame, false, false);
   ticks_from_vm_buffer_.Enqueue(record);
 }
@@ -84,9 +84,9 @@ void ProfilerEventsProcessor::AddCurrentStack(Isolate* isolate,
   StackFrameIterator it(isolate);
   if (!it.done()) {
     StackFrame* frame = it.frame();
-    regs.sp = frame->sp();
-    regs.fp = frame->fp();
-    regs.pc = frame->pc();
+    regs.sp = reinterpret_cast<void*>(frame->sp());
+    regs.fp = reinterpret_cast<void*>(frame->fp());
+    regs.pc = reinterpret_cast<void*>(frame->pc());
   }
   record.sample.Init(isolate, regs, TickSample::kSkipCEntryFrame, update_stats,
                      false);
@@ -235,7 +235,7 @@ void CpuProfiler::CodeEventHandler(const CodeEventsContainer& evt_rec) {
       break;
     case CodeEventRecord::CODE_DEOPT: {
       const CodeDeoptEventRecord* rec = &evt_rec.CodeDeoptEventRecord_;
-      Address pc = reinterpret_cast<Address>(rec->pc);
+      Address pc = rec->pc;
       int fp_to_sp_delta = rec->fp_to_sp_delta;
       processor_->Enqueue(evt_rec);
       processor_->AddDeoptStack(isolate_, pc, fp_to_sp_delta);
@@ -318,6 +318,7 @@ void CpuProfiler::set_sampling_interval(base::TimeDelta value) {
 void CpuProfiler::ResetProfiles() {
   profiles_.reset(new CpuProfilesCollection(isolate_));
   profiles_->set_cpu_profiler(this);
+  profiler_listener_.reset();
 }
 
 void CpuProfiler::CreateEntriesForRuntimeCallStats() {
@@ -372,10 +373,11 @@ void CpuProfiler::StartProcessorIfNotStarted() {
   generator_.reset(new ProfileGenerator(profiles_.get()));
   processor_.reset(new ProfilerEventsProcessor(isolate_, generator_.get(),
                                                sampling_interval_));
+  if (!profiler_listener_) {
+    profiler_listener_.reset(new ProfilerListener(isolate_, this));
+  }
   CreateEntriesForRuntimeCallStats();
-  logger->SetUpProfilerListener();
-  ProfilerListener* profiler_listener = logger->profiler_listener();
-  profiler_listener->AddObserver(this);
+  logger->AddCodeEventListener(profiler_listener_.get());
   is_profiling_ = true;
   isolate_->set_is_profiling(true);
   // Enumerate stuff we already have in the heap.
@@ -410,10 +412,8 @@ void CpuProfiler::StopProcessor() {
   Logger* logger = isolate_->logger();
   is_profiling_ = false;
   isolate_->set_is_profiling(false);
-  ProfilerListener* profiler_listener = logger->profiler_listener();
-  profiler_listener->RemoveObserver(this);
+  logger->RemoveCodeEventListener(profiler_listener_.get());
   processor_->StopSynchronously();
-  logger->TearDownProfilerListener();
   processor_.reset();
   generator_.reset();
   logger->is_logging_ = saved_is_logging_;

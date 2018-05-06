@@ -103,8 +103,8 @@ class Register : public RegisterBase<Register, kRegAfterLast> {
   explicit constexpr Register(int code) : RegisterBase(code) {}
 };
 
-static_assert(IS_TRIVIALLY_COPYABLE(Register) &&
-                  sizeof(Register) == sizeof(int),
+ASSERT_TRIVIALLY_COPYABLE(Register);
+static_assert(sizeof(Register) == sizeof(int),
               "Register can efficiently be passed by value");
 
 #define DECLARE_REGISTER(R) \
@@ -204,8 +204,8 @@ class XMMRegister : public RegisterBase<XMMRegister, kDoubleAfterLast> {
   explicit constexpr XMMRegister(int code) : RegisterBase(code) {}
 };
 
-static_assert(IS_TRIVIALLY_COPYABLE(XMMRegister) &&
-                  sizeof(XMMRegister) == sizeof(int),
+ASSERT_TRIVIALLY_COPYABLE(XMMRegister);
+static_assert(sizeof(XMMRegister) == sizeof(int),
               "XMMRegister can efficiently be passed by value");
 
 typedef XMMRegister FloatRegister;
@@ -301,23 +301,25 @@ enum RoundingMode {
 // -----------------------------------------------------------------------------
 // Machine instruction Immediates
 
-class Immediate BASE_EMBEDDED {
+class Immediate {
  public:
-  explicit Immediate(int32_t value) : value_(value) {}
-  explicit Immediate(int32_t value, RelocInfo::Mode rmode)
+  explicit constexpr Immediate(int32_t value) : value_(value) {}
+  explicit constexpr Immediate(int32_t value, RelocInfo::Mode rmode)
       : value_(value), rmode_(rmode) {}
-  explicit Immediate(Smi* value) {
+  explicit Immediate(Smi* value)
+      : value_(static_cast<int32_t>(reinterpret_cast<intptr_t>(value))) {
     DCHECK(SmiValuesAre31Bits());  // Only available for 31-bit SMI.
-    value_ = static_cast<int32_t>(reinterpret_cast<intptr_t>(value));
   }
 
  private:
-  int32_t value_;
-  RelocInfo::Mode rmode_ = RelocInfo::NONE;
+  const int32_t value_;
+  const RelocInfo::Mode rmode_ = RelocInfo::NONE;
 
   friend class Assembler;
 };
-
+ASSERT_TRIVIALLY_COPYABLE(Immediate);
+static_assert(sizeof(Immediate) <= kPointerSize,
+              "Immediate must be small enough to pass it by value");
 
 // -----------------------------------------------------------------------------
 // Machine instruction Operands
@@ -380,19 +382,9 @@ class Operand {
  private:
   const Data data_;
 };
+ASSERT_TRIVIALLY_COPYABLE(Operand);
 static_assert(sizeof(Operand) <= 2 * kPointerSize,
               "Operand must be small enough to pass it by value");
-// Unfortunately, MSVC 2015 is broken in that both is_trivially_destructible and
-// is_trivially_copy_constructible are true, but is_trivially_copyable is false.
-// (status at 2018-02-26, observed on the msvc waterfall bot).
-#if V8_CC_MSVC
-static_assert(std::is_trivially_copy_constructible<Operand>::value &&
-                  std::is_trivially_destructible<Operand>::value,
-              "Operand must be trivially copyable to pass it by value");
-#else
-static_assert(IS_TRIVIALLY_COPYABLE(Operand),
-              "Operand must be trivially copyable to pass it by value");
-#endif
 
 #define ASSEMBLER_INSTRUCTION_LIST(V) \
   V(add)                              \
@@ -489,6 +481,10 @@ class Assembler : public AssemblerBase {
   inline static void deserialization_set_special_target_at(
       Address instruction_payload, Code* code, Address target);
 
+  // Get the size of the special target encoded at 'instruction_payload'.
+  inline static int deserialization_special_target_size(
+      Address instruction_payload);
+
   // This sets the internal reference at the pc.
   inline static void deserialization_set_target_internal_reference_at(
       Address pc, Address target,
@@ -496,6 +492,11 @@ class Assembler : public AssemblerBase {
 
   inline Handle<Code> code_target_object_handle_at(Address pc);
   inline Address runtime_entry_at(Address pc);
+
+  // TODO(arm64): This is only needed until direct calls are supported in
+  // WebAssembly for ARM64.
+  void set_code_in_js_code_space(bool) {}
+
   // Number of bytes taken up by the branch target in the code.
   static constexpr int kSpecialTargetSize = 4;  // 32-bit displacement.
   // Distance between the address of the code target in the call instruction
@@ -645,7 +646,7 @@ class Assembler : public AssemblerBase {
   void movl(Operand dst, Label* src);
 
   // Loads a pointer into a register with a relocation mode.
-  void movp(Register dst, void* ptr, RelocInfo::Mode rmode);
+  void movp(Register dst, Address ptr, RelocInfo::Mode rmode);
 
   // Load a heap number into a register.
   // The heap number will not be allocated and embedded into the code right
@@ -682,7 +683,7 @@ class Assembler : public AssemblerBase {
   void repmovsq() { emit_repmovs(kInt64Size); }
 
   // Instruction to load from an immediate 64-bit pointer into RAX.
-  void load_rax(void* ptr, RelocInfo::Mode rmode);
+  void load_rax(Address value, RelocInfo::Mode rmode);
   void load_rax(ExternalReference ext);
 
   // Conditional moves.
@@ -801,7 +802,7 @@ class Assembler : public AssemblerBase {
   // Shifts src:dst right by cl bits, affecting only dst.
   void shrd(Register dst, Register src);
 
-  void store_rax(void* dst, RelocInfo::Mode mode);
+  void store_rax(Address dst, RelocInfo::Mode mode);
   void store_rax(ExternalReference ref);
 
   void subb(Register dst, Immediate src) {
@@ -1460,6 +1461,7 @@ class Assembler : public AssemblerBase {
   AVX_P_3(vor, 0x56);
   AVX_P_3(vxor, 0x57);
   AVX_3(vcvtsd2ss, 0x5a, vsd);
+  AVX_3(vhaddps, 0x7c, vsd);
 
 #undef AVX_3
 #undef AVX_S_3
@@ -1636,85 +1638,85 @@ class Assembler : public AssemblerBase {
   void vlddqu(XMMRegister dst, Operand src) {
     vinstr(0xF0, dst, xmm0, src, kF2, k0F, kWIG);
   }
-  void vpsllw(XMMRegister dst, XMMRegister src, int8_t imm8) {
+  void vpsllw(XMMRegister dst, XMMRegister src, uint8_t imm8) {
     vinstr(0x71, xmm6, dst, src, k66, k0F, kWIG);
     emit(imm8);
   }
-  void vpsrlw(XMMRegister dst, XMMRegister src, int8_t imm8) {
+  void vpsrlw(XMMRegister dst, XMMRegister src, uint8_t imm8) {
     vinstr(0x71, xmm2, dst, src, k66, k0F, kWIG);
     emit(imm8);
   }
-  void vpsraw(XMMRegister dst, XMMRegister src, int8_t imm8) {
+  void vpsraw(XMMRegister dst, XMMRegister src, uint8_t imm8) {
     vinstr(0x71, xmm4, dst, src, k66, k0F, kWIG);
     emit(imm8);
   }
-  void vpslld(XMMRegister dst, XMMRegister src, int8_t imm8) {
+  void vpslld(XMMRegister dst, XMMRegister src, uint8_t imm8) {
     vinstr(0x72, xmm6, dst, src, k66, k0F, kWIG);
     emit(imm8);
   }
-  void vpsrld(XMMRegister dst, XMMRegister src, int8_t imm8) {
+  void vpsrld(XMMRegister dst, XMMRegister src, uint8_t imm8) {
     vinstr(0x72, xmm2, dst, src, k66, k0F, kWIG);
     emit(imm8);
   }
-  void vpsrad(XMMRegister dst, XMMRegister src, int8_t imm8) {
+  void vpsrad(XMMRegister dst, XMMRegister src, uint8_t imm8) {
     vinstr(0x72, xmm4, dst, src, k66, k0F, kWIG);
     emit(imm8);
   }
-  void vpextrb(Register dst, XMMRegister src, int8_t imm8) {
+  void vpextrb(Register dst, XMMRegister src, uint8_t imm8) {
     XMMRegister idst = XMMRegister::from_code(dst.code());
     vinstr(0x14, src, xmm0, idst, k66, k0F3A, kW0);
     emit(imm8);
   }
-  void vpextrb(Operand dst, XMMRegister src, int8_t imm8) {
+  void vpextrb(Operand dst, XMMRegister src, uint8_t imm8) {
     vinstr(0x14, src, xmm0, dst, k66, k0F3A, kW0);
     emit(imm8);
   }
-  void vpextrw(Register dst, XMMRegister src, int8_t imm8) {
+  void vpextrw(Register dst, XMMRegister src, uint8_t imm8) {
     XMMRegister idst = XMMRegister::from_code(dst.code());
     vinstr(0xc5, idst, xmm0, src, k66, k0F, kW0);
     emit(imm8);
   }
-  void vpextrw(Operand dst, XMMRegister src, int8_t imm8) {
+  void vpextrw(Operand dst, XMMRegister src, uint8_t imm8) {
     vinstr(0x15, src, xmm0, dst, k66, k0F3A, kW0);
     emit(imm8);
   }
-  void vpextrd(Register dst, XMMRegister src, int8_t imm8) {
+  void vpextrd(Register dst, XMMRegister src, uint8_t imm8) {
     XMMRegister idst = XMMRegister::from_code(dst.code());
     vinstr(0x16, src, xmm0, idst, k66, k0F3A, kW0);
     emit(imm8);
   }
-  void vpextrd(Operand dst, XMMRegister src, int8_t imm8) {
+  void vpextrd(Operand dst, XMMRegister src, uint8_t imm8) {
     vinstr(0x16, src, xmm0, dst, k66, k0F3A, kW0);
     emit(imm8);
   }
-  void vpinsrb(XMMRegister dst, XMMRegister src1, Register src2, int8_t imm8) {
+  void vpinsrb(XMMRegister dst, XMMRegister src1, Register src2, uint8_t imm8) {
     XMMRegister isrc = XMMRegister::from_code(src2.code());
     vinstr(0x20, dst, src1, isrc, k66, k0F3A, kW0);
     emit(imm8);
   }
-  void vpinsrb(XMMRegister dst, XMMRegister src1, Operand src2, int8_t imm8) {
+  void vpinsrb(XMMRegister dst, XMMRegister src1, Operand src2, uint8_t imm8) {
     vinstr(0x20, dst, src1, src2, k66, k0F3A, kW0);
     emit(imm8);
   }
-  void vpinsrw(XMMRegister dst, XMMRegister src1, Register src2, int8_t imm8) {
+  void vpinsrw(XMMRegister dst, XMMRegister src1, Register src2, uint8_t imm8) {
     XMMRegister isrc = XMMRegister::from_code(src2.code());
     vinstr(0xc4, dst, src1, isrc, k66, k0F, kW0);
     emit(imm8);
   }
-  void vpinsrw(XMMRegister dst, XMMRegister src1, Operand src2, int8_t imm8) {
+  void vpinsrw(XMMRegister dst, XMMRegister src1, Operand src2, uint8_t imm8) {
     vinstr(0xc4, dst, src1, src2, k66, k0F, kW0);
     emit(imm8);
   }
-  void vpinsrd(XMMRegister dst, XMMRegister src1, Register src2, int8_t imm8) {
+  void vpinsrd(XMMRegister dst, XMMRegister src1, Register src2, uint8_t imm8) {
     XMMRegister isrc = XMMRegister::from_code(src2.code());
     vinstr(0x22, dst, src1, isrc, k66, k0F3A, kW0);
     emit(imm8);
   }
-  void vpinsrd(XMMRegister dst, XMMRegister src1, Operand src2, int8_t imm8) {
+  void vpinsrd(XMMRegister dst, XMMRegister src1, Operand src2, uint8_t imm8) {
     vinstr(0x22, dst, src1, src2, k66, k0F3A, kW0);
     emit(imm8);
   }
-  void vpshufd(XMMRegister dst, XMMRegister src, int8_t imm8) {
+  void vpshufd(XMMRegister dst, XMMRegister src, uint8_t imm8) {
     vinstr(0x70, dst, xmm0, src, k66, k0F, kWIG);
     emit(imm8);
   }
@@ -1917,8 +1919,6 @@ class Assembler : public AssemblerBase {
   byte byte_at(int pos)  { return buffer_[pos]; }
   void set_byte_at(int pos, byte value) { buffer_[pos] = value; }
 
-  Address pc() const { return pc_; }
-
  protected:
   // Call near indirect
   void call(Operand operand);
@@ -1937,7 +1937,7 @@ class Assembler : public AssemblerBase {
 
   void emit(byte x) { *pc_++ = x; }
   inline void emitl(uint32_t x);
-  inline void emitp(void* x, RelocInfo::Mode rmode);
+  inline void emitp(Address x, RelocInfo::Mode rmode);
   inline void emitq(uint64_t x);
   inline void emitw(uint16_t x);
   inline void emit_code_target(Handle<Code> target, RelocInfo::Mode rmode);
