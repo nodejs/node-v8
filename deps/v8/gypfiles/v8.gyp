@@ -786,12 +786,14 @@
         '../src/compiler/loop-peeling.h',
         '../src/compiler/loop-variable-optimizer.cc',
         '../src/compiler/loop-variable-optimizer.h',
+        '../src/compiler/machine-graph-verifier.cc',
+        '../src/compiler/machine-graph-verifier.h',
+        '../src/compiler/machine-graph.cc',
+        '../src/compiler/machine-graph.h',
         '../src/compiler/machine-operator-reducer.cc',
         '../src/compiler/machine-operator-reducer.h',
         '../src/compiler/machine-operator.cc',
         '../src/compiler/machine-operator.h',
-        '../src/compiler/machine-graph-verifier.cc',
-        '../src/compiler/machine-graph-verifier.h',
         '../src/compiler/memory-optimizer.cc',
         '../src/compiler/memory-optimizer.h',
         '../src/compiler/move-optimizer.cc',
@@ -1433,6 +1435,7 @@
         '../src/transitions-inl.h',
         '../src/transitions.cc',
         '../src/transitions.h',
+        '../src/trap-handler/handler-inside.cc',
         '../src/trap-handler/handler-outside.cc',
         '../src/trap-handler/handler-shared.cc',
         '../src/trap-handler/trap-handler.h',
@@ -1753,7 +1756,15 @@
           ],
         }],
         ['v8_target_arch=="x64" and OS=="linux"', {
-            'sources': ['../src/trap-handler/handler-inside.cc']
+            'sources': [
+              '../src/trap-handler/handler-inside-linux.cc',
+              '../src/trap-handler/handler-outside-linux.cc',
+            ],
+        }],
+        ['v8_target_arch=="x64" and OS=="win"', {
+            'sources': [
+              '../src/trap-handler/handler-outside-win.cc',
+            ],
         }],
         ['v8_target_arch=="ppc" or v8_target_arch=="ppc64"', {
           'sources': [
