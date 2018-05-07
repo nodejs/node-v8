@@ -23,7 +23,8 @@ class TypeCache;
 class V8_EXPORT_PRIVATE SimplifiedLowering final {
  public:
   SimplifiedLowering(JSGraph* jsgraph, Zone* zone,
-                     SourcePositionTable* source_positions);
+                     SourcePositionTable* source_position,
+                     PoisoningMitigationLevel poisoning_level);
   ~SimplifiedLowering() {}
 
   void LowerAllNodes();
@@ -34,7 +35,7 @@ class V8_EXPORT_PRIVATE SimplifiedLowering final {
       Node* node, RepresentationSelector* selector);
   void DoJSToNumberOrNumericTruncatesToWord32(Node* node,
                                               RepresentationSelector* selector);
-  void DoShift(Node* node, Operator const* op, Type* rhs_type);
+  void DoShift(Node* node, Operator const* op, Type rhs_type);
   void DoIntegral32ToBit(Node* node);
   void DoOrderedNumberToBit(Node* node);
   void DoNumberToBit(Node* node);
@@ -58,6 +59,8 @@ class V8_EXPORT_PRIVATE SimplifiedLowering final {
   // lowering. Once this phase becomes a vanilla reducer, it should get source
   // position information via the SourcePositionWrapper like all other reducers.
   SourcePositionTable* source_positions_;
+
+  PoisoningMitigationLevel poisoning_level_;
 
   Node* Float64Round(Node* const node);
   Node* Float64Sign(Node* const node);

@@ -13,7 +13,7 @@ namespace internal {
 CodeEntry::CodeEntry(CodeEventListener::LogEventsAndTags tag, const char* name,
                      const char* name_prefix, const char* resource_name,
                      int line_number, int column_number,
-                     std::unique_ptr<JITLineInfoTable> line_info,
+                     std::unique_ptr<SourcePositionTable> line_info,
                      Address instruction_start)
     : bit_field_(TagField::encode(tag) |
                  BuiltinIdField::encode(Builtins::builtin_count)),
@@ -35,10 +35,8 @@ ProfileNode::ProfileNode(ProfileTree* tree, CodeEntry* entry,
     : tree_(tree),
       entry_(entry),
       self_ticks_(0),
-      children_(CodeEntriesMatch),
       parent_(parent),
-      id_(tree->next_node_id()),
-      line_ticks_(LineTickMatch) {
+      id_(tree->next_node_id()) {
   tree_->EnqueueNode(this);
 }
 

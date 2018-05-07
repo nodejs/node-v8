@@ -53,10 +53,6 @@ using v8::internal::EmbeddedVector;
 using v8::internal::Logger;
 using v8::internal::StrLength;
 
-namespace internal {
-class InstructionStream;
-}
-
 namespace {
 
 
@@ -527,8 +523,7 @@ TEST(LogCallbacks) {
     ObjMethod1_entry = *FUNCTION_ENTRYPOINT_ADDRESS(ObjMethod1_entry);
 #endif
     i::EmbeddedVector<char, 100> ref_data;
-    i::SNPrintF(ref_data, ",0x%" V8PRIxPTR ",1,method1",
-                reinterpret_cast<intptr_t>(ObjMethod1_entry));
+    i::SNPrintF(ref_data, ",0x%" V8PRIxPTR ",1,method1", ObjMethod1_entry);
     CHECK(logger.FindLine("code-creation,Callback,-2,", ref_data.start()));
   }
   isolate->Dispose();
@@ -574,7 +569,7 @@ TEST(LogAccessorCallbacks) {
 #endif
     EmbeddedVector<char, 100> prop1_getter_record;
     i::SNPrintF(prop1_getter_record, ",0x%" V8PRIxPTR ",1,get prop1",
-                reinterpret_cast<intptr_t>(Prop1Getter_entry));
+                Prop1Getter_entry);
     CHECK(logger.FindLine("code-creation,Callback,-2,",
                           prop1_getter_record.start()));
 
@@ -584,7 +579,7 @@ TEST(LogAccessorCallbacks) {
 #endif
     EmbeddedVector<char, 100> prop1_setter_record;
     i::SNPrintF(prop1_setter_record, ",0x%" V8PRIxPTR ",1,set prop1",
-                reinterpret_cast<intptr_t>(Prop1Setter_entry));
+                Prop1Setter_entry);
     CHECK(logger.FindLine("code-creation,Callback,-2,",
                           prop1_setter_record.start()));
 
@@ -594,7 +589,7 @@ TEST(LogAccessorCallbacks) {
 #endif
     EmbeddedVector<char, 100> prop2_getter_record;
     i::SNPrintF(prop2_getter_record, ",0x%" V8PRIxPTR ",1,get prop2",
-                reinterpret_cast<intptr_t>(Prop2Getter_entry));
+                Prop2Getter_entry);
     CHECK(logger.FindLine("code-creation,Callback,-2,",
                           prop2_getter_record.start()));
   }
@@ -703,9 +698,7 @@ TEST(Issue539892) {
    private:
     void LogRecordedBuffer(i::AbstractCode* code, i::SharedFunctionInfo* shared,
                            const char* name, int length) override {}
-    void LogRecordedBuffer(const i::InstructionStream* stream, const char* name,
-                           int length) override {}
-    void LogRecordedBuffer(i::wasm::WasmCode* code, const char* name,
+    void LogRecordedBuffer(const i::wasm::WasmCode* code, const char* name,
                            int length) override {}
   } code_event_logger;
   SETUP_FLAGS();
@@ -715,7 +708,7 @@ TEST(Issue539892) {
 
   {
     ScopedLoggerInitializer logger(saved_log, saved_prof, isolate);
-    logger.logger()->addCodeEventListener(&code_event_logger);
+    logger.logger()->AddCodeEventListener(&code_event_logger);
 
     // Function with a really large name.
     const char* source_text =
@@ -780,6 +773,29 @@ TEST(LogAll) {
       CHECK(logger.FindLine("timer-event-start", "V8.DeoptimizeCode"));
       CHECK(logger.FindLine("timer-event-end", "V8.DeoptimizeCode"));
     }
+  }
+  isolate->Dispose();
+}
+
+TEST(LogInterpretedFramesNativeStack) {
+  SETUP_FLAGS();
+  i::FLAG_interpreted_frames_native_stack = true;
+  v8::Isolate::CreateParams create_params;
+  create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
+  v8::Isolate* isolate = v8::Isolate::New(create_params);
+
+  {
+    ScopedLoggerInitializer logger(saved_log, saved_prof, isolate);
+
+    const char* source_text =
+        "function testLogInterpretedFramesNativeStack(a,b) { return a + b };"
+        "testLogInterpretedFramesNativeStack('1', 1);";
+    CompileRun(source_text);
+
+    logger.StopLogging();
+
+    CHECK(logger.FindLine("InterpretedFunction",
+                          "testLogInterpretedFramesNativeStack"));
   }
   isolate->Dispose();
 }

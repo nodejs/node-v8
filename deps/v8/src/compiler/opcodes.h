@@ -123,7 +123,8 @@
   V(JSToNumber)                    \
   V(JSToNumeric)                   \
   V(JSToObject)                    \
-  V(JSToString)
+  V(JSToString)                    \
+  V(JSParseInt)
 
 #define JS_SIMPLE_UNOP_LIST(V) \
   JS_CONVERSION_UNOP_LIST(V)   \
@@ -136,13 +137,17 @@
   V(JSCreate)                   \
   V(JSCreateArguments)          \
   V(JSCreateArray)              \
+  V(JSCreateArrayIterator)      \
   V(JSCreateBoundFunction)      \
   V(JSCreateClosure)            \
+  V(JSCreateCollectionIterator) \
   V(JSCreateGeneratorObject)    \
   V(JSCreateIterResultObject)   \
   V(JSCreateStringIterator)     \
   V(JSCreateKeyValueArray)      \
+  V(JSCreateObject)             \
   V(JSCreatePromise)            \
+  V(JSCreateTypedArray)         \
   V(JSCreateLiteralArray)       \
   V(JSCreateEmptyLiteralArray)  \
   V(JSCreateLiteralObject)      \
@@ -159,6 +164,7 @@
   V(JSStoreNamedOwn)              \
   V(JSStoreGlobal)                \
   V(JSStoreDataPropertyInLiteral) \
+  V(JSStoreInArrayLiteral)        \
   V(JSDeleteProperty)             \
   V(JSHasProperty)                \
   V(JSGetSuperConstructor)
@@ -202,6 +208,7 @@
   V(JSRejectPromise)                   \
   V(JSResolvePromise)                  \
   V(JSStackCheck)                      \
+  V(JSObjectIsArray)                   \
   V(JSDebugger)
 
 #define JS_OP_LIST(V)     \
@@ -339,13 +346,10 @@
   V(PlainPrimitiveToFloat64)            \
   V(BooleanNot)                         \
   V(StringToNumber)                     \
-  V(StringCharAt)                       \
   V(StringCharCodeAt)                   \
-  V(SeqStringCharCodeAt)                \
   V(StringCodePointAt)                  \
-  V(SeqStringCodePointAt)               \
-  V(StringFromCharCode)                 \
-  V(StringFromCodePoint)                \
+  V(StringFromSingleCharCode)           \
+  V(StringFromSingleCodePoint)          \
   V(StringIndexOf)                      \
   V(StringLength)                       \
   V(StringToLowerCaseIntl)              \
@@ -358,7 +362,6 @@
   V(CheckInternalizedString)            \
   V(CheckReceiver)                      \
   V(CheckString)                        \
-  V(CheckSeqString)                     \
   V(CheckSymbol)                        \
   V(CheckSmi)                           \
   V(CheckHeapObject)                    \
@@ -385,6 +388,12 @@
   V(TransitionAndStoreNonNumberElement) \
   V(ToBoolean)                          \
   V(NumberIsFloat64Hole)                \
+  V(NumberIsFinite)                     \
+  V(ObjectIsFiniteNumber)               \
+  V(NumberIsInteger)                    \
+  V(ObjectIsSafeInteger)                \
+  V(NumberIsSafeInteger)                \
+  V(ObjectIsInteger)                    \
   V(ObjectIsArrayBufferView)            \
   V(ObjectIsBigInt)                     \
   V(ObjectIsCallable)                   \
@@ -392,6 +401,7 @@
   V(ObjectIsDetectableCallable)         \
   V(ObjectIsMinusZero)                  \
   V(ObjectIsNaN)                        \
+  V(NumberIsNaN)                        \
   V(ObjectIsNonCallable)                \
   V(ObjectIsNumber)                     \
   V(ObjectIsReceiver)                   \
@@ -411,8 +421,9 @@
   V(TransitionElementsKind)             \
   V(FindOrderedHashMapEntry)            \
   V(FindOrderedHashMapEntryForInt32Key) \
-  V(MaskIndexWithBound)                 \
-  V(RuntimeAbort)
+  V(PoisonIndex)                        \
+  V(RuntimeAbort)                       \
+  V(DateNow)
 
 #define SIMPLIFIED_OP_LIST(V)                 \
   SIMPLIFIED_CHANGE_OP_LIST(V)                \
@@ -606,10 +617,13 @@
   V(Float64ExtractHighWord32)    \
   V(Float64InsertLowWord32)      \
   V(Float64InsertHighWord32)     \
-  V(SpeculationPoison)           \
+  V(TaggedPoisonOnSpeculation)   \
+  V(Word32PoisonOnSpeculation)   \
+  V(Word64PoisonOnSpeculation)   \
   V(LoadStackPointer)            \
   V(LoadFramePointer)            \
   V(LoadParentFramePointer)      \
+  V(LoadRootsPointer)            \
   V(UnalignedLoad)               \
   V(UnalignedStore)              \
   V(Int32PairAdd)                \
@@ -629,6 +643,15 @@
   V(Word32AtomicAnd)             \
   V(Word32AtomicOr)              \
   V(Word32AtomicXor)             \
+  V(Word64AtomicLoad)            \
+  V(Word64AtomicStore)           \
+  V(Word64AtomicAdd)             \
+  V(Word64AtomicSub)             \
+  V(Word64AtomicAnd)             \
+  V(Word64AtomicOr)              \
+  V(Word64AtomicXor)             \
+  V(Word64AtomicExchange)        \
+  V(Word64AtomicCompareExchange) \
   V(SpeculationFence)            \
   V(SignExtendWord8ToInt32)      \
   V(SignExtendWord16ToInt32)     \

@@ -31,6 +31,8 @@ std::ostream& operator<<(std::ostream& os, BranchHint hint) {
 
 std::ostream& operator<<(std::ostream& os, IsSafetyCheck is_safety_check) {
   switch (is_safety_check) {
+    case IsSafetyCheck::kCriticalSafetyCheck:
+      return os << "CriticalSafetyCheck";
     case IsSafetyCheck::kSafetyCheck:
       return os << "SafetyCheck";
     case IsSafetyCheck::kNoSafetyCheck:
@@ -96,21 +98,20 @@ IsSafetyCheck IsSafetyCheckOf(const Operator* op) {
   return DeoptimizeParametersOf(op).is_safety_check();
 }
 
-const Operator* CommonOperatorBuilder::MarkAsSafetyCheck(const Operator* op) {
+const Operator* CommonOperatorBuilder::MarkAsSafetyCheck(
+    const Operator* op, IsSafetyCheck safety_check) {
   if (op->opcode() == IrOpcode::kBranch) {
     BranchOperatorInfo info = BranchOperatorInfoOf(op);
-    if (info.is_safety_check == IsSafetyCheck::kSafetyCheck) return op;
-    return Branch(info.hint, IsSafetyCheck::kSafetyCheck);
+    if (info.is_safety_check == safety_check) return op;
+    return Branch(info.hint, safety_check);
   }
   DeoptimizeParameters p = DeoptimizeParametersOf(op);
-  if (p.is_safety_check() == IsSafetyCheck::kSafetyCheck) return op;
+  if (p.is_safety_check() == safety_check) return op;
   switch (op->opcode()) {
     case IrOpcode::kDeoptimizeIf:
-      return DeoptimizeIf(p.kind(), p.reason(), p.feedback(),
-                          IsSafetyCheck::kSafetyCheck);
+      return DeoptimizeIf(p.kind(), p.reason(), p.feedback(), safety_check);
     case IrOpcode::kDeoptimizeUnless:
-      return DeoptimizeUnless(p.kind(), p.reason(), p.feedback(),
-                              IsSafetyCheck::kSafetyCheck);
+      return DeoptimizeUnless(p.kind(), p.reason(), p.feedback(), safety_check);
     default:
       UNREACHABLE();
   }
@@ -347,9 +348,9 @@ RegionObservability RegionObservabilityOf(Operator const* op) {
   return OpParameter<RegionObservability>(op);
 }
 
-Type* TypeGuardTypeOf(Operator const* op) {
+Type TypeGuardTypeOf(Operator const* op) {
   DCHECK_EQ(IrOpcode::kTypeGuard, op->opcode());
-  return OpParameter<Type*>(op);
+  return OpParameter<Type>(op);
 }
 
 std::ostream& operator<<(std::ostream& os,
@@ -391,6 +392,26 @@ ZoneVector<MachineType> const* MachineTypesOf(Operator const* op) {
   return OpParameter<TypedObjectStateInfo>(op).machine_types();
 }
 
+V8_EXPORT_PRIVATE bool operator==(IfValueParameters const& l,
+                                  IfValueParameters const& r) {
+  return l.value() == r.value() && r.comparison_order() == r.comparison_order();
+}
+
+size_t hash_value(IfValueParameters const& p) {
+  return base::hash_combine(p.value(), p.comparison_order());
+}
+
+V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream& out,
+                                           IfValueParameters const& p) {
+  out << p.value() << " (order " << p.comparison_order() << ")";
+  return out;
+}
+
+IfValueParameters const& IfValueParametersOf(const Operator* op) {
+  DCHECK(op->opcode() == IrOpcode::kIfValue);
+  return OpParameter<IfValueParameters>(op);
+}
+
 #define COMMON_CACHED_OP_LIST(V)                                              \
   V(Dead, Operator::kFoldable, 0, 0, 0, 1, 1, 1)                              \
   V(Unreachable, Operator::kFoldable, 0, 1, 1, 1, 1, 0)                       \
@@ -410,12 +431,15 @@ ZoneVector<MachineType> const* MachineTypesOf(Operator const* op) {
   V(FinishRegion, Operator::kKontrol, 1, 1, 0, 1, 1, 0)                       \
   V(Retain, Operator::kKontrol, 1, 1, 0, 0, 1, 0)
 
-#define CACHED_BRANCH_LIST(V) \
-  V(None, SafetyCheck)        \
-  V(True, SafetyCheck)        \
-  V(False, SafetyCheck)       \
-  V(None, NoSafetyCheck)      \
-  V(True, NoSafetyCheck)      \
+#define CACHED_BRANCH_LIST(V)   \
+  V(None, CriticalSafetyCheck)  \
+  V(True, CriticalSafetyCheck)  \
+  V(False, CriticalSafetyCheck) \
+  V(None, SafetyCheck)          \
+  V(True, SafetyCheck)          \
+  V(False, SafetyCheck)         \
+  V(None, NoSafetyCheck)        \
+  V(True, NoSafetyCheck)        \
   V(False, NoSafetyCheck)
 
 #define CACHED_RETURN_LIST(V) \
@@ -994,13 +1018,13 @@ const Operator* CommonOperatorBuilder::Switch(size_t control_output_count) {
       1, 0, 1, 0, 0, control_output_count);   // counts
 }
 
-
-const Operator* CommonOperatorBuilder::IfValue(int32_t index) {
-  return new (zone()) Operator1<int32_t>(      // --
-      IrOpcode::kIfValue, Operator::kKontrol,  // opcode
-      "IfValue",                               // name
-      0, 0, 1, 0, 0, 1,                        // counts
-      index);                                  // parameter
+const Operator* CommonOperatorBuilder::IfValue(int32_t index,
+                                               int32_t comparison_order) {
+  return new (zone()) Operator1<IfValueParameters>(  // --
+      IrOpcode::kIfValue, Operator::kKontrol,        // opcode
+      "IfValue",                                     // name
+      0, 0, 1, 0, 0, 1,                              // counts
+      IfValueParameters(index, comparison_order));   // parameter
 }
 
 
@@ -1148,6 +1172,11 @@ const Operator* CommonOperatorBuilder::HeapConstant(
       value);                                         // parameter
 }
 
+Handle<HeapObject> HeapConstantOf(const Operator* op) {
+  DCHECK_EQ(IrOpcode::kHeapConstant, op->opcode());
+  return OpParameter<Handle<HeapObject>>(op);
+}
+
 const Operator* CommonOperatorBuilder::RelocatableInt32Constant(
     int32_t value, RelocInfo::Mode rmode) {
   return new (zone()) Operator1<RelocatablePtrConstantInfo>(  // --
@@ -1202,8 +1231,8 @@ const Operator* CommonOperatorBuilder::Phi(MachineRepresentation rep,
       rep);                                              // parameter
 }
 
-const Operator* CommonOperatorBuilder::TypeGuard(Type* type) {
-  return new (zone()) Operator1<Type*>(       // --
+const Operator* CommonOperatorBuilder::TypeGuard(Type type) {
+  return new (zone()) Operator1<Type>(        // --
       IrOpcode::kTypeGuard, Operator::kPure,  // opcode
       "TypeGuard",                            // name
       1, 1, 1, 1, 1, 0,                       // counts
@@ -1484,6 +1513,22 @@ const Operator* CommonOperatorBuilder::DeadValue(MachineRepresentation rep) {
       "DeadValue",                                       // name
       1, 0, 0, 1, 0, 0,                                  // counts
       rep);                                              // parameter
+}
+
+const FrameStateInfo& FrameStateInfoOf(const Operator* op) {
+  DCHECK_EQ(IrOpcode::kFrameState, op->opcode());
+  return OpParameter<FrameStateInfo>(op);
+}
+
+IsSafetyCheck CombineSafetyChecks(IsSafetyCheck a, IsSafetyCheck b) {
+  if (a == IsSafetyCheck::kCriticalSafetyCheck ||
+      b == IsSafetyCheck::kCriticalSafetyCheck) {
+    return IsSafetyCheck::kCriticalSafetyCheck;
+  }
+  if (a == IsSafetyCheck::kSafetyCheck || b == IsSafetyCheck::kSafetyCheck) {
+    return IsSafetyCheck::kSafetyCheck;
+  }
+  return IsSafetyCheck::kNoSafetyCheck;
 }
 
 #undef COMMON_CACHED_OP_LIST

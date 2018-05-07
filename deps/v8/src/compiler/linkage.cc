@@ -6,12 +6,12 @@
 
 #include "src/assembler-inl.h"
 #include "src/code-stubs.h"
-#include "src/compilation-info.h"
 #include "src/compiler/common-operator.h"
 #include "src/compiler/frame.h"
 #include "src/compiler/node.h"
 #include "src/compiler/osr.h"
 #include "src/compiler/pipeline.h"
+#include "src/optimized-compilation-info.h"
 
 namespace v8 {
 namespace internal {
@@ -123,19 +123,19 @@ int CallDescriptor::CalculateFixedFrameSize() const {
       return PushArgumentCount()
                  ? OptimizedBuiltinFrameConstants::kFixedSlotCount
                  : StandardFrameConstants::kFixedSlotCount;
-      break;
     case kCallAddress:
       return CommonFrameConstants::kFixedSlotCountAboveFp +
              CommonFrameConstants::kCPSlotCount;
-      break;
     case kCallCodeObject:
-    case kCallWasmFunction:
       return TypedFrameConstants::kFixedSlotCount;
+    case kCallWasmFunction:
+      return WasmCompiledFrameConstants::kFixedSlotCount;
   }
   UNREACHABLE();
 }
 
-CallDescriptor* Linkage::ComputeIncoming(Zone* zone, CompilationInfo* info) {
+CallDescriptor* Linkage::ComputeIncoming(Zone* zone,
+                                         OptimizedCompilationInfo* info) {
   DCHECK(!info->IsStub());
   if (!info->closure().is_null()) {
     // If we are compiling a JS function, use a JS call descriptor,

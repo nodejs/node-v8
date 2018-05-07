@@ -19,6 +19,20 @@ class RegExpBuiltinsAssembler : public CodeStubAssembler {
                           Node* const map, Label* const if_isunmodified,
                           Label* const if_ismodified);
 
+  // Create and initialize a RegExp object.
+  TNode<Object> RegExpCreate(TNode<Context> context,
+                             TNode<Context> native_context,
+                             TNode<Object> regexp_string, TNode<String> flags);
+
+  TNode<Object> RegExpCreate(TNode<Context> context, TNode<Map> initial_map,
+                             TNode<Object> regexp_string, TNode<String> flags);
+
+  TNode<Object> MatchAllIterator(TNode<Context> context,
+                                 TNode<Context> native_context,
+                                 TNode<Object> regexp, TNode<String> string,
+                                 TNode<BoolT> is_fast_regexp,
+                                 char const* method_name);
+
  protected:
   // Allocate a RegExpResult with the given length (the number of captures,
   // including the match itself), index (the index where the match starts),
@@ -64,12 +78,13 @@ class RegExpBuiltinsAssembler : public CodeStubAssembler {
                              MessageTemplate::Template msg_template,
                              char const* method_name);
 
+  // Analogous to BranchIfFastRegExp, for use in asserts.
+  TNode<BoolT> IsFastRegExp(SloppyTNode<Context> context,
+                            SloppyTNode<Object> object);
+
   void BranchIfFastRegExp(Node* const context, Node* const object,
                           Label* const if_isunmodified,
                           Label* const if_ismodified);
-
-  // Analogous to BranchIfFastRegExp, for use in asserts.
-  Node* IsFastRegExp(Node* const context, Node* const object);
 
   // Performs fast path checks on the given object itself, but omits prototype
   // checks.
@@ -91,6 +106,10 @@ class RegExpBuiltinsAssembler : public CodeStubAssembler {
                   int counter, const char* method_name);
 
   Node* IsRegExp(Node* const context, Node* const maybe_receiver);
+
+  TNode<Object> LoadRegExpResultFirstMatch(SloppyTNode<Context> context,
+                                           SloppyTNode<JSObject> maybe_array);
+
   Node* RegExpInitialize(Node* const context, Node* const regexp,
                          Node* const maybe_pattern, Node* const maybe_flags);
 

@@ -14,7 +14,6 @@
 #include "src/code-stub-assembler.h"
 #include "src/code-stubs-utils.h"
 #include "src/counters.h"
-#include "src/factory.h"
 #include "src/gdb-jit.h"
 #include "src/heap/heap-inl.h"
 #include "src/ic/ic-stats.h"
@@ -34,7 +33,7 @@ CodeStubDescriptor::CodeStubDescriptor(CodeStub* stub)
       stack_parameter_count_(no_reg),
       hint_stack_parameter_count_(-1),
       function_mode_(NOT_JS_FUNCTION_STUB_MODE),
-      deoptimization_handler_(nullptr),
+      deoptimization_handler_(kNullAddress),
       miss_handler_(),
       has_miss_handler_(false) {
   stub->InitializeDescriptor(this);
@@ -45,7 +44,7 @@ CodeStubDescriptor::CodeStubDescriptor(Isolate* isolate, uint32_t stub_key)
       stack_parameter_count_(no_reg),
       hint_stack_parameter_count_(-1),
       function_mode_(NOT_JS_FUNCTION_STUB_MODE),
-      deoptimization_handler_(nullptr),
+      deoptimization_handler_(kNullAddress),
       miss_handler_(),
       has_miss_handler_(false) {
   CodeStub::InitializeDescriptor(isolate, stub_key, this);
@@ -88,7 +87,7 @@ void CodeStub::RecordCodeGeneration(Handle<Code> code) {
           CodeCreateEvent(CodeEventListener::STUB_TAG,
                           AbstractCode::cast(*code), os.str().c_str()));
   Counters* counters = isolate()->counters();
-  counters->total_stubs_code_size()->Increment(code->instruction_size());
+  counters->total_stubs_code_size()->Increment(code->raw_instruction_size());
 #ifdef DEBUG
   code->VerifyEmbeddedObjects();
 #endif
@@ -299,8 +298,9 @@ Handle<Code> TurboFanCodeStub::GenerateCode() {
   const char* name = CodeStub::MajorName(MajorKey());
   Zone zone(isolate()->allocator(), ZONE_NAME);
   CallInterfaceDescriptor descriptor(GetCallInterfaceDescriptor());
-  compiler::CodeAssemblerState state(isolate(), &zone, descriptor, Code::STUB,
-                                     name, 1, GetKey());
+  compiler::CodeAssemblerState state(
+      isolate(), &zone, descriptor, Code::STUB, name,
+      PoisoningMitigationLevel::kDontPoison, 1, GetKey());
   GenerateAssembly(&state);
   return compiler::CodeAssembler::GenerateCode(&state);
 }
@@ -504,6 +504,15 @@ TF_STUB(StoreSlowElementStub, CodeStubAssembler) {
 
   TailCallRuntime(Runtime::kKeyedStoreIC_Slow, context, value, slot, vector,
                   receiver, name);
+}
+
+TF_STUB(StoreInArrayLiteralSlowStub, CodeStubAssembler) {
+  Node* array = Parameter(Descriptor::kReceiver);
+  Node* index = Parameter(Descriptor::kName);
+  Node* value = Parameter(Descriptor::kValue);
+  Node* context = Parameter(Descriptor::kContext);
+  TailCallRuntime(Runtime::kStoreInArrayLiteralIC_Slow, context, value, array,
+                  index);
 }
 
 TF_STUB(StoreFastElementStub, CodeStubAssembler) {

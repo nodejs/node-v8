@@ -48,6 +48,21 @@ size_t hash_value(FieldAccess const& access) {
                             access.machine_type);
 }
 
+size_t hash_value(LoadSensitivity load_sensitivity) {
+  return static_cast<size_t>(load_sensitivity);
+}
+
+std::ostream& operator<<(std::ostream& os, LoadSensitivity load_sensitivity) {
+  switch (load_sensitivity) {
+    case LoadSensitivity::kCritical:
+      return os << "Critical";
+    case LoadSensitivity::kSafe:
+      return os << "Safe";
+    case LoadSensitivity::kUnsafe:
+      return os << "Unsafe";
+  }
+  UNREACHABLE();
+}
 
 std::ostream& operator<<(std::ostream& os, FieldAccess const& access) {
   os << "[" << access.base_is_tagged << ", " << access.offset << ", ";
@@ -62,8 +77,12 @@ std::ostream& operator<<(std::ostream& os, FieldAccess const& access) {
     os << Brief(*map) << ", ";
   }
 #endif
-  access.type->PrintTo(os);
-  os << ", " << access.machine_type << ", " << access.write_barrier_kind << "]";
+  os << access.type << ", " << access.machine_type << ", "
+     << access.write_barrier_kind;
+  if (FLAG_untrusted_code_mitigations || FLAG_branch_load_poisoning) {
+    os << ", " << access.load_sensitivity;
+  }
+  os << "]";
   return os;
 }
 
@@ -96,9 +115,12 @@ size_t hash_value(ElementAccess const& access) {
 
 
 std::ostream& operator<<(std::ostream& os, ElementAccess const& access) {
-  os << access.base_is_tagged << ", " << access.header_size << ", ";
-  access.type->PrintTo(os);
-  os << ", " << access.machine_type << ", " << access.write_barrier_kind;
+  os << access.base_is_tagged << ", " << access.header_size << ", "
+     << access.type << ", " << access.machine_type << ", "
+     << access.write_barrier_kind;
+  if (FLAG_untrusted_code_mitigations || FLAG_branch_load_poisoning) {
+    os << ", " << access.load_sensitivity;
+  }
   return os;
 }
 
@@ -366,19 +388,19 @@ namespace {
 class TransitionAndStoreNonNumberElementParameters final {
  public:
   TransitionAndStoreNonNumberElementParameters(Handle<Map> fast_map,
-                                               Type* value_type);
+                                               Type value_type);
 
   Handle<Map> fast_map() const { return fast_map_; }
-  Type* value_type() const { return value_type_; }
+  Type value_type() const { return value_type_; }
 
  private:
   Handle<Map> const fast_map_;
-  Type* value_type_;
+  Type value_type_;
 };
 
 TransitionAndStoreNonNumberElementParameters::
     TransitionAndStoreNonNumberElementParameters(Handle<Map> fast_map,
-                                                 Type* value_type)
+                                                 Type value_type)
     : fast_map_(fast_map), value_type_(value_type) {}
 
 bool operator==(TransitionAndStoreNonNumberElementParameters const& lhs,
@@ -394,8 +416,8 @@ size_t hash_value(TransitionAndStoreNonNumberElementParameters parameters) {
 
 std::ostream& operator<<(
     std::ostream& os, TransitionAndStoreNonNumberElementParameters parameters) {
-  parameters.value_type()->PrintTo(os);
-  return os << ", fast-map" << Brief(*parameters.fast_map());
+  return os << parameters.value_type() << ", fast-map"
+            << Brief(*parameters.fast_map());
 }
 
 }  // namespace
@@ -444,7 +466,7 @@ Handle<Map> DoubleMapParameterOf(const Operator* op) {
   return Handle<Map>::null();
 }
 
-Type* ValueTypeParameterOf(const Operator* op) {
+Type ValueTypeParameterOf(const Operator* op) {
   DCHECK_EQ(IrOpcode::kTransitionAndStoreNonNumberElement, op->opcode());
   return OpParameter<TransitionAndStoreNonNumberElementParameters>(op)
       .value_type();
@@ -526,8 +548,7 @@ size_t hash_value(AllocateParameters info) {
 
 V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream& os,
                                            AllocateParameters info) {
-  info.type()->PrintTo(os);
-  return os << ", " << info.pretenure();
+  return os << info.type() << ", " << info.pretenure();
 }
 
 bool operator==(AllocateParameters const& lhs, AllocateParameters const& rhs) {
@@ -544,15 +565,14 @@ PretenureFlag PretenureFlagOf(const Operator* op) {
   return OpParameter<AllocateParameters>(op).pretenure();
 }
 
-Type* AllocateTypeOf(const Operator* op) {
+Type AllocateTypeOf(const Operator* op) {
   DCHECK_EQ(IrOpcode::kAllocate, op->opcode());
   return OpParameter<AllocateParameters>(op).type();
 }
 
 UnicodeEncoding UnicodeEncodingOf(const Operator* op) {
-  DCHECK(op->opcode() == IrOpcode::kStringFromCodePoint ||
-         op->opcode() == IrOpcode::kStringCodePointAt ||
-         op->opcode() == IrOpcode::kSeqStringCodePointAt);
+  DCHECK(op->opcode() == IrOpcode::kStringFromSingleCodePoint ||
+         op->opcode() == IrOpcode::kStringCodePointAt);
   return OpParameter<UnicodeEncoding>(op);
 }
 
@@ -671,7 +691,7 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(NumberToUint8Clamped, Operator::kNoProperties, 1, 0)         \
   V(NumberSilenceNaN, Operator::kNoProperties, 1, 0)             \
   V(StringToNumber, Operator::kNoProperties, 1, 0)               \
-  V(StringFromCharCode, Operator::kNoProperties, 1, 0)           \
+  V(StringFromSingleCharCode, Operator::kNoProperties, 1, 0)     \
   V(StringIndexOf, Operator::kNoProperties, 3, 0)                \
   V(StringLength, Operator::kNoProperties, 1, 0)                 \
   V(StringToLowerCaseIntl, Operator::kNoProperties, 1, 0)        \
@@ -702,6 +722,7 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(ObjectIsDetectableCallable, Operator::kNoProperties, 1, 0)   \
   V(ObjectIsMinusZero, Operator::kNoProperties, 1, 0)            \
   V(ObjectIsNaN, Operator::kNoProperties, 1, 0)                  \
+  V(NumberIsNaN, Operator::kNoProperties, 1, 0)                  \
   V(ObjectIsNonCallable, Operator::kNoProperties, 1, 0)          \
   V(ObjectIsNumber, Operator::kNoProperties, 1, 0)               \
   V(ObjectIsReceiver, Operator::kNoProperties, 1, 0)             \
@@ -710,6 +731,12 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(ObjectIsSymbol, Operator::kNoProperties, 1, 0)               \
   V(ObjectIsUndetectable, Operator::kNoProperties, 1, 0)         \
   V(NumberIsFloat64Hole, Operator::kNoProperties, 1, 0)          \
+  V(NumberIsFinite, Operator::kNoProperties, 1, 0)               \
+  V(ObjectIsFiniteNumber, Operator::kNoProperties, 1, 0)         \
+  V(NumberIsInteger, Operator::kNoProperties, 1, 0)              \
+  V(ObjectIsSafeInteger, Operator::kNoProperties, 1, 0)          \
+  V(NumberIsSafeInteger, Operator::kNoProperties, 1, 0)          \
+  V(ObjectIsInteger, Operator::kNoProperties, 1, 0)              \
   V(ConvertTaggedHoleToUndefined, Operator::kNoProperties, 1, 0) \
   V(SameValue, Operator::kCommutative, 2, 0)                     \
   V(ReferenceEqual, Operator::kCommutative, 2, 0)                \
@@ -718,13 +745,12 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(StringLessThanOrEqual, Operator::kNoProperties, 2, 0)        \
   V(ToBoolean, Operator::kNoProperties, 1, 0)                    \
   V(NewConsString, Operator::kNoProperties, 3, 0)                \
-  V(MaskIndexWithBound, Operator::kNoProperties, 2, 0)
+  V(PoisonIndex, Operator::kNoProperties, 1, 0)
 
-#define EFFECT_DEPENDENT_OP_LIST(V)                     \
-  V(StringCharAt, Operator::kNoProperties, 2, 1)        \
-  V(StringCharCodeAt, Operator::kNoProperties, 2, 1)    \
-  V(SeqStringCharCodeAt, Operator::kNoProperties, 2, 1) \
-  V(StringSubstring, Operator::kNoProperties, 3, 1)
+#define EFFECT_DEPENDENT_OP_LIST(V)                  \
+  V(StringCharCodeAt, Operator::kNoProperties, 2, 1) \
+  V(StringSubstring, Operator::kNoProperties, 3, 1)  \
+  V(DateNow, Operator::kNoProperties, 0, 1)
 
 #define SPECULATIVE_NUMBER_BINOP_LIST(V)      \
   SIMPLIFIED_SPECULATIVE_NUMBER_BINOP_LIST(V) \
@@ -739,7 +765,6 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(CheckInternalizedString, 1, 1)       \
   V(CheckNotTaggedHole, 1, 1)            \
   V(CheckReceiver, 1, 1)                 \
-  V(CheckSeqString, 1, 1)                \
   V(CheckSymbol, 1, 1)                   \
   V(CheckedInt32Add, 2, 1)               \
   V(CheckedInt32Div, 2, 1)               \
@@ -834,30 +859,17 @@ struct SimplifiedOperatorGlobalCache final {
       kStringCodePointAtOperatorUTF32;
 
   template <UnicodeEncoding kEncoding>
-  struct SeqStringCodePointAtOperator final
+  struct StringFromSingleCodePointOperator final
       : public Operator1<UnicodeEncoding> {
-    SeqStringCodePointAtOperator()
-        : Operator1<UnicodeEncoding>(IrOpcode::kSeqStringCodePointAt,
-                                     Operator::kFoldable | Operator::kNoThrow,
-                                     "SeqStringCodePointAt", 2, 1, 1, 1, 1, 0,
-                                     kEncoding) {}
+    StringFromSingleCodePointOperator()
+        : Operator1<UnicodeEncoding>(
+              IrOpcode::kStringFromSingleCodePoint, Operator::kPure,
+              "StringFromSingleCodePoint", 1, 0, 0, 1, 0, 0, kEncoding) {}
   };
-  SeqStringCodePointAtOperator<UnicodeEncoding::UTF16>
-      kSeqStringCodePointAtOperatorUTF16;
-  SeqStringCodePointAtOperator<UnicodeEncoding::UTF32>
-      kSeqStringCodePointAtOperatorUTF32;
-
-  template <UnicodeEncoding kEncoding>
-  struct StringFromCodePointOperator final : public Operator1<UnicodeEncoding> {
-    StringFromCodePointOperator()
-        : Operator1<UnicodeEncoding>(IrOpcode::kStringFromCodePoint,
-                                     Operator::kPure, "StringFromCodePoint", 1,
-                                     0, 0, 1, 0, 0, kEncoding) {}
-  };
-  StringFromCodePointOperator<UnicodeEncoding::UTF16>
-      kStringFromCodePointOperatorUTF16;
-  StringFromCodePointOperator<UnicodeEncoding::UTF32>
-      kStringFromCodePointOperatorUTF32;
+  StringFromSingleCodePointOperator<UnicodeEncoding::UTF16>
+      kStringFromSingleCodePointOperatorUTF16;
+  StringFromSingleCodePointOperator<UnicodeEncoding::UTF32>
+      kStringFromSingleCodePointOperatorUTF32;
 
   struct ArrayBufferWasNeuteredOperator final : public Operator {
     ArrayBufferWasNeuteredOperator()
@@ -1430,7 +1442,12 @@ const Operator* SimplifiedOperatorBuilder::NewArgumentsElements(
       mapped_count);                    // parameter
 }
 
-const Operator* SimplifiedOperatorBuilder::Allocate(Type* type,
+int NewArgumentsElementsMappedCountOf(const Operator* op) {
+  DCHECK_EQ(IrOpcode::kNewArgumentsElements, op->opcode());
+  return OpParameter<int>(op);
+}
+
+const Operator* SimplifiedOperatorBuilder::Allocate(Type type,
                                                     PretenureFlag pretenure) {
   return new (zone()) Operator1<AllocateParameters>(
       IrOpcode::kAllocate,
@@ -1439,7 +1456,7 @@ const Operator* SimplifiedOperatorBuilder::Allocate(Type* type,
 }
 
 const Operator* SimplifiedOperatorBuilder::AllocateRaw(
-    Type* type, PretenureFlag pretenure) {
+    Type type, PretenureFlag pretenure) {
   return new (zone()) Operator1<AllocateParameters>(
       IrOpcode::kAllocateRaw,
       Operator::kNoDeopt | Operator::kNoThrow | Operator::kNoWrite,
@@ -1457,24 +1474,13 @@ const Operator* SimplifiedOperatorBuilder::StringCodePointAt(
   UNREACHABLE();
 }
 
-const Operator* SimplifiedOperatorBuilder::SeqStringCodePointAt(
+const Operator* SimplifiedOperatorBuilder::StringFromSingleCodePoint(
     UnicodeEncoding encoding) {
   switch (encoding) {
     case UnicodeEncoding::UTF16:
-      return &cache_.kSeqStringCodePointAtOperatorUTF16;
+      return &cache_.kStringFromSingleCodePointOperatorUTF16;
     case UnicodeEncoding::UTF32:
-      return &cache_.kSeqStringCodePointAtOperatorUTF32;
-  }
-  UNREACHABLE();
-}
-
-const Operator* SimplifiedOperatorBuilder::StringFromCodePoint(
-    UnicodeEncoding encoding) {
-  switch (encoding) {
-    case UnicodeEncoding::UTF16:
-      return &cache_.kStringFromCodePointOperatorUTF16;
-    case UnicodeEncoding::UTF32:
-      return &cache_.kStringFromCodePointOperatorUTF32;
+      return &cache_.kStringFromSingleCodePointOperatorUTF32;
   }
   UNREACHABLE();
 }
@@ -1544,7 +1550,7 @@ const Operator* SimplifiedOperatorBuilder::TransitionAndStoreNumberElement(
 }
 
 const Operator* SimplifiedOperatorBuilder::TransitionAndStoreNonNumberElement(
-    Handle<Map> fast_map, Type* value_type) {
+    Handle<Map> fast_map, Type value_type) {
   TransitionAndStoreNonNumberElementParameters parameters(fast_map, value_type);
   return new (zone()) Operator1<TransitionAndStoreNonNumberElementParameters>(
       IrOpcode::kTransitionAndStoreNonNumberElement,

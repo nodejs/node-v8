@@ -7,14 +7,14 @@
 #include "src/address-map.h"
 #include "src/assembler-inl.h"
 #include "src/base/adapters.h"
-#include "src/compilation-info.h"
 #include "src/compiler/code-generator-impl.h"
 #include "src/compiler/linkage.h"
 #include "src/compiler/pipeline.h"
+#include "src/compiler/wasm-compiler.h"
 #include "src/eh-frame.h"
 #include "src/frames.h"
 #include "src/macro-assembler-inl.h"
-#include "src/trap-handler/trap-handler.h"
+#include "src/optimized-compilation-info.h"
 
 namespace v8 {
 namespace internal {
@@ -37,13 +37,14 @@ class CodeGenerator::JumpTable final : public ZoneObject {
   size_t const target_count_;
 };
 
-CodeGenerator::CodeGenerator(
-    Zone* codegen_zone, Frame* frame, Linkage* linkage,
-    InstructionSequence* code, CompilationInfo* info, Isolate* isolate,
-    base::Optional<OsrHelper> osr_helper, int start_source_position,
-    JumpOptimizationInfo* jump_opt,
-    std::vector<trap_handler::ProtectedInstructionData>* protected_instructions,
-    LoadPoisoning load_poisoning)
+CodeGenerator::CodeGenerator(Zone* codegen_zone, Frame* frame, Linkage* linkage,
+                             InstructionSequence* code,
+                             OptimizedCompilationInfo* info, Isolate* isolate,
+                             base::Optional<OsrHelper> osr_helper,
+                             int start_source_position,
+                             JumpOptimizationInfo* jump_opt,
+                             WasmCompilationData* wasm_compilation_data,
+                             PoisoningMitigationLevel poisoning_level)
     : zone_(codegen_zone),
       isolate_(isolate),
       frame_access_state_(nullptr),
@@ -72,10 +73,11 @@ CodeGenerator::CodeGenerator(
       osr_helper_(osr_helper),
       osr_pc_offset_(-1),
       optimized_out_literal_id_(-1),
-      source_position_table_builder_(info->SourcePositionRecordingMode()),
-      protected_instructions_(protected_instructions),
+      source_position_table_builder_(
+          SourcePositionTableBuilder::RECORD_SOURCE_POSITIONS),
+      wasm_compilation_data_(wasm_compilation_data),
       result_(kSuccess),
-      load_poisoning_(load_poisoning) {
+      poisoning_level_(poisoning_level) {
   for (int i = 0; i < code->InstructionBlockCount(); ++i) {
     new (&labels_[i]) Label;
   }
@@ -87,15 +89,23 @@ CodeGenerator::CodeGenerator(
       code_kind == Code::WASM_FUNCTION) {
     tasm_.enable_serializer();
   }
+  // TODO(arm64): Remove when direct calls are supported in WebAssembly for
+  // ARM64.
+  tasm_.set_code_in_js_code_space(code_kind != Code::WASM_FUNCTION &&
+                                  code_kind != Code::WASM_TO_JS_FUNCTION &&
+                                  code_kind != Code::WASM_INTERPRETER_ENTRY &&
+                                  code_kind != Code::C_WASM_ENTRY);
+}
+
+bool CodeGenerator::wasm_runtime_exception_support() const {
+  DCHECK(wasm_compilation_data_);
+  return wasm_compilation_data_->runtime_exception_support();
 }
 
 void CodeGenerator::AddProtectedInstructionLanding(uint32_t instr_offset,
                                                    uint32_t landing_offset) {
-  if (protected_instructions_ != nullptr) {
-    trap_handler::ProtectedInstructionData data = {instr_offset,
-                                                   landing_offset};
-    protected_instructions_->emplace_back(data);
-  }
+  DCHECK_NOT_NULL(wasm_compilation_data_);
+  wasm_compilation_data_->AddProtectedInstruction(instr_offset, landing_offset);
 }
 
 void CodeGenerator::CreateFrameAccessState(Frame* frame) {
@@ -126,7 +136,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleDeoptimizerCall(
       GetDeoptimizationReason(deoptimization_id);
   Address deopt_entry = Deoptimizer::GetDeoptimizationEntry(
       tasm()->isolate(), deoptimization_id, bailout_type);
-  if (deopt_entry == nullptr) return kTooManyDeoptimizationBailouts;
+  if (deopt_entry == kNullAddress) return kTooManyDeoptimizationBailouts;
   if (info()->is_source_positions_enabled()) {
     tasm()->RecordDeoptReason(deoptimization_reason, pos, deoptimization_id);
   }
@@ -135,7 +145,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleDeoptimizerCall(
 }
 
 void CodeGenerator::AssembleCode() {
-  CompilationInfo* info = this->info();
+  OptimizedCompilationInfo* info = this->info();
 
   // Open a frame scope to indicate that there is a frame on the stack.  The
   // MANUAL indicates that the scope shouldn't actually generate code to set up
@@ -168,22 +178,11 @@ void CodeGenerator::AssembleCode() {
     BailoutIfDeoptimized();
   }
 
-  // Initialize {kSpeculationPoisonRegister} either by comparing the expected
-  // with the actual call target, or by unconditionally using {-1} initially.
-  // Masking register arguments with it only makes sense in the first case.
-  if (info->is_generating_speculation_poison_on_entry()) {
-    tasm()->RecordComment("-- Prologue: generate speculation poison --");
-    GenerateSpeculationPoison();
-    if (info->is_poisoning_register_arguments()) {
-      AssembleRegisterArgumentPoisoning();
-    }
-  } else {
-    InitializePoisonForLoadsIfNeeded();
-  }
+  InitializeSpeculationPoison();
 
   // Define deoptimization literals for all inlined functions.
   DCHECK_EQ(0u, deoptimization_literals_.size());
-  for (CompilationInfo::InlinedFunctionHolder& inlined :
+  for (OptimizedCompilationInfo::InlinedFunctionHolder& inlined :
        info->inlined_functions()) {
     if (!inlined.shared_info.equals(info->shared_info())) {
       int index = DefineDeoptimizationLiteral(
@@ -389,10 +388,10 @@ Handle<Code> CodeGenerator::FinalizeCode() {
       frame()->GetTotalFrameSlotCount(), safepoints()->GetCodeOffset(),
       handler_table_offset_);
   isolate()->counters()->total_compiled_code_size()->Increment(
-      result->instruction_size());
+      result->raw_instruction_size());
 
   LOG_CODE_EVENT(isolate(),
-                 CodeLinePosInfoRecordEvent(result->instruction_start(),
+                 CodeLinePosInfoRecordEvent(result->raw_instruction_start(),
                                             *source_positions));
 
   return result;
@@ -679,7 +678,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleInstruction(
 
   // TODO(jarin) We should thread the flag through rather than set it.
   if (instr->IsCall()) {
-    InitializePoisonForLoadsIfNeeded();
+    ResetSpeculationPoison();
   }
 
   return kSuccess;
@@ -699,7 +698,7 @@ void CodeGenerator::AssembleSourcePosition(SourcePosition source_position) {
   source_position_table_builder_.AddPosition(tasm()->pc_offset(),
                                              source_position, false);
   if (FLAG_code_comments) {
-    CompilationInfo* info = this->info();
+    OptimizedCompilationInfo* info = this->info();
     if (info->IsStub()) return;
     std::ostringstream buffer;
     buffer << "-- ";
@@ -741,8 +740,8 @@ void CodeGenerator::AssembleGaps(Instruction* instr) {
 namespace {
 
 Handle<PodArray<InliningPosition>> CreateInliningPositions(
-    CompilationInfo* info, Isolate* isolate) {
-  const CompilationInfo::InlinedFunctionList& inlined_functions =
+    OptimizedCompilationInfo* info, Isolate* isolate) {
+  const OptimizedCompilationInfo::InlinedFunctionList& inlined_functions =
       info->inlined_functions();
   if (inlined_functions.size() == 0) {
     return Handle<PodArray<InliningPosition>>::cast(
@@ -760,7 +759,7 @@ Handle<PodArray<InliningPosition>> CreateInliningPositions(
 }  // namespace
 
 Handle<DeoptimizationData> CodeGenerator::GenerateDeoptimizationData() {
-  CompilationInfo* info = this->info();
+  OptimizedCompilationInfo* info = this->info();
   int deopt_count = static_cast<int>(deoptimization_states_.size());
   if (deopt_count == 0 && !info->is_osr()) {
     return DeoptimizationData::Empty(isolate());
@@ -841,9 +840,9 @@ void CodeGenerator::RecordCallPosition(Instruction* instr) {
 
   if (needs_frame_state) {
     MarkLazyDeoptSite();
-    // If the frame state is present, it starts at argument 1 (just after the
-    // code address).
-    size_t frame_state_offset = 1;
+    // If the frame state is present, it starts at argument 2 - after
+    // the code address and the poison-alias index.
+    size_t frame_state_offset = 2;
     FrameStateDescriptor* descriptor =
         GetDeoptimizationEntry(instr, frame_state_offset).descriptor();
     int pc_offset = tasm()->pc_offset();
@@ -1012,6 +1011,14 @@ void CodeGenerator::BuildTranslationForFrameStateDescriptor(
       int parameter_count =
           static_cast<unsigned int>(descriptor->parameters_count());
       translation->BeginJavaScriptBuiltinContinuationFrame(
+          bailout_id, shared_info_id, parameter_count);
+      break;
+    }
+    case FrameStateType::kJavaScriptBuiltinContinuationWithCatch: {
+      BailoutId bailout_id = descriptor->bailout_id();
+      int parameter_count =
+          static_cast<unsigned int>(descriptor->parameters_count());
+      translation->BeginJavaScriptBuiltinContinuationWithCatchFrame(
           bailout_id, shared_info_id, parameter_count);
       break;
     }
@@ -1190,8 +1197,25 @@ DeoptimizationExit* CodeGenerator::AddDeoptimizationExit(
   return exit;
 }
 
-void CodeGenerator::InitializePoisonForLoadsIfNeeded() {
-  if (load_poisoning_ == LoadPoisoning::kDoPoison) {
+void CodeGenerator::InitializeSpeculationPoison() {
+  if (poisoning_level_ == PoisoningMitigationLevel::kDontPoison) return;
+
+  // Initialize {kSpeculationPoisonRegister} either by comparing the expected
+  // with the actual call target, or by unconditionally using {-1} initially.
+  // Masking register arguments with it only makes sense in the first case.
+  if (info()->called_with_code_start_register()) {
+    tasm()->RecordComment("-- Prologue: generate speculation poison --");
+    GenerateSpeculationPoisonFromCodeStartRegister();
+    if (info()->is_poisoning_register_arguments()) {
+      AssembleRegisterArgumentPoisoning();
+    }
+  } else {
+    ResetSpeculationPoison();
+  }
+}
+
+void CodeGenerator::ResetSpeculationPoison() {
+  if (poisoning_level_ != PoisoningMitigationLevel::kDontPoison) {
     tasm()->ResetSpeculationPoisonRegister();
   }
 }

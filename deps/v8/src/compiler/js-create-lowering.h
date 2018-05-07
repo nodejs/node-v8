@@ -50,6 +50,8 @@ class V8_EXPORT_PRIVATE JSCreateLowering final
   Reduction ReduceJSCreate(Node* node);
   Reduction ReduceJSCreateArguments(Node* node);
   Reduction ReduceJSCreateArray(Node* node);
+  Reduction ReduceJSCreateArrayIterator(Node* node);
+  Reduction ReduceJSCreateCollectionIterator(Node* node);
   Reduction ReduceJSCreateBoundFunction(Node* node);
   Reduction ReduceJSCreateClosure(Node* node);
   Reduction ReduceJSCreateIterResultObject(Node* node);
@@ -71,6 +73,7 @@ class V8_EXPORT_PRIVATE JSCreateLowering final
                            Handle<Map> initial_map, PretenureFlag pretenure);
   Reduction ReduceNewArray(Node* node, std::vector<Node*> values,
                            Handle<Map> initial_map, PretenureFlag pretenure);
+  Reduction ReduceJSCreateObject(Node* node);
 
   Node* AllocateArguments(Node* effect, Node* control, Node* frame_state);
   Node* AllocateRestArguments(Node* effect, Node* control, Node* frame_state,

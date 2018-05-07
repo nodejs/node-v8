@@ -13,6 +13,8 @@
 #include "src/compiler/node-properties.h"
 #include "src/compiler/node.h"
 #include "src/compiler/wasm-compiler.h"
+// TODO(wasm): Remove this include.
+#include "src/wasm/wasm-linkage.h"
 #include "src/zone/zone.h"
 
 namespace v8 {
@@ -124,12 +126,6 @@ int Int64Lowering::GetParameterCountAfterLowering(
       signature, static_cast<int>(signature->parameter_count()));
 }
 
-// static
-bool Int64Lowering::IsI64AsTwoParameters(MachineOperatorBuilder* machine,
-                                         MachineRepresentation type) {
-  return machine->Is32() && type == MachineRepresentation::kWord64;
-}
-
 void Int64Lowering::GetIndexNodes(Node* index, Node*& index_low,
                                   Node*& index_high) {
   if (HasReplacementLow(index)) {
@@ -149,7 +145,7 @@ void Int64Lowering::GetIndexNodes(Node* index, Node*& index_low,
 void Int64Lowering::LowerNode(Node* node) {
   switch (node->opcode()) {
     case IrOpcode::kInt64Constant: {
-      int64_t value = OpParameter<int64_t>(node);
+      int64_t value = OpParameter<int64_t>(node->op());
       Node* low_node = graph()->NewNode(
           common()->Int32Constant(static_cast<int32_t>(value & 0xFFFFFFFF)));
       Node* high_node = graph()->NewNode(
@@ -164,7 +160,7 @@ void Int64Lowering::LowerNode(Node* node) {
         rep = LoadRepresentationOf(node->op()).representation();
       } else {
         DCHECK_EQ(IrOpcode::kUnalignedLoad, node->opcode());
-        rep = UnalignedLoadRepresentationOf(node->op()).representation();
+        rep = LoadRepresentationOf(node->op()).representation();
       }
 
       if (rep == MachineRepresentation::kWord64) {
@@ -281,15 +277,15 @@ void Int64Lowering::LowerNode(Node* node) {
           static_cast<int>(signature()->parameter_count())) {
         int old_index = ParameterIndexOf(node->op());
         // TODO(wasm): Make this part not wasm specific.
-        // Prevent special lowering of the WasmContext parameter.
-        if (old_index == kWasmContextParameterIndex) {
+        // Prevent special lowering of the instance parameter.
+        if (old_index == wasm::kWasmInstanceParameterIndex) {
           DefaultLowering(node);
           break;
         }
         // Adjust old_index to be compliant with the signature.
         --old_index;
         int new_index = GetParameterIndexAfterLowering(signature(), old_index);
-        // Adjust new_index to consider the WasmContext parameter.
+        // Adjust new_index to consider the instance parameter.
         ++new_index;
         NodeProperties::ChangeOp(node, common()->Parameter(new_index));
 

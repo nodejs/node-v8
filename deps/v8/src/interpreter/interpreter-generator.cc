@@ -157,9 +157,10 @@ class InterpreterLoadGlobalAssembler : public InterpreterAssembler {
     Node* feedback_slot = BytecodeOperandIdx(slot_operand_index);
 
     AccessorAssembler accessor_asm(state());
-    Label done(this);
-    Variable var_result(this, MachineRepresentation::kTagged);
-    ExitPoint exit_point(this, &done, &var_result);
+    ExitPoint exit_point(this, [=](Node* result) {
+      SetAccumulator(result);
+      Dispatch();
+    });
 
     LazyNode<Context> lazy_context = [=] { return CAST(GetContext()); };
 
@@ -171,10 +172,6 @@ class InterpreterLoadGlobalAssembler : public InterpreterAssembler {
     accessor_asm.LoadGlobalIC(feedback_vector, feedback_slot, lazy_context,
                               lazy_name, typeof_mode, &exit_point,
                               CodeStubAssembler::INTPTR_PARAMETERS);
-
-    BIND(&done);
-    SetAccumulator(var_result.value());
-    Dispatch();
   }
 };
 
@@ -213,8 +210,8 @@ IGNITION_HANDLER(StaGlobal, InterpreterAssembler) {
   Node* raw_slot = BytecodeOperandIdx(1);
   Node* smi_slot = SmiTag(raw_slot);
   Node* feedback_vector = LoadFeedbackVector();
-  Callable ic = Builtins::CallableFor(isolate(), Builtins::kStoreGlobalIC);
-  CallStub(ic, context, name, value, smi_slot, feedback_vector);
+  CallBuiltin(Builtins::kStoreGlobalIC, context, name, value, smi_slot,
+              feedback_vector);
   Dispatch();
 }
 
@@ -523,16 +520,14 @@ IGNITION_HANDLER(LdaNamedProperty, InterpreterAssembler) {
 // Calls the KeyedLoadIC at FeedBackVector slot <slot> for <object> and the key
 // in the accumulator.
 IGNITION_HANDLER(LdaKeyedProperty, InterpreterAssembler) {
-  Callable ic = Builtins::CallableFor(isolate(), Builtins::kKeyedLoadIC);
-  Node* code_target = HeapConstant(ic.code());
   Node* object = LoadRegisterAtOperandIndex(0);
   Node* name = GetAccumulator();
   Node* raw_slot = BytecodeOperandIdx(1);
   Node* smi_slot = SmiTag(raw_slot);
   Node* feedback_vector = LoadFeedbackVector();
   Node* context = GetContext();
-  Node* result = CallStub(ic.descriptor(), code_target, context, object, name,
-                          smi_slot, feedback_vector);
+  Node* result = CallBuiltin(Builtins::kKeyedLoadIC, context, object, name,
+                             smi_slot, feedback_vector);
   SetAccumulator(result);
   Dispatch();
 }
@@ -555,7 +550,9 @@ class InterpreterStoreNamedPropertyAssembler : public InterpreterAssembler {
     Node* context = GetContext();
     Node* result = CallStub(ic.descriptor(), code_target, context, object, name,
                             value, smi_slot, feedback_vector);
-    // It doesn't really matter what we write to the accumulator here, since we
+    // To avoid special logic in the deoptimizer to re-materialize the value in
+    // the accumulator, we overwrite the accumulator after the IC call. It
+    // doesn't really matter what we write to the accumulator here, since we
     // restore to the correct value on the outside. Storing the result means we
     // don't need to keep unnecessary state alive across the callstub.
     SetAccumulator(result);
@@ -588,8 +585,6 @@ IGNITION_HANDLER(StaNamedOwnProperty, InterpreterStoreNamedPropertyAssembler) {
 // Calls the KeyedStoreIC at FeedbackVector slot <slot> for <object> and
 // the key <key> with the value in the accumulator.
 IGNITION_HANDLER(StaKeyedProperty, InterpreterAssembler) {
-  Callable ic = Builtins::CallableFor(isolate(), Builtins::kKeyedStoreIC);
-  Node* code_target = HeapConstant(ic.code());
   Node* object = LoadRegisterAtOperandIndex(0);
   Node* name = LoadRegisterAtOperandIndex(1);
   Node* value = GetAccumulator();
@@ -597,9 +592,34 @@ IGNITION_HANDLER(StaKeyedProperty, InterpreterAssembler) {
   Node* smi_slot = SmiTag(raw_slot);
   Node* feedback_vector = LoadFeedbackVector();
   Node* context = GetContext();
-  Node* result = CallStub(ic.descriptor(), code_target, context, object, name,
-                          value, smi_slot, feedback_vector);
-  // It doesn't really matter what we write to the accumulator here, since we
+  Node* result = CallBuiltin(Builtins::kKeyedStoreIC, context, object, name,
+                             value, smi_slot, feedback_vector);
+  // To avoid special logic in the deoptimizer to re-materialize the value in
+  // the accumulator, we overwrite the accumulator after the IC call. It
+  // doesn't really matter what we write to the accumulator here, since we
+  // restore to the correct value on the outside. Storing the result means we
+  // don't need to keep unnecessary state alive across the callstub.
+  SetAccumulator(result);
+  Dispatch();
+}
+
+// StaInArrayLiteral <array> <index> <slot>
+//
+// Calls the StoreInArrayLiteralIC at FeedbackVector slot <slot> for <array> and
+// the key <index> with the value in the accumulator.
+IGNITION_HANDLER(StaInArrayLiteral, InterpreterAssembler) {
+  Node* array = LoadRegisterAtOperandIndex(0);
+  Node* index = LoadRegisterAtOperandIndex(1);
+  Node* value = GetAccumulator();
+  Node* raw_slot = BytecodeOperandIdx(2);
+  Node* smi_slot = SmiTag(raw_slot);
+  Node* feedback_vector = LoadFeedbackVector();
+  Node* context = GetContext();
+  Node* result = CallBuiltin(Builtins::kStoreInArrayLiteralIC, context, array,
+                             index, value, smi_slot, feedback_vector);
+  // To avoid special logic in the deoptimizer to re-materialize the value in
+  // the accumulator, we overwrite the accumulator after the IC call. It
+  // doesn't really matter what we write to the accumulator here, since we
   // restore to the correct value on the outside. Storing the result means we
   // don't need to keep unnecessary state alive across the callstub.
   SetAccumulator(result);
@@ -1274,12 +1294,18 @@ IGNITION_HANDLER(ToNumeric, InterpreterAssembler) {
 //
 // Convert the object referenced by the accumulator to a JSReceiver.
 IGNITION_HANDLER(ToObject, InterpreterAssembler) {
-  Callable callable = Builtins::CallableFor(isolate(), Builtins::kToObject);
-  Node* target = HeapConstant(callable.code());
   Node* accumulator = GetAccumulator();
   Node* context = GetContext();
-  Node* result = CallStub(callable.descriptor(), target, context, accumulator);
+  Node* result = CallBuiltin(Builtins::kToObject, context, accumulator);
   StoreRegisterAtOperandIndex(result, 0);
+  Dispatch();
+}
+
+// ToString
+//
+// Convert the accumulator to a String.
+IGNITION_HANDLER(ToString, InterpreterAssembler) {
+  SetAccumulator(ToString_Inline(GetContext(), GetAccumulator()));
   Dispatch();
 }
 
@@ -1452,7 +1478,7 @@ IGNITION_HANDLER(DeletePropertySloppy, InterpreterAssembler) {
 IGNITION_HANDLER(GetSuperConstructor, InterpreterAssembler) {
   Node* active_function = GetAccumulator();
   Node* context = GetContext();
-  Node* result = GetSuperConstructor(active_function, context);
+  Node* result = GetSuperConstructor(context, active_function);
   StoreRegisterAtOperandIndex(result, 0);
   Dispatch();
 }
@@ -1771,18 +1797,14 @@ IGNITION_HANDLER(TestGreaterThanOrEqual, InterpreterCompareOpAssembler) {
   CompareOpWithFeedback(Operation::kGreaterThanOrEqual);
 }
 
-// TestEqualStrictNoFeedback <src>
+// TestReferenceEqual <src>
 //
-// Test if the value in the <src> register is strictly equal to the accumulator.
-// Type feedback is not collected.
-IGNITION_HANDLER(TestEqualStrictNoFeedback, InterpreterAssembler) {
+// Test if the value in the <src> register is equal to the accumulator
+// by means of simple comparison. For SMIs and simple reference comparisons.
+IGNITION_HANDLER(TestReferenceEqual, InterpreterAssembler) {
   Node* lhs = LoadRegisterAtOperandIndex(0);
   Node* rhs = GetAccumulator();
-  // TODO(5310): This is called only when lhs and rhs are Smis (for ex:
-  // try-finally or generators) or strings (only when visiting
-  // ClassLiteralProperties). We should be able to optimize this and not perform
-  // the full strict equality.
-  Node* result = StrictEqual(lhs, rhs);
+  Node* result = SelectBooleanConstant(WordEqual(lhs, rhs));
   SetAccumulator(result);
   Dispatch();
 }
@@ -2497,71 +2519,65 @@ IGNITION_HANDLER(CreateClosure, InterpreterAssembler) {
 
 // CreateBlockContext <index>
 //
-// Creates a new block context with the scope info constant at |index| and the
-// closure in the accumulator.
+// Creates a new block context with the scope info constant at |index|.
 IGNITION_HANDLER(CreateBlockContext, InterpreterAssembler) {
   Node* scope_info = LoadConstantPoolEntryAtOperandIndex(0);
-  Node* closure = GetAccumulator();
   Node* context = GetContext();
-  SetAccumulator(
-      CallRuntime(Runtime::kPushBlockContext, context, scope_info, closure));
+  SetAccumulator(CallRuntime(Runtime::kPushBlockContext, context, scope_info));
   Dispatch();
 }
 
-// CreateCatchContext <exception> <name_idx> <scope_info_idx>
+// CreateCatchContext <exception> <scope_info_idx>
 //
-// Creates a new context for a catch block with the |exception| in a register,
-// the variable name at |name_idx|, the ScopeInfo at |scope_info_idx|, and the
-// closure in the accumulator.
+// Creates a new context for a catch block with the |exception| in a register
+// and the ScopeInfo at |scope_info_idx|.
 IGNITION_HANDLER(CreateCatchContext, InterpreterAssembler) {
   Node* exception = LoadRegisterAtOperandIndex(0);
-  Node* name = LoadConstantPoolEntryAtOperandIndex(1);
-  Node* scope_info = LoadConstantPoolEntryAtOperandIndex(2);
-  Node* closure = GetAccumulator();
+  Node* scope_info = LoadConstantPoolEntryAtOperandIndex(1);
   Node* context = GetContext();
-  SetAccumulator(CallRuntime(Runtime::kPushCatchContext, context, name,
-                             exception, scope_info, closure));
+  SetAccumulator(
+      CallRuntime(Runtime::kPushCatchContext, context, exception, scope_info));
   Dispatch();
 }
 
-// CreateFunctionContext <slots>
+// CreateFunctionContext <scope_info_idx> <slots>
 //
 // Creates a new context with number of |slots| for the function closure.
 IGNITION_HANDLER(CreateFunctionContext, InterpreterAssembler) {
-  Node* closure = LoadRegister(Register::function_closure());
-  Node* slots = BytecodeOperandUImm(0);
+  Node* scope_info_idx = BytecodeOperandIdx(0);
+  Node* scope_info = LoadConstantPoolEntry(scope_info_idx);
+  Node* slots = BytecodeOperandUImm(1);
   Node* context = GetContext();
   ConstructorBuiltinsAssembler constructor_assembler(state());
   SetAccumulator(constructor_assembler.EmitFastNewFunctionContext(
-      closure, slots, context, FUNCTION_SCOPE));
+      scope_info, slots, context, FUNCTION_SCOPE));
   Dispatch();
 }
 
-// CreateEvalContext <slots>
+// CreateEvalContext <scope_info_idx> <slots>
 //
 // Creates a new context with number of |slots| for an eval closure.
 IGNITION_HANDLER(CreateEvalContext, InterpreterAssembler) {
-  Node* closure = LoadRegister(Register::function_closure());
-  Node* slots = BytecodeOperandUImm(0);
+  Node* scope_info_idx = BytecodeOperandIdx(0);
+  Node* scope_info = LoadConstantPoolEntry(scope_info_idx);
+  Node* slots = BytecodeOperandUImm(1);
   Node* context = GetContext();
   ConstructorBuiltinsAssembler constructor_assembler(state());
   SetAccumulator(constructor_assembler.EmitFastNewFunctionContext(
-      closure, slots, context, EVAL_SCOPE));
+      scope_info, slots, context, EVAL_SCOPE));
   Dispatch();
 }
 
 // CreateWithContext <register> <scope_info_idx>
 //
 // Creates a new context with the ScopeInfo at |scope_info_idx| for a
-// with-statement with the object in |register| and the closure in the
-// accumulator.
+// with-statement with the object in |register|.
 IGNITION_HANDLER(CreateWithContext, InterpreterAssembler) {
   Node* object = LoadRegisterAtOperandIndex(0);
   Node* scope_info = LoadConstantPoolEntryAtOperandIndex(1);
-  Node* closure = GetAccumulator();
   Node* context = GetContext();
-  SetAccumulator(CallRuntime(Runtime::kPushWithContext, context, object,
-                             scope_info, closure));
+  SetAccumulator(
+      CallRuntime(Runtime::kPushWithContext, context, object, scope_info));
   Dispatch();
 }
 
@@ -2580,12 +2596,10 @@ IGNITION_HANDLER(CreateMappedArguments, InterpreterAssembler) {
   // duplicate parameters.
   Node* shared_info =
       LoadObjectField(closure, JSFunction::kSharedFunctionInfoOffset);
-  Node* compiler_hints =
-      LoadObjectField(shared_info, SharedFunctionInfo::kCompilerHintsOffset,
-                      MachineType::Uint32());
+  Node* flags = LoadObjectField(shared_info, SharedFunctionInfo::kFlagsOffset,
+                                MachineType::Uint32());
   Node* has_duplicate_parameters =
-      IsSetWord32<SharedFunctionInfo::HasDuplicateParametersBit>(
-          compiler_hints);
+      IsSetWord32<SharedFunctionInfo::HasDuplicateParametersBit>(flags);
   Branch(has_duplicate_parameters, &if_duplicate_parameters,
          &if_not_duplicate_parameters);
 
@@ -3084,7 +3098,11 @@ Handle<Code> GenerateBytecodeHandler(Isolate* isolate, Bytecode bytecode,
   InterpreterDispatchDescriptor descriptor(isolate);
   compiler::CodeAssemblerState state(
       isolate, &zone, descriptor, Code::BYTECODE_HANDLER,
-      Bytecodes::ToString(bytecode), Bytecodes::ReturnCount(bytecode));
+      Bytecodes::ToString(bytecode),
+      FLAG_untrusted_code_mitigations
+          ? PoisoningMitigationLevel::kPoisonCriticalOnly
+          : PoisoningMitigationLevel::kDontPoison,
+      Bytecodes::ReturnCount(bytecode));
 
   switch (bytecode) {
 #define CALL_GENERATOR(Name, ...)                     \
@@ -3154,9 +3172,12 @@ Handle<Code> GenerateDeserializeLazyHandler(Isolate* isolate,
   }
 
   InterpreterDispatchDescriptor descriptor(isolate);
-  compiler::CodeAssemblerState state(isolate, &zone, descriptor,
-                                     Code::BYTECODE_HANDLER, debug_name.c_str(),
-                                     return_count);
+  compiler::CodeAssemblerState state(
+      isolate, &zone, descriptor, Code::BYTECODE_HANDLER, debug_name.c_str(),
+      FLAG_untrusted_code_mitigations
+          ? PoisoningMitigationLevel::kPoisonCriticalOnly
+          : PoisoningMitigationLevel::kDontPoison,
+      return_count);
 
   DeserializeLazyAssembler::Generate(&state, operand_scale);
   Handle<Code> code = compiler::CodeAssembler::GenerateCode(&state);

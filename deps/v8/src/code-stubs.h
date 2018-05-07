@@ -7,8 +7,8 @@
 
 #include "src/allocation.h"
 #include "src/assembler.h"
-#include "src/factory.h"
 #include "src/globals.h"
+#include "src/heap/factory.h"
 #include "src/interface-descriptors.h"
 #include "src/macro-assembler.h"
 #include "src/ostreams.h"
@@ -32,13 +32,12 @@ class Node;
   V(CallApiCallback)                        \
   V(CallApiGetter)                          \
   V(CEntry)                                 \
-  V(DoubleToI)                              \
   V(InternalArrayConstructor)               \
   V(JSEntry)                                \
-  V(MathPow)                                \
   V(ProfileEntryHook)                       \
-  V(StoreSlowElement)                       \
   /* --- TurboFanCodeStubs --- */           \
+  V(StoreSlowElement)                       \
+  V(StoreInArrayLiteralSlow)                \
   V(ArrayNoArgumentConstructor)             \
   V(ArraySingleArgumentConstructor)         \
   V(ArrayNArgumentsConstructor)             \
@@ -303,17 +302,17 @@ class CodeStubDescriptor {
 
   CodeStubDescriptor(Isolate* isolate, uint32_t stub_key);
 
-  void Initialize(Address deoptimization_handler = nullptr,
+  void Initialize(Address deoptimization_handler = kNullAddress,
                   int hint_stack_parameter_count = -1,
                   StubFunctionMode function_mode = NOT_JS_FUNCTION_STUB_MODE);
   void Initialize(Register stack_parameter_count,
-                  Address deoptimization_handler = nullptr,
+                  Address deoptimization_handler = kNullAddress,
                   int hint_stack_parameter_count = -1,
                   StubFunctionMode function_mode = NOT_JS_FUNCTION_STUB_MODE);
 
   void SetMissHandler(Runtime::FunctionId id) {
     miss_handler_id_ = id;
-    miss_handler_ = ExternalReference(Runtime::FunctionForId(id), isolate_);
+    miss_handler_ = ExternalReference::Create(Runtime::FunctionForId(id));
     has_miss_handler_ = true;
     // Our miss handler infrastructure doesn't currently support
     // variable stack parameter counts.
@@ -433,6 +432,7 @@ class TurboFanCodeStub : public CodeStub {
 namespace v8 {
 namespace internal {
 
+// TODO(jgruber): Convert this stub into a builtin.
 class StoreInterceptorStub : public TurboFanCodeStub {
  public:
   explicit StoreInterceptorStub(Isolate* isolate) : TurboFanCodeStub(isolate) {}
@@ -472,6 +472,7 @@ class TransitionElementsKindStub : public TurboFanCodeStub {
   DEFINE_TURBOFAN_CODE_STUB(TransitionElementsKind, TurboFanCodeStub);
 };
 
+// TODO(jgruber): Convert this stub into a builtin.
 class LoadIndexedInterceptorStub : public TurboFanCodeStub {
  public:
   explicit LoadIndexedInterceptorStub(Isolate* isolate)
@@ -482,6 +483,7 @@ class LoadIndexedInterceptorStub : public TurboFanCodeStub {
 };
 
 // ES6 [[Get]] operation.
+// TODO(jgruber): Convert this stub into a builtin.
 class GetPropertyStub : public TurboFanCodeStub {
  public:
   explicit GetPropertyStub(Isolate* isolate) : TurboFanCodeStub(isolate) {}
@@ -490,14 +492,13 @@ class GetPropertyStub : public TurboFanCodeStub {
   DEFINE_TURBOFAN_CODE_STUB(GetProperty, TurboFanCodeStub);
 };
 
-
 enum AllocationSiteOverrideMode {
   DONT_OVERRIDE,
   DISABLE_ALLOCATION_SITES,
   LAST_ALLOCATION_SITE_OVERRIDE_MODE = DISABLE_ALLOCATION_SITES
 };
 
-
+// TODO(jgruber): Convert this stub into a builtin.
 class ArrayConstructorStub: public PlatformCodeStub {
  public:
   explicit ArrayConstructorStub(Isolate* isolate);
@@ -510,7 +511,7 @@ class ArrayConstructorStub: public PlatformCodeStub {
   DEFINE_PLATFORM_CODE_STUB(ArrayConstructor, PlatformCodeStub);
 };
 
-
+// TODO(jgruber): Convert this stub into a builtin.
 class InternalArrayConstructorStub: public PlatformCodeStub {
  public:
   explicit InternalArrayConstructorStub(Isolate* isolate);
@@ -522,38 +523,7 @@ class InternalArrayConstructorStub: public PlatformCodeStub {
   DEFINE_PLATFORM_CODE_STUB(InternalArrayConstructor, PlatformCodeStub);
 };
 
-
-class MathPowStub: public PlatformCodeStub {
- public:
-  enum ExponentType { INTEGER, DOUBLE, TAGGED };
-
-  MathPowStub(Isolate* isolate, ExponentType exponent_type)
-      : PlatformCodeStub(isolate) {
-    minor_key_ = ExponentTypeBits::encode(exponent_type);
-  }
-
-  CallInterfaceDescriptor GetCallInterfaceDescriptor() const override {
-    if (exponent_type() == TAGGED) {
-      return MathPowTaggedDescriptor(isolate());
-    } else if (exponent_type() == INTEGER) {
-      return MathPowIntegerDescriptor(isolate());
-    } else {
-      // A CallInterfaceDescriptor doesn't specify double registers (yet).
-      DCHECK_EQ(DOUBLE, exponent_type());
-      return ContextOnlyDescriptor(isolate());
-    }
-  }
-
- private:
-  ExponentType exponent_type() const {
-    return ExponentTypeBits::decode(minor_key_);
-  }
-
-  class ExponentTypeBits : public BitField<ExponentType, 0, 2> {};
-
-  DEFINE_PLATFORM_CODE_STUB(MathPow, PlatformCodeStub);
-};
-
+// TODO(jgruber): Convert this stub into a builtin.
 class KeyedLoadSloppyArgumentsStub : public TurboFanCodeStub {
  public:
   explicit KeyedLoadSloppyArgumentsStub(Isolate* isolate)
@@ -601,7 +571,7 @@ class CallApiCallbackStub : public PlatformCodeStub {
   DEFINE_PLATFORM_CODE_STUB(CallApiCallback, PlatformCodeStub);
 };
 
-
+// TODO(jgruber): Convert this stub into a builtin.
 class CallApiGetterStub : public PlatformCodeStub {
  public:
   explicit CallApiGetterStub(Isolate* isolate) : PlatformCodeStub(isolate) {}
@@ -728,49 +698,6 @@ class JSEntryStub : public PlatformCodeStub {
 
   DEFINE_NULL_CALL_INTERFACE_DESCRIPTOR();
   DEFINE_PLATFORM_CODE_STUB(JSEntry, PlatformCodeStub);
-};
-
-
-enum ReceiverCheckMode {
-  // We don't know anything about the receiver.
-  RECEIVER_IS_UNKNOWN,
-
-  // We know the receiver is a string.
-  RECEIVER_IS_STRING
-};
-
-
-enum EmbedMode {
-  // The code being generated is part of an IC handler, which may MISS
-  // to an IC in failure cases.
-  PART_OF_IC_HANDLER,
-
-  NOT_PART_OF_IC_HANDLER
-};
-
-class DoubleToIStub : public PlatformCodeStub {
- public:
-  DoubleToIStub(Isolate* isolate, Register destination)
-      : PlatformCodeStub(isolate) {
-    minor_key_ = DestinationRegisterBits::encode(destination.code()) |
-                 SSE3Bits::encode(CpuFeatures::IsSupported(SSE3) ? 1 : 0);
-  }
-
-  bool SometimesSetsUpAFrame() override { return false; }
-
- private:
-  Register destination() const {
-    return Register::from_code(DestinationRegisterBits::decode(minor_key_));
-  }
-
-  static const int kBitsPerRegisterNumber = 6;
-  STATIC_ASSERT((1L << kBitsPerRegisterNumber) >= Register::kNumRegisters);
-  class DestinationRegisterBits
-      : public BitField<int, 0, kBitsPerRegisterNumber> {};
-  class SSE3Bits : public BitField<int, kBitsPerRegisterNumber, 1> {};
-
-  DEFINE_NULL_CALL_INTERFACE_DESCRIPTOR();
-  DEFINE_PLATFORM_CODE_STUB(DoubleToI, PlatformCodeStub);
 };
 
 class StoreFastElementStub : public TurboFanCodeStub {
@@ -904,6 +831,7 @@ class InternalArraySingleArgumentConstructorStub
                             CommonArrayConstructorStub);
 };
 
+// TODO(jgruber): Convert this stub into a builtin.
 class ArrayNArgumentsConstructorStub : public PlatformCodeStub {
  public:
   explicit ArrayNArgumentsConstructorStub(Isolate* isolate)
@@ -927,6 +855,18 @@ class StoreSlowElementStub : public TurboFanCodeStub {
  private:
   DEFINE_CALL_INTERFACE_DESCRIPTOR(StoreWithVector);
   DEFINE_TURBOFAN_CODE_STUB(StoreSlowElement, TurboFanCodeStub);
+};
+
+class StoreInArrayLiteralSlowStub : public TurboFanCodeStub {
+ public:
+  StoreInArrayLiteralSlowStub(Isolate* isolate, KeyedAccessStoreMode mode)
+      : TurboFanCodeStub(isolate) {
+    minor_key_ = CommonStoreModeBits::encode(mode);
+  }
+
+ private:
+  DEFINE_CALL_INTERFACE_DESCRIPTOR(StoreWithVector);
+  DEFINE_TURBOFAN_CODE_STUB(StoreInArrayLiteralSlow, TurboFanCodeStub);
 };
 
 class ElementsTransitionAndStoreStub : public TurboFanCodeStub {
@@ -957,7 +897,7 @@ class ElementsTransitionAndStoreStub : public TurboFanCodeStub {
   DEFINE_TURBOFAN_CODE_STUB(ElementsTransitionAndStore, TurboFanCodeStub);
 };
 
-
+// TODO(jgruber): Convert this stub into a builtin.
 class ProfileEntryHookStub : public PlatformCodeStub {
  public:
   explicit ProfileEntryHookStub(Isolate* isolate) : PlatformCodeStub(isolate) {}

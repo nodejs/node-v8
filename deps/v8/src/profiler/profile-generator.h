@@ -6,11 +6,11 @@
 #define V8_PROFILER_PROFILE_GENERATOR_H_
 
 #include <map>
+#include <unordered_map>
 #include <vector>
 
 #include "include/v8-profiler.h"
 #include "src/allocation.h"
-#include "src/base/hashmap.h"
 #include "src/log.h"
 #include "src/profiler/strings-storage.h"
 #include "src/source-position.h"
@@ -20,23 +20,21 @@ namespace internal {
 
 struct TickSample;
 
-// Provides a mapping from the offsets within generated code to
-// the source line.
-class JITLineInfoTable : public Malloced {
+// Provides a mapping from the offsets within generated code or a bytecode array
+// to the source line.
+class SourcePositionTable : public Malloced {
  public:
-  JITLineInfoTable();
-  ~JITLineInfoTable();
+  SourcePositionTable() {}
+  ~SourcePositionTable() {}
 
   void SetPosition(int pc_offset, int line);
   int GetSourceLineNumber(int pc_offset) const;
-
-  bool empty() const { return pc_offset_map_.empty(); }
 
  private:
   // pc_offset -> source line
   typedef std::map<int, int> PcOffsetMap;
   PcOffsetMap pc_offset_map_;
-  DISALLOW_COPY_AND_ASSIGN(JITLineInfoTable);
+  DISALLOW_COPY_AND_ASSIGN(SourcePositionTable);
 };
 
 
@@ -48,8 +46,8 @@ class CodeEntry {
                    const char* resource_name = CodeEntry::kEmptyResourceName,
                    int line_number = v8::CpuProfileNode::kNoLineNumberInfo,
                    int column_number = v8::CpuProfileNode::kNoColumnNumberInfo,
-                   std::unique_ptr<JITLineInfoTable> line_info = nullptr,
-                   Address instruction_start = nullptr);
+                   std::unique_ptr<SourcePositionTable> line_info = nullptr,
+                   Address instruction_start = kNullAddress);
 
   const char* name_prefix() const { return name_prefix_; }
   bool has_name_prefix() const { return name_prefix_[0] != '\0'; }
@@ -57,7 +55,7 @@ class CodeEntry {
   const char* resource_name() const { return resource_name_; }
   int line_number() const { return line_number_; }
   int column_number() const { return column_number_; }
-  const JITLineInfoTable* line_info() const { return line_info_.get(); }
+  const SourcePositionTable* line_info() const { return line_info_.get(); }
   int script_id() const { return script_id_; }
   void set_script_id(int script_id) { script_id_ = script_id; }
   int position() const { return position_; }
@@ -87,7 +85,7 @@ class CodeEntry {
   }
 
   uint32_t GetHash() const;
-  bool IsSameFunctionAs(CodeEntry* entry) const;
+  bool IsSameFunctionAs(const CodeEntry* entry) const;
 
   int GetSourceLine(int pc_offset) const;
 
@@ -162,7 +160,7 @@ class CodeEntry {
   const char* bailout_reason_;
   const char* deopt_reason_;
   int deopt_id_;
-  std::unique_ptr<JITLineInfoTable> line_info_;
+  std::unique_ptr<SourcePositionTable> line_info_;
   Address instruction_start_;
   // Should be an unordered_map, but it doesn't currently work on Win & MacOS.
   std::map<int, std::vector<std::unique_ptr<CodeEntry>>> inline_locations_;
@@ -190,7 +188,9 @@ class ProfileNode {
   unsigned id() const { return id_; }
   unsigned function_id() const;
   ProfileNode* parent() const { return parent_; }
-  unsigned int GetHitLineCount() const { return line_ticks_.occupancy(); }
+  unsigned int GetHitLineCount() const {
+    return static_cast<unsigned int>(line_ticks_.size());
+  }
   bool GetLineTicks(v8::CpuProfileNode::LineTick* entries,
                     unsigned int length) const;
   void CollectDeoptInfo(CodeEntry* entry);
@@ -201,25 +201,26 @@ class ProfileNode {
 
   void Print(int indent);
 
-  static bool CodeEntriesMatch(void* entry1, void* entry2) {
-    return reinterpret_cast<CodeEntry*>(entry1)
-        ->IsSameFunctionAs(reinterpret_cast<CodeEntry*>(entry2));
-  }
-
  private:
-  static uint32_t CodeEntryHash(CodeEntry* entry) { return entry->GetHash(); }
-
-  static bool LineTickMatch(void* a, void* b) { return a == b; }
+  struct CodeEntryEqual {
+    bool operator()(CodeEntry* entry1, CodeEntry* entry2) const {
+      return entry1 == entry2 || entry1->IsSameFunctionAs(entry2);
+    }
+  };
+  struct CodeEntryHash {
+    std::size_t operator()(CodeEntry* entry) const { return entry->GetHash(); }
+  };
 
   ProfileTree* tree_;
   CodeEntry* entry_;
   unsigned self_ticks_;
-  // Mapping from CodeEntry* to ProfileNode*
-  base::CustomMatcherHashMap children_;
+  std::unordered_map<CodeEntry*, ProfileNode*, CodeEntryHash, CodeEntryEqual>
+      children_;
   std::vector<ProfileNode*> children_list_;
   ProfileNode* parent_;
   unsigned id_;
-  base::CustomMatcherHashMap line_ticks_;
+  // maps line number --> number of ticks
+  std::unordered_map<int, int> line_ticks_;
 
   std::vector<CpuProfileDeoptInfo> deopt_infos_;
 
@@ -264,7 +265,7 @@ class ProfileTree {
   Isolate* isolate_;
 
   unsigned next_function_id_;
-  base::CustomMatcherHashMap function_ids_;
+  std::unordered_map<CodeEntry*, unsigned> function_ids_;
 
   DISALLOW_COPY_AND_ASSIGN(ProfileTree);
 };
@@ -314,7 +315,7 @@ class CpuProfile {
 
 class CodeMap {
  public:
-  CodeMap() {}
+  CodeMap();
 
   void AddCode(Address addr, CodeEntry* entry, unsigned size);
   void MoveCode(Address from, Address to);
@@ -324,7 +325,7 @@ class CodeMap {
  private:
   struct CodeEntryInfo {
     CodeEntryInfo(CodeEntry* an_entry, unsigned a_size)
-        : entry(an_entry), size(a_size) { }
+        : entry(an_entry), size(a_size) {}
     CodeEntry* entry;
     unsigned size;
   };
@@ -380,7 +381,7 @@ class ProfileGenerator {
   CodeMap* code_map() { return &code_map_; }
 
  private:
-  CodeEntry* FindEntry(void* address);
+  CodeEntry* FindEntry(Address address) { return code_map_.FindEntry(address); }
   CodeEntry* EntryForVMState(StateTag tag);
 
   CpuProfilesCollection* profiles_;

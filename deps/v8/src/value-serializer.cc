@@ -10,12 +10,11 @@
 #include "src/api.h"
 #include "src/base/logging.h"
 #include "src/conversions.h"
-#include "src/factory.h"
 #include "src/flags.h"
 #include "src/handles-inl.h"
+#include "src/heap/factory.h"
 #include "src/isolate.h"
 #include "src/objects-inl.h"
-#include "src/objects.h"
 #include "src/snapshot/code-serializer.h"
 #include "src/transitions.h"
 #include "src/wasm/wasm-engine.h"
@@ -58,6 +57,9 @@ static size_t BytesNeededForVarint(T value) {
   return result;
 }
 
+// Note that some additional tag values are defined in Blink's
+// Source/bindings/core/v8/serialization/SerializationTag.h, which must
+// not clash with values defined here.
 enum class SerializationTag : uint8_t {
   // version:uint32_t (if at beginning of data, sets version > 0)
   kVersion = 0xFF,
@@ -80,6 +82,8 @@ enum class SerializationTag : uint8_t {
   // Number represented as a 64-bit double.
   // Host byte order is used (N.B. this makes the format non-portable).
   kDouble = 'N',
+  // BigInt. Bitfield:uint32_t, then raw digits storage.
+  kBigInt = 'Z',
   // byteLength:uint32_t, then raw data
   kUtf8String = 'S',
   kOneByteString = '"',
@@ -107,6 +111,8 @@ enum class SerializationTag : uint8_t {
   kFalseObject = 'x',
   // Number object. value:double
   kNumberObject = 'n',
+  // BigInt object. Bitfield:uint32_t, then raw digits storage.
+  kBigIntObject = 'z',
   // String object, UTF-8 encoding. byteLength:uint32_t, then raw data.
   kStringObject = 's',
   // Regular expression, UTF-8 encoding. byteLength:uint32_t, raw data,
@@ -253,6 +259,16 @@ void ValueSerializer::WriteTwoByteString(Vector<const uc16> chars) {
   WriteRawBytes(chars.begin(), chars.length() * sizeof(uc16));
 }
 
+void ValueSerializer::WriteBigIntContents(BigInt* bigint) {
+  uint32_t bitfield = bigint->GetBitfieldForSerialization();
+  int bytelength = BigInt::DigitsByteLengthForBitfield(bitfield);
+  WriteVarint<uint32_t>(bitfield);
+  uint8_t* dest;
+  if (ReserveRawBytes(bytelength).To(&dest)) {
+    bigint->SerializeDigits(dest);
+  }
+}
+
 void ValueSerializer::WriteRawBytes(const void* source, size_t length) {
   uint8_t* dest;
   if (ReserveRawBytes(length).To(&dest)) {
@@ -340,6 +356,9 @@ Maybe<bool> ValueSerializer::WriteObject(Handle<Object> object) {
     case MUTABLE_HEAP_NUMBER_TYPE:
       WriteHeapNumber(HeapNumber::cast(*object));
       return ThrowIfOutOfMemory();
+    case BIGINT_TYPE:
+      WriteBigInt(BigInt::cast(*object));
+      return ThrowIfOutOfMemory();
     case JS_TYPED_ARRAY_TYPE:
     case JS_DATA_VIEW_TYPE: {
       // Despite being JSReceivers, these have their wrapped buffer serialized
@@ -401,6 +420,11 @@ void ValueSerializer::WriteSmi(Smi* smi) {
 void ValueSerializer::WriteHeapNumber(HeapNumber* number) {
   WriteTag(SerializationTag::kDouble);
   WriteDouble(number->value());
+}
+
+void ValueSerializer::WriteBigInt(BigInt* bigint) {
+  WriteTag(SerializationTag::kBigInt);
+  WriteBigIntContents(bigint);
 }
 
 void ValueSerializer::WriteString(Handle<String> string) {
@@ -501,7 +525,7 @@ Maybe<bool> ValueSerializer::WriteJSReceiver(Handle<JSReceiver> receiver) {
 }
 
 Maybe<bool> ValueSerializer::WriteJSObject(Handle<JSObject> object) {
-  DCHECK_GT(object->map()->instance_type(), LAST_CUSTOM_ELEMENTS_RECEIVER);
+  DCHECK(!object->map()->IsCustomElementsReceiverMap());
   const bool can_serialize_fast =
       object->HasFastProperties() && object->elements()->length() == 0;
   if (!can_serialize_fast) return WriteJSObjectSlow(object);
@@ -687,6 +711,9 @@ Maybe<bool> ValueSerializer::WriteJSValue(Handle<JSValue> value) {
   } else if (inner_value->IsNumber()) {
     WriteTag(SerializationTag::kNumberObject);
     WriteDouble(inner_value->Number());
+  } else if (inner_value->IsBigInt()) {
+    WriteTag(SerializationTag::kBigIntObject);
+    WriteBigIntContents(BigInt::cast(inner_value));
   } else if (inner_value->IsString()) {
     WriteTag(SerializationTag::kStringObject);
     WriteString(handle(String::cast(inner_value), isolate_));
@@ -858,10 +885,17 @@ Maybe<bool> ValueSerializer::WriteWasmModule(Handle<WasmModuleObject> object) {
     String::WriteToFlat(*wire_bytes, destination, 0, wire_bytes_length);
   }
 
-  std::pair<std::unique_ptr<const byte[]>, size_t> serialized_module =
-      wasm::SerializeNativeModule(isolate_, compiled_part);
-  WriteVarint<uint32_t>(static_cast<uint32_t>(serialized_module.second));
-  WriteRawBytes(serialized_module.first.get(), serialized_module.second);
+  size_t module_size =
+      wasm::GetSerializedNativeModuleSize(isolate_, compiled_part);
+  CHECK_GE(std::numeric_limits<uint32_t>::max(), module_size);
+  WriteVarint<uint32_t>(static_cast<uint32_t>(module_size));
+  uint8_t* module_buffer;
+  if (ReserveRawBytes(module_size).To(&module_buffer)) {
+    if (!wasm::SerializeNativeModule(isolate_, compiled_part,
+                                     {module_buffer, module_size})) {
+      return Nothing<bool>();
+    }
+  }
   return ThrowIfOutOfMemory();
 }
 
@@ -1154,6 +1188,8 @@ MaybeHandle<Object> ValueDeserializer::ReadObjectInternal() {
       if (number.IsNothing()) return MaybeHandle<Object>();
       return isolate_->factory()->NewNumber(number.FromJust(), pretenure_);
     }
+    case SerializationTag::kBigInt:
+      return ReadBigInt();
     case SerializationTag::kUtf8String:
       return ReadUtf8String();
     case SerializationTag::kOneByteString:
@@ -1176,6 +1212,7 @@ MaybeHandle<Object> ValueDeserializer::ReadObjectInternal() {
     case SerializationTag::kTrueObject:
     case SerializationTag::kFalseObject:
     case SerializationTag::kNumberObject:
+    case SerializationTag::kBigIntObject:
     case SerializationTag::kStringObject:
       return ReadJSValue(tag);
     case SerializationTag::kRegExp:
@@ -1221,6 +1258,19 @@ MaybeHandle<String> ValueDeserializer::ReadString() {
     return MaybeHandle<String>();
   }
   return Handle<String>::cast(object);
+}
+
+MaybeHandle<BigInt> ValueDeserializer::ReadBigInt() {
+  if (!FLAG_harmony_bigint) return MaybeHandle<BigInt>();
+  uint32_t bitfield;
+  if (!ReadVarint<uint32_t>().To(&bitfield)) return MaybeHandle<BigInt>();
+  int bytelength = BigInt::DigitsByteLengthForBitfield(bitfield);
+  Vector<const uint8_t> digits_storage;
+  if (!ReadRawBytes(bytelength).To(&digits_storage)) {
+    return MaybeHandle<BigInt>();
+  }
+  return BigInt::FromSerializedDigits(isolate_, bitfield, digits_storage,
+                                      pretenure_);
 }
 
 MaybeHandle<String> ValueDeserializer::ReadUtf8String() {
@@ -1462,6 +1512,14 @@ MaybeHandle<JSValue> ValueDeserializer::ReadJSValue(SerializationTag tag) {
       Handle<Object> number_object =
           isolate_->factory()->NewNumber(number, pretenure_);
       value->set_value(*number_object);
+      break;
+    }
+    case SerializationTag::kBigIntObject: {
+      Handle<BigInt> bigint;
+      if (!ReadBigInt().ToHandle(&bigint)) return MaybeHandle<JSValue>();
+      value = Handle<JSValue>::cast(isolate_->factory()->NewJSObject(
+          isolate_->bigint_function(), pretenure_));
+      value->set_value(*bigint);
       break;
     }
     case SerializationTag::kStringObject: {
@@ -1745,7 +1803,6 @@ MaybeHandle<JSObject> ValueDeserializer::ReadWasmModule() {
     result = isolate_->wasm_engine()->SyncCompile(
         isolate_, &thrower, wasm::ModuleWireBytes(wire_bytes));
   }
-  RETURN_EXCEPTION_IF_SCHEDULED_EXCEPTION(isolate_, JSObject);
   uint32_t id = next_id_++;
   if (!result.is_null()) {
     AddObjectWithID(id, result.ToHandleChecked());
@@ -1861,9 +1918,9 @@ Maybe<uint32_t> ValueDeserializer::ReadJSObjectProperties(
           key =
               isolate_->factory()->InternalizeString(Handle<String>::cast(key));
           // Don't reuse |transitions| because it could be stale.
-          target = TransitionsAccessor(map).FindTransitionToField(
-              Handle<String>::cast(key));
-          transitioning = !target.is_null();
+          transitioning = TransitionsAccessor(map)
+                              .FindTransitionToField(Handle<String>::cast(key))
+                              .ToHandle(&target);
         } else {
           transitioning = false;
         }
