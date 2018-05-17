@@ -2522,10 +2522,33 @@
         'GCC_ENABLE_CPP_RTTI': 'YES',        # -frtti
       },
       'defines': ['ANTLR4CPP_STATIC'],
+      'defines!': [
+        '_HAS_EXCEPTIONS=0',
+        'BUILDING_V8_SHARED=1',
+      ],
       'include_dirs': [
         '../third_party/antlr4/runtime/Cpp/runtime/src',
         '../src/torque',
       ],
+      # This is defined trough `configurations` for GYP+ninja compatibility
+      'configurations': {
+        'Debug': {
+          'msvs_settings': {
+            'VCCLCompilerTool': {
+              'RuntimeTypeInfo': 'true',
+              'ExceptionHandling': 1,
+            },
+          }
+        },
+        'Release': {
+          'msvs_settings': {
+            'VCCLCompilerTool': {
+              'RuntimeTypeInfo': 'true',
+              'ExceptionHandling': 1,
+            },
+          }
+        },
+      },
       'sources': [
         '../src/torque/TorqueBaseVisitor.cpp',
         '../src/torque/TorqueBaseVisitor.h',
