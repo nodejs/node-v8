@@ -810,6 +810,8 @@
         '../src/compiler/node-marker.h',
         '../src/compiler/node-matchers.cc',
         '../src/compiler/node-matchers.h',
+        '../src/compiler/node-origin-table.cc',
+        '../src/compiler/node-origin-table.h',
         '../src/compiler/node-properties.cc',
         '../src/compiler/node-properties.h',
         '../src/compiler/node.cc',
