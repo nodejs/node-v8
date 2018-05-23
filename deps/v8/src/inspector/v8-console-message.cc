@@ -92,6 +92,9 @@ class V8ValueStringBuilder {
     if (value->IsString()) return append(v8::Local<v8::String>::Cast(value));
     if (value->IsStringObject())
       return append(v8::Local<v8::StringObject>::Cast(value)->ValueOf());
+    if (value->IsBigInt()) return append(v8::Local<v8::BigInt>::Cast(value));
+    if (value->IsBigIntObject())
+      return append(v8::Local<v8::BigIntObject>::Cast(value)->ValueOf());
     if (value->IsSymbol()) return append(v8::Local<v8::Symbol>::Cast(value));
     if (value->IsSymbolObject())
       return append(v8::Local<v8::SymbolObject>::Cast(value)->ValueOf());
@@ -153,6 +156,13 @@ class V8ValueStringBuilder {
     m_builder.append("Symbol(");
     bool result = append(symbol->Name(), IgnoreUndefined);
     m_builder.append(')');
+    return result;
+  }
+
+  bool append(v8::Local<v8::BigInt> bigint) {
+    bool result = append(bigint->ToString());
+    if (m_tryCatch.HasCaught()) return false;
+    m_builder.append('n');
     return result;
   }
 
@@ -520,6 +530,14 @@ int V8ConsoleMessageStorage::count(int contextId, const String16& id) {
 
 void V8ConsoleMessageStorage::time(int contextId, const String16& id) {
   m_data[contextId].m_time[id] = m_inspector->client()->currentTimeMS();
+}
+
+bool V8ConsoleMessageStorage::countReset(int contextId, const String16& id) {
+  std::map<String16, int>& count_map = m_data[contextId].m_count;
+  if (count_map.find(id) == count_map.end()) return false;
+
+  count_map[id] = 0;
+  return true;
 }
 
 double V8ConsoleMessageStorage::timeEnd(int contextId, const String16& id) {

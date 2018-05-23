@@ -307,6 +307,12 @@ class ParserBase {
   void set_allow_harmony_bigint(bool allow) {
     scanner()->set_allow_harmony_bigint(allow);
   }
+  bool allow_harmony_numeric_separator() const {
+    return scanner()->allow_harmony_numeric_separator();
+  }
+  void set_allow_harmony_numeric_separator(bool allow) {
+    scanner()->set_allow_harmony_numeric_separator(allow);
+  }
 
   bool allow_harmony_private_fields() const {
     return scanner()->allow_harmony_private_fields();
@@ -3418,22 +3424,10 @@ ParserBase<Impl>::ParseLeftHandSideExpression(bool* ok) {
         Call::PossiblyEval is_possibly_eval =
             CheckPossibleEvalCall(result, scope());
 
-        bool is_super_call = result->IsSuperCallReference();
         if (spread_pos.IsValid()) {
           result = impl()->SpreadCall(result, args, pos, is_possibly_eval);
         } else {
           result = factory()->NewCall(result, args, pos, is_possibly_eval);
-        }
-
-        // Explicit calls to the super constructor using super() perform an
-        // implicit binding assignment to the 'this' variable.
-        if (is_super_call) {
-          classifier()->RecordAssignmentPatternError(
-              Scanner::Location(pos, scanner()->location().end_pos),
-              MessageTemplate::kInvalidDestructuringTarget);
-          ExpressionT this_expr = impl()->ThisExpression(pos);
-          result =
-              factory()->NewAssignment(Token::INIT, this_expr, result, pos);
         }
 
         if (fni_ != nullptr) fni_->RemoveLastFunction();

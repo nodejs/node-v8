@@ -31,6 +31,7 @@ constexpr Register kJavaScriptCallNewTargetRegister = edx;
 constexpr Register kOffHeapTrampolineRegister = ecx;
 constexpr Register kRuntimeCallFunctionRegister = ebx;
 constexpr Register kRuntimeCallArgCountRegister = eax;
+constexpr Register kWasmInstanceRegister = esi;
 
 // Convenience for platform-independent signatures.  We do not normally
 // distinguish memory operands from other operands on ia32.
@@ -113,6 +114,7 @@ class TurboAssembler : public Assembler {
 
   void Move(Register dst, Handle<HeapObject> handle);
 
+  void Call(Register reg) { call(reg); }
   void Call(Handle<Code> target, RelocInfo::Mode rmode) { call(target, rmode); }
   void Call(Label* target) { call(target); }
 
@@ -128,6 +130,7 @@ class TurboAssembler : public Assembler {
   inline bool AllowThisStubCall(CodeStub* stub);
   void CallStubDelayed(CodeStub* stub);
 
+  // TODO(jgruber): Remove in favor of MacroAssembler::CallRuntime.
   void CallRuntimeDelayed(Zone* zone, Runtime::FunctionId fid,
                           SaveFPRegsMode save_doubles = kDontSaveFPRegs);
 
@@ -179,7 +182,7 @@ class TurboAssembler : public Assembler {
   void ShlPair(Register high, Register low, uint8_t imm8);
   void ShlPair_cl(Register high, Register low);
   void ShrPair(Register high, Register low, uint8_t imm8);
-  void ShrPair_cl(Register high, Register src);
+  void ShrPair_cl(Register high, Register low);
   void SarPair(Register high, Register low, uint8_t imm8);
   void SarPair_cl(Register high, Register low);
 
@@ -222,12 +225,15 @@ class TurboAssembler : public Assembler {
     }                                                           \
   }
 
+  AVX_OP2_WITH_TYPE(Rcpps, rcpps, XMMRegister, const Operand&)
+  AVX_OP2_WITH_TYPE(Rsqrtps, rsqrtps, XMMRegister, const Operand&)
   AVX_OP2_WITH_TYPE(Movdqu, movdqu, XMMRegister, Operand)
   AVX_OP2_WITH_TYPE(Movdqu, movdqu, Operand, XMMRegister)
   AVX_OP2_WITH_TYPE(Movd, movd, XMMRegister, Register)
   AVX_OP2_WITH_TYPE(Movd, movd, XMMRegister, Operand)
   AVX_OP2_WITH_TYPE(Movd, movd, Register, XMMRegister)
   AVX_OP2_WITH_TYPE(Movd, movd, Operand, XMMRegister)
+  AVX_OP2_WITH_TYPE(Cvtdq2ps, cvtdq2ps, XMMRegister, Operand)
 
 #undef AVX_OP2_WITH_TYPE
 
@@ -246,18 +252,27 @@ class TurboAssembler : public Assembler {
   AVX_OP3_WITH_TYPE(macro_name, name, XMMRegister, XMMRegister) \
   AVX_OP3_WITH_TYPE(macro_name, name, XMMRegister, Operand)
 
+  AVX_OP3_XO(Pcmpeqb, pcmpeqb)
+  AVX_OP3_XO(Pcmpeqw, pcmpeqw)
   AVX_OP3_XO(Pcmpeqd, pcmpeqd)
   AVX_OP3_XO(Psubb, psubb)
   AVX_OP3_XO(Psubw, psubw)
   AVX_OP3_XO(Psubd, psubd)
   AVX_OP3_XO(Pxor, pxor)
+  AVX_OP3_XO(Andps, andps)
+  AVX_OP3_XO(Andpd, andpd)
   AVX_OP3_XO(Xorps, xorps)
   AVX_OP3_XO(Xorpd, xorpd)
+  AVX_OP3_XO(Sqrtss, sqrtss)
+  AVX_OP3_XO(Sqrtsd, sqrtsd)
 
 #undef AVX_OP3_XO
 #undef AVX_OP3_WITH_TYPE
 
   // Non-SSE2 instructions.
+  void Ptest(XMMRegister dst, XMMRegister src) { Ptest(dst, Operand(src)); }
+  void Ptest(XMMRegister dst, Operand src);
+
   void Pshufb(XMMRegister dst, XMMRegister src) { Pshufb(dst, Operand(src)); }
   void Pshufb(XMMRegister dst, Operand src);
 
@@ -278,21 +293,29 @@ class TurboAssembler : public Assembler {
   void Pinsrd(XMMRegister dst, Operand src, int8_t imm8,
               bool is_64_bits = false);
 
-  void LoadUint32(XMMRegister dst, Register src) {
-    LoadUint32(dst, Operand(src));
-  }
-  void LoadUint32(XMMRegister dst, Operand src);
-
   // Expression support
   // cvtsi2sd instruction only writes to the low 64-bit of dst register, which
   // hinders register renaming and makes dependence chains longer. So we use
   // xorps to clear the dst register before cvtsi2sd to solve this issue.
+  void Cvtsi2ss(XMMRegister dst, Register src) { Cvtsi2ss(dst, Operand(src)); }
+  void Cvtsi2ss(XMMRegister dst, Operand src);
   void Cvtsi2sd(XMMRegister dst, Register src) { Cvtsi2sd(dst, Operand(src)); }
   void Cvtsi2sd(XMMRegister dst, Operand src);
 
-  void Cvtui2ss(XMMRegister dst, Register src, Register tmp);
-
-  void SlowTruncateToIDelayed(Zone* zone, Register result_reg);
+  void Cvtui2ss(XMMRegister dst, Register src, Register tmp) {
+    Cvtui2ss(dst, Operand(src), tmp);
+  }
+  void Cvtui2ss(XMMRegister dst, Operand src, Register tmp);
+  void Cvttss2ui(Register dst, XMMRegister src, XMMRegister tmp) {
+    Cvttss2ui(dst, Operand(src), tmp);
+  }
+  void Cvttss2ui(Register dst, Operand src, XMMRegister tmp);
+  void Cvtui2sd(XMMRegister dst, Register src) { Cvtui2sd(dst, Operand(src)); }
+  void Cvtui2sd(XMMRegister dst, Operand src);
+  void Cvttsd2ui(Register dst, XMMRegister src, XMMRegister tmp) {
+    Cvttsd2ui(dst, Operand(src), tmp);
+  }
+  void Cvttsd2ui(Register dst, Operand src, XMMRegister tmp);
 
   void Push(Register src) { push(src); }
   void Push(Operand src) { push(src); }
@@ -336,11 +359,17 @@ class TurboAssembler : public Assembler {
 
   void ResetSpeculationPoisonRegister();
 
- private:
-  bool has_frame_ = false;
-  Isolate* const isolate_;
+  bool root_array_available() const { return root_array_available_; }
+  void set_root_array_available(bool v) { root_array_available_ = v; }
+
+ protected:
   // This handle will be patched with the code object on installation.
   Handle<HeapObject> code_object_;
+
+ private:
+  bool has_frame_ = false;
+  bool root_array_available_ = false;
+  Isolate* const isolate_;
 };
 
 // MacroAssembler implements a collection of frequently used macros.
@@ -532,6 +561,9 @@ class MacroAssembler : public TurboAssembler {
   // Abort execution if argument is not a JSFunction, enabled via --debug-code.
   void AssertFunction(Register object);
 
+  // Abort execution if argument is not a Constructor, enabled via --debug-code.
+  void AssertConstructor(Register object);
+
   // Abort execution if argument is not a JSBoundFunction,
   // enabled via --debug-code.
   void AssertBoundFunction(Register object);
@@ -587,7 +619,7 @@ class MacroAssembler : public TurboAssembler {
                                bool builtin_exit_frame = false);
 
   // Generates a trampoline to jump to the off-heap instruction stream.
-  void JumpToInstructionStream(const InstructionStream* stream);
+  void JumpToInstructionStream(Address entry);
 
   // ---------------------------------------------------------------------------
   // Utilities
@@ -601,6 +633,10 @@ class MacroAssembler : public TurboAssembler {
   void Pop(Operand dst) { pop(dst); }
   void PushReturnAddressFrom(Register src) { push(src); }
   void PopReturnAddressTo(Register dst) { pop(dst); }
+
+  // ---------------------------------------------------------------------------
+  // In-place weak references.
+  void LoadWeakValue(Register in_out, Label* target_if_cleared);
 
   // ---------------------------------------------------------------------------
   // StatsCounter support

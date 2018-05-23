@@ -1040,6 +1040,11 @@ int DisassemblerX64::AVXInstruction(byte* data) {
                        NameOfCPURegister(regop));
         current += PrintRightXMMOperand(current);
         break;
+      case 0x51:
+        AppendToBuffer("vsqrtss %s,%s,", NameOfXMMRegister(regop),
+                       NameOfXMMRegister(vvvv));
+        current += PrintRightXMMOperand(current);
+        break;
       case 0x58:
         AppendToBuffer("vaddss %s,%s,", NameOfXMMRegister(regop),
                        NameOfXMMRegister(vvvv));
@@ -1154,6 +1159,11 @@ int DisassemblerX64::AVXInstruction(byte* data) {
         break;
       case 0xF0:
         AppendToBuffer("vlddqu %s,", NameOfXMMRegister(regop));
+        current += PrintRightXMMOperand(current);
+        break;
+      case 0x7C:
+        AppendToBuffer("vhaddps %s,%s,", NameOfXMMRegister(regop),
+                       NameOfXMMRegister(vvvv));
         current += PrintRightXMMOperand(current);
         break;
       default:
@@ -1980,7 +1990,7 @@ int DisassemblerX64::TwoByteOpcodeInstruction(byte* data) {
       int mod, regop, rm;
       get_modrm(*current, &mod, &regop, &rm);
       AppendToBuffer("haddps %s,", NameOfXMMRegister(regop));
-      current += PrintRightOperand(current);
+      current += PrintRightXMMOperand(current);
     } else {
       UnimplementedInstruction();
     }
@@ -2557,7 +2567,9 @@ int DisassemblerX64::InstructionDecode(v8::internal::Vector<char> out_buffer,
       case 0x96:
       case 0x97: {
         int reg = (*data & 0x7) | (rex_b() ? 8 : 0);
-        if (reg == 0) {
+        if (group_1_prefix_ == 0xF3 && *data == 0x90) {
+          AppendToBuffer("pause");
+        } else if (reg == 0) {
           AppendToBuffer("nop");  // Common name for xchg rax,rax.
         } else {
           AppendToBuffer("xchg%c rax,%s",

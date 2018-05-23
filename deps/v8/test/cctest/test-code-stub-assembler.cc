@@ -15,6 +15,7 @@
 #include "src/debug/debug.h"
 #include "src/isolate.h"
 #include "src/objects-inl.h"
+#include "src/objects/hash-table-inl.h"
 #include "src/objects/promise-inl.h"
 #include "test/cctest/compiler/code-assembler-tester.h"
 #include "test/cctest/compiler/function-tester.h"
@@ -25,8 +26,22 @@ namespace compiler {
 
 namespace {
 
-typedef CodeAssemblerLabel Label;
-typedef CodeAssemblerVariable Variable;
+using Label = CodeAssemblerLabel;
+using Variable = CodeAssemblerVariable;
+template <class T>
+using TVariable = TypedCodeAssemblerVariable<T>;
+
+Handle<String> MakeString(const char* str) {
+  Isolate* isolate = CcTest::i_isolate();
+  Factory* factory = isolate->factory();
+  return factory->InternalizeUtf8String(str);
+}
+
+Handle<String> MakeName(const char* str, int suffix) {
+  EmbeddedVector<char, 128> buffer;
+  SNPrintF(buffer, "%s%d", str, suffix);
+  return MakeString(buffer.start());
+}
 
 int sum9(int a0, int a1, int a2, int a3, int a4, int a5, int a6, int a7,
          int a8) {
@@ -46,7 +61,7 @@ TEST(CallCFunction9) {
 
   {
     Node* const fun_constant = m.ExternalConstant(
-        ExternalReference(reinterpret_cast<Address>(sum9), isolate));
+        ExternalReference::Create(reinterpret_cast<Address>(sum9)));
 
     MachineType type_intptr = MachineType::IntPtr();
 
@@ -75,7 +90,7 @@ TEST(CallCFunction3WithCallerSavedRegisters) {
 
   {
     Node* const fun_constant = m.ExternalConstant(
-        ExternalReference(reinterpret_cast<Address>(sum3), isolate));
+        ExternalReference::Create(reinterpret_cast<Address>(sum3)));
 
     MachineType type_intptr = MachineType::IntPtr();
 
@@ -533,8 +548,8 @@ void TestEntryToIndex() {
   CodeAssemblerTester asm_tester(isolate, kNumParams);
   CodeStubAssembler m(asm_tester.state());
   {
-    Node* entry = m.SmiUntag(m.Parameter(0));
-    Node* result = m.EntryToIndex<Dictionary>(entry);
+    TNode<IntPtrT> entry = m.SmiUntag(m.Parameter(0));
+    TNode<IntPtrT> result = m.EntryToIndex<Dictionary>(entry);
     m.Return(m.SmiTag(result));
   }
 
@@ -566,14 +581,14 @@ void TestNameDictionaryLookup() {
 
   enum Result { kFound, kNotFound };
   {
-    Node* dictionary = m.Parameter(0);
-    Node* unique_name = m.Parameter(1);
-    Node* expected_result = m.Parameter(2);
-    Node* expected_arg = m.Parameter(3);
+    TNode<Dictionary> dictionary = m.CAST(m.Parameter(0));
+    TNode<Name> unique_name = m.CAST(m.Parameter(1));
+    TNode<Smi> expected_result = m.CAST(m.Parameter(2));
+    TNode<Object> expected_arg = m.CAST(m.Parameter(3));
 
     Label passed(&m), failed(&m);
     Label if_found(&m), if_not_found(&m);
-    Variable var_name_index(&m, MachineType::PointerRepresentation());
+    TVariable<IntPtrT> var_name_index(&m);
 
     m.NameDictionaryLookup<Dictionary>(dictionary, unique_name, &if_found,
                                        &var_name_index, &if_not_found);
@@ -581,8 +596,9 @@ void TestNameDictionaryLookup() {
     m.GotoIfNot(
         m.WordEqual(expected_result, m.SmiConstant(Smi::FromInt(kFound))),
         &failed);
-    m.Branch(m.WordEqual(m.SmiUntag(expected_arg), var_name_index.value()),
-             &passed, &failed);
+    m.Branch(
+        m.WordEqual(m.SmiUntag(m.CAST(expected_arg)), var_name_index.value()),
+        &passed, &failed);
 
     m.BIND(&if_not_found);
     m.Branch(
@@ -667,14 +683,14 @@ TEST(NumberDictionaryLookup) {
 
   enum Result { kFound, kNotFound };
   {
-    Node* dictionary = m.Parameter(0);
-    Node* key = m.SmiUntag(m.Parameter(1));
-    Node* expected_result = m.Parameter(2);
-    Node* expected_arg = m.Parameter(3);
+    TNode<NumberDictionary> dictionary = m.CAST(m.Parameter(0));
+    TNode<IntPtrT> key = m.SmiUntag(m.Parameter(1));
+    TNode<Smi> expected_result = m.CAST(m.Parameter(2));
+    TNode<Object> expected_arg = m.CAST(m.Parameter(3));
 
     Label passed(&m), failed(&m);
     Label if_found(&m), if_not_found(&m);
-    Variable var_entry(&m, MachineType::PointerRepresentation());
+    TVariable<IntPtrT> var_entry(&m);
 
     m.NumberDictionaryLookup(dictionary, key, &if_found, &var_entry,
                              &if_not_found);
@@ -682,8 +698,8 @@ TEST(NumberDictionaryLookup) {
     m.GotoIfNot(
         m.WordEqual(expected_result, m.SmiConstant(Smi::FromInt(kFound))),
         &failed);
-    m.Branch(m.WordEqual(m.SmiUntag(expected_arg), var_entry.value()), &passed,
-             &failed);
+    m.Branch(m.WordEqual(m.SmiUntag(m.CAST(expected_arg)), var_entry.value()),
+             &passed, &failed);
 
     m.BIND(&if_not_found);
     m.Branch(
@@ -741,6 +757,136 @@ TEST(NumberDictionaryLookup) {
     Handle<Object> key(Smi::FromInt(random_key), isolate);
     ft.CheckTrue(dictionary, key, expect_not_found);
   }
+}
+
+TEST(TransitionLookup) {
+  Isolate* isolate(CcTest::InitIsolateOnce());
+
+  const int kNumParams = 4;
+  CodeAssemblerTester asm_tester(isolate, kNumParams);
+
+  enum Result { kFound, kNotFound };
+
+  class TempAssembler : public CodeStubAssembler {
+   public:
+    explicit TempAssembler(compiler::CodeAssemblerState* state)
+        : CodeStubAssembler(state) {}
+
+    void Generate() {
+      TNode<TransitionArray> transitions = CAST(Parameter(0));
+      TNode<Name> name = CAST(Parameter(1));
+      TNode<Smi> expected_result = CAST(Parameter(2));
+      TNode<Object> expected_arg = CAST(Parameter(3));
+
+      Label passed(this), failed(this);
+      Label if_found(this), if_not_found(this);
+      TVARIABLE(IntPtrT, var_transition_index);
+
+      TransitionLookup(name, transitions, &if_found, &var_transition_index,
+                       &if_not_found);
+
+      BIND(&if_found);
+      GotoIfNot(WordEqual(expected_result, SmiConstant(kFound)), &failed);
+      Branch(WordEqual(expected_arg, SmiTag(var_transition_index.value())),
+             &passed, &failed);
+
+      BIND(&if_not_found);
+      Branch(WordEqual(expected_result, SmiConstant(kNotFound)), &passed,
+             &failed);
+
+      BIND(&passed);
+      Return(BooleanConstant(true));
+
+      BIND(&failed);
+      Return(BooleanConstant(false));
+    }
+  };
+  TempAssembler(asm_tester.state()).Generate();
+
+  FunctionTester ft(asm_tester.GenerateCode(), kNumParams);
+
+  Handle<Object> expect_found(Smi::FromInt(kFound), isolate);
+  Handle<Object> expect_not_found(Smi::FromInt(kNotFound), isolate);
+
+  const int ATTRS_COUNT = (READ_ONLY | DONT_ENUM | DONT_DELETE) + 1;
+  STATIC_ASSERT(ATTRS_COUNT == 8);
+
+  const int kKeysCount = 300;
+  Handle<Map> root_map = Map::Create(isolate, 0);
+  Handle<Name> keys[kKeysCount];
+
+  base::RandomNumberGenerator rand_gen(FLAG_random_seed);
+
+  Factory* factory = isolate->factory();
+  Handle<FieldType> any = FieldType::Any(isolate);
+
+  for (int i = 0; i < kKeysCount; i++) {
+    Handle<Name> name;
+    if (i % 30 == 0) {
+      name = factory->NewPrivateSymbol();
+    } else if (i % 10 == 0) {
+      name = factory->NewSymbol();
+    } else {
+      int random_key = rand_gen.NextInt(Smi::kMaxValue);
+      name = MakeName("p", random_key);
+    }
+    keys[i] = name;
+
+    bool is_private = name->IsPrivate();
+    PropertyAttributes base_attributes = is_private ? DONT_ENUM : NONE;
+
+    // Ensure that all the combinations of cases are covered:
+    // 1) there is a "base" attributes transition
+    // 2) there are other non-base attributes transitions
+    if ((i & 1) == 0) {
+      CHECK(!Map::CopyWithField(root_map, name, any, base_attributes, kMutable,
+                                Representation::Tagged(), INSERT_TRANSITION)
+                 .is_null());
+    }
+
+    if ((i & 2) == 0) {
+      for (int j = 0; j < ATTRS_COUNT; j++) {
+        PropertyAttributes attributes = static_cast<PropertyAttributes>(j);
+        if (attributes == base_attributes) continue;
+        // Don't add private symbols with enumerable attributes.
+        if (is_private && ((attributes & DONT_ENUM) == 0)) continue;
+        CHECK(!Map::CopyWithField(root_map, name, any, attributes, kMutable,
+                                  Representation::Tagged(), INSERT_TRANSITION)
+                   .is_null());
+      }
+    }
+  }
+
+  CHECK(root_map->raw_transitions()->ToStrongHeapObject()->IsTransitionArray());
+  Handle<TransitionArray> transitions(
+      TransitionArray::cast(root_map->raw_transitions()->ToStrongHeapObject()));
+  DCHECK(transitions->IsSortedNoDuplicates());
+
+  // Ensure we didn't overflow transition array and therefore all the
+  // combinations of cases are covered.
+  CHECK(TransitionsAccessor(root_map).CanHaveMoreTransitions());
+
+  // Now try querying keys.
+  bool positive_lookup_tested = false;
+  bool negative_lookup_tested = false;
+  for (int i = 0; i < kKeysCount; i++) {
+    Handle<Name> name = keys[i];
+
+    int transition_number = transitions->SearchNameForTesting(*name);
+
+    if (transition_number != TransitionArray::kNotFound) {
+      Handle<Smi> expected_value(
+          Smi::FromInt(TransitionArray::ToKeyIndex(transition_number)),
+          isolate);
+      ft.CheckTrue(transitions, name, expect_found, expected_value);
+      positive_lookup_tested = true;
+    } else {
+      ft.CheckTrue(transitions, name, expect_not_found);
+      negative_lookup_tested = true;
+    }
+  }
+  CHECK(positive_lookup_tested);
+  CHECK(negative_lookup_tested);
 }
 
 namespace {
@@ -1814,13 +1960,14 @@ TEST(ArgumentsForEach) {
 
   CodeStubArguments arguments(&m, m.IntPtrConstant(3));
 
-  Variable sum(&m, MachineRepresentation::kTagged);
+  TVariable<Smi> sum(&m);
   CodeAssemblerVariableList list({&sum}, m.zone());
 
-  sum.Bind(m.SmiConstant(0));
+  sum = m.SmiConstant(0);
 
-  arguments.ForEach(
-      list, [&m, &sum](Node* arg) { sum.Bind(m.SmiAdd(sum.value(), arg)); });
+  arguments.ForEach(list, [&m, &sum](Node* arg) {
+    sum = m.SmiAdd(sum.value(), m.CAST(arg));
+  });
 
   arguments.PopAndReturn(sum.value());
 
@@ -2149,7 +2296,7 @@ TEST(CreatePromiseResolvingFunctionsContext) {
       ft.Call(isolate->factory()->undefined_value()).ToHandleChecked();
   CHECK(result->IsContext());
   Handle<Context> context_js = Handle<Context>::cast(result);
-  CHECK_EQ(isolate->native_context()->closure(), context_js->closure());
+  CHECK_EQ(isolate->native_context()->scope_info(), context_js->scope_info());
   CHECK_EQ(isolate->heap()->the_hole_value(), context_js->extension());
   CHECK_EQ(*isolate->native_context(), context_js->native_context());
   CHECK(context_js->get(PromiseBuiltinsAssembler::kPromiseSlot)->IsJSPromise());
@@ -2279,7 +2426,7 @@ TEST(AllocateFunctionWithMapAndContext) {
   CHECK(!fun->has_prototype_slot());
   CHECK_EQ(*isolate->promise_capability_default_resolve_shared_fun(),
            fun->shared());
-  CHECK_EQ(isolate->promise_capability_default_resolve_shared_fun()->code(),
+  CHECK_EQ(isolate->promise_capability_default_resolve_shared_fun()->GetCode(),
            fun->code());
 }
 
@@ -2312,7 +2459,7 @@ TEST(CreatePromiseGetCapabilitiesExecutorContext) {
   Handle<Context> context_js = Handle<Context>::cast(result_obj);
   CHECK_EQ(PromiseBuiltinsAssembler::kCapabilitiesContextLength,
            context_js->length());
-  CHECK_EQ(isolate->native_context()->closure(), context_js->closure());
+  CHECK_EQ(isolate->native_context()->scope_info(), context_js->scope_info());
   CHECK_EQ(isolate->heap()->the_hole_value(), context_js->extension());
   CHECK_EQ(*isolate->native_context(), context_js->native_context());
   CHECK(context_js->get(PromiseBuiltinsAssembler::kCapabilitySlot)
@@ -2360,7 +2507,7 @@ TEST(NewPromiseCapability) {
 
     for (auto&& callback : callbacks) {
       Handle<Context> context(Context::cast(callback->context()));
-      CHECK_EQ(isolate->native_context()->closure(), context->closure());
+      CHECK_EQ(isolate->native_context()->scope_info(), context->scope_info());
       CHECK_EQ(isolate->heap()->the_hole_value(), context->extension());
       CHECK_EQ(*isolate->native_context(), context->native_context());
       CHECK_EQ(PromiseBuiltinsAssembler::kPromiseContextLength,
@@ -2727,7 +2874,8 @@ TEST(IsNumberArrayIndex) {
   CodeAssemblerTester asm_tester(isolate, kNumParams);
   {
     CodeStubAssembler m(asm_tester.state());
-    m.Return(m.SmiFromInt32(m.IsNumberArrayIndex(m.Parameter(0))));
+    m.Return(m.SmiFromInt32(
+        m.UncheckedCast<Int32T>(m.IsNumberArrayIndex(m.Parameter(0)))));
   }
 
   FunctionTester ft(asm_tester.GenerateCode(), kNumParams);
@@ -3072,8 +3220,8 @@ TEST(ExtractFixedArraySimpleIntPtrParameters) {
   CHECK_EQ(Smi::cast(result->get(0))->value(), 1234);
   CHECK(result->get(1)->IsTheHole(isolate));
 
-  Handle<FixedDoubleArray> source_double(Handle<FixedDoubleArray>::cast(
-      isolate->factory()->NewFixedDoubleArray(5)));
+  Handle<FixedDoubleArray> source_double = Handle<FixedDoubleArray>::cast(
+      isolate->factory()->NewFixedDoubleArray(5));
   source_double->set(0, 10);
   source_double->set(1, 11);
   source_double->set(2, 12);
@@ -3087,6 +3235,32 @@ TEST(ExtractFixedArraySimpleIntPtrParameters) {
   CHECK_EQ(2, double_result->length());
   CHECK_EQ(double_result->get_scalar(0), 11);
   CHECK_EQ(double_result->get_scalar(1), 12);
+}
+
+TEST(SingleInputPhiElimination) {
+  Isolate* isolate(CcTest::InitIsolateOnce());
+  const int kNumParams = 2;
+  CodeAssemblerTester asm_tester(isolate, kNumParams);
+  {
+    CodeStubAssembler m(asm_tester.state());
+    Variable temp1(&m, MachineRepresentation::kTagged);
+    Variable temp2(&m, MachineRepresentation::kTagged);
+    Label temp_label(&m, {&temp1, &temp2});
+    Label end_label(&m, {&temp1, &temp2});
+    temp1.Bind(m.Parameter(1));
+    temp2.Bind(m.Parameter(1));
+    m.Branch(m.WordEqual(m.Parameter(0), m.Parameter(1)), &end_label,
+             &temp_label);
+    temp1.Bind(m.Parameter(2));
+    temp2.Bind(m.Parameter(2));
+    m.BIND(&temp_label);
+    m.Goto(&end_label);
+    m.BIND(&end_label);
+    m.Return(temp1.value());
+  }
+  FunctionTester ft(asm_tester.GenerateCode(), kNumParams);
+  // Generating code without an assert is enough to make sure that the
+  // single-input phi is properly eliminated.
 }
 
 }  // namespace compiler

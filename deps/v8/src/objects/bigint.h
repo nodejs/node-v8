@@ -15,6 +15,10 @@
 namespace v8 {
 namespace internal {
 
+class BigInt;
+class ValueDeserializer;
+class ValueSerializer;
+
 // BigIntBase is just the raw data object underlying a BigInt. Use with care!
 // Most code should be using BigInts instead.
 class BigIntBase : public HeapObject {
@@ -30,15 +34,16 @@ class BigIntBase : public HeapObject {
 
   static const int kLengthFieldBits = 30;
   STATIC_ASSERT(kMaxLength <= ((1 << kLengthFieldBits) - 1));
-  class LengthBits : public BitField<int, 0, kLengthFieldBits> {};
-  class SignBits : public BitField<bool, LengthBits::kNext, 1> {};
+  class SignBits : public BitField<bool, 0, 1> {};
+  class LengthBits : public BitField<int, SignBits::kNext, kLengthFieldBits> {};
+  STATIC_ASSERT(LengthBits::kNext <= 32);
 
   static const int kBitfieldOffset = HeapObject::kHeaderSize;
   static const int kDigitsOffset = kBitfieldOffset + kPointerSize;
   static const int kHeaderSize = kDigitsOffset;
 
  private:
-  friend class BigInt;
+  friend class ::v8::internal::BigInt;  // MSVC wants full namespace.
   friend class MutableBigInt;
 
   typedef uintptr_t digit_t;
@@ -58,9 +63,8 @@ class BigIntBase : public HeapObject {
 
   inline digit_t digit(int n) const {
     SLOW_DCHECK(0 <= n && n < length());
-    const byte* address =
-        FIELD_ADDR_CONST(this, kDigitsOffset + n * kDigitSize);
-    return *reinterpret_cast<digit_t*>(reinterpret_cast<intptr_t>(address));
+    Address address = FIELD_ADDR(this, kDigitsOffset + n * kDigitSize);
+    return *reinterpret_cast<digit_t*>(address);
   }
 
   bool is_zero() const { return length() == 0; }
@@ -130,6 +134,7 @@ class V8_EXPORT_PRIVATE BigInt : public BigIntBase {
 
   static bool EqualToString(Handle<BigInt> x, Handle<String> y);
   static bool EqualToNumber(Handle<BigInt> x, Handle<Object> y);
+  static ComparisonResult CompareToString(Handle<BigInt> x, Handle<String> y);
   static ComparisonResult CompareToNumber(Handle<BigInt> x, Handle<Object> y);
   // Exposed for tests, do not call directly. Use CompareToNumber() instead.
   static ComparisonResult CompareToDouble(Handle<BigInt> x, double y);
@@ -168,6 +173,8 @@ class V8_EXPORT_PRIVATE BigInt : public BigIntBase {
 
  private:
   friend class StringToBigIntHelper;
+  friend class ValueDeserializer;
+  friend class ValueSerializer;
 
   // Special functions for StringToBigIntHelper:
   static Handle<BigInt> Zero(Isolate* isolate);
@@ -177,6 +184,16 @@ class V8_EXPORT_PRIVATE BigInt : public BigIntBase {
   static void InplaceMultiplyAdd(Handle<FreshlyAllocatedBigInt> x,
                                  uintptr_t factor, uintptr_t summand);
   static Handle<BigInt> Finalize(Handle<FreshlyAllocatedBigInt> x, bool sign);
+
+  // Special functions for ValueSerializer/ValueDeserializer:
+  uint32_t GetBitfieldForSerialization() const;
+  static int DigitsByteLengthForBitfield(uint32_t bitfield);
+  // Expects {storage} to have a length of at least
+  // {DigitsByteLengthForBitfield(GetBitfieldForSerialization())}.
+  void SerializeDigits(uint8_t* storage);
+  V8_WARN_UNUSED_RESULT static MaybeHandle<BigInt> FromSerializedDigits(
+      Isolate* isolate, uint32_t bitfield, Vector<const uint8_t> digits_storage,
+      PretenureFlag pretenure);
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(BigInt);
 };

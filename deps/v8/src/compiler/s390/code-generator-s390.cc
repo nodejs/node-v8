@@ -6,11 +6,11 @@
 
 #include "src/assembler-inl.h"
 #include "src/callable.h"
-#include "src/compilation-info.h"
 #include "src/compiler/code-generator-impl.h"
 #include "src/compiler/gap-resolver.h"
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/osr.h"
+#include "src/optimized-compilation-info.h"
 #include "src/s390/macro-assembler-s390.h"
 
 namespace v8 {
@@ -605,15 +605,14 @@ static inline int AssembleUnaryOp(Instruction* instr, _R _r, _M _m, _I _i) {
     __ LoadlW(i.OutputRegister(), r0);          \
   } while (0)
 
-#define ASSEMBLE_FLOAT_MODULO()                                            \
-  do {                                                                     \
-    FrameScope scope(tasm(), StackFrame::MANUAL);                          \
-    __ PrepareCallCFunction(0, 2, kScratchReg);                            \
-    __ MovToFloatParameters(i.InputDoubleRegister(0),                      \
-                            i.InputDoubleRegister(1));                     \
-    __ CallCFunction(                                                      \
-        ExternalReference::mod_two_doubles_operation(__ isolate()), 0, 2); \
-    __ MovFromFloatResult(i.OutputDoubleRegister());                       \
+#define ASSEMBLE_FLOAT_MODULO()                                             \
+  do {                                                                      \
+    FrameScope scope(tasm(), StackFrame::MANUAL);                           \
+    __ PrepareCallCFunction(0, 2, kScratchReg);                             \
+    __ MovToFloatParameters(i.InputDoubleRegister(0),                       \
+                            i.InputDoubleRegister(1));                      \
+    __ CallCFunction(ExternalReference::mod_two_doubles_operation(), 0, 2); \
+    __ MovFromFloatResult(i.OutputDoubleRegister());                        \
   } while (0)
 
 #define ASSEMBLE_IEEE754_UNOP(name)                                            \
@@ -623,8 +622,7 @@ static inline int AssembleUnaryOp(Instruction* instr, _R _r, _M _m, _I _i) {
     FrameScope scope(tasm(), StackFrame::MANUAL);                              \
     __ PrepareCallCFunction(0, 1, kScratchReg);                                \
     __ MovToFloatParameter(i.InputDoubleRegister(0));                          \
-    __ CallCFunction(                                                          \
-        ExternalReference::ieee754_##name##_function(__ isolate()), 0, 1);     \
+    __ CallCFunction(ExternalReference::ieee754_##name##_function(), 0, 1);    \
     /* Move the result in the double result register. */                       \
     __ MovFromFloatResult(i.OutputDoubleRegister());                           \
   } while (0)
@@ -637,8 +635,7 @@ static inline int AssembleUnaryOp(Instruction* instr, _R _r, _M _m, _I _i) {
     __ PrepareCallCFunction(0, 2, kScratchReg);                                \
     __ MovToFloatParameters(i.InputDoubleRegister(0),                          \
                             i.InputDoubleRegister(1));                         \
-    __ CallCFunction(                                                          \
-        ExternalReference::ieee754_##name##_function(__ isolate()), 0, 2);     \
+    __ CallCFunction(ExternalReference::ieee754_##name##_function(), 0, 2);    \
     /* Move the result in the double result register. */                       \
     __ MovFromFloatResult(i.OutputDoubleRegister());                           \
   } while (0)
@@ -899,6 +896,252 @@ static inline int AssembleUnaryOp(Instruction* instr, _R _r, _M _m, _I _i) {
     __ asm_instr(value, operand);                        \
   } while (0)
 
+#define ATOMIC_COMP_EXCHANGE(start, end, shift_amount, offset)              \
+  {                                                                         \
+    __ LoadlW(temp0, MemOperand(addr, offset));                             \
+    __ llgfr(temp1, temp0);                                                 \
+    __ risbg(temp0, old_val, Operand(start), Operand(end),                  \
+             Operand(shift_amount), false);                                 \
+    __ risbg(temp1, new_val, Operand(start), Operand(end),                  \
+             Operand(shift_amount), false);                                 \
+    __ CmpAndSwap(temp0, temp1, MemOperand(addr, offset));                  \
+    __ risbg(output, temp0, Operand(start+shift_amount),                    \
+             Operand(end+shift_amount), Operand(64-shift_amount), true);    \
+  }
+
+#ifdef V8_TARGET_BIG_ENDIAN
+#define ATOMIC_COMP_EXCHANGE_BYTE(i)                                        \
+  {                                                                         \
+    constexpr int idx = (i);                                                \
+    static_assert(idx <= 3 && idx >= 0, "idx is out of range!");            \
+    constexpr int start = 32 + 8 * idx;                                     \
+    constexpr int end = start + 7;                                          \
+    constexpr int shift_amount = (3 - idx) * 8;                             \
+    ATOMIC_COMP_EXCHANGE(start, end, shift_amount, -idx);                   \
+  }
+#define ATOMIC_COMP_EXCHANGE_HALFWORD(i)                                    \
+  {                                                                         \
+    constexpr int idx = (i);                                                \
+    static_assert(idx <= 1 && idx >= 0, "idx is out of range!");            \
+    constexpr int start = 32 + 16 * idx;                                    \
+    constexpr int end = start + 15;                                         \
+    constexpr int shift_amount = (1 - idx) * 16;                            \
+    ATOMIC_COMP_EXCHANGE(start, end, shift_amount, -idx * 2);               \
+  }
+#else
+#define ATOMIC_COMP_EXCHANGE_BYTE(i)                                        \
+  {                                                                         \
+    constexpr int idx = (i);                                                \
+    static_assert(idx <= 3 && idx >= 0, "idx is out of range!");            \
+    constexpr int start = 32 + 8 * (3 - idx);                               \
+    constexpr int end = start + 7;                                          \
+    constexpr int shift_amount = idx * 8;                                   \
+    ATOMIC_COMP_EXCHANGE(start, end, shift_amount, -idx);                   \
+  }
+#define ATOMIC_COMP_EXCHANGE_HALFWORD(i)                                    \
+  {                                                                         \
+    constexpr int idx = (i);                                                \
+    static_assert(idx <= 1 && idx >= 0, "idx is out of range!");            \
+    constexpr int start = 32 + 16 * (1 - idx);                              \
+    constexpr int end = start + 15;                                         \
+    constexpr int shift_amount = idx * 16;                                  \
+    ATOMIC_COMP_EXCHANGE(start, end, shift_amount, -idx * 2);               \
+  }
+#endif
+
+#define ASSEMBLE_ATOMIC_COMPARE_EXCHANGE_BYTE(load_and_ext)            \
+  do {                                                                 \
+    Register old_val = i.InputRegister(0);                             \
+    Register new_val = i.InputRegister(1);                             \
+    Register output = i.OutputRegister();                              \
+    Register addr = kScratchReg;                                       \
+    Register temp0 = r0;                                               \
+    Register temp1 = r1;                                               \
+    size_t index = 2;                                                  \
+    AddressingMode mode = kMode_None;                                  \
+    MemOperand op = i.MemoryOperand(&mode, &index);                    \
+    Label three, two, one, done;                                       \
+    __ lay(addr, op);                                                  \
+    __ tmll(addr, Operand(3));                                         \
+    __ b(Condition(1), &three);                                        \
+    __ b(Condition(2), &two);                                          \
+    __ b(Condition(4), &one);                                          \
+    /* ending with 0b00 */                                             \
+    ATOMIC_COMP_EXCHANGE_BYTE(0);                                      \
+    __ b(&done);                                                       \
+    /* ending with 0b01 */                                             \
+    __ bind(&one);                                                     \
+    ATOMIC_COMP_EXCHANGE_BYTE(1);                                      \
+    __ b(&done);                                                       \
+    /* ending with 0b10 */                                             \
+    __ bind(&two);                                                     \
+    ATOMIC_COMP_EXCHANGE_BYTE(2);                                      \
+    __ b(&done);                                                       \
+    /* ending with 0b11 */                                             \
+    __ bind(&three);                                                   \
+    ATOMIC_COMP_EXCHANGE_BYTE(3);                                      \
+    __ bind(&done);                                                    \
+    __ load_and_ext(output, output);                                   \
+  } while (false)
+
+#define ASSEMBLE_ATOMIC_COMPARE_EXCHANGE_HALFWORD(load_and_ext)          \
+  do {                                                                   \
+    Register old_val = i.InputRegister(0);                               \
+    Register new_val = i.InputRegister(1);                               \
+    Register output = i.OutputRegister();                                \
+    Register addr = kScratchReg;                                         \
+    Register temp0 = r0;                                                 \
+    Register temp1 = r1;                                                 \
+    size_t index = 2;                                                    \
+    AddressingMode mode = kMode_None;                                    \
+    MemOperand op = i.MemoryOperand(&mode, &index);                      \
+    Label two, done;                                                     \
+    __ lay(addr, op);                                                    \
+    __ tmll(addr, Operand(3));                                           \
+    __ b(Condition(2), &two);                                            \
+    ATOMIC_COMP_EXCHANGE_HALFWORD(0);                                    \
+    __ b(&done);                                                         \
+    __ bind(&two);                                                       \
+    ATOMIC_COMP_EXCHANGE_HALFWORD(1);                                    \
+    __ bind(&done);                                                      \
+    __ load_and_ext(output, output);                                     \
+  } while (false)
+
+#define ASSEMBLE_ATOMIC_COMPARE_EXCHANGE_WORD()                          \
+  do {                                                                   \
+    Register new_val = i.InputRegister(1);                               \
+    Register output = i.OutputRegister();                                \
+    Register addr = kScratchReg;                                         \
+    size_t index = 2;                                                    \
+    AddressingMode mode = kMode_None;                                    \
+    MemOperand op = i.MemoryOperand(&mode, &index);                      \
+    __ lay(addr, op);                                                    \
+    __ CmpAndSwap(output, new_val, MemOperand(addr));                    \
+  } while (false)
+
+#define ASSEMBLE_ATOMIC_BINOP_WORD(load_and_op)                           \
+  do {                                                                    \
+    Register value = i.InputRegister(2);                                  \
+    Register result = i.OutputRegister(0);                                \
+    Register addr = r1;                                                   \
+    AddressingMode mode = kMode_None;                                     \
+    MemOperand op = i.MemoryOperand(&mode);                               \
+    __ lay(addr, op);                                                     \
+    __ load_and_op(result, value, MemOperand(addr));                      \
+    __ LoadlW(result, result);                                            \
+  } while (false)
+
+#define ATOMIC_BIN_OP(bin_inst, offset, shift_amount, start, end)         \
+  do {                                                                    \
+    Label do_cs;                                                          \
+    __ LoadlW(prev, MemOperand(addr, offset));                            \
+    __ bind(&do_cs);                                                      \
+    __ risbg(temp, value, Operand(start), Operand(end),                   \
+             Operand(static_cast<intptr_t>(shift_amount)), true);         \
+    __ bin_inst(new_val, prev, temp);                                     \
+    __ lr(temp, prev);                                                    \
+    __ risbg(temp, new_val, Operand(start), Operand(end),                 \
+             Operand::Zero(), false);                                     \
+    __ CmpAndSwap(prev, temp, MemOperand(addr, offset));                  \
+    __ bne(&do_cs, Label::kNear);                                         \
+  } while (false)
+
+#ifdef V8_TARGET_BIG_ENDIAN
+#define ATOMIC_BIN_OP_HALFWORD(bin_inst, index, extract_result)  \
+  {                                                              \
+    constexpr int offset = -(2 * index);                         \
+    constexpr int shift_amount = 16 - (index * 16);              \
+    constexpr int start = 48 - shift_amount;                     \
+    constexpr int end = start + 15;                              \
+    ATOMIC_BIN_OP(bin_inst, offset, shift_amount, start, end);   \
+    extract_result();                                            \
+  }
+#define ATOMIC_BIN_OP_BYTE(bin_inst, index, extract_result)      \
+  {                                                              \
+    constexpr int offset = -(index);                             \
+    constexpr int shift_amount = 24 - (index * 8);               \
+    constexpr int start = 56 - shift_amount;                     \
+    constexpr int end = start + 7;                               \
+    ATOMIC_BIN_OP(bin_inst, offset, shift_amount, start, end);   \
+    extract_result();                                            \
+  }
+#else
+#define ATOMIC_BIN_OP_HALFWORD(bin_inst, index, extract_result)  \
+  {                                                              \
+    constexpr int offset = -(2 * index);                         \
+    constexpr int shift_amount = index * 16;                     \
+    constexpr int start = 48 - shift_amount;                     \
+    constexpr int end = start + 15;                              \
+    ATOMIC_BIN_OP(bin_inst, offset, shift_amount, start, end);   \
+    extract_result();                                            \
+  }
+#define ATOMIC_BIN_OP_BYTE(bin_inst, index, extract_result)      \
+  {                                                              \
+    constexpr int offset = -(index);                             \
+    constexpr int shift_amount = index * 8;                      \
+    constexpr int start = 56 - shift_amount;                     \
+    constexpr int end = start + 7;                               \
+    ATOMIC_BIN_OP(bin_inst, offset, shift_amount, start, end);   \
+    extract_result();                                            \
+  }
+#endif  // V8_TARGET_BIG_ENDIAN
+
+#define ASSEMBLE_ATOMIC_BINOP_HALFWORD(bin_inst, extract_result)          \
+  do {                                                                    \
+    Register value = i.InputRegister(2);                                  \
+    Register result = i.OutputRegister(0);                                \
+    Register prev = i.TempRegister(0);                                    \
+    Register new_val = r0;                                                \
+    Register addr = r1;                                                   \
+    Register temp = kScratchReg;                                          \
+    AddressingMode mode = kMode_None;                                     \
+    MemOperand op = i.MemoryOperand(&mode);                               \
+    Label two, done;                                                      \
+    __ lay(addr, op);                                                     \
+    __ tmll(addr, Operand(3));                                            \
+    __ b(Condition(2), &two);                                             \
+    /* word boundary */                                                   \
+    ATOMIC_BIN_OP_HALFWORD(bin_inst, 0, extract_result);                  \
+    __ b(&done);                                                          \
+    __ bind(&two);                                                        \
+    /* halfword boundary */                                               \
+    ATOMIC_BIN_OP_HALFWORD(bin_inst, 1, extract_result);                  \
+    __ bind(&done);                                                       \
+  } while (false)
+
+#define ASSEMBLE_ATOMIC_BINOP_BYTE(bin_inst, extract_result)              \
+  do {                                                                    \
+    Register value = i.InputRegister(2);                                  \
+    Register result = i.OutputRegister(0);                                \
+    Register addr = i.TempRegister(0);                                    \
+    Register prev = r0;                                                   \
+    Register new_val = r1;                                                \
+    Register temp = kScratchReg;                                          \
+    AddressingMode mode = kMode_None;                                     \
+    MemOperand op = i.MemoryOperand(&mode);                               \
+    Label done, one, two, three;                                          \
+    __ lay(addr, op);                                                     \
+    __ tmll(addr, Operand(3));                                            \
+    __ b(Condition(1), &three);                                           \
+    __ b(Condition(2), &two);                                             \
+    __ b(Condition(4), &one);                                             \
+    /* ending with 0b00 (word boundary) */                                \
+    ATOMIC_BIN_OP_BYTE(bin_inst, 0, extract_result);                      \
+    __ b(&done);                                                          \
+    /* ending with 0b01 */                                                \
+    __ bind(&one);                                                        \
+    ATOMIC_BIN_OP_BYTE(bin_inst, 1, extract_result);                      \
+    __ b(&done);                                                          \
+    /* ending with 0b10 (hw boundary) */                                  \
+    __ bind(&two);                                                        \
+    ATOMIC_BIN_OP_BYTE(bin_inst, 2, extract_result);                      \
+    __ b(&done);                                                          \
+    /* ending with 0b11 */                                                \
+    __ bind(&three);                                                      \
+    ATOMIC_BIN_OP_BYTE(bin_inst, 3, extract_result);                      \
+    __ bind(&done);                                                       \
+  } while (false)
+
 void CodeGenerator::AssembleDeconstructFrame() {
   __ LeaveFrame(StackFrame::MANUAL);
 }
@@ -1041,8 +1284,7 @@ void CodeGenerator::AssembleTailCallAfterGap(Instruction* instr,
 // Check that {kJavaScriptCallCodeStartRegister} is correct.
 void CodeGenerator::AssembleCodeStartRegisterCheck() {
   Register scratch = r1;
-  int pc_offset = __ pc_offset();
-  __ larl(scratch, Operand(-pc_offset/2));
+  __ ComputeCodeStartAddress(scratch);
   __ CmpP(scratch, kJavaScriptCallCodeStartRegister);
   __ Assert(eq, AbortReason::kWrongFunctionCodeStart);
 }
@@ -1057,8 +1299,7 @@ void CodeGenerator::AssembleCodeStartRegisterCheck() {
 void CodeGenerator::BailoutIfDeoptimized() {
   if (FLAG_debug_code) {
     // Check that {kJavaScriptCallCodeStartRegister} is correct.
-    int pc_offset = __ pc_offset();
-    __ larl(ip, Operand(-pc_offset/2));
+    __ ComputeCodeStartAddress(ip);
     __ CmpP(ip, kJavaScriptCallCodeStartRegister);
     __ Assert(eq, AbortReason::kWrongFunctionCodeStart);
   }
@@ -1068,12 +1309,15 @@ void CodeGenerator::BailoutIfDeoptimized() {
   __ LoadW(ip,
            FieldMemOperand(ip, CodeDataContainer::kKindSpecificFlagsOffset));
   __ TestBit(ip, Code::kMarkedForDeoptimizationBit);
+  // Ensure we're not serializing (otherwise we'd need to use an indirection to
+  // access the builtin below).
+  DCHECK(!isolate()->ShouldLoadConstantsFromRootList());
   Handle<Code> code = isolate()->builtins()->builtin_handle(
       Builtins::kCompileLazyDeoptimizedCode);
   __ Jump(code, RelocInfo::CODE_TARGET, ne);
 }
 
-void CodeGenerator::GenerateSpeculationPoison() {
+void CodeGenerator::GenerateSpeculationPoisonFromCodeStartRegister() {
   Register scratch = r1;
 
   Label current_pc;
@@ -1084,18 +1328,10 @@ void CodeGenerator::GenerateSpeculationPoison() {
 
   // Calculate a mask which has all bits set in the normal case, but has all
   // bits cleared if we are speculatively executing the wrong PC.
-  //    difference = (current - expected) | (expected - current)
-  //    poison = ~(difference >> (kBitsPerPointer - 1))
-  __ LoadRR(kSpeculationPoisonRegister, scratch);
-  __ SubP(kSpeculationPoisonRegister, kSpeculationPoisonRegister,
-          kJavaScriptCallCodeStartRegister);
-  __ SubP(kJavaScriptCallCodeStartRegister, kJavaScriptCallCodeStartRegister,
-          scratch);
-  __ OrP(kSpeculationPoisonRegister, kSpeculationPoisonRegister,
-         kJavaScriptCallCodeStartRegister);
-  __ ShiftRightArithP(kSpeculationPoisonRegister, kSpeculationPoisonRegister,
-                      Operand(kBitsPerPointer - 1));
-  __ NotP(kSpeculationPoisonRegister, kSpeculationPoisonRegister);
+  __ LoadImmP(kSpeculationPoisonRegister, Operand::Zero());
+  __ LoadImmP(r0, Operand(-1));
+  __ CmpP(kJavaScriptCallCodeStartRegister, scratch);
+  __ LoadOnConditionP(eq, kSpeculationPoisonRegister, r0);
 }
 
 void CodeGenerator::AssembleRegisterArgumentPoisoning() {
@@ -1138,11 +1374,11 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
 
       if (instr->InputAt(0)->IsImmediate()) {
 #ifdef V8_TARGET_ARCH_S390X
-        Address wasm_code = reinterpret_cast<Address>(
-            i.ToConstant(instr->InputAt(0)).ToInt64());
+        Address wasm_code =
+            static_cast<Address>(i.ToConstant(instr->InputAt(0)).ToInt64());
 #else
-        Address wasm_code = reinterpret_cast<Address>(
-            i.ToConstant(instr->InputAt(0)).ToInt32());
+        Address wasm_code =
+            static_cast<Address>(i.ToConstant(instr->InputAt(0)).ToInt32());
 #endif
         __ Call(wasm_code, rmode);
       } else {
@@ -1182,8 +1418,8 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       }
 
       if (instr->InputAt(0)->IsImmediate()) {
-        Address wasm_code = reinterpret_cast<Address>(
-            i.ToConstant(instr->InputAt(0)).ToInt32());
+        Address wasm_code =
+            static_cast<Address>(i.ToConstant(instr->InputAt(0)).ToInt32());
         __ Jump(wasm_code, rmode);
       } else {
         __ Jump(i.InputRegister(0));
@@ -1333,10 +1569,12 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         __ LoadRR(i.OutputRegister(), fp);
       }
       break;
+    case kArchRootsPointer:
+      __ LoadRR(i.OutputRegister(), kRootRegister);
+      break;
     case kArchTruncateDoubleToI:
-      // TODO(mbrandy): move slow call to stub out of line.
-      __ TruncateDoubleToIDelayed(zone(), i.OutputRegister(),
-                                  i.InputDoubleRegister(0));
+      __ TruncateDoubleToI(isolate(), zone(), i.OutputRegister(),
+                           i.InputDoubleRegister(0));
       break;
     case kArchStoreWithWriteBarrier: {
       RecordWriteMode mode =
@@ -1374,6 +1612,10 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
               Operand(offset.offset()));
       break;
     }
+    case kArchWordPoisonOnSpeculation:
+      DCHECK_EQ(i.OutputRegister(), i.InputRegister(0));
+      __ AndP(i.InputRegister(0), kSpeculationPoisonRegister);
+      break;
     case kS390_Abs32:
       // TODO(john.yan): zero-ext
       __ lpr(i.OutputRegister(0), i.InputRegister(0));
@@ -1802,8 +2044,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       ASSEMBLE_IEEE754_UNOP(log10);
       break;
     case kIeee754Float64Pow: {
-      __ CallStubDelayed(new (zone())
-                             MathPowStub(nullptr, MathPowStub::DOUBLE));
+      __ Call(BUILTIN_CODE(isolate(), MathPowInternal), RelocInfo::CODE_TARGET);
       __ Move(d1, d3);
       break;
     }
@@ -2303,7 +2544,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
 #define ATOMIC_EXCHANGE(start, end, shift_amount, offset)                    \
   {                                                                          \
     Label do_cs;                                                             \
-    __ LoadlW(output, MemOperand(r1));                                       \
+    __ LoadlW(output, MemOperand(r1, offset));                               \
     __ bind(&do_cs);                                                         \
     __ llgfr(r0, output);                                                    \
     __ risbg(r0, value, Operand(start), Operand(end), Operand(shift_amount), \
@@ -2430,6 +2671,71 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ bne(&do_cs, Label::kNear);
       break;
     }
+    case kWord32AtomicCompareExchangeInt8:
+      ASSEMBLE_ATOMIC_COMPARE_EXCHANGE_BYTE(LoadB);
+      break;
+    case kWord32AtomicCompareExchangeUint8:
+      ASSEMBLE_ATOMIC_COMPARE_EXCHANGE_BYTE(LoadlB);
+      break;
+    case kWord32AtomicCompareExchangeInt16:
+      ASSEMBLE_ATOMIC_COMPARE_EXCHANGE_HALFWORD(LoadHalfWordP);
+      break;
+    case kWord32AtomicCompareExchangeUint16:
+      ASSEMBLE_ATOMIC_COMPARE_EXCHANGE_HALFWORD(LoadLogicalHalfWordP);
+      break;
+    case kWord32AtomicCompareExchangeWord32:
+      ASSEMBLE_ATOMIC_COMPARE_EXCHANGE_WORD();
+      break;
+#define ATOMIC_BINOP_CASE(op, inst)                                     \
+  case kWord32Atomic##op##Int8:                                         \
+    ASSEMBLE_ATOMIC_BINOP_BYTE(inst, [&]() {                            \
+          intptr_t shift_right = static_cast<intptr_t>(shift_amount);   \
+          __ srlk(result, prev, Operand(shift_right));                  \
+          __ LoadB(result, result);                                     \
+        });                                                             \
+    break;                                                              \
+  case kWord32Atomic##op##Uint8:                                        \
+    ASSEMBLE_ATOMIC_BINOP_BYTE(inst, [&]() {                            \
+          int rotate_left = shift_amount == 0 ? 0 : 64 - shift_amount;  \
+          __ risbg(result, prev, Operand(56), Operand(63),              \
+                   Operand(static_cast<intptr_t>(rotate_left)), true);  \
+        });                                                             \
+    break;                                                              \
+  case kWord32Atomic##op##Int16:                                        \
+    ASSEMBLE_ATOMIC_BINOP_HALFWORD(inst, [&]() {                        \
+          intptr_t shift_right = static_cast<intptr_t>(shift_amount);   \
+          __ srlk(result, prev, Operand(shift_right));                  \
+          __ LoadHalfWordP(result, result);                             \
+        });                                                             \
+    break;                                                              \
+  case kWord32Atomic##op##Uint16:                                       \
+    ASSEMBLE_ATOMIC_BINOP_HALFWORD(inst, [&]() {                        \
+          int rotate_left = shift_amount == 0 ? 0 : 64 - shift_amount;  \
+          __ risbg(result, prev, Operand(48), Operand(63),              \
+                   Operand(static_cast<intptr_t>(rotate_left)), true);  \
+        });                                                             \
+    break;
+      ATOMIC_BINOP_CASE(Add, Add32)
+      ATOMIC_BINOP_CASE(Sub, Sub32)
+      ATOMIC_BINOP_CASE(And, And)
+      ATOMIC_BINOP_CASE(Or, Or)
+      ATOMIC_BINOP_CASE(Xor, Xor)
+#undef ATOMIC_BINOP_CASE
+    case kWord32AtomicAddWord32:
+      ASSEMBLE_ATOMIC_BINOP_WORD(laa);
+      break;
+    case kWord32AtomicSubWord32:
+      ASSEMBLE_ATOMIC_BINOP_WORD(LoadAndSub32);
+      break;
+    case kWord32AtomicAndWord32:
+      ASSEMBLE_ATOMIC_BINOP_WORD(lan);
+      break;
+    case kWord32AtomicOrWord32:
+      ASSEMBLE_ATOMIC_BINOP_WORD(lao);
+      break;
+    case kWord32AtomicXorWord32:
+      ASSEMBLE_ATOMIC_BINOP_WORD(lax);
+      break;
     default:
       UNREACHABLE();
       break;
@@ -2467,7 +2773,7 @@ void CodeGenerator::AssembleBranchPoisoning(FlagsCondition condition,
   }
 
   condition = NegateFlagsCondition(condition);
-  __ XorP(r0, r0);
+  __ LoadImmP(r0, Operand::Zero());
   __ LoadOnConditionP(FlagsConditionToCondition(condition, kArchNop),
                       kSpeculationPoisonRegister, r0);
 }
@@ -2515,9 +2821,8 @@ void CodeGenerator::AssembleArchTrap(Instruction* instr,
         // We use the context register as the scratch register, because we do
         // not have a context here.
         __ PrepareCallCFunction(0, 0, cp);
-        __ CallCFunction(ExternalReference::wasm_call_trap_callback_for_testing(
-                             __ isolate()),
-                         0);
+        __ CallCFunction(
+            ExternalReference::wasm_call_trap_callback_for_testing(), 0);
         __ LeaveFrame(StackFrame::WASM_COMPILED);
         auto call_descriptor = gen_->linkage()->GetIncomingDescriptor();
         int pop_count =
@@ -2659,6 +2964,9 @@ void CodeGenerator::AssembleConstructFrame() {
       // TODO(mbrandy): Detect cases where ip is the entrypoint (for
       // efficient intialization of the constant pool pointer register).
       __ StubPrologue(type);
+      if (call_descriptor->IsWasmFunctionCall()) {
+        __ Push(kWasmInstanceRegister);
+      }
     }
   }
 
@@ -2675,7 +2983,7 @@ void CodeGenerator::AssembleConstructFrame() {
     if (FLAG_code_comments) __ RecordComment("-- OSR entrypoint --");
     osr_pc_offset_ = __ pc_offset();
     shrink_slots -= osr_helper()->UnoptimizedFrameSlots();
-    InitializePoisonForLoadsIfNeeded();
+    ResetSpeculationPoison();
   }
 
   const RegList double_saves = call_descriptor->CalleeSavedFPRegisters();
@@ -2775,7 +3083,7 @@ void CodeGenerator::AssembleMove(InstructionOperand* source,
       switch (src.type()) {
         case Constant::kInt32:
 #if V8_TARGET_ARCH_S390X
-          if (RelocInfo::IsWasmSizeReference(src.rmode())) {
+          if (false) {
 #else
           if (RelocInfo::IsWasmReference(src.rmode())) {
 #endif
@@ -2789,7 +3097,6 @@ void CodeGenerator::AssembleMove(InstructionOperand* source,
           if (RelocInfo::IsWasmPtrReference(src.rmode())) {
             __ mov(dst, Operand(src.ToInt64(), src.rmode()));
           } else {
-            DCHECK(!RelocInfo::IsWasmSizeReference(src.rmode()));
             __ Load(dst, Operand(src.ToInt64()));
           }
 #else

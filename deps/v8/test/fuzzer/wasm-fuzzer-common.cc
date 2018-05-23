@@ -10,6 +10,7 @@
 #include "src/wasm/wasm-engine.h"
 #include "src/wasm/wasm-module-builder.h"
 #include "src/wasm/wasm-module.h"
+#include "src/wasm/wasm-objects.h"
 #include "src/zone/accounting-allocator.h"
 #include "src/zone/zone.h"
 #include "test/common/wasm/flag-utils.h"
@@ -165,7 +166,7 @@ void GenerateTestCase(Isolate* isolate, ModuleWireBytes wire_bytes,
         "load('test/mjsunit/wasm/wasm-module-builder.js');\n"
         "\n"
         "(function() {\n"
-        "  var builder = new WasmModuleBuilder();\n";
+        "  const builder = new WasmModuleBuilder();\n";
 
   if (module->has_memory) {
     os << "  builder.addMemory(" << module->initial_pages;
@@ -185,14 +186,15 @@ void GenerateTestCase(Isolate* isolate, ModuleWireBytes wire_bytes,
 
   for (const WasmFunction& func : module->functions) {
     Vector<const uint8_t> func_code = wire_bytes.GetFunctionBytes(&func);
-    os << "  // Generate function " << func.func_index << " (out of "
+    os << "  // Generate function " << (func.func_index + 1) << " (out of "
        << module->functions.size() << ").\n";
     // Generate signature.
-    os << "  sig" << func.func_index << " = makeSig("
+    os << "  sig" << (func.func_index + 1) << " = makeSig("
        << PrintParameters(func.sig) << ", " << PrintReturns(func.sig) << ");\n";
 
     // Add function.
-    os << "  builder.addFunction(undefined, sig" << func.func_index << ")\n";
+    os << "  builder.addFunction(undefined, sig" << (func.func_index + 1)
+       << ")\n";
 
     // Add locals.
     BodyLocalDecls decls(&tmp_zone);
@@ -204,7 +206,7 @@ void GenerateTestCase(Isolate* isolate, ModuleWireBytes wire_bytes,
         ValueType type = decls.type_list[pos];
         while (pos + count < locals && decls.type_list[pos + count] == type)
           ++count;
-        os << ".addLocals({" << WasmOpcodes::TypeName(type)
+        os << ".addLocals({" << ValueTypes::TypeName(type)
            << "_count: " << count << "})";
       }
       os << "\n";
@@ -226,8 +228,8 @@ void GenerateTestCase(Isolate* isolate, ModuleWireBytes wire_bytes,
   }
 
   if (compiles) {
-    os << "  var module = builder.instantiate();\n"
-          "  module.exports.main(1, 2, 3);\n";
+    os << "  const instance = builder.instantiate();\n"
+          "  print(instance.exports.main(1, 2, 3));\n";
   } else {
     os << "  assertThrows(function() { builder.instantiate(); }, "
           "WebAssembly.CompileError);\n";

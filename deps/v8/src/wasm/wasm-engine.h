@@ -7,7 +7,6 @@
 
 #include <memory>
 
-#include "src/wasm/compilation-manager.h"
 #include "src/wasm/wasm-code-manager.h"
 #include "src/wasm/wasm-memory.h"
 
@@ -67,16 +66,48 @@ class V8_EXPORT_PRIVATE WasmEngine {
                         Handle<WasmModuleObject> module_object,
                         MaybeHandle<JSReceiver> imports);
 
-  CompilationManager* compilation_manager() { return &compilation_manager_; }
+  std::shared_ptr<StreamingDecoder> StartStreamingCompilation(
+      Isolate* isolate, Handle<Context> context, Handle<JSPromise> promise);
 
   WasmCodeManager* code_manager() const { return code_manager_.get(); }
 
-  WasmAllocationTracker* allocation_tracker() { return &allocation_tracker_; }
+  WasmMemoryTracker* memory_tracker() { return &memory_tracker_; }
+
+  // We register and unregister CancelableTaskManagers that run
+  // isolate-dependent tasks. These tasks need to be shutdown if the isolate is
+  // shut down.
+  void Register(CancelableTaskManager* task_manager);
+  void Unregister(CancelableTaskManager* task_manager);
+
+  // Remove {job} from the list of active compile jobs.
+  std::unique_ptr<AsyncCompileJob> RemoveCompileJob(AsyncCompileJob* job);
+
+  // Returns true if at lease one AsyncCompileJob is currently running.
+  bool HasRunningCompileJob() const { return !jobs_.empty(); }
+
+  // Cancel all AsyncCompileJobs so that they are not processed any further,
+  // but delay the deletion of their state until all tasks accessing the
+  // AsyncCompileJob finish their execution. This is used to clean-up the
+  // isolate to be reused.
+  void AbortAllCompileJobs();
+
+  void TearDown();
 
  private:
-  CompilationManager compilation_manager_;
+  AsyncCompileJob* CreateAsyncCompileJob(Isolate* isolate,
+                                         std::unique_ptr<byte[]> bytes_copy,
+                                         size_t length, Handle<Context> context,
+                                         Handle<JSPromise> promise);
+
+  // We use an AsyncCompileJob as the key for itself so that we can delete the
+  // job from the map when it is finished.
+  std::unordered_map<AsyncCompileJob*, std::unique_ptr<AsyncCompileJob>> jobs_;
   std::unique_ptr<WasmCodeManager> code_manager_;
-  WasmAllocationTracker allocation_tracker_;
+  WasmMemoryTracker memory_tracker_;
+
+  // Contains all CancelableTaskManagers that run tasks that are dependent
+  // on the isolate.
+  std::list<CancelableTaskManager*> task_managers_;
 
   DISALLOW_COPY_AND_ASSIGN(WasmEngine);
 };

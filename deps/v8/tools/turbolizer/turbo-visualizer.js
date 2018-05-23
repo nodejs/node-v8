@@ -12,22 +12,22 @@ class Snapper {
     snapper.disassemblyExpand = d3.select("#" + DISASSEMBLY_EXPAND_ID);
     snapper.disassemblyCollapse = d3.select("#" + DISASSEMBLY_COLLAPSE_ID);
 
-    d3.select("#source-collapse").on("click", function(){
+    d3.select("#source-collapse").on("click", function () {
       resizer.snapper.toggleSourceExpanded();
     });
-    d3.select("#disassembly-collapse").on("click", function(){
+    d3.select("#disassembly-collapse").on("click", function () {
       resizer.snapper.toggleDisassemblyExpanded();
     });
   }
 
   getLastExpandedState(type, default_state) {
-    var state = window.sessionStorage.getItem("expandedState-"+type);
+    var state = window.sessionStorage.getItem("expandedState-" + type);
     if (state === null) return default_state;
     return state === 'true';
   }
 
   setLastExpandedState(type, state) {
-    window.sessionStorage.setItem("expandedState-"+type, state);
+    window.sessionStorage.setItem("expandedState-" + type, state);
   }
 
   toggleSourceExpanded() {
@@ -97,51 +97,50 @@ class Resizer {
     resizer.right = d3.select("#" + GENERATED_PANE_ID);
     resizer.resizer_left = d3.select('.resizer-left');
     resizer.resizer_right = d3.select('.resizer-right');
-    resizer.sep_left = resizer.client_width/3;
-    resizer.sep_right = resizer.client_width/3*2;
+    resizer.sep_left = resizer.client_width / 3;
+    resizer.sep_right = resizer.client_width / 3 * 2;
     resizer.sep_left_snap = 0;
     resizer.sep_right_snap = 0;
     // Offset to prevent resizers from sliding slightly over one another.
     resizer.sep_width_offset = 7;
 
     let dragResizeLeft = d3.behavior.drag()
-      .on('drag', function() {
+      .on('drag', function () {
         let x = d3.mouse(this.parentElement)[0];
-        resizer.sep_left = Math.min(Math.max(0,x), resizer.sep_right-resizer.sep_width_offset);
+        resizer.sep_left = Math.min(Math.max(0, x), resizer.sep_right - resizer.sep_width_offset);
         resizer.updatePanes();
       })
-      .on('dragstart', function() {
+      .on('dragstart', function () {
         resizer.resizer_left.classed("dragged", true);
         let x = d3.mouse(this.parentElement)[0];
         if (x > dead_width) {
           resizer.sep_left_snap = resizer.sep_left;
         }
       })
-      .on('dragend', function() {
+      .on('dragend', function () {
         resizer.resizer_left.classed("dragged", false);
       });
     resizer.resizer_left.call(dragResizeLeft);
 
     let dragResizeRight = d3.behavior.drag()
-      .on('drag', function() {
+      .on('drag', function () {
         let x = d3.mouse(this.parentElement)[0];
-        resizer.sep_right = Math.max(resizer.sep_left+resizer.sep_width_offset, Math.min(x, resizer.client_width));
+        resizer.sep_right = Math.max(resizer.sep_left + resizer.sep_width_offset, Math.min(x, resizer.client_width));
         resizer.updatePanes();
       })
-      .on('dragstart', function() {
+      .on('dragstart', function () {
         resizer.resizer_right.classed("dragged", true);
         let x = d3.mouse(this.parentElement)[0];
-        if (x < (resizer.client_width-dead_width)) {
+        if (x < (resizer.client_width - dead_width)) {
           resizer.sep_right_snap = resizer.sep_right;
         }
       })
-      .on('dragend', function() {
+      .on('dragend', function () {
         resizer.resizer_right.classed("dragged", false);
       });;
     resizer.resizer_right.call(dragResizeRight);
-    window.onresize = function(){
+    window.onresize = function () {
       resizer.updateWidths();
-      /*fitPanesToParents();*/
       resizer.updatePanes();
     };
   }
@@ -152,7 +151,7 @@ class Resizer {
     this.resizer_left.classed("snapped", left_snapped);
     this.resizer_right.classed("snapped", right_snapped);
     this.left.style('width', this.sep_left + 'px');
-    this.middle.style('width', (this.sep_right-this.sep_left) + 'px');
+    this.middle.style('width', (this.sep_right - this.sep_left) + 'px');
     this.right.style('width', (this.client_width - this.sep_right) + 'px');
     this.resizer_left.style('left', this.sep_left + 'px');
     this.resizer_right.style('right', (this.client_width - this.sep_right - 1) + 'px');
@@ -168,153 +167,110 @@ class Resizer {
   }
 }
 
-document.onload = (function(d3){
+document.onload = (function (d3) {
   "use strict";
-  var jsonObj;
-  var svg  = null;
-  var graph = null;
-  var schedule = null;
-  var empty = null;
-  var currentPhaseView = null;
+  var svg = null;
+  var multiview = null;
   var disassemblyView = null;
-  var sourceView = null;
+  var sourceViews = [];
   var selectionBroker = null;
+  var sourceResolver = null;
   let resizer = new Resizer(panesUpdatedCallback, 100);
 
   function panesUpdatedCallback() {
-    graph.fitGraphViewToWindow();
+    if (multiview) multiview.onresize();
   }
 
-  function hideCurrentPhase() {
-    var rememberedSelection = null;
-    if (currentPhaseView != null) {
-      rememberedSelection = currentPhaseView.detachSelection();
-      currentPhaseView.hide();
-      currentPhaseView = null;
+  function loadFile(txtRes) {
+    // If the JSON isn't properly terminated, assume compiler crashed and
+    // add best-guess empty termination
+    if (txtRes[txtRes.length - 2] == ',') {
+      txtRes += '{"name":"disassembly","type":"disassembly","data":""}]}';
     }
-    return rememberedSelection;
-  }
+    try {
+      sourceViews.forEach((sv) => sv.hide());
+      if (multiview) multiview.hide();
+      multiview = null;
+      if (disassemblyView) disassemblyView.hide();
+      sourceViews = [];
+      sourceResolver = new SourceResolver();
+      selectionBroker = new SelectionBroker(sourceResolver);
 
-  function displayPhaseView(view, data) {
-    var rememberedSelection = hideCurrentPhase();
-    view.show(data, rememberedSelection);
-    d3.select("#middle").classed("scrollable", view.isScrollable());
-    currentPhaseView = view;
-  }
+      const jsonObj = JSON.parse(txtRes);
 
-  function displayPhase(phase) {
-    if (phase.type == 'graph') {
-      displayPhaseView(graph, phase.data);
-    } else if (phase.type == 'schedule') {
-      displayPhaseView(schedule, phase.data);
-    } else {
-      displayPhaseView(empty, null);
-    }
-  }
-
-  function fitPanesToParents() {
-    d3.select("#left").classed("scrollable", false)
-    d3.select("#right").classed("scrollable", false);
-
-    graph.fitGraphViewToWindow();
-
-    d3.select("#left").classed("scrollable", true);
-    d3.select("#right").classed("scrollable", true);
-  }
-
-  selectionBroker = new SelectionBroker();
-
-  function initializeHandlers(g) {
-    d3.select("#hidden-file-upload").on("change", function() {
-      if (window.File && window.FileReader && window.FileList) {
-        var uploadFile = this.files[0];
-        var filereader = new window.FileReader();
-        var consts = Node.consts;
-        filereader.onload = function(){
-          var txtRes = filereader.result;
-          // If the JSON isn't properly terminated, assume compiler crashed and
-          // add best-guess empty termination
-          if (txtRes[txtRes.length-2] == ',') {
-            txtRes += '{"name":"disassembly","type":"disassembly","data":""}]}';
-          }
-          try{
-            jsonObj = JSON.parse(txtRes);
-
-            hideCurrentPhase();
-
-            selectionBroker.setNodePositionMap(jsonObj.nodePositions);
-
-            sourceView.initializeCode(jsonObj.source, jsonObj.sourcePosition);
-            disassemblyView.initializeCode(jsonObj.source);
-
-            var selectMenu = document.getElementById('display-selector');
-            var disassemblyPhase = null;
-            selectMenu.innerHTML = '';
-            for (var i = 0; i < jsonObj.phases.length; ++i) {
-              var optionElement = document.createElement("option");
-              optionElement.text = jsonObj.phases[i].name;
-              if (optionElement.text == 'disassembly') {
-                disassemblyPhase = jsonObj.phases[i];
-              } else {
-                selectMenu.add(optionElement, null);
-              }
-            }
-
-            disassemblyView.initializePerfProfile(jsonObj.eventCounts);
-            disassemblyView.show(disassemblyPhase.data, null);
-
-            var initialPhaseIndex = +window.sessionStorage.getItem("lastSelectedPhase");
-            if (!(initialPhaseIndex in jsonObj.phases)) {
-              initialPhaseIndex = 0;
-            }
-
-            // We wish to show the remembered phase {lastSelectedPhase}, but
-            // this will crash if the first view we switch to is a
-            // ScheduleView. So we first switch to the first phase, which
-            // should never be a ScheduleView.
-            displayPhase(jsonObj.phases[0]);
-            displayPhase(jsonObj.phases[initialPhaseIndex]);
-            selectMenu.selectedIndex = initialPhaseIndex;
-
-            selectMenu.onchange = function(item) {
-              window.sessionStorage.setItem("lastSelectedPhase", selectMenu.selectedIndex);
-              displayPhase(jsonObj.phases[selectMenu.selectedIndex]);
-            }
-
-            fitPanesToParents();
-
-            d3.select("#search-input").attr("value", window.sessionStorage.getItem("lastSearch") || "");
-
-          }
-          catch(err) {
-            window.console.log("caught exception, clearing session storage just in case");
-            window.sessionStorage.clear(); // just in case
-            window.console.log("showing error");
-            window.alert("Invalid TurboFan JSON file\n" +
-                         "error: " + err.message);
-            return;
-          }
+      let fnc = jsonObj.function;
+      // Backwards compatibility.
+      if (typeof fnc == 'string') {
+        fnc = {
+          functionName: fnc,
+          sourceId: -1,
+          startPosition: jsonObj.sourcePosition,
+          endPosition: jsonObj.sourcePosition + jsonObj.source.length,
+          sourceText: jsonObj.source
         };
-        filereader.readAsText(uploadFile);
+      }
+
+      sourceResolver.setInlinings(jsonObj.inlinings);
+      sourceResolver.setSources(jsonObj.sources, fnc)
+      sourceResolver.setNodePositionMap(jsonObj.nodePositions);
+      sourceResolver.parsePhases(jsonObj.phases);
+
+      let sourceView = new CodeView(SOURCE_PANE_ID, selectionBroker, sourceResolver, fnc, CodeView.MAIN_SOURCE);
+      sourceView.show(null, null);
+      sourceViews.push(sourceView);
+
+      sourceResolver.forEachSource((source) => {
+        let sourceView = new CodeView(SOURCE_PANE_ID, selectionBroker, sourceResolver, source, CodeView.INLINED_SOURCE);
+        sourceView.show(null, null);
+        sourceViews.push(sourceView);
+      });
+
+      disassemblyView = new DisassemblyView(GENERATED_PANE_ID, selectionBroker);
+      disassemblyView.initializeCode(fnc.sourceText);
+      if (sourceResolver.disassemblyPhase) {
+        disassemblyView.initializePerfProfile(jsonObj.eventCounts);
+        disassemblyView.show(sourceResolver.disassemblyPhase.data, null);
+      }
+
+      multiview = new GraphMultiView(INTERMEDIATE_PANE_ID, selectionBroker, sourceResolver);
+      multiview.show(jsonObj);
+    } catch (err) {
+      if (window.confirm("Error: Exception during load of TurboFan JSON file:\n" +
+           "error: " + err.message + "\nDo you want to clear session storage?")) {
+        window.sessionStorage.clear();
+      }
+      return;
+    }
+  }
+
+  function initializeUploadHandlers() {
+    // The <input> form #upload-helper with type file can't be a picture.
+    // We hence keep it hidden, and forward the click from the picture
+    // button #upload.
+    d3.select("#upload").on("click",
+      () => document.getElementById("upload-helper").click());
+    d3.select("#upload-helper").on("change", function () {
+      if (window.File && window.FileReader && window.FileList) {
+        var uploadFile = this.files && this.files[0];
+        var filereader = new window.FileReader();
+        filereader.onload = function (e) {
+          var txtRes = e.target.result;
+          loadFile(txtRes);
+        };
+        if (uploadFile)
+          filereader.readAsText(uploadFile);
       } else {
         alert("Can't load graph");
       }
     });
   }
 
-  sourceView = new CodeView(SOURCE_PANE_ID, PR, "", 0, selectionBroker);
-  disassemblyView = new DisassemblyView(DISASSEMBLY_PANE_ID, selectionBroker);
-  graph = new GraphView(d3, GRAPH_PANE_ID, [], [], selectionBroker);
-  schedule = new ScheduleView(SCHEDULE_PANE_ID, selectionBroker);
-  empty = new EmptyView(EMPTY_PANE_ID, selectionBroker);
+  initializeUploadHandlers();
 
-  initializeHandlers(graph);
 
   resizer.snapper.setSourceExpanded(resizer.snapper.getLastExpandedState("source", true));
   resizer.snapper.setDisassemblyExpanded(resizer.snapper.getLastExpandedState("disassembly", false));
 
-  displayPhaseView(empty, null);
-  fitPanesToParents();
   resizer.updatePanes();
 
 })(window.d3);

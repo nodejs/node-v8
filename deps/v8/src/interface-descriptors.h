@@ -9,6 +9,7 @@
 
 #include "src/assembler.h"
 #include "src/globals.h"
+#include "src/isolate.h"
 #include "src/macro-assembler.h"
 
 namespace v8 {
@@ -21,7 +22,6 @@ class PlatformInterfaceDescriptor;
   V(ContextOnly)                      \
   V(Load)                             \
   V(LoadWithVector)                   \
-  V(LoadField)                        \
   V(LoadGlobal)                       \
   V(LoadGlobalWithVector)             \
   V(Store)                            \
@@ -60,7 +60,6 @@ class PlatformInterfaceDescriptor;
   V(ArrayNArgumentsConstructor)       \
   V(Compare)                          \
   V(BinaryOp)                         \
-  V(StringAdd)                        \
   V(StringAt)                         \
   V(StringSubstring)                  \
   V(ForInPrepare)                     \
@@ -80,7 +79,6 @@ class PlatformInterfaceDescriptor;
   V(FrameDropperTrampoline)           \
   V(WasmRuntimeCall)                  \
   V(RunMicrotasks)                    \
-  V(PromiseReactionHandler)           \
   BUILTIN_LIST_TFS(V)
 
 class V8_EXPORT_PRIVATE CallInterfaceDescriptorData {
@@ -365,18 +363,6 @@ class LoadDescriptor : public CallInterfaceDescriptor {
   static const Register SlotRegister();
 };
 
-// LoadFieldDescriptor is used by the shared handler that loads a field from an
-// object based on the smi-encoded field description.
-class LoadFieldDescriptor : public CallInterfaceDescriptor {
- public:
-  DEFINE_PARAMETERS(kReceiver, kSmiHandler)
-  DECLARE_DESCRIPTOR_WITH_CUSTOM_FUNCTION_TYPE(LoadFieldDescriptor,
-                                               CallInterfaceDescriptor)
-
-  static const Register ReceiverRegister();
-  static const Register SmiHandlerRegister();
-};
-
 class LoadGlobalDescriptor : public CallInterfaceDescriptor {
  public:
   DEFINE_PARAMETERS(kName, kSlot)
@@ -517,11 +503,11 @@ class LoadGlobalWithVectorDescriptor : public LoadGlobalDescriptor {
 
 class FastNewFunctionContextDescriptor : public CallInterfaceDescriptor {
  public:
-  DEFINE_PARAMETERS(kFunction, kSlots)
+  DEFINE_PARAMETERS(kScopeInfo, kSlots)
   DECLARE_DESCRIPTOR_WITH_CUSTOM_FUNCTION_TYPE(FastNewFunctionContextDescriptor,
                                                CallInterfaceDescriptor)
 
-  static const Register FunctionRegister();
+  static const Register ScopeInfoRegister();
   static const Register SlotsRegister();
 };
 
@@ -656,7 +642,9 @@ class ConstructStubDescriptor : public CallInterfaceDescriptor {
                                                CallInterfaceDescriptor)
 };
 
-
+// This descriptor is also used by DebugBreakTrampoline because it handles both
+// regular function calls and construct calls, and we need to pass new.target
+// for the latter.
 class ConstructTrampolineDescriptor : public CallInterfaceDescriptor {
  public:
   DEFINE_PARAMETERS(kFunction, kNewTarget, kActualArgumentsCount)
@@ -747,13 +735,6 @@ class BinaryOpDescriptor : public CallInterfaceDescriptor {
  public:
   DEFINE_PARAMETERS(kLeft, kRight)
   DECLARE_DESCRIPTOR(BinaryOpDescriptor, CallInterfaceDescriptor)
-};
-
-
-class StringAddDescriptor : public CallInterfaceDescriptor {
- public:
-  DEFINE_PARAMETERS(kLeft, kRight)
-  DECLARE_DESCRIPTOR(StringAddDescriptor, CallInterfaceDescriptor)
 };
 
 // This desciptor is shared among String.p.charAt/charCodeAt/codePointAt
@@ -884,13 +865,6 @@ class RunMicrotasksDescriptor final : public CallInterfaceDescriptor {
   DEFINE_EMPTY_PARAMETERS()
   DECLARE_DEFAULT_DESCRIPTOR(RunMicrotasksDescriptor, CallInterfaceDescriptor,
                              0)
-};
-
-class PromiseReactionHandlerDescriptor final : public CallInterfaceDescriptor {
- public:
-  DEFINE_PARAMETERS(kArgument, kGenerator)
-  DECLARE_DEFAULT_DESCRIPTOR(PromiseReactionHandlerDescriptor,
-                             CallInterfaceDescriptor, 2)
 };
 
 #define DEFINE_TFS_BUILTIN_DESCRIPTOR(Name, ...)                          \

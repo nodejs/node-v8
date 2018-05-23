@@ -239,7 +239,12 @@ InductionVariable* LoopVariableOptimizer::TryGetInductionVariable(Node* phi) {
   }
 
   // TODO(jarin) Support both sides.
-  if (arith->InputAt(0) != phi) return nullptr;
+  Node* input = arith->InputAt(0);
+  if (input->opcode() == IrOpcode::kSpeculativeToNumber ||
+      input->opcode() == IrOpcode::kJSToNumber) {
+    input = input->InputAt(0);
+  }
+  if (input != phi) return nullptr;
 
   Node* effect_phi = nullptr;
   for (Node* use : loop->uses()) {
@@ -319,9 +324,9 @@ void LoopVariableOptimizer::ChangeToPhisAndInsertGuards() {
       // If the backedge is not a subtype of the phi's type, we insert a sigma
       // to get the typing right.
       Node* backedge_value = induction_var->phi()->InputAt(1);
-      Type* backedge_type = NodeProperties::GetType(backedge_value);
-      Type* phi_type = NodeProperties::GetType(induction_var->phi());
-      if (!backedge_type->Is(phi_type)) {
+      Type backedge_type = NodeProperties::GetType(backedge_value);
+      Type phi_type = NodeProperties::GetType(induction_var->phi());
+      if (!backedge_type.Is(phi_type)) {
         Node* loop = NodeProperties::GetControlInput(induction_var->phi());
         Node* backedge_control = loop->InputAt(1);
         Node* backedge_effect =
