@@ -223,6 +223,8 @@
         '<(SHARED_INTERMEDIATE_DIR)/torque-generated/builtins-base-from-dsl-gen.h',
         '<(SHARED_INTERMEDIATE_DIR)/torque-generated/builtins-typed-array-from-dsl-gen.cc',
         '<(SHARED_INTERMEDIATE_DIR)/torque-generated/builtins-typed-array-from-dsl-gen.h',
+        '<(SHARED_INTERMEDIATE_DIR)/torque-generated/builtins-data-view-from-dsl-gen.cc',
+        '<(SHARED_INTERMEDIATE_DIR)/torque-generated/builtins-data-view-from-dsl-gen.h',
       ],
       'conditions': [
         ['want_separate_host_toolset==1', {
@@ -1345,6 +1347,7 @@
         '../src/runtime/runtime-classes.cc',
         '../src/runtime/runtime-collections.cc',
         '../src/runtime/runtime-compiler.cc',
+        '../src/runtime/runtime-dataview.cc',
         '../src/runtime/runtime-date.cc',
         '../src/runtime/runtime-debug.cc',
         '../src/runtime/runtime-forin.cc',
@@ -1951,6 +1954,7 @@
         '../src/base/ieee754.h',
         '../src/base/iterator.h',
         '../src/base/lazy-instance.h',
+        '../src/base/list.h',
         '../src/base/logging.cc',
         '../src/base/logging.h',
         '../src/base/macros.h',
@@ -2905,6 +2909,7 @@
             '../src/builtins/base.tq',
             '../src/builtins/array.tq',
             '../src/builtins/typed-array.tq',
+            '../src/builtins/data-view.tq',
           ],
           'outputs': [
             '<(SHARED_INTERMEDIATE_DIR)/torque-generated/builtin-definitions-from-dsl.h',
@@ -2914,6 +2919,8 @@
             '<(SHARED_INTERMEDIATE_DIR)/torque-generated/builtins-base-from-dsl-gen.h',
             '<(SHARED_INTERMEDIATE_DIR)/torque-generated/builtins-typed-array-from-dsl-gen.cc',
             '<(SHARED_INTERMEDIATE_DIR)/torque-generated/builtins-typed-array-from-dsl-gen.h',
+            '<(SHARED_INTERMEDIATE_DIR)/torque-generated/builtins-data-view-from-dsl-gen.cc',
+            '<(SHARED_INTERMEDIATE_DIR)/torque-generated/builtins-data-view-from-dsl-gen.h',
           ],
           'action': ['<@(_inputs)', '-o', '<(SHARED_INTERMEDIATE_DIR)/torque-generated'],
         },
