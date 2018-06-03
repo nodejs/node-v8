@@ -85,12 +85,15 @@ class NodeTestFixture : public ::testing::Test {
   }
 
   virtual void SetUp() {
-    isolate_ = v8::Isolate::New(params);
+    isolate_ = v8::Isolate::Allocate();
     CHECK_NE(isolate_, nullptr);
+    platform->RegisterIsolate(isolate_, &current_loop);
+    v8::Isolate::Initialize(isolate_, params);
   }
 
   virtual void TearDown() {
     isolate_->Dispose();
+    platform->UnregisterIsolate(isolate_);
     isolate_ = nullptr;
   }
 };
