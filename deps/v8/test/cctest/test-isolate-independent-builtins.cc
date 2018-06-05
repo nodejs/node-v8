@@ -57,36 +57,33 @@ UNINITIALIZED_TEST(VerifyBuiltinsIsolateIndependence) {
     STATIC_ASSERT(RelocInfo::LAST_REAL_RELOC_MODE == RelocInfo::VENEER_POOL);
     STATIC_ASSERT(RelocInfo::ModeMask(RelocInfo::COMMENT) ==
                   (1 << RelocInfo::COMMENT));
-    STATIC_ASSERT(
-        mode_mask ==
-        (RelocInfo::ModeMask(RelocInfo::CODE_TARGET) |
-         RelocInfo::ModeMask(RelocInfo::EMBEDDED_OBJECT) |
-         RelocInfo::ModeMask(RelocInfo::WASM_GLOBAL_HANDLE) |
-         RelocInfo::ModeMask(RelocInfo::WASM_CALL) |
-         RelocInfo::ModeMask(RelocInfo::JS_TO_WASM_CALL) |
-         RelocInfo::ModeMask(RelocInfo::RUNTIME_ENTRY) |
-         RelocInfo::ModeMask(RelocInfo::EXTERNAL_REFERENCE)));
+    STATIC_ASSERT(mode_mask ==
+                  (RelocInfo::ModeMask(RelocInfo::CODE_TARGET) |
+                   RelocInfo::ModeMask(RelocInfo::EMBEDDED_OBJECT) |
+                   RelocInfo::ModeMask(RelocInfo::WASM_CALL) |
+                   RelocInfo::ModeMask(RelocInfo::WASM_STUB_CALL) |
+                   RelocInfo::ModeMask(RelocInfo::JS_TO_WASM_CALL) |
+                   RelocInfo::ModeMask(RelocInfo::RUNTIME_ENTRY) |
+                   RelocInfo::ModeMask(RelocInfo::EXTERNAL_REFERENCE)));
 
     constexpr bool kVerbose = false;
     bool found_mismatch = false;
     for (int i = 0; i < Builtins::builtin_count; i++) {
       Code* code = isolate->builtins()->builtin(i);
 
-      if (kVerbose) {
-        printf("%s %s\n", Builtins::KindNameOf(i),
-               isolate->builtins()->name(i));
-      }
-
       bool is_isolate_independent = true;
       for (RelocIterator it(code, mode_mask); !it.done(); it.next()) {
-        is_isolate_independent = false;
-
-#ifdef ENABLE_DISASSEMBLER
         if (kVerbose) {
+          if (is_isolate_independent) {
+            printf("%s %s\n", Builtins::KindNameOf(i),
+                   isolate->builtins()->name(i));
+          }
+#ifdef ENABLE_DISASSEMBLER
           RelocInfo::Mode mode = it.rinfo()->rmode();
           printf("  %s\n", RelocInfo::RelocModeName(mode));
-        }
 #endif
+        }
+        is_isolate_independent = false;
       }
 
       // Relaxed condition only checks whether the isolate-independent list is
@@ -277,7 +274,7 @@ TEST(ByteInText) {
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   auto f = GeneratedCode<int(int, int)>::FromAddress(
-      isolate, const_cast<char*>(test_function0_bytes));
+      isolate, reinterpret_cast<Address>(&test_function0_bytes[0]));
   CHECK_EQ(7, f.Call(3, 4));
   CHECK_EQ(11, f.Call(5, 6));
 }

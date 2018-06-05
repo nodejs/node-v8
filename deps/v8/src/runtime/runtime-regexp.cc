@@ -68,8 +68,9 @@ class CompiledReplacement {
       : parts_(1, zone), replacement_substrings_(0, zone), zone_(zone) {}
 
   // Return whether the replacement is simple.
-  bool Compile(Handle<JSRegExp> regexp, Handle<String> replacement,
-               int capture_count, int subject_length);
+  bool Compile(Isolate* isolate, Handle<JSRegExp> regexp,
+               Handle<String> replacement, int capture_count,
+               int subject_length);
 
   // Use Apply only if Compile returned false.
   void Apply(ReplacementStringBuilder* builder, int match_from, int match_to,
@@ -148,9 +149,6 @@ class CompiledReplacement {
     // Equivalent to String::GetSubstitution, except that this method converts
     // the replacement string into an internal representation that avoids
     // repeated parsing when used repeatedly.
-    DCHECK_IMPLIES(capture_name_map != nullptr,
-                   FLAG_harmony_regexp_named_captures);
-
     int length = characters.length();
     int last = 0;
     for (int i = 0; i < length; i++) {
@@ -315,7 +313,7 @@ class CompiledReplacement {
   Zone* zone_;
 };
 
-bool CompiledReplacement::Compile(Handle<JSRegExp> regexp,
+bool CompiledReplacement::Compile(Isolate* isolate, Handle<JSRegExp> regexp,
                                   Handle<String> replacement, int capture_count,
                                   int subject_length) {
   {
@@ -328,7 +326,6 @@ bool CompiledReplacement::Compile(Handle<JSRegExp> regexp,
       DCHECK_EQ(regexp->TypeTag(), JSRegExp::IRREGEXP);
       Object* maybe_capture_name_map = regexp->CaptureNameMap();
       if (maybe_capture_name_map->IsFixedArray()) {
-        DCHECK(FLAG_harmony_regexp_named_captures);
         capture_name_map = FixedArray::cast(maybe_capture_name_map);
       }
     }
@@ -347,7 +344,6 @@ bool CompiledReplacement::Compile(Handle<JSRegExp> regexp,
     if (simple) return true;
   }
 
-  Isolate* isolate = replacement->GetIsolate();
   // Find substrings of replacement string and create them as String objects.
   int substring_index = 0;
   for (int i = 0, n = parts_.length(); i < n; i++) {
@@ -601,7 +597,8 @@ V8_WARN_UNUSED_RESULT static Object* StringReplaceGlobalAtomRegExpWithString(
   }
 
   int32_t match_indices[] = {indices->back(), indices->back() + pattern_len};
-  RegExpImpl::SetLastMatchInfo(last_match_info, subject, 0, match_indices);
+  RegExpImpl::SetLastMatchInfo(isolate, last_match_info, subject, 0,
+                               match_indices);
 
   TruncateRegexpIndicesList(isolate);
 
@@ -620,7 +617,7 @@ V8_WARN_UNUSED_RESULT static Object* StringReplaceGlobalRegExpWithString(
   JSRegExp::Type typeTag = regexp->TypeTag();
   if (typeTag == JSRegExp::IRREGEXP) {
     // Ensure the RegExp is compiled so we can access the capture-name map.
-    if (RegExpImpl::IrregexpPrepare(regexp, subject) == -1) {
+    if (RegExpImpl::IrregexpPrepare(isolate, regexp, subject) == -1) {
       DCHECK(isolate->has_pending_exception());
       return isolate->heap()->exception();
     }
@@ -630,7 +627,7 @@ V8_WARN_UNUSED_RESULT static Object* StringReplaceGlobalRegExpWithString(
   Zone zone(isolate->allocator(), ZONE_NAME);
   CompiledReplacement compiled_replacement(&zone);
   const bool simple_replace = compiled_replacement.Compile(
-      regexp, replacement, capture_count, subject_length);
+      isolate, regexp, replacement, capture_count, subject_length);
 
   // Shortcut for simple non-regexp global replacements
   if (typeTag == JSRegExp::ATOM && simple_replace) {
@@ -692,7 +689,7 @@ V8_WARN_UNUSED_RESULT static Object* StringReplaceGlobalRegExpWithString(
     builder.AddSubjectSlice(prev, subject_length);
   }
 
-  RegExpImpl::SetLastMatchInfo(last_match_info, subject, capture_count,
+  RegExpImpl::SetLastMatchInfo(isolate, last_match_info, subject, capture_count,
                                global_cache.LastSuccessfulMatch());
 
   RETURN_RESULT_OR_FAILURE(isolate, builder.ToString());
@@ -760,7 +757,7 @@ V8_WARN_UNUSED_RESULT static Object* StringReplaceGlobalRegExpWithEmptyString(
 
   if (global_cache.HasException()) return isolate->heap()->exception();
 
-  RegExpImpl::SetLastMatchInfo(last_match_info, subject, capture_count,
+  RegExpImpl::SetLastMatchInfo(isolate, last_match_info, subject, capture_count,
                                global_cache.LastSuccessfulMatch());
 
   if (prev < subject_length) {
@@ -915,8 +912,8 @@ RUNTIME_FUNCTION(Runtime_RegExpExec) {
   CHECK_LE(0, index);
   CHECK_GE(subject->length(), index);
   isolate->counters()->regexp_entry_runtime()->Increment();
-  RETURN_RESULT_OR_FAILURE(
-      isolate, RegExpImpl::Exec(regexp, subject, index, last_match_info));
+  RETURN_RESULT_OR_FAILURE(isolate, RegExpImpl::Exec(isolate, regexp, subject,
+                                                     index, last_match_info));
 }
 
 RUNTIME_FUNCTION(Runtime_RegExpInternalReplace) {
@@ -947,8 +944,7 @@ class MatchInfoBackedMatch : public String::Match {
       Object* o = regexp->CaptureNameMap();
       has_named_captures_ = o->IsFixedArray();
       if (has_named_captures_) {
-        DCHECK(FLAG_harmony_regexp_named_captures);
-        capture_name_map_ = handle(FixedArray::cast(o));
+        capture_name_map_ = handle(FixedArray::cast(o), isolate);
       }
     } else {
       has_named_captures_ = false;
@@ -1105,7 +1101,6 @@ class VectorBackedMatch : public String::Match {
 Handle<JSObject> ConstructNamedCaptureGroupsObject(
     Isolate* isolate, Handle<FixedArray> capture_map,
     std::function<Object*(int)> f_get_capture) {
-  DCHECK(FLAG_harmony_regexp_named_captures);
   Handle<JSObject> groups = isolate->factory()->NewJSObjectWithNullProto();
 
   const int capture_count = capture_map->length() >> 1;
@@ -1154,14 +1149,14 @@ static Object* SearchRegExpMultiple(Isolate* isolate, Handle<String> subject,
         last_match[i] = Smi::ToInt(last_match_cache->get(i));
       }
       Handle<FixedArray> cached_fixed_array =
-          Handle<FixedArray>(FixedArray::cast(cached_answer));
+          Handle<FixedArray>(FixedArray::cast(cached_answer), isolate);
       // The cache FixedArray is a COW-array and we need to return a copy.
       Handle<FixedArray> copied_fixed_array =
           isolate->factory()->CopyFixedArrayWithMap(
               cached_fixed_array, isolate->factory()->fixed_array_map());
       JSArray::SetContent(result_array, copied_fixed_array);
-      RegExpImpl::SetLastMatchInfo(last_match_array, subject, capture_count,
-                                   last_match);
+      RegExpImpl::SetLastMatchInfo(isolate, last_match_array, subject,
+                                   capture_count, last_match);
       DeleteArray(last_match);
       return *result_array;
     }
@@ -1218,7 +1213,6 @@ static Object* SearchRegExpMultiple(Isolate* isolate, Handle<String> subject,
 
         Handle<Object> maybe_capture_map(regexp->CaptureNameMap(), isolate);
         const bool has_named_captures = maybe_capture_map->IsFixedArray();
-        DCHECK_IMPLIES(has_named_captures, FLAG_harmony_regexp_named_captures);
 
         const int argc =
             has_named_captures ? 4 + capture_count : 3 + capture_count;
@@ -1269,7 +1263,8 @@ static Object* SearchRegExpMultiple(Isolate* isolate, Handle<String> subject,
                                                 subject_length);
     }
 
-    RegExpImpl::SetLastMatchInfo(last_match_array, subject, capture_count,
+    RegExpImpl::SetLastMatchInfo(isolate, last_match_array, subject,
+                                 capture_count,
                                  global_cache.LastSuccessfulMatch());
 
     if (subject_length > kMinLengthToCache) {
@@ -1282,8 +1277,8 @@ static Object* SearchRegExpMultiple(Isolate* isolate, Handle<String> subject,
       for (int i = 0; i < capture_registers; i++) {
         last_match_cache->set(i, Smi::FromInt(last_match[i]));
       }
-      Handle<FixedArray> result_fixed_array = builder.array();
-      result_fixed_array->Shrink(builder.length());
+      Handle<FixedArray> result_fixed_array =
+          FixedArray::ShrinkOrEmpty(builder.array(), builder.length());
       // Cache the result and copy the FixedArray into a COW array.
       Handle<FixedArray> copied_fixed_array =
           isolate->factory()->CopyFixedArrayWithMap(
@@ -1337,7 +1332,8 @@ V8_WARN_UNUSED_RESULT MaybeHandle<String> RegExpReplace(
     Handle<Object> match_indices_obj;
     ASSIGN_RETURN_ON_EXCEPTION(
         isolate, match_indices_obj,
-        RegExpImpl::Exec(regexp, string, last_index, last_match_info), String);
+        RegExpImpl::Exec(isolate, regexp, string, last_index, last_match_info),
+        String);
 
     if (match_indices_obj->IsNull(isolate)) {
       if (sticky) regexp->set_last_index(Smi::kZero, SKIP_WRITE_BARRIER);
@@ -1456,7 +1452,7 @@ RUNTIME_FUNCTION(Runtime_StringReplaceNonGlobalRegExpWithFunction) {
   Handle<Object> match_indices_obj;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
       isolate, match_indices_obj,
-      RegExpImpl::Exec(regexp, subject, last_index, last_match_info));
+      RegExpImpl::Exec(isolate, regexp, subject, last_index, last_match_info));
 
   if (match_indices_obj->IsNull(isolate)) {
     if (sticky) regexp->set_last_index(Smi::kZero, SKIP_WRITE_BARRIER);
@@ -1491,11 +1487,10 @@ RUNTIME_FUNCTION(Runtime_StringReplaceNonGlobalRegExpWithFunction) {
     Object* maybe_capture_map = regexp->CaptureNameMap();
     if (maybe_capture_map->IsFixedArray()) {
       has_named_captures = true;
-      capture_map = handle(FixedArray::cast(maybe_capture_map));
+      capture_map = handle(FixedArray::cast(maybe_capture_map), isolate);
     }
   }
 
-  DCHECK_IMPLIES(has_named_captures, FLAG_harmony_regexp_named_captures);
   const uint32_t argc = GetArgcForReplaceCallable(m, has_named_captures);
   if (argc == static_cast<uint32_t>(-1)) {
     THROW_NEW_ERROR_RETURN_FAILURE(
@@ -1561,8 +1556,8 @@ V8_WARN_UNUSED_RESULT MaybeHandle<Object> ToUint32(Isolate* isolate,
 Handle<JSArray> NewJSArrayWithElements(Isolate* isolate,
                                        Handle<FixedArray> elems,
                                        int num_elems) {
-  elems->Shrink(num_elems);
-  return isolate->factory()->NewJSArrayWithElements(elems);
+  return isolate->factory()->NewJSArrayWithElements(
+      FixedArray::ShrinkOrEmpty(elems, num_elems));
 }
 
 }  // namespace
@@ -1756,7 +1751,7 @@ RUNTIME_FUNCTION(Runtime_RegExpReplace) {
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
       isolate, global_obj,
       JSReceiver::GetProperty(recv, factory->global_string()));
-  const bool global = global_obj->BooleanValue();
+  const bool global = global_obj->BooleanValue(isolate);
 
   bool unicode = false;
   if (global) {
@@ -1764,7 +1759,7 @@ RUNTIME_FUNCTION(Runtime_RegExpReplace) {
     ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
         isolate, unicode_obj,
         JSReceiver::GetProperty(recv, factory->unicode_string()));
-    unicode = unicode_obj->BooleanValue();
+    unicode = unicode_obj->BooleanValue(isolate);
 
     RETURN_FAILURE_ON_EXCEPTION(isolate,
                                 RegExpUtils::SetLastIndex(isolate, recv, 0));
@@ -1851,14 +1846,11 @@ RUNTIME_FUNCTION(Runtime_RegExpReplace) {
     }
 
     Handle<Object> groups_obj = isolate->factory()->undefined_value();
-    if (FLAG_harmony_regexp_named_captures) {
-      ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-          isolate, groups_obj,
-          Object::GetProperty(result, factory->groups_string()));
-    }
+    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+        isolate, groups_obj,
+        Object::GetProperty(result, factory->groups_string()));
 
     const bool has_named_captures = !groups_obj->IsUndefined(isolate);
-    DCHECK_IMPLIES(has_named_captures, FLAG_harmony_regexp_named_captures);
 
     Handle<String> replacement;
     if (functional_replace) {

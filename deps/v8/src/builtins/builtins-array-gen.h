@@ -5,12 +5,12 @@
 #ifndef V8_BUILTINS_BUILTINS_ARRAY_GEN_H_
 #define V8_BUILTINS_BUILTINS_ARRAY_GEN_H_
 
-#include "src/code-stub-assembler.h"
+#include "torque-generated/builtins-base-from-dsl-gen.h"
 
 namespace v8 {
 namespace internal {
 
-class ArrayBuiltinsAssembler : public CodeStubAssembler {
+class ArrayBuiltinsAssembler : public BaseBuiltinsFromDSLAssembler {
  public:
   explicit ArrayBuiltinsAssembler(compiler::CodeAssemblerState* state);
 
@@ -71,7 +71,6 @@ class ArrayBuiltinsAssembler : public CodeStubAssembler {
  protected:
   TNode<Context> context() { return context_; }
   TNode<Object> receiver() { return receiver_; }
-  Node* new_target() { return new_target_; }
   TNode<IntPtrT> argc() { return argc_; }
   TNode<JSReceiver> o() { return o_; }
   TNode<Number> len() { return len_; }
@@ -84,8 +83,7 @@ class ArrayBuiltinsAssembler : public CodeStubAssembler {
 
   void InitIteratingArrayBuiltinBody(TNode<Context> context,
                                      TNode<Object> receiver, Node* callbackfn,
-                                     Node* this_arg, Node* new_target,
-                                     TNode<IntPtrT> argc);
+                                     Node* this_arg, TNode<IntPtrT> argc);
 
   void GenerateIteratingArrayBuiltinBody(
       const char* name, const BuiltinResultGenerator& generator,
@@ -107,6 +105,16 @@ class ArrayBuiltinsAssembler : public CodeStubAssembler {
       const CallResultProcessor& processor, const PostLoopAction& action,
       MissingPropertyMode missing_property_mode,
       ForEachDirection direction = ForEachDirection::kForward);
+
+  void GenerateConstructor(Node* context, Node* array_function, Node* array_map,
+                           Node* array_size, Node* allocation_site,
+                           ElementsKind elements_kind, AllocationSiteMode mode);
+  void GenerateArrayNoArgumentConstructor(ElementsKind kind,
+                                          AllocationSiteOverrideMode mode);
+  void GenerateArraySingleArgumentConstructor(ElementsKind kind,
+                                              AllocationSiteOverrideMode mode);
+  void GenerateInternalArrayNoArgumentConstructor(ElementsKind kind);
+  void GenerateInternalArraySingleArgumentConstructor(ElementsKind kind);
 
  private:
   static ElementsKind ElementsKindForInstanceType(InstanceType type);
@@ -142,7 +150,6 @@ class ArrayBuiltinsAssembler : public CodeStubAssembler {
   TNode<Number> len_;
   TNode<Context> context_;
   TNode<Object> receiver_;
-  Node* new_target_ = nullptr;
   TNode<IntPtrT> argc_;
   Node* fast_typed_array_target_ = nullptr;
   const char* name_ = nullptr;

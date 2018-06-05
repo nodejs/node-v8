@@ -95,7 +95,8 @@ TEST(VectorStructure) {
     CHECK_EQ(1,
              FeedbackMetadata::GetSlotSize(FeedbackSlotKind::kCreateClosure));
     FeedbackSlot slot = helper.slot(1);
-    FeedbackCell* cell = FeedbackCell::cast(vector->Get(slot));
+    FeedbackCell* cell =
+        FeedbackCell::cast(vector->Get(slot)->ToStrongHeapObject());
     CHECK_EQ(cell->value(), *factory->undefined_value());
   }
 }
@@ -133,7 +134,7 @@ TEST(VectorICMetadata) {
 
   // Meanwhile set some feedback values and type feedback values to
   // verify the data structure remains intact.
-  vector->Set(FeedbackSlot(0), *vector);
+  vector->Set(FeedbackSlot(0), MaybeObject::FromObject(*vector));
 
   // Verify the metadata is correctly set up from the spec.
   for (int i = 0; i < 40; i++) {
@@ -201,8 +202,9 @@ TEST(VectorCallFeedback) {
   FeedbackNexus nexus(feedback_vector, slot);
 
   CHECK_EQ(MONOMORPHIC, nexus.StateFromFeedback());
-  CHECK(nexus.GetFeedback()->IsWeakCell());
-  CHECK(*foo == WeakCell::cast(nexus.GetFeedback())->value());
+  HeapObject* heap_object;
+  CHECK(nexus.GetFeedback()->ToWeakHeapObject(&heap_object));
+  CHECK_EQ(*foo, heap_object);
 
   CcTest::CollectAllGarbage();
   // It should stay monomorphic even after a GC.
@@ -225,9 +227,9 @@ TEST(VectorCallFeedbackForArray) {
   FeedbackNexus nexus(feedback_vector, slot);
 
   CHECK_EQ(MONOMORPHIC, nexus.StateFromFeedback());
-  CHECK(nexus.GetFeedback()->IsWeakCell());
-  CHECK(*isolate->array_function() ==
-        WeakCell::cast(nexus.GetFeedback())->value());
+  HeapObject* heap_object;
+  CHECK(nexus.GetFeedback()->ToWeakHeapObject(&heap_object));
+  CHECK_EQ(*isolate->array_function(), heap_object);
 
   CcTest::CollectAllGarbage();
   // It should stay monomorphic even after a GC.
@@ -282,7 +284,7 @@ TEST(VectorConstructCounts) {
   FeedbackNexus nexus(feedback_vector, slot);
   CHECK_EQ(MONOMORPHIC, nexus.StateFromFeedback());
 
-  CHECK(feedback_vector->Get(slot)->IsWeakCell());
+  CHECK(feedback_vector->Get(slot)->IsWeakHeapObject());
 
   CompileRun("f(Foo); f(Foo);");
   CHECK_EQ(MONOMORPHIC, nexus.StateFromFeedback());

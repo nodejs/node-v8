@@ -25,20 +25,70 @@ Callable make_callable(Stub& stub) {
 
 // static
 Handle<Code> CodeFactory::RuntimeCEntry(Isolate* isolate, int result_size) {
-  CEntryStub stub(isolate, result_size);
-  return stub.GetCode();
+  return CodeFactory::CEntry(isolate, result_size);
 }
+
+#define CENTRY_CODE(RS, SD, AM, BE) \
+  BUILTIN_CODE(isolate, CEntry_##RS##_##SD##_##AM##_##BE)
+
+// static
+Handle<Code> CodeFactory::CEntry(Isolate* isolate, int result_size,
+                                 SaveFPRegsMode save_doubles,
+                                 ArgvMode argv_mode, bool builtin_exit_frame) {
+  // Aliases for readability below.
+  const int rs = result_size;
+  const SaveFPRegsMode sd = save_doubles;
+  const ArgvMode am = argv_mode;
+  const bool be = builtin_exit_frame;
+
+  if (rs == 1 && sd == kDontSaveFPRegs && am == kArgvOnStack && !be) {
+    return CENTRY_CODE(Return1, DontSaveFPRegs, ArgvOnStack, NoBuiltinExit);
+  } else if (rs == 1 && sd == kDontSaveFPRegs && am == kArgvOnStack && be) {
+    return CENTRY_CODE(Return1, DontSaveFPRegs, ArgvOnStack, BuiltinExit);
+  } else if (rs == 1 && sd == kDontSaveFPRegs && am == kArgvInRegister && !be) {
+    return CENTRY_CODE(Return1, DontSaveFPRegs, ArgvInRegister, NoBuiltinExit);
+  } else if (rs == 1 && sd == kSaveFPRegs && am == kArgvOnStack && !be) {
+    return CENTRY_CODE(Return1, SaveFPRegs, ArgvOnStack, NoBuiltinExit);
+  } else if (rs == 1 && sd == kSaveFPRegs && am == kArgvOnStack && be) {
+    return CENTRY_CODE(Return1, SaveFPRegs, ArgvOnStack, BuiltinExit);
+  } else if (rs == 2 && sd == kDontSaveFPRegs && am == kArgvOnStack && !be) {
+    return CENTRY_CODE(Return2, DontSaveFPRegs, ArgvOnStack, NoBuiltinExit);
+  } else if (rs == 2 && sd == kDontSaveFPRegs && am == kArgvOnStack && be) {
+    return CENTRY_CODE(Return2, DontSaveFPRegs, ArgvOnStack, BuiltinExit);
+  } else if (rs == 2 && sd == kDontSaveFPRegs && am == kArgvInRegister && !be) {
+    return CENTRY_CODE(Return2, DontSaveFPRegs, ArgvInRegister, NoBuiltinExit);
+  } else if (rs == 2 && sd == kSaveFPRegs && am == kArgvOnStack && !be) {
+    return CENTRY_CODE(Return2, SaveFPRegs, ArgvOnStack, NoBuiltinExit);
+  } else if (rs == 2 && sd == kSaveFPRegs && am == kArgvOnStack && be) {
+    return CENTRY_CODE(Return2, SaveFPRegs, ArgvOnStack, BuiltinExit);
+  }
+
+  UNREACHABLE();
+}
+
+#undef CENTRY_CODE
 
 // static
 Callable CodeFactory::ApiGetter(Isolate* isolate) {
-  CallApiGetterStub stub(isolate);
-  return make_callable(stub);
+  return Callable(BUILTIN_CODE(isolate, CallApiGetter),
+                  ApiGetterDescriptor(isolate));
 }
 
 // static
 Callable CodeFactory::CallApiCallback(Isolate* isolate, int argc) {
-  CallApiCallbackStub stub(isolate, argc);
-  return make_callable(stub);
+  switch (argc) {
+    case 0:
+      return Callable(BUILTIN_CODE(isolate, CallApiCallback_Argc0),
+                      ApiCallbackDescriptor(isolate));
+    case 1:
+      return Callable(BUILTIN_CODE(isolate, CallApiCallback_Argc1),
+                      ApiCallbackDescriptor(isolate));
+    default: {
+      CallApiCallbackStub stub(isolate, argc);
+      return make_callable(stub);
+    }
+  }
+  UNREACHABLE();
 }
 
 // static
@@ -105,12 +155,6 @@ Callable CodeFactory::BinaryOperation(Isolate* isolate, Operation op) {
 }
 
 // static
-Callable CodeFactory::GetProperty(Isolate* isolate) {
-  GetPropertyStub stub(isolate);
-  return make_callable(stub);
-}
-
-// static
 Callable CodeFactory::NonPrimitiveToPrimitive(Isolate* isolate,
                                               ToPrimitiveHint hint) {
   return Callable(isolate->builtins()->NonPrimitiveToPrimitive(hint),
@@ -127,8 +171,26 @@ Callable CodeFactory::OrdinaryToPrimitive(Isolate* isolate,
 // static
 Callable CodeFactory::StringAdd(Isolate* isolate, StringAddFlags flags,
                                 PretenureFlag pretenure_flag) {
-  StringAddStub stub(isolate, flags, pretenure_flag);
-  return make_callable(stub);
+  if (pretenure_flag == NOT_TENURED) {
+    switch (flags) {
+      case STRING_ADD_CHECK_NONE:
+        return Builtins::CallableFor(isolate,
+                                     Builtins::kStringAdd_CheckNone_NotTenured);
+      case STRING_ADD_CONVERT_LEFT:
+        return Builtins::CallableFor(
+            isolate, Builtins::kStringAdd_ConvertLeft_NotTenured);
+      case STRING_ADD_CONVERT_RIGHT:
+        return Builtins::CallableFor(
+            isolate, Builtins::kStringAdd_ConvertRight_NotTenured);
+    }
+  } else {
+    CHECK_EQ(TENURED, pretenure_flag);
+    CHECK_EQ(STRING_ADD_CHECK_NONE, flags);
+    return Builtins::CallableFor(isolate,
+                                 Builtins::kStringAdd_CheckNone_Tenured);
+  }
+
+  UNREACHABLE();
 }
 
 // static
@@ -260,8 +322,9 @@ Callable CodeFactory::InterpreterPushArgsThenConstruct(
 Callable CodeFactory::InterpreterCEntry(Isolate* isolate, int result_size) {
   // Note: If we ever use fpregs in the interpreter then we will need to
   // save fpregs too.
-  CEntryStub stub(isolate, result_size, kDontSaveFPRegs, kArgvInRegister);
-  return Callable(stub.GetCode(), InterpreterCEntryDescriptor(isolate));
+  Handle<Code> code = CodeFactory::CEntry(isolate, result_size, kDontSaveFPRegs,
+                                          kArgvInRegister);
+  return Callable(code, InterpreterCEntryDescriptor(isolate));
 }
 
 // static
@@ -271,9 +334,108 @@ Callable CodeFactory::InterpreterOnStackReplacement(Isolate* isolate) {
 }
 
 // static
-Callable CodeFactory::ArrayConstructor(Isolate* isolate) {
-  ArrayConstructorStub stub(isolate);
-  return make_callable(stub);
+Callable CodeFactory::ArrayNoArgumentConstructor(
+    Isolate* isolate, ElementsKind kind,
+    AllocationSiteOverrideMode override_mode) {
+#define CASE(kind_caps, kind_camel, mode_camel)                               \
+  case kind_caps:                                                             \
+    return Callable(                                                          \
+        BUILTIN_CODE(isolate,                                                 \
+                     ArrayNoArgumentConstructor_##kind_camel##_##mode_camel), \
+        ArrayNoArgumentConstructorDescriptor(isolate))
+  if (override_mode == DONT_OVERRIDE && AllocationSite::ShouldTrack(kind)) {
+    DCHECK(IsSmiElementsKind(kind));
+    switch (kind) {
+      CASE(PACKED_SMI_ELEMENTS, PackedSmi, DontOverride);
+      CASE(HOLEY_SMI_ELEMENTS, HoleySmi, DontOverride);
+      default:
+        UNREACHABLE();
+    }
+  } else {
+    DCHECK(override_mode == DISABLE_ALLOCATION_SITES ||
+           !AllocationSite::ShouldTrack(kind));
+    switch (kind) {
+      CASE(PACKED_SMI_ELEMENTS, PackedSmi, DisableAllocationSites);
+      CASE(HOLEY_SMI_ELEMENTS, HoleySmi, DisableAllocationSites);
+      CASE(PACKED_ELEMENTS, Packed, DisableAllocationSites);
+      CASE(HOLEY_ELEMENTS, Holey, DisableAllocationSites);
+      CASE(PACKED_DOUBLE_ELEMENTS, PackedDouble, DisableAllocationSites);
+      CASE(HOLEY_DOUBLE_ELEMENTS, HoleyDouble, DisableAllocationSites);
+      default:
+        UNREACHABLE();
+    }
+  }
+#undef CASE
+}
+
+// static
+Callable CodeFactory::ArraySingleArgumentConstructor(
+    Isolate* isolate, ElementsKind kind,
+    AllocationSiteOverrideMode override_mode) {
+#define CASE(kind_caps, kind_camel, mode_camel)                          \
+  case kind_caps:                                                        \
+    return Callable(                                                     \
+        BUILTIN_CODE(                                                    \
+            isolate,                                                     \
+            ArraySingleArgumentConstructor_##kind_camel##_##mode_camel), \
+        ArraySingleArgumentConstructorDescriptor(isolate))
+  if (override_mode == DONT_OVERRIDE && AllocationSite::ShouldTrack(kind)) {
+    DCHECK(IsSmiElementsKind(kind));
+    switch (kind) {
+      CASE(PACKED_SMI_ELEMENTS, PackedSmi, DontOverride);
+      CASE(HOLEY_SMI_ELEMENTS, HoleySmi, DontOverride);
+      default:
+        UNREACHABLE();
+    }
+  } else {
+    DCHECK(override_mode == DISABLE_ALLOCATION_SITES ||
+           !AllocationSite::ShouldTrack(kind));
+    switch (kind) {
+      CASE(PACKED_SMI_ELEMENTS, PackedSmi, DisableAllocationSites);
+      CASE(HOLEY_SMI_ELEMENTS, HoleySmi, DisableAllocationSites);
+      CASE(PACKED_ELEMENTS, Packed, DisableAllocationSites);
+      CASE(HOLEY_ELEMENTS, Holey, DisableAllocationSites);
+      CASE(PACKED_DOUBLE_ELEMENTS, PackedDouble, DisableAllocationSites);
+      CASE(HOLEY_DOUBLE_ELEMENTS, HoleyDouble, DisableAllocationSites);
+      default:
+        UNREACHABLE();
+    }
+  }
+#undef CASE
+}
+
+// static
+Callable CodeFactory::InternalArrayNoArgumentConstructor(Isolate* isolate,
+                                                         ElementsKind kind) {
+  switch (kind) {
+    case PACKED_ELEMENTS:
+      return Callable(
+          BUILTIN_CODE(isolate, InternalArrayNoArgumentConstructor_Packed),
+          ArrayNoArgumentConstructorDescriptor(isolate));
+    case HOLEY_ELEMENTS:
+      return Callable(
+          BUILTIN_CODE(isolate, InternalArrayNoArgumentConstructor_Holey),
+          ArrayNoArgumentConstructorDescriptor(isolate));
+    default:
+      UNREACHABLE();
+  }
+}
+
+// static
+Callable CodeFactory::InternalArraySingleArgumentConstructor(
+    Isolate* isolate, ElementsKind kind) {
+  switch (kind) {
+    case PACKED_ELEMENTS:
+      return Callable(
+          BUILTIN_CODE(isolate, InternalArraySingleArgumentConstructor_Packed),
+          ArraySingleArgumentConstructorDescriptor(isolate));
+    case HOLEY_ELEMENTS:
+      return Callable(
+          BUILTIN_CODE(isolate, InternalArraySingleArgumentConstructor_Holey),
+          ArraySingleArgumentConstructorDescriptor(isolate));
+    default:
+      UNREACHABLE();
+  }
 }
 
 // static
@@ -308,14 +470,6 @@ Callable CodeFactory::ArrayPush(Isolate* isolate) {
 Callable CodeFactory::FunctionPrototypeBind(Isolate* isolate) {
   return Callable(BUILTIN_CODE(isolate, FunctionPrototypeBind),
                   BuiltinDescriptor(isolate));
-}
-
-// static
-Callable CodeFactory::TransitionElementsKind(Isolate* isolate,
-                                             ElementsKind from, ElementsKind to,
-                                             bool is_jsarray) {
-  TransitionElementsKindStub stub(isolate, from, to, is_jsarray);
-  return make_callable(stub);
 }
 
 }  // namespace internal

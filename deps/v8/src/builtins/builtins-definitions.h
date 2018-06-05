@@ -5,6 +5,9 @@
 #ifndef V8_BUILTINS_BUILTINS_DEFINITIONS_H_
 #define V8_BUILTINS_BUILTINS_DEFINITIONS_H_
 
+// include generated header
+#include "torque-generated/builtin-definitions-from-dsl.h"
+
 namespace v8 {
 namespace internal {
 
@@ -65,8 +68,7 @@ namespace internal {
   TFC(ConstructWithArrayLike, ConstructWithArrayLike, 1)                       \
   ASM(ConstructForwardVarargs)                                                 \
   ASM(ConstructFunctionForwardVarargs)                                         \
-  ASM(JSConstructStubGenericRestrictedReturn)                                  \
-  ASM(JSConstructStubGenericUnrestrictedReturn)                                \
+  ASM(JSConstructStubGeneric)                                                  \
   ASM(JSBuiltinsConstructStub)                                                 \
   TFC(FastNewObject, FastNewObject, 1)                                         \
   TFS(FastNewClosure, kSharedFunctionInfo, kFeedbackCell)                      \
@@ -203,7 +205,6 @@ namespace internal {
   TFH(KeyedStoreIC_Megamorphic, StoreWithVector)                               \
   TFH(KeyedStoreIC_Slow, StoreWithVector)                                      \
   TFH(LoadGlobalIC_Slow, LoadWithVector)                                       \
-  TFH(LoadField, LoadField)                                                    \
   TFH(LoadIC_FunctionPrototype, LoadWithVector)                                \
   TFH(LoadIC_Slow, LoadWithVector)                                             \
   TFH(LoadIC_StringLength, LoadWithVector)                                     \
@@ -235,7 +236,49 @@ namespace internal {
                                                                                \
   /* Array */                                                                  \
   ASM(ArrayConstructor)                                                        \
+  ASM(ArrayConstructorImpl)                                                    \
+  TFC(ArrayNoArgumentConstructor_PackedSmi_DontOverride,                       \
+      ArrayNoArgumentConstructor, 1)                                           \
+  TFC(ArrayNoArgumentConstructor_HoleySmi_DontOverride,                        \
+      ArrayNoArgumentConstructor, 1)                                           \
+  TFC(ArrayNoArgumentConstructor_PackedSmi_DisableAllocationSites,             \
+      ArrayNoArgumentConstructor, 1)                                           \
+  TFC(ArrayNoArgumentConstructor_HoleySmi_DisableAllocationSites,              \
+      ArrayNoArgumentConstructor, 1)                                           \
+  TFC(ArrayNoArgumentConstructor_Packed_DisableAllocationSites,                \
+      ArrayNoArgumentConstructor, 1)                                           \
+  TFC(ArrayNoArgumentConstructor_Holey_DisableAllocationSites,                 \
+      ArrayNoArgumentConstructor, 1)                                           \
+  TFC(ArrayNoArgumentConstructor_PackedDouble_DisableAllocationSites,          \
+      ArrayNoArgumentConstructor, 1)                                           \
+  TFC(ArrayNoArgumentConstructor_HoleyDouble_DisableAllocationSites,           \
+      ArrayNoArgumentConstructor, 1)                                           \
+  TFC(ArraySingleArgumentConstructor_PackedSmi_DontOverride,                   \
+      ArraySingleArgumentConstructor, 1)                                       \
+  TFC(ArraySingleArgumentConstructor_HoleySmi_DontOverride,                    \
+      ArraySingleArgumentConstructor, 1)                                       \
+  TFC(ArraySingleArgumentConstructor_PackedSmi_DisableAllocationSites,         \
+      ArraySingleArgumentConstructor, 1)                                       \
+  TFC(ArraySingleArgumentConstructor_HoleySmi_DisableAllocationSites,          \
+      ArraySingleArgumentConstructor, 1)                                       \
+  TFC(ArraySingleArgumentConstructor_Packed_DisableAllocationSites,            \
+      ArraySingleArgumentConstructor, 1)                                       \
+  TFC(ArraySingleArgumentConstructor_Holey_DisableAllocationSites,             \
+      ArraySingleArgumentConstructor, 1)                                       \
+  TFC(ArraySingleArgumentConstructor_PackedDouble_DisableAllocationSites,      \
+      ArraySingleArgumentConstructor, 1)                                       \
+  TFC(ArraySingleArgumentConstructor_HoleyDouble_DisableAllocationSites,       \
+      ArraySingleArgumentConstructor, 1)                                       \
+  ASM(ArrayNArgumentsConstructor)                                              \
   ASM(InternalArrayConstructor)                                                \
+  ASM(InternalArrayConstructorImpl)                                            \
+  TFC(InternalArrayNoArgumentConstructor_Packed, ArrayNoArgumentConstructor,   \
+      1)                                                                       \
+  TFC(InternalArrayNoArgumentConstructor_Holey, ArrayNoArgumentConstructor, 1) \
+  TFC(InternalArraySingleArgumentConstructor_Packed,                           \
+      ArraySingleArgumentConstructor, 1)                                       \
+  TFC(InternalArraySingleArgumentConstructor_Holey,                            \
+      ArraySingleArgumentConstructor, 1)                                       \
   CPP(ArrayConcat)                                                             \
   /* ES6 #sec-array.isarray */                                                 \
   TFJ(ArrayIsArray, 1, kArg)                                                   \
@@ -276,14 +319,6 @@ namespace internal {
   /* Support for Array.from and other array-copying idioms */                  \
   TFS(CloneFastJSArray, kSource)                                               \
   TFS(ExtractFastJSArray, kSource, kBegin, kCount)                             \
-  /* ES6 #sec-array.prototype.foreach */                                       \
-  TFS(ArrayForEachLoopContinuation, kReceiver, kCallbackFn, kThisArg, kArray,  \
-      kObject, kInitialK, kLength, kTo)                                        \
-  TFJ(ArrayForEachLoopEagerDeoptContinuation, 4, kCallbackFn, kThisArg,        \
-      kInitialK, kLength)                                                      \
-  TFJ(ArrayForEachLoopLazyDeoptContinuation, 5, kCallbackFn, kThisArg,         \
-      kInitialK, kLength, kResult)                                             \
-  TFJ(ArrayForEach, SharedFunctionInfo::kDontAdaptArgumentsSentinel)           \
   /* ES6 #sec-array.prototype.every */                                         \
   TFS(ArrayEveryLoopContinuation, kReceiver, kCallbackFn, kThisArg, kArray,    \
       kObject, kInitialK, kLength, kTo)                                        \
@@ -367,8 +402,8 @@ namespace internal {
   TFS(FlattenIntoArray, kTarget, kSource, kSourceLength, kStart, kDepth)       \
   TFS(FlatMapIntoArray, kTarget, kSource, kSourceLength, kStart, kDepth,       \
       kMapperFunction, kThisArg)                                               \
-  /* https://tc39.github.io/proposal-flatMap/#sec-Array.prototype.flatten */   \
-  TFJ(ArrayPrototypeFlatten, SharedFunctionInfo::kDontAdaptArgumentsSentinel)  \
+  /* https://tc39.github.io/proposal-flatMap/#sec-Array.prototype.flat */      \
+  TFJ(ArrayPrototypeFlat, SharedFunctionInfo::kDontAdaptArgumentsSentinel)     \
   /* https://tc39.github.io/proposal-flatMap/#sec-Array.prototype.flatMap */   \
   TFJ(ArrayPrototypeFlatMap, SharedFunctionInfo::kDontAdaptArgumentsSentinel)  \
                                                                                \
@@ -386,7 +421,7 @@ namespace internal {
   TFJ(AsyncFunctionAwaitRejectClosure, 1, kSentError)                          \
   TFJ(AsyncFunctionAwaitResolveClosure, 1, kSentValue)                         \
   TFJ(AsyncFunctionPromiseCreate, 0)                                           \
-  TFJ(AsyncFunctionPromiseRelease, 1, kPromise)                                \
+  TFJ(AsyncFunctionPromiseRelease, 2, kPromise, kCanSuspend)                   \
                                                                                \
   /* BigInt */                                                                 \
   CPP(BigIntConstructor)                                                       \
@@ -437,6 +472,7 @@ namespace internal {
   CPP(ConsoleGroupEnd)                                                         \
   CPP(ConsoleClear)                                                            \
   CPP(ConsoleCount)                                                            \
+  CPP(ConsoleCountReset)                                                       \
   CPP(ConsoleAssert)                                                           \
   TFJ(FastConsoleAssert, SharedFunctionInfo::kDontAdaptArgumentsSentinel)      \
   CPP(ConsoleMarkTimeline)                                                     \
@@ -452,29 +488,6 @@ namespace internal {
   /* DataView */                                                               \
   /* ES #sec-dataview-constructor */                                           \
   CPP(DataViewConstructor)                                                     \
-  CPP(DataViewPrototypeGetBuffer)                                              \
-  CPP(DataViewPrototypeGetByteLength)                                          \
-  CPP(DataViewPrototypeGetByteOffset)                                          \
-  CPP(DataViewPrototypeGetInt8)                                                \
-  CPP(DataViewPrototypeSetInt8)                                                \
-  CPP(DataViewPrototypeGetUint8)                                               \
-  CPP(DataViewPrototypeSetUint8)                                               \
-  CPP(DataViewPrototypeGetInt16)                                               \
-  CPP(DataViewPrototypeSetInt16)                                               \
-  CPP(DataViewPrototypeGetUint16)                                              \
-  CPP(DataViewPrototypeSetUint16)                                              \
-  CPP(DataViewPrototypeGetInt32)                                               \
-  CPP(DataViewPrototypeSetInt32)                                               \
-  CPP(DataViewPrototypeGetUint32)                                              \
-  CPP(DataViewPrototypeSetUint32)                                              \
-  CPP(DataViewPrototypeGetFloat32)                                             \
-  CPP(DataViewPrototypeSetFloat32)                                             \
-  CPP(DataViewPrototypeGetFloat64)                                             \
-  CPP(DataViewPrototypeSetFloat64)                                             \
-  CPP(DataViewPrototypeGetBigInt64)                                            \
-  CPP(DataViewPrototypeSetBigInt64)                                            \
-  CPP(DataViewPrototypeGetBigUint64)                                           \
-  CPP(DataViewPrototypeSetBigUint64)                                           \
                                                                                \
   /* Date */                                                                   \
   /* ES #sec-date-constructor */                                               \
@@ -729,6 +742,7 @@ namespace internal {
   TFJ(NumberParseFloat, 1, kString)                                            \
   /* ES6 #sec-number.parseint */                                               \
   TFJ(NumberParseInt, 2, kString, kRadix)                                      \
+  TFS(ParseInt, kString, kRadix)                                               \
   CPP(NumberPrototypeToExponential)                                            \
   CPP(NumberPrototypeToFixed)                                                  \
   CPP(NumberPrototypeToLocaleString)                                           \
@@ -763,9 +777,10 @@ namespace internal {
   /* Object */                                                                 \
   /* ES #sec-object-constructor */                                             \
   TFJ(ObjectConstructor, SharedFunctionInfo::kDontAdaptArgumentsSentinel)      \
-  CPP(ObjectAssign)                                                            \
+  TFJ(ObjectAssign, SharedFunctionInfo::kDontAdaptArgumentsSentinel)           \
   /* ES #sec-object.create */                                                  \
   TFJ(ObjectCreate, SharedFunctionInfo::kDontAdaptArgumentsSentinel)           \
+  TFS(CreateObjectWithoutProperties, kPrototypeArg)                            \
   CPP(ObjectDefineGetter)                                                      \
   CPP(ObjectDefineProperties)                                                  \
   CPP(ObjectDefineProperty)                                                    \
@@ -1097,7 +1112,8 @@ namespace internal {
                                                                                \
   /* TypedArray */                                                             \
   TFS(IterableToList, kIterable, kIteratorFn)                                  \
-  TFS(TypedArrayInitialize, kHolder, kLength, kElementSize, kInitialize)       \
+  TFS(TypedArrayInitialize, kHolder, kLength, kElementSize, kInitialize,       \
+      kBufferConstructor)                                                      \
   TFS(TypedArrayInitializeWithBuffer, kHolder, kLength, kBuffer, kElementSize, \
       kByteOffset)                                                             \
   /* ES #sec-typedarray-constructors */                                        \
@@ -1247,34 +1263,77 @@ namespace internal {
   /* #sec-%asyncfromsynciteratorprototype%.return */                           \
   TFJ(AsyncFromSyncIteratorPrototypeReturn, 1, kValue)                         \
   /* #sec-async-iterator-value-unwrap-functions */                             \
-  TFJ(AsyncIteratorValueUnwrap, 1, kValue)
+  TFJ(AsyncIteratorValueUnwrap, 1, kValue)                                     \
+                                                                               \
+  /* CEntry */                                                                 \
+  ASM(CEntry_Return1_DontSaveFPRegs_ArgvOnStack_NoBuiltinExit)                 \
+  ASM(CEntry_Return1_DontSaveFPRegs_ArgvOnStack_BuiltinExit)                   \
+  ASM(CEntry_Return1_DontSaveFPRegs_ArgvInRegister_NoBuiltinExit)              \
+  ASM(CEntry_Return1_SaveFPRegs_ArgvOnStack_NoBuiltinExit)                     \
+  ASM(CEntry_Return1_SaveFPRegs_ArgvOnStack_BuiltinExit)                       \
+  ASM(CEntry_Return2_DontSaveFPRegs_ArgvOnStack_NoBuiltinExit)                 \
+  ASM(CEntry_Return2_DontSaveFPRegs_ArgvOnStack_BuiltinExit)                   \
+  ASM(CEntry_Return2_DontSaveFPRegs_ArgvInRegister_NoBuiltinExit)              \
+  ASM(CEntry_Return2_SaveFPRegs_ArgvOnStack_NoBuiltinExit)                     \
+  ASM(CEntry_Return2_SaveFPRegs_ArgvOnStack_BuiltinExit)                       \
+                                                                               \
+  /* StringAdd */                                                              \
+  TFS(StringAdd_CheckNone_NotTenured, kLeft, kRight)                           \
+  TFS(StringAdd_CheckNone_Tenured, kLeft, kRight)                              \
+  TFS(StringAdd_ConvertLeft_NotTenured, kLeft, kRight)                         \
+  TFS(StringAdd_ConvertRight_NotTenured, kLeft, kRight)                        \
+                                                                               \
+  /* Miscellaneous */                                                          \
+  ASM(CallApiCallback_Argc0)                                                   \
+  ASM(CallApiCallback_Argc1)                                                   \
+  ASM(CallApiGetter)                                                           \
+  ASM(DoubleToI)                                                               \
+  TFC(GetProperty, GetProperty, 1)                                             \
+  ASM(MathPowInternal)
 
 #ifdef V8_INTL_SUPPORT
-#define BUILTIN_LIST(CPP, API, TFJ, TFC, TFS, TFH, ASM)        \
-  BUILTIN_LIST_BASE(CPP, API, TFJ, TFC, TFS, TFH, ASM)         \
-                                                               \
-  TFS(StringToLowerCaseIntl, kString)                          \
-  /* ES #sec-string.prototype.tolowercase */                   \
-  TFJ(StringPrototypeToLowerCaseIntl, 0)                       \
-  /* ES #sec-string.prototype.touppercase */                   \
-  CPP(StringPrototypeToUpperCaseIntl)                          \
-  /* ES #sec-string.prototype.normalize */                     \
-  CPP(StringPrototypeNormalizeIntl)                            \
-  /* ecma402 #sec-intl.numberformat.prototype.formattoparts */ \
-  CPP(NumberFormatPrototypeFormatToParts)
+#define BUILTIN_LIST(CPP, API, TFJ, TFC, TFS, TFH, ASM)          \
+  BUILTIN_LIST_BASE(CPP, API, TFJ, TFC, TFS, TFH, ASM)           \
+  BUILTIN_LIST_FROM_DSL(CPP, API, TFJ, TFC, TFS, TFH, ASM)       \
+                                                                 \
+  TFS(StringToLowerCaseIntl, kString)                            \
+  /* ES #sec-string.prototype.tolowercase */                     \
+  TFJ(StringPrototypeToLowerCaseIntl, 0)                         \
+  /* ES #sec-string.prototype.touppercase */                     \
+  CPP(StringPrototypeToUpperCaseIntl)                            \
+  /* ES #sec-string.prototype.normalize */                       \
+  CPP(StringPrototypeNormalizeIntl)                              \
+  /* ecma402 #sec-intl.numberformat.prototype.formattoparts */   \
+  CPP(NumberFormatPrototypeFormatToParts)                        \
+  /* ecma402 #sec-intl.datetimeformat.prototype.formattoparts */ \
+  CPP(DateTimeFormatPrototypeFormatToParts)                      \
+  /* ecma402 #new proposal */                                    \
+  CPP(LocaleConstructor)                                         \
+  CPP(LocalePrototypeLanguage)                                   \
+  CPP(LocalePrototypeScript)                                     \
+  CPP(LocalePrototypeRegion)                                     \
+  CPP(LocalePrototypeBaseName)                                   \
+  CPP(LocalePrototypeCalendar)                                   \
+  CPP(LocalePrototypeCaseFirst)                                  \
+  CPP(LocalePrototypeCollation)                                  \
+  CPP(LocalePrototypeHourCycle)                                  \
+  CPP(LocalePrototypeNumeric)                                    \
+  CPP(LocalePrototypeNumberingSystem)                            \
+  CPP(LocalePrototypeToString)
 #else
-#define BUILTIN_LIST(CPP, API, TFJ, TFC, TFS, TFH, ASM) \
-  BUILTIN_LIST_BASE(CPP, API, TFJ, TFC, TFS, TFH, ASM)  \
-                                                        \
-  /* no-op fallback version */                          \
-  CPP(StringPrototypeNormalize)                         \
-  /* same as toLowercase; fallback version */           \
-  CPP(StringPrototypeToLocaleLowerCase)                 \
-  /* same as toUppercase; fallback version */           \
-  CPP(StringPrototypeToLocaleUpperCase)                 \
-  /* (obsolete) Unibrow version */                      \
-  CPP(StringPrototypeToLowerCase)                       \
-  /* (obsolete) Unibrow version */                      \
+#define BUILTIN_LIST(CPP, API, TFJ, TFC, TFS, TFH, ASM)    \
+  BUILTIN_LIST_BASE(CPP, API, TFJ, TFC, TFS, TFH, ASM)     \
+  BUILTIN_LIST_FROM_DSL(CPP, API, TFJ, TFC, TFS, TFH, ASM) \
+                                                           \
+  /* no-op fallback version */                             \
+  CPP(StringPrototypeNormalize)                            \
+  /* same as toLowercase; fallback version */              \
+  CPP(StringPrototypeToLocaleLowerCase)                    \
+  /* same as toUppercase; fallback version */              \
+  CPP(StringPrototypeToLocaleUpperCase)                    \
+  /* (obsolete) Unibrow version */                         \
+  CPP(StringPrototypeToLowerCase)                          \
+  /* (obsolete) Unibrow version */                         \
   CPP(StringPrototypeToUpperCase)
 #endif  // V8_INTL_SUPPORT
 

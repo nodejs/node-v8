@@ -87,7 +87,6 @@ class BreakHandler : public debug::DebugDelegate {
   std::vector<BreakPoint> expected_breaks_;
 
   void BreakProgramRequested(v8::Local<v8::Context> paused_context,
-                             v8::Local<v8::Object> exec_state,
                              const std::vector<int>&) override {
     printf("Break #%d\n", count_);
     CHECK_GT(expected_breaks_.size(), count_);
@@ -122,12 +121,13 @@ void SetBreakpoint(WasmRunnerBase& runner, int function_index, int byte_offset,
   if (expected_set_byte_offset == -1) expected_set_byte_offset = byte_offset;
   Handle<WasmInstanceObject> instance = runner.builder().instance_object();
   Handle<WasmCompiledModule> compiled_module(instance->compiled_module());
+  Handle<WasmModuleObject> module_object(instance->module_object());
   static int break_index = 0;
   Handle<BreakPoint> break_point =
       runner.main_isolate()->factory()->NewBreakPoint(
           break_index++, runner.main_isolate()->factory()->empty_string());
-  CHECK(WasmCompiledModule::SetBreakPoint(compiled_module, &code_offset,
-                                          break_point));
+  CHECK(WasmModuleObject::SetBreakPoint(module_object, &code_offset,
+                                        break_point));
   int set_byte_offset = code_offset - func_offset;
   CHECK_EQ(expected_set_byte_offset, set_byte_offset);
   // Also set breakpoint on the debug info of the instance directly, since the
@@ -192,7 +192,6 @@ class CollectValuesBreakHandler : public debug::DebugDelegate {
   std::vector<BreakpointValues> expected_values_;
 
   void BreakProgramRequested(v8::Local<v8::Context> paused_context,
-                             v8::Local<v8::Object> exec_state,
                              const std::vector<int>&) override {
     printf("Break #%d\n", count_);
     CHECK_GT(expected_values_.size(), count_);
@@ -248,7 +247,7 @@ WASM_COMPILED_EXEC_TEST(WasmCollectPossibleBreakpoints) {
   BUILD(runner, WASM_NOP, WASM_I32_ADD(WASM_ZERO, WASM_ONE));
 
   WasmInstanceObject* instance = *runner.builder().instance_object();
-  WasmSharedModuleData* shared = instance->compiled_module()->shared();
+  WasmSharedModuleData* shared = instance->module_object()->shared();
 
   std::vector<debug::Location> locations;
   // Check all locations for function 0.
@@ -320,7 +319,7 @@ WASM_COMPILED_EXEC_TEST(WasmSimpleStepping) {
 WASM_COMPILED_EXEC_TEST(WasmStepInAndOut) {
   WasmRunner<int, int> runner(execution_mode);
   WasmFunctionCompiler& f2 = runner.NewFunction<void>();
-  f2.AllocateLocal(ValueType::kWord32);
+  f2.AllocateLocal(kWasmI32);
 
   // Call f2 via indirect call, because a direct call requires f2 to exist when
   // we compile main, but we need to compile main first so that the order of
@@ -359,9 +358,9 @@ WASM_COMPILED_EXEC_TEST(WasmStepInAndOut) {
 
 WASM_COMPILED_EXEC_TEST(WasmGetLocalsAndStack) {
   WasmRunner<void, int> runner(execution_mode);
-  runner.AllocateLocal(ValueType::kWord64);
-  runner.AllocateLocal(ValueType::kFloat32);
-  runner.AllocateLocal(ValueType::kFloat64);
+  runner.AllocateLocal(kWasmI64);
+  runner.AllocateLocal(kWasmF32);
+  runner.AllocateLocal(kWasmF64);
 
   BUILD(runner,
         // set [1] to 17

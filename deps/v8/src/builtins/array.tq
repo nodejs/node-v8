@@ -1,0 +1,919 @@
+// Copyright 2018 the V8 project authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+module array {
+  macro FastArraySplice(
+      context: Context, args: constexpr Arguments, o: Object,
+      originalLengthNumber: Number, actualStartNumber: Number, insertCount: Smi,
+      actualDeleteCountNumber: Number): Object
+  labels Bailout {
+    let originalLength: Smi = cast<Smi>(originalLengthNumber) otherwise Bailout;
+    let actualStart: Smi = cast<Smi>(actualStartNumber) otherwise Bailout;
+    let actualDeleteCount: Smi =
+        cast<Smi>(actualDeleteCountNumber) otherwise Bailout;
+    let lengthDelta: Smi = insertCount - actualDeleteCount;
+    let newLength: Smi = originalLength + lengthDelta;
+
+    let a: JSArray = cast<JSArray>(o) otherwise Bailout;
+
+    let map: Map = a.map;
+    if (!IsPrototypeInitialArrayPrototype(context, map)) goto Bailout;
+    if (IsNoElementsProtectorCellInvalid()) goto Bailout;
+    if (IsArraySpeciesProtectorCellInvalid()) goto Bailout;
+
+    // Fast path only works on fast elements kind and with writable length.
+    let elementsKind: ElementsKind = EnsureArrayPushable(map) otherwise Bailout;
+    if (!IsFastElementsKind(elementsKind)) goto Bailout;
+
+    // For now, only support non-double fast elements
+    if (!IsFastSmiOrTaggedElementsKind(elementsKind)) goto Bailout;
+
+    if (IsFastSmiElementsKind(elementsKind)) {
+      for (let e: Object of args [2: ]) {
+        if (TaggedIsNotSmi(e)) goto Bailout;
+      }
+    }
+
+    // Make sure that the length hasn't been changed by side-effect.
+    let length: Smi = cast<Smi>(a.length) otherwise Bailout;
+    if (originalLength != length) goto Bailout;
+
+    let deletedResult: JSArray =
+        ExtractFastJSArray(context, a, actualStart, actualDeleteCount);
+
+    if (newLength == 0) {
+      a.elements = kEmptyFixedArray;
+      a.length = 0;
+      return deletedResult;
+    }
+
+    let elements: FixedArray = cast<FixedArray>(a.elements) otherwise Bailout;
+    let elementsMap: Map = elements.map;
+
+    // If the source is a COW array or the spliced array is larger then the
+    // source array, then allocate a new FixedArray to hold the result.
+    let newElements: FixedArray = elements;
+    if ((elementsMap == kCOWMap) || (lengthDelta > 0)) {
+      newElements = ExtractFixedArray(
+          elements, 0, actualStart, newLength, kAllFixedArrays);
+      newElements.map = elementsMap;
+      a.elements = newElements;
+    }
+
+    // Double check that the array is still in fast elements mode
+    assert(IsFastSmiElementsKind(a.map.elements_kind));
+
+    // Copy over inserted elements.
+    let k: Smi = actualStart;
+    if (insertCount > 0) {
+      for (let e: Object of args [2: ]) {
+        newElements[k++] = e;
+      }
+    }
+
+    // Copy over elements after deleted elements.
+    let count: Smi = length - actualStart - actualDeleteCount;
+    while (count > 0) {
+      let e: Object = elements[k - lengthDelta];
+      newElements[k++] = e;
+      count--;
+    }
+
+    // Fill rest of spliced FixedArray with the hole, but only if the
+    // destination FixedArray is the original array's, since otherwise the array
+    // is pre-filled with holes.
+    if (elements == newElements) {
+      let limit: Smi = elements.length;
+      while (k < limit) {
+        newElements[k++] = Hole;
+      }
+    }
+
+    // Update the array's length after all the FixedArray shuffling is done.
+    a.length = newLength;
+
+    return deletedResult;
+  }
+
+  // https://tc39.github.io/ecma262/#sec-array.prototype.splice
+  javascript builtin ArraySpliceTorque(
+      context: Context, receiver: Object, ...arguments): Object {
+    // 1. Let O be ? ToObject(this value).
+    let o: Object = ToObject(context, receiver);
+
+    // 2. Let len be ? ToLength(? Get(O, "length")).
+    let len: Number =
+        ToLength_Inline(context, GetProperty(context, o, 'length'));
+
+    // 3. Let relativeStart be ? ToInteger(start).
+    let start: Object = arguments[0];
+    let relativeStart: Number = ToInteger_Inline(context, start);
+
+    // 4. If relativeStart < 0, let actualStart be max((len + relativeStart),
+    // 0);
+    //    else let actualStart be min(relativeStart, len).
+    let actualStart: Number = relativeStart < 0 ?
+        max((len + relativeStart), 0) :
+        min(relativeStart, len);
+
+    let insertCount: Smi;
+    let actualDeleteCount: Number;
+    // 5. If the Number of actual arguments is 0, then
+    if (arguments.length == 0) {
+      // a. Let insertCount be 0.
+      insertCount = 0;
+      // b. Let actualDeleteCount be 0.
+      actualDeleteCount = 0;
+      // 6. Else if the Number of actual arguments is 1, then
+    } else if (arguments.length == 1) {
+      // a. Let insertCount be 0.
+      insertCount = 0;
+      // b. Let actualDeleteCount be len - actualStart.
+      actualDeleteCount = len - actualStart;
+      // 7. Else,
+    } else {
+      // a. Let insertCount be the Number of actual arguments minus 2.
+      insertCount = convert<Smi>(arguments.length) - 2;
+      // b. Let dc be ? ToInteger(deleteCount).
+      let deleteCount: Object = arguments[1];
+      let dc: Number = ToInteger_Inline(context, deleteCount);
+      // c. Let actualDeleteCount be min(max(dc, 0), len - actualStart).
+      actualDeleteCount = min(max(dc, 0), len - actualStart);
+    }
+
+    // 8. If len + insertCount - actualDeleteCount > 2^53-1, throw a
+    //    Bailout exception.
+    if (len + insertCount - actualDeleteCount > kMaxSafeInteger) {
+      ThrowRangeError(context, kInvalidArrayLength);
+    }
+
+    try {
+      return FastArraySplice(
+          context, arguments, o, len, actualStart, insertCount,
+          actualDeleteCount) otherwise Bailout;
+    }
+    label Bailout {}
+    // If the fast case fails, just continue with the slow, correct,
+    // spec-compliant case.
+
+    // 9. Let A be ? ArraySpeciesCreate(O, actualDeleteCount).
+    let a: Object = ArraySpeciesCreate(context, o, actualDeleteCount);
+
+    // 10. Let k be 0.
+    let k: Number = 0;
+
+    // 11. Repeat, while k < actualDeleteCount
+    while (k < actualDeleteCount) {
+      // a. Let from be ! ToString(actualStart + k).
+      let from: String = ToString_Inline(context, actualStart + k);
+
+      // b. Let fromPresent be ? HasProperty(O, from).
+      let fromPresent: Oddball =
+          HasPropertyObject(o, from, context, kHasProperty);
+
+      // c. If fromPresent is true, then
+      if (fromPresent == True) {
+        // i. Let fromValue be ? Get(O, from).
+        let fromValue: Object = GetProperty(context, o, from);
+
+        // ii. Perform ? CreateDataPropertyOrThrow(A, ! ToString(k), fromValue).
+        CreateDataProperty(context, a, ToString_Inline(context, k), fromValue);
+      }
+
+      // d. Increment k by 1.
+      k = k + 1;
+    }
+
+    // 12. Perform ? Set(A, "length", actualDeleteCount, true).
+    SetProperty(context, a, 'length', actualDeleteCount, kStrict);
+
+    // 13. Let items be a List whose elements are, in left-to-right order,
+    //     the portion of the actual argument list starting with the third
+    //     argument. The list is empty if fewer than three arguments were
+    //     passed.
+    // 14. Let itemCount be the Number of elements in items.
+    let itemCount: Number = insertCount;
+
+    // 15. If itemCount < actualDeleteCount, then
+    if (itemCount < actualDeleteCount) {
+      // a. Let k be actualStart.
+      let k: Number = actualStart;
+
+      // b. Repeat, while k < (len - actualDeleteCount)
+      while (k < (len - actualDeleteCount)) {
+        // i. Let from be ! ToString(k + actualDeleteCount).
+        let from: String = ToString_Inline(context, k + actualDeleteCount);
+        // ii. Let to be ! ToString(k + itemCount).
+        let to: String = ToString_Inline(context, k + itemCount);
+
+        // iii. Let fromPresent be ? HasProperty(O, from).
+        let fromPresent: Oddball =
+            HasPropertyObject(o, from, context, kHasProperty);
+
+        // iv. If fromPresent is true, then
+        if (fromPresent == True) {
+          // 1. Let fromValue be ? Get(O, from).
+          let fromValue: Object = GetProperty(context, o, from);
+
+          // 2. Perform ? Set(O, to, fromValue, true).
+          SetProperty(context, o, to, fromValue, kStrict);
+
+          // v. Else fromPresent is false,
+        } else {
+          // 1. Perform ? DeletePropertyOrThrow(O, to).
+          DeleteProperty(context, o, to, kStrict);
+        }
+        // vi. Increase k by 1.
+        k = k + 1;
+      }
+
+      // c. Let k be len.
+      k = len;
+      // d. Repeat, while k > (len - actualDeleteCount + itemCount)
+      while (k > (len - actualDeleteCount + itemCount)) {
+        // i. Perform ? DeletePropertyOrThrow(O, ! ToString(k - 1)).
+        DeleteProperty(context, o, ToString_Inline(context, k - 1), kStrict);
+
+        // ii. Decrease k by 1.
+        k = k - 1;
+      }
+      // 16. Else if itemCount > actualDeleteCount, then
+    } else if (itemCount > actualDeleteCount) {
+      // a. Let k be (len - actualDeleteCount).
+      let k: Number = len - actualDeleteCount;
+
+      // b. Repeat, while k > actualStart
+      while (k > actualStart) {
+        // i. Let from be ! ToString(k + actualDeleteCount - 1).
+        let from: String = ToString_Inline(context, k + actualDeleteCount - 1);
+
+        // ii. Let to be ! ToString(k + itemCount - 1).
+        let to: String = ToString_Inline(context, k + itemCount - 1);
+
+        // iii. Let fromPresent be ? HasProperty(O, from).
+        let fromPresent: Oddball =
+            HasPropertyObject(o, from, context, kHasProperty);
+
+        // iv. If fromPresent is true, then
+        if (fromPresent == True) {
+          // 1. Let fromValue be ? Get(O, from).
+          let fromValue: Object = GetProperty(context, o, from);
+
+          // 2. Perform ? Set(O, to, fromValue, true).
+          SetProperty(context, o, to, fromValue, kStrict);
+
+          // v. Else fromPresent is false,
+        } else {
+          // 1. Perform ? DeletePropertyOrThrow(O, to).
+          DeleteProperty(context, o, to, kStrict);
+        }
+
+        // vi. Decrease k by 1.
+        k = k - 1;
+      }
+    }
+
+    // 17. Let k be actualStart.
+    k = actualStart;
+
+    // 18. Repeat, while items is not empty
+    //   a. Remove the first element from items and let E be the value of that
+    //   element.
+    if (arguments.length > 2) {
+      for (let e: Object of arguments [2: ]) {
+        // b. Perform ? Set(O, ! ToString(k), E, true).
+        SetProperty(context, o, ToString_Inline(context, k), e, kStrict);
+
+        // c. Increase k by 1.
+        k = k + 1;
+      }
+    }
+
+    // 19. Perform ? Set(O, "length", len - actualDeleteCount + itemCount,
+    // true).
+    SetProperty(
+        context, o, 'length', len - actualDeleteCount + itemCount, kStrict);
+
+    return a;
+  }
+
+  macro ArrayForEachTorqueContinuation(
+      context: Context, o: Object, len: Number, callbackfn: Callable,
+      thisArg: Object, initial_k: Smi): Object {
+    // 5. Let k be 0.
+    // 6. Repeat, while k < len
+    for (let k: Smi = initial_k; k < len; k = k + 1) {
+      // 6a. Let Pk be ! ToString(k).
+      let pK: String = ToString_Inline(context, k);
+
+      // 6b. Let kPresent be ? HasProperty(O, Pk).
+      let kPresent: Oddball = HasPropertyObject(o, pK, context, kHasProperty);
+
+      // 6c. If kPresent is true, then
+      if (kPresent == True) {
+        // 6c. i. Let kValue be ? Get(O, Pk).
+        let kValue: Object = GetProperty(context, o, pK);
+
+        // 6c. ii. Perform ? Call(callbackfn, T, <kValue, k, O>).
+        Call(context, callbackfn, thisArg, kValue, k, o);
+      }
+
+      // 6d. Increase k by 1. (done by the loop).
+    }
+    return Undefined;
+  }
+
+  javascript builtin ArrayForEachLoopEagerDeoptContinuation(
+      context: Context, receiver: Object, callback: Object, thisArg: Object,
+      initialK: Object, length: Object): Object {
+    return ArrayForEachLoopContinuation(
+        context, receiver, callback, thisArg, Undefined, receiver, initialK,
+        length, Undefined);
+  }
+
+  javascript builtin ArrayForEachLoopLazyDeoptContinuation(
+      context: Context, receiver: Object, callback: Object, thisArg: Object,
+      initialK: Object, length: Object, result: Object): Object {
+    return ArrayForEachLoopContinuation(
+        context, receiver, callback, thisArg, Undefined, receiver, initialK,
+        length, Undefined);
+  }
+
+  builtin ArrayForEachLoopContinuation(
+      context: Context, receiver: Object, callback: Object, thisArg: Object,
+      array: Object, object: Object, initialK: Object, length: Object,
+      to: Object): Object {
+    try {
+      let callbackfn: Callable = cast<Callable>(callback) otherwise Unexpected;
+      let k: Smi = cast<Smi>(initialK) otherwise Unexpected;
+      let number_length: Number = cast<Number>(length) otherwise Unexpected;
+
+      return ArrayForEachTorqueContinuation(
+          context, object, number_length, callbackfn, thisArg, k);
+    }
+    label Unexpected {
+      unreachable;
+    }
+  }
+
+  macro VisitAllElements<FixedArrayType : type>(
+      context: Context, a: JSArray, len: Smi, callbackfn: Callable,
+      thisArg: Object): void labels
+  Bailout(Smi) {
+    let k: Smi = 0;
+    let map: Map = a.map;
+
+    try {
+      // Build a fast loop over the smi array.
+      for (; k < len; k = k + 1) {
+        // Ensure that the map didn't change.
+        if (map != a.map) goto Slow;
+        // Ensure that we haven't walked beyond a possibly updated length.
+        if (k >= a.length) goto Slow;
+
+        try {
+          let value: Object =
+              LoadElementNoHole<FixedArrayType>(a, k) otherwise FoundHole;
+          Call(context, callbackfn, thisArg, value, k, a);
+        }
+        label FoundHole {
+          // If we found the hole, we need to bail out if the initial
+          // array prototype has had elements inserted. This is preferable
+          // to walking the prototype chain looking for elements.
+
+          if (IsNoElementsProtectorCellInvalid()) goto Bailout(k);
+        }
+      }
+    }
+    label Slow {
+      goto Bailout(k);
+    }
+  }
+
+  macro FastArrayForEach(
+      context: Context, o: Object, len: Number, callbackfn: Callable,
+      thisArg: Object): Object labels
+  Bailout(Smi) {
+    let k: Smi = 0;
+    try {
+      let smi_len: Smi = cast<Smi>(len) otherwise Slow;
+      let a: JSArray = cast<JSArray>(o) otherwise Slow;
+      let map: Map = a.map;
+
+      if (!IsPrototypeInitialArrayPrototype(context, map)) goto Slow;
+      let elementsKind: ElementsKind = map.elements_kind;
+      if (!IsFastElementsKind(elementsKind)) goto Slow;
+
+      if (IsElementsKindGreaterThan(elementsKind, HOLEY_ELEMENTS)) {
+        VisitAllElements<FixedDoubleArray>(
+            context, a, smi_len, callbackfn, thisArg)
+        otherwise Bailout;
+      } else {
+        VisitAllElements<FixedArray>(context, a, smi_len, callbackfn, thisArg)
+        otherwise Bailout;
+      }
+    }
+    label Slow {
+      goto Bailout(k);
+    }
+    return Undefined;
+  }
+
+  // https://tc39.github.io/ecma262/#sec-array.prototype.foreach
+  javascript builtin ArrayForEach(
+      context: Context, receiver: Object, ...arguments): Object {
+    try {
+      if (IsNullOrUndefined(receiver)) {
+        goto NullOrUndefinedError;
+      }
+
+      // 1. Let O be ? ToObject(this value).
+      let o: Object = ToObject(context, receiver);
+
+      // 2. Let len be ? ToLength(? Get(O, "length")).
+      let len: Number =
+          ToLength_Inline(context, GetProperty(context, o, 'length'));
+
+      // 3. If IsCallable(callbackfn) is false, throw a TypeError exception.
+      if (arguments.length == 0) {
+        goto TypeError;
+      }
+      let callbackfn: Callable =
+          cast<Callable>(arguments[0]) otherwise TypeError;
+
+      // 4. If thisArg is present, let T be thisArg; else let T be undefined.
+      let thisArg: Object = arguments.length > 1 ? arguments[1] : Undefined;
+
+      // Special cases.
+      let k: Smi = 0;
+      try {
+        return FastArrayForEach(context, o, len, callbackfn, thisArg)
+        otherwise Bailout;
+      }
+      label Bailout(k_value: Smi) {
+        k = k_value;
+      }
+
+      return ArrayForEachTorqueContinuation(
+          context, o, len, callbackfn, thisArg, k);
+    }
+    label TypeError {
+      ThrowTypeError(context, kCalledNonCallable, arguments[0]);
+    }
+    label NullOrUndefinedError {
+      ThrowTypeError(
+          context, kCalledOnNullOrUndefined, 'Array.prototype.forEach');
+    }
+  }
+
+  // Naming convention from elements.cc. We have a similar intent but implement
+  // fastpaths using generics instead of using a class hierarchy for elements
+  // kinds specific implementations.
+  type GenericElementsAccessor;
+  type FastPackedSmiElements;
+  type FastSmiOrObjectElements;
+  type FastDoubleElements;
+
+  macro Load<ElementsAccessor : type>(
+      context: Context, receiver: Object, index: Smi): Object labels Bailout {
+    return GetProperty(context, receiver, index);
+  }
+
+  Load<FastPackedSmiElements>(
+      context: Context, elements: Object, index: Smi): Object labels Bailout {
+    let elems: FixedArray = unsafe_cast<FixedArray>(elements);
+    return elems[index];
+  }
+
+  Load<FastSmiOrObjectElements>(
+      context: Context, elements: Object, index: Smi): Object labels Bailout {
+    let elems: FixedArray = unsafe_cast<FixedArray>(elements);
+    let result: Object = elems[index];
+    if (IsTheHole(result)) goto Bailout;
+    return result;
+  }
+
+  Load<FastDoubleElements>(
+      context: Context, elements: Object, index: Smi): Object labels Bailout {
+    let elems: FixedDoubleArray = unsafe_cast<FixedDoubleArray>(elements);
+    let value: float64 =
+        LoadDoubleWithHoleCheck(elems, index) otherwise Bailout;
+    return AllocateHeapNumberWithValue(value);
+  }
+
+  macro Store<ElementsAccessor : type>(
+      context: Context, receiver: Object, index: Smi, value: Object) {
+    SetProperty(context, receiver, index, value, kStrict);
+  }
+
+  Store<FastPackedSmiElements>(
+      context: Context, elements: Object, index: Smi, value: Object) {
+    let elems: FixedArray = unsafe_cast<FixedArray>(elements);
+    elems[index] = value;
+  }
+
+  Store<FastSmiOrObjectElements>(
+      context: Context, elements: Object, index: Smi, value: Object) {
+    let elems: FixedArray = unsafe_cast<FixedArray>(elements);
+    elems[index] = value;
+  }
+
+  Store<FastDoubleElements>(
+      context: Context, elements: Object, index: Smi, value: Object) {
+    let elems: FixedDoubleArray = unsafe_cast<FixedDoubleArray>(elements);
+    let heap_val: HeapNumber = unsafe_cast<HeapNumber>(value);
+    // Make sure we do not store signalling NaNs into double arrays.
+    let val: float64 = Float64SilenceNaN(convert<float64>(heap_val));
+    StoreFixedDoubleArrayElementWithSmiIndex(elems, index, val);
+  }
+
+  type CompareBuiltinFn = builtin(Context, Object, Object, Object) => Number;
+
+  builtin SortCompareDefault(
+      context: Context, comparefn: Object, x: Object, y: Object): Number {
+    assert(comparefn == Undefined);
+
+    if (TaggedIsSmi(x) && TaggedIsSmi(y)) {
+      // TODO(szuend): Replace with a fast CallCFunction call.
+      return SmiLexicographicCompare(context, x, y);
+    }
+
+    // 5. Let xString be ? ToString(x).
+    let xString: String = ToString_Inline(context, x);
+
+    // 6. Let yString be ? ToString(y).
+    let yString: String = ToString_Inline(context, y);
+
+    // 7. Let xSmaller be the result of performing
+    //    Abstract Relational Comparison xString < yString.
+    // 8. If xSmaller is true, return -1.
+    if (StringLessThan(context, xString, yString) == True) return -1;
+
+    // 9. Let ySmaller be the result of performing
+    //    Abstract Relational Comparison yString < xString.
+    // 10. If ySmaller is true, return 1.
+    if (StringLessThan(context, yString, xString) == True) return 1;
+
+    // 11. Return +0.
+    return 0;
+  }
+
+  builtin SortCompareUserFn(
+      context: Context, comparefn: Object, x: Object, y: Object): Number {
+    assert(comparefn != Undefined);
+    let cmpfn: Callable = unsafe_cast<Callable>(comparefn);
+
+    // a. Let v be ? ToNumber(? Call(comparefn, undefined, x, y)).
+    let v: Number =
+        ToNumber_Inline(context, Call(context, cmpfn, Undefined, x, y));
+
+    // b. If v is NaN, return +0.
+    if (NumberIsNaN(v)) return 0;
+
+    // c. return v.
+    return v;
+  }
+
+  macro CanUseSameAccessor<ElementsAccessor : type>(
+      context: Context, receiver: Object, initialReceiverMap: Object,
+      initialReceiverLength: Number): bool {
+    assert(IsJSArray(unsafe_cast<HeapObject>(receiver)));
+
+    let a: JSArray = unsafe_cast<JSArray>(receiver);
+    if (a.map != initialReceiverMap) return false;
+
+    let originalLength: Smi = unsafe_cast<Smi>(initialReceiverLength);
+    if (a.length_fast != originalLength) return false;
+
+    return true;
+  }
+
+  CanUseSameAccessor<GenericElementsAccessor>(
+      context: Context, receiver: Object, initialReceiverMap: Object,
+      initialReceiverLength: Number): bool {
+    // Do nothing. We are already on the slow path.
+    return true;
+  }
+
+  macro CallCompareFn<E : type>(
+      context: Context, receiver: Object, initialReceiverMap: Object,
+      initialReceiverLength: Number, userCmpFn: Object,
+      sortCompare: CompareBuiltinFn, x: Object,
+      y: Object): Number labels Bailout {
+    let result: Number = sortCompare(context, userCmpFn, x, y);
+    if (!CanUseSameAccessor<E>(
+            context, receiver, initialReceiverMap, initialReceiverLength))
+      goto Bailout;
+    return result;
+  }
+
+  // InsertionSort is used for smaller arrays.
+  macro ArrayInsertionSort<E : type>(
+      context: Context, receiver: Object, elements: Object,
+      initialReceiverMap: Object, initialReceiverLength: Number, from: Smi,
+      to: Smi, userCmpFn: Object, sortCompare: CompareBuiltinFn)
+  labels Bailout {
+    for (let i: Smi = from + 1; i < to; ++i) {
+      let element: Object = Load<E>(context, elements, i) otherwise Bailout;
+      let j: Smi = i - 1;
+      for (; j >= from; --j) {
+        // TODO(szuend): Introduce line breaks when multi-line asserts are
+        //               fixed in Torque.
+        assert(CanUseSameAccessor<E>(context, receiver, initialReceiverMap, initialReceiverLength));
+
+        let tmp: Object = Load<E>(context, elements, j) otherwise Bailout;
+        let order: Number = CallCompareFn<E>(
+            context, receiver, initialReceiverMap, initialReceiverLength,
+            userCmpFn, sortCompare, tmp, element)
+        otherwise Bailout;
+        if (order > 0) {
+          Store<E>(context, elements, j + 1, tmp);
+        } else {
+          break;
+        }
+      }
+      Store<E>(context, elements, j + 1, element);
+    }
+  }
+
+  macro CalculatePivot<E : type>(
+      context: Context, receiver: Object, elements: Object,
+      initialReceiverMap: Object, initialReceiverLength: Number, from: Smi,
+      to: Smi, userCmpFn: Object, sortCompare: CompareBuiltinFn): Object
+  labels Bailout {
+    // TODO(szuend): Check if a more involved third_index calculation is
+    //               worth it for very large arrays.
+    let third_index: Smi = from + ((to - from) >>> 1);
+
+    // Find a pivot as the median of first, last and middle element.
+    let v0: Object = Load<E>(context, elements, from) otherwise Bailout;
+    let v1: Object = Load<E>(context, elements, to - 1) otherwise Bailout;
+    let v2: Object = Load<E>(context, elements, third_index) otherwise Bailout;
+
+    let c01: Number = CallCompareFn<E>(
+        context, receiver, initialReceiverMap, initialReceiverLength, userCmpFn,
+        sortCompare, v0, v1)
+    otherwise Bailout;
+    if (c01 > 0) {
+      // v0 > v1, so swap them.
+      let tmp: Object = v0;
+      v0 = v1;
+      v1 = tmp;
+    }
+    // Current state: v0 <= v1.
+    let c02: Number = CallCompareFn<E>(
+        context, receiver, initialReceiverMap, initialReceiverLength, userCmpFn,
+        sortCompare, v0, v2)
+    otherwise Bailout;
+    if (c02 >= 0) {
+      // v0 <= v1 and v0 >= v2, hence swap to v2 <= v0 <= v1.
+      let tmp: Object = v0;
+      v0 = v2;
+      v2 = v1;
+      v1 = tmp;
+    } else {
+      // v0 <= v1 and v0 < v2.
+      let c12: Number = CallCompareFn<E>(
+          context, receiver, initialReceiverMap, initialReceiverLength,
+          userCmpFn, sortCompare, v1, v2)
+      otherwise Bailout;
+      if (c12 > 0) {
+        // v0 <= v1 and v0 < v2 and v1 > v2, hence swap to v0 <= v2 < v1.
+        let tmp: Object = v1;
+        v1 = v2;
+        v2 = tmp;
+      }
+    }
+
+    // v0 <= v1 <= v2.
+    Store<E>(context, elements, from, v0);
+    Store<E>(context, elements, to - 1, v2);
+
+    // Move pivot element to a place on the left.
+    Swap<E>(context, elements, from + 1, third_index, v1) otherwise Bailout;
+
+    return v1;
+  }
+
+  // elements[indexB] = elements[indexA].
+  // elements[indexA] = value.
+  macro Swap<E : type>(
+      context: Context, elements: Object, indexA: Smi, indexB: Smi,
+      value: Object)
+  labels Bailout {
+    let tmp: Object = Load<E>(context, elements, indexA) otherwise Bailout;
+    Store<E>(context, elements, indexB, tmp);
+    Store<E>(context, elements, indexA, value);
+  }
+
+  macro ArrayQuickSortImpl<E : type>(
+      context: Context, receiver: Object, elements: Object,
+      initialReceiverMap: Object, initialReceiverLength: Number, fromArg: Smi,
+      toArg: Smi, userCmpFn: Object, sortCompare: CompareBuiltinFn)
+  labels Bailout {
+    let from: Smi = fromArg;
+    let to: Smi = toArg;
+
+    while (to - from > 1) {
+      if (to - from <= 10) {
+        ArrayInsertionSort<E>(
+            context, receiver, elements, initialReceiverMap,
+            initialReceiverLength, from, to, userCmpFn, sortCompare)
+        otherwise Bailout;
+        break;
+      }
+
+      let pivot: Object = CalculatePivot<E>(
+          context, receiver, elements, initialReceiverMap,
+          initialReceiverLength, from, to, userCmpFn, sortCompare)
+      otherwise Bailout;
+
+      let low_end: Smi = from + 1;   // Upper bound of elems lower than pivot.
+      let high_start: Smi = to - 1;  // Lower bound of elems greater than pivot.
+
+      // From low_end to idx are elements equal to pivot.
+      // From idx to high_start are elements that haven"t been compared yet.
+      for (let idx: Smi = low_end + 1; idx < high_start; idx++) {
+        // TODO(szuend): Introduce line breaks when multi-line asserts are
+        //               fixed in Torque.
+        assert(CanUseSameAccessor<E>(context, receiver, initialReceiverMap, initialReceiverLength));
+
+        let element: Object = Load<E>(context, elements, idx) otherwise Bailout;
+        let order: Number = CallCompareFn<E>(
+            context, receiver, initialReceiverMap, initialReceiverLength,
+            userCmpFn, sortCompare, element, pivot)
+        otherwise Bailout;
+
+        if (order < 0) {
+          Swap<E>(context, elements, low_end, idx, element) otherwise Bailout;
+          low_end++;
+        } else if (order > 0) {
+          let break_for: bool = false;
+
+          // Start looking for high_start to find the first value that is
+          // smaller than pivot.
+          while (order > 0) {
+            high_start--;
+            if (high_start == idx) {
+              break_for = true;
+              break;
+            }
+
+            let top_elem: Object =
+                Load<E>(context, elements, high_start) otherwise Bailout;
+            order = CallCompareFn<E>(
+                context, receiver, initialReceiverMap, initialReceiverLength,
+                userCmpFn, sortCompare, top_elem, pivot)
+            otherwise Bailout;
+          }
+
+          if (break_for) {
+            break;
+          }
+
+          Swap<E>(context, elements, high_start, idx, element)
+          otherwise Bailout;
+
+          if (order < 0) {
+            element = Load<E>(context, elements, idx) otherwise Bailout;
+
+            Swap<E>(context, elements, low_end, idx, element) otherwise Bailout;
+            low_end++;
+          }
+        }
+      }
+
+      if ((to - high_start) < (low_end - from)) {
+        ArrayQuickSort<E>(
+            context, receiver, elements, initialReceiverMap,
+            initialReceiverLength, high_start, to, userCmpFn, sortCompare);
+        to = low_end;
+      } else {
+        ArrayQuickSort<E>(
+            context, receiver, elements, initialReceiverMap,
+            initialReceiverLength, from, low_end, userCmpFn, sortCompare);
+        from = high_start;
+      }
+    }
+  }
+
+  builtin ArrayQuickSort<ElementsAccessor : type>(
+      context: Context, receiver: Object, elements: Object,
+      initialReceiverMap: Object, initialReceiverLength: Number, from: Smi,
+      to: Smi, userCmpFn: Object, sortCompare: CompareBuiltinFn): Object {
+    try {
+      ArrayQuickSortImpl<ElementsAccessor>(
+          context, receiver, elements, initialReceiverMap,
+          initialReceiverLength, from, to, userCmpFn, sortCompare)
+      otherwise Slow;
+    }
+    label Slow {
+      ArrayQuickSort<GenericElementsAccessor>(
+          context, receiver, receiver, initialReceiverMap,
+          initialReceiverLength, from, to, userCmpFn, sortCompare);
+    }
+    return receiver;
+  }
+
+  // The specialization is needed since we would end up in an endless loop
+  // when the ElementsAccessor fails and bails to the ElementsAccessor again.
+  ArrayQuickSort<GenericElementsAccessor>(
+      context: Context, receiver: Object, elements: Object,
+      initialReceiverMap: Object, initialReceiverLength: Number, from: Smi,
+      to: Smi, userCmpFn: Object, sortCompare: CompareBuiltinFn): Object {
+    try {
+      ArrayQuickSortImpl<GenericElementsAccessor>(
+          context, receiver, elements, initialReceiverMap,
+          initialReceiverLength, from, to, userCmpFn, sortCompare)
+      otherwise Error;
+    }
+    label Error {
+      // The generic baseline path must not fail.
+      unreachable;
+    }
+    return receiver;
+  }
+
+  // For compatibility with JSC, we also sort elements inherited from
+  // the prototype chain on non-Array objects.
+  // We do this by copying them to this object and sorting only
+  // own elements. This is not very efficient, but sorting with
+  // inherited elements happens very, very rarely, if at all.
+  // The specification allows "implementation dependent" behavior
+  // if an element on the prototype chain has an element that
+  // might interact with sorting.
+  //
+  // We also move all non-undefined elements to the front of the
+  // array and move the undefineds after that. Holes are removed.
+  // This happens for Array as well as non-Array objects.
+  extern runtime PrepareElementsForSort(Context, Object, Number): Smi;
+
+  // https://tc39.github.io/ecma262/#sec-array.prototype.sort
+  javascript builtin ArrayPrototypeSort(
+      context: Context, receiver: Object, ...arguments): Object {
+    // 1. If comparefn is not undefined and IsCallable(comparefn) is false,
+    //    throw a TypeError exception.
+    let comparefnObj: Object = arguments[0];
+    if (comparefnObj != Undefined && !TaggedIsCallable(comparefnObj)) {
+      ThrowTypeError(context, kBadSortComparisonFunction, comparefnObj);
+    }
+
+    // 2. Let obj be ? ToObject(this value).
+    let obj: Object = ToObject(context, receiver);
+
+    let cmpBuiltin: CompareBuiltinFn =
+        comparefnObj != Undefined ? SortCompareUserFn : SortCompareDefault;
+    try {
+      let a: JSArray = cast<JSArray>(obj) otherwise slow;
+      let map: Map = a.map;
+      let elementsKind: ElementsKind = map.elements_kind;
+      if (!IsFastElementsKind(elementsKind)) goto slow;
+
+      // 3. Let len be ? ToLength(? Get(obj, "length")).
+      let len: Smi = a.length_fast;
+      if (len < 2) return receiver;
+
+      // TODO(szuend): Investigate performance tradeoff of skipping this step
+      //               for PACKED_* and handling Undefineds during sorting.
+      let nofNonUndefined: Smi = PrepareElementsForSort(context, obj, len);
+
+      // TODO(szuend): Extract into IsDoubleElementsKind when bool types are
+      //               fixed in Torque.
+      if (elementsKind == convert<ElementsKind>(PACKED_DOUBLE_ELEMENTS) ||
+          elementsKind == convert<ElementsKind>(HOLEY_DOUBLE_ELEMENTS)) {
+        let elements: FixedDoubleArray =
+            unsafe_cast<FixedDoubleArray>(a.elements);
+        ArrayQuickSort<FastDoubleElements>(
+            context, obj, elements, map, len, 0, nofNonUndefined, comparefnObj,
+            cmpBuiltin);
+      } else {
+        let elements: FixedArray = unsafe_cast<FixedArray>(a.elements);
+
+        if (elementsKind == convert<ElementsKind>(PACKED_SMI_ELEMENTS)) {
+          ArrayQuickSort<FastPackedSmiElements>(
+              context, obj, elements, map, len, 0, nofNonUndefined,
+              comparefnObj, cmpBuiltin);
+        } else {
+          ArrayQuickSort<FastSmiOrObjectElements>(
+              context, obj, elements, map, len, 0, nofNonUndefined,
+              comparefnObj, cmpBuiltin);
+        }
+      }
+    }
+    label slow {
+      // 3. Let len be ? ToLength(? Get(obj, "length")).
+      let len: Number =
+          ToLength_Inline(context, GetProperty(context, obj, 'length'));
+
+      if (len < 2) return receiver;
+      let nofNonUndefined: Smi = PrepareElementsForSort(context, obj, len);
+
+      ArrayQuickSort<GenericElementsAccessor>(
+          context, obj, obj, Undefined, len, 0, nofNonUndefined, comparefnObj,
+          cmpBuiltin);
+    }
+
+    return receiver;
+  }
+}

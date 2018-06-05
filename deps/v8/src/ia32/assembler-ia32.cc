@@ -203,26 +203,6 @@ bool RelocInfo::IsInConstantPool() {
   return false;
 }
 
-Address RelocInfo::embedded_address() const { return Memory::Address_at(pc_); }
-
-uint32_t RelocInfo::embedded_size() const { return Memory::uint32_at(pc_); }
-
-void RelocInfo::set_embedded_address(Address address,
-                                     ICacheFlushMode icache_flush_mode) {
-  Memory::Address_at(pc_) = address;
-  if (icache_flush_mode != SKIP_ICACHE_FLUSH) {
-    Assembler::FlushICache(pc_, sizeof(Address));
-  }
-}
-
-void RelocInfo::set_embedded_size(uint32_t size,
-                                  ICacheFlushMode icache_flush_mode) {
-  Memory::uint32_at(pc_) = size;
-  if (icache_flush_mode != SKIP_ICACHE_FLUSH) {
-    Assembler::FlushICache(pc_, sizeof(uint32_t));
-  }
-}
-
 void RelocInfo::set_js_to_wasm_address(Address address,
                                        ICacheFlushMode icache_flush_mode) {
   DCHECK_EQ(rmode_, JS_TO_WASM_CALL);
@@ -233,6 +213,11 @@ void RelocInfo::set_js_to_wasm_address(Address address,
 Address RelocInfo::js_to_wasm_address() const {
   DCHECK_EQ(rmode_, JS_TO_WASM_CALL);
   return Assembler::target_address_at(pc_, constant_pool_);
+}
+
+uint32_t RelocInfo::wasm_stub_call_tag() const {
+  DCHECK_EQ(rmode_, WASM_STUB_CALL);
+  return Memory::uint32_at(pc_);
 }
 
 // -----------------------------------------------------------------------------
@@ -318,7 +303,7 @@ void Assembler::AllocateAndInstallRequestedHeapObjects(Isolate* isolate) {
         object = request.code_stub()->GetCode();
         break;
     }
-    Address pc = buffer_ + request.offset();
+    Address pc = reinterpret_cast<Address>(buffer_) + request.offset();
     Memory::Object_Handle_at(pc) = object;
   }
 }
@@ -395,7 +380,7 @@ void Assembler::Align(int m) {
 
 
 bool Assembler::IsNop(Address addr) {
-  Address a = addr;
+  byte* a = reinterpret_cast<byte*>(addr);
   while (*a == 0x66) a++;
   if (*a == 0x90) return true;
   if (a[0] == 0xF && a[1] == 0x1F) return true;
@@ -654,7 +639,7 @@ void Assembler::mov(Operand dst, Address src, RelocInfo::Mode rmode) {
   EnsureSpace ensure_space(this);
   EMIT(0xC7);
   emit_operand(eax, dst);
-  emit(reinterpret_cast<uint32_t>(src), rmode);
+  emit(src, rmode);
 }
 
 void Assembler::mov(Operand dst, Handle<HeapObject> handle) {
@@ -1595,22 +1580,21 @@ void Assembler::call(Label* L) {
   }
 }
 
-
-void Assembler::call(byte* entry, RelocInfo::Mode rmode) {
+void Assembler::call(Address entry, RelocInfo::Mode rmode) {
   EnsureSpace ensure_space(this);
   DCHECK(!RelocInfo::IsCodeTarget(rmode));
   EMIT(0xE8);
   if (RelocInfo::IsRuntimeEntry(rmode)) {
-    emit(reinterpret_cast<uint32_t>(entry), rmode);
+    emit(entry, rmode);
   } else {
-    emit(entry - (pc_ + sizeof(int32_t)), rmode);
+    emit(entry - (reinterpret_cast<Address>(pc_) + sizeof(int32_t)), rmode);
   }
 }
 
 void Assembler::wasm_call(Address entry, RelocInfo::Mode rmode) {
   EnsureSpace ensure_space(this);
   EMIT(0xE8);
-  emit(reinterpret_cast<intptr_t>(entry), rmode);
+  emit(entry, rmode);
 }
 
 int Assembler::CallSize(Operand adr) {
@@ -1680,14 +1664,14 @@ void Assembler::jmp(Label* L, Label::Distance distance) {
   }
 }
 
-void Assembler::jmp(byte* entry, RelocInfo::Mode rmode) {
+void Assembler::jmp(Address entry, RelocInfo::Mode rmode) {
   EnsureSpace ensure_space(this);
   DCHECK(!RelocInfo::IsCodeTarget(rmode));
   EMIT(0xE9);
   if (RelocInfo::IsRuntimeEntry(rmode)) {
-    emit(reinterpret_cast<uint32_t>(entry), rmode);
+    emit(entry, rmode);
   } else {
-    emit(entry - (pc_ + sizeof(int32_t)), rmode);
+    emit(entry - (reinterpret_cast<Address>(pc_) + sizeof(int32_t)), rmode);
   }
 }
 
@@ -2606,7 +2590,7 @@ void Assembler::extractps(Register dst, XMMRegister src, byte imm8) {
   EMIT(imm8);
 }
 
-void Assembler::ptest(XMMRegister dst, XMMRegister src) {
+void Assembler::ptest(XMMRegister dst, Operand src) {
   DCHECK(IsEnabled(SSE4_1));
   EnsureSpace ensure_space(this);
   EMIT(0x66);
@@ -2707,6 +2691,15 @@ void Assembler::psrlq(XMMRegister dst, XMMRegister src) {
   emit_sse_operand(dst, src);
 }
 
+void Assembler::pshufhw(XMMRegister dst, Operand src, uint8_t shuffle) {
+  EnsureSpace ensure_space(this);
+  EMIT(0xF3);
+  EMIT(0x0F);
+  EMIT(0x70);
+  emit_sse_operand(dst, src);
+  EMIT(shuffle);
+}
+
 void Assembler::pshuflw(XMMRegister dst, Operand src, uint8_t shuffle) {
   EnsureSpace ensure_space(this);
   EMIT(0xF2);
@@ -2732,6 +2725,17 @@ void Assembler::pblendw(XMMRegister dst, Operand src, uint8_t mask) {
   EMIT(0x0F);
   EMIT(0x3A);
   EMIT(0x0E);
+  emit_sse_operand(dst, src);
+  EMIT(mask);
+}
+
+void Assembler::palignr(XMMRegister dst, Operand src, uint8_t mask) {
+  DCHECK(IsEnabled(SSSE3));
+  EnsureSpace ensure_space(this);
+  EMIT(0x66);
+  EMIT(0x0F);
+  EMIT(0x3A);
+  EMIT(0x0F);
   emit_sse_operand(dst, src);
   EMIT(mask);
 }
@@ -2960,6 +2964,11 @@ void Assembler::vpsrad(XMMRegister dst, XMMRegister src, int8_t imm8) {
   EMIT(imm8);
 }
 
+void Assembler::vpshufhw(XMMRegister dst, Operand src, uint8_t shuffle) {
+  vinstr(0x70, dst, xmm0, src, kF3, k0F, kWIG);
+  EMIT(shuffle);
+}
+
 void Assembler::vpshuflw(XMMRegister dst, Operand src, uint8_t shuffle) {
   vinstr(0x70, dst, xmm0, src, kF2, k0F, kWIG);
   EMIT(shuffle);
@@ -2973,6 +2982,12 @@ void Assembler::vpshufd(XMMRegister dst, Operand src, uint8_t shuffle) {
 void Assembler::vpblendw(XMMRegister dst, XMMRegister src1, Operand src2,
                          uint8_t mask) {
   vinstr(0x0E, dst, src1, src2, k66, k0F3A, kWIG);
+  EMIT(mask);
+}
+
+void Assembler::vpalignr(XMMRegister dst, XMMRegister src1, Operand src2,
+                         uint8_t mask) {
+  vinstr(0x0F, dst, src1, src2, k66, k0F3A, kWIG);
   EMIT(mask);
 }
 
@@ -3304,7 +3319,7 @@ void Assembler::RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data) {
       !serializer_enabled() && !emit_debug_code()) {
     return;
   }
-  RelocInfo rinfo(pc_, rmode, data, nullptr);
+  RelocInfo rinfo(reinterpret_cast<Address>(pc_), rmode, data, nullptr);
   reloc_info_writer.Write(&rinfo);
 }
 

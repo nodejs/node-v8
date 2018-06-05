@@ -22,18 +22,15 @@ class PlatformInterfaceDescriptor;
   V(ContextOnly)                      \
   V(Load)                             \
   V(LoadWithVector)                   \
-  V(LoadField)                        \
   V(LoadGlobal)                       \
   V(LoadGlobalWithVector)             \
   V(Store)                            \
   V(StoreWithVector)                  \
-  V(StoreNamedTransition)             \
   V(StoreTransition)                  \
   V(StoreGlobal)                      \
   V(StoreGlobalWithVector)            \
   V(FastNewFunctionContext)           \
   V(FastNewObject)                    \
-  V(FastNewArguments)                 \
   V(RecordWrite)                      \
   V(TypeConversion)                   \
   V(TypeConversionStackParameter)     \
@@ -50,27 +47,21 @@ class PlatformInterfaceDescriptor;
   V(ConstructWithSpread)              \
   V(ConstructWithArrayLike)           \
   V(ConstructTrampoline)              \
-  V(TransitionElementsKind)           \
   V(AbortJS)                          \
   V(AllocateHeapNumber)               \
   V(Builtin)                          \
   V(ArrayConstructor)                 \
-  V(IteratingArrayBuiltin)            \
   V(ArrayNoArgumentConstructor)       \
   V(ArraySingleArgumentConstructor)   \
   V(ArrayNArgumentsConstructor)       \
   V(Compare)                          \
   V(BinaryOp)                         \
-  V(StringAdd)                        \
   V(StringAt)                         \
   V(StringSubstring)                  \
-  V(ForInPrepare)                     \
   V(GetProperty)                      \
   V(ArgumentAdaptor)                  \
   V(ApiCallback)                      \
   V(ApiGetter)                        \
-  V(MathPowTagged)                    \
-  V(MathPowInteger)                   \
   V(GrowArrayElements)                \
   V(NewArgumentsElements)             \
   V(InterpreterDispatch)              \
@@ -365,18 +356,6 @@ class LoadDescriptor : public CallInterfaceDescriptor {
   static const Register SlotRegister();
 };
 
-// LoadFieldDescriptor is used by the shared handler that loads a field from an
-// object based on the smi-encoded field description.
-class LoadFieldDescriptor : public CallInterfaceDescriptor {
- public:
-  DEFINE_PARAMETERS(kReceiver, kSmiHandler)
-  DECLARE_DESCRIPTOR_WITH_CUSTOM_FUNCTION_TYPE(LoadFieldDescriptor,
-                                               CallInterfaceDescriptor)
-
-  static const Register ReceiverRegister();
-  static const Register SmiHandlerRegister();
-};
-
 class LoadGlobalDescriptor : public CallInterfaceDescriptor {
  public:
   DEFINE_PARAMETERS(kName, kSlot)
@@ -425,24 +404,6 @@ class StoreTransitionDescriptor : public StoreDescriptor {
 
   // Pass value, slot and vector through the stack.
   static const int kStackArgumentsCount = kPassLastArgsOnStack ? 3 : 0;
-};
-
-class StoreNamedTransitionDescriptor : public StoreTransitionDescriptor {
- public:
-  DEFINE_PARAMETERS(kReceiver, kFieldOffset, kMap, kValue, kSlot, kVector,
-                    kName)
-  DECLARE_DESCRIPTOR_WITH_CUSTOM_FUNCTION_TYPE(StoreNamedTransitionDescriptor,
-                                               StoreTransitionDescriptor)
-
-  // Always pass name on the stack.
-  static const bool kPassLastArgsOnStack = true;
-  static const int kStackArgumentsCount =
-      StoreTransitionDescriptor::kStackArgumentsCount + 1;
-
-  static const Register NameRegister() { return no_reg; }
-  static const Register FieldOffsetRegister() {
-    return StoreTransitionDescriptor::NameRegister();
-  }
 };
 
 class StoreWithVectorDescriptor : public StoreDescriptor {
@@ -517,11 +478,11 @@ class LoadGlobalWithVectorDescriptor : public LoadGlobalDescriptor {
 
 class FastNewFunctionContextDescriptor : public CallInterfaceDescriptor {
  public:
-  DEFINE_PARAMETERS(kFunction, kSlots)
+  DEFINE_PARAMETERS(kScopeInfo, kSlots)
   DECLARE_DESCRIPTOR_WITH_CUSTOM_FUNCTION_TYPE(FastNewFunctionContextDescriptor,
                                                CallInterfaceDescriptor)
 
-  static const Register FunctionRegister();
+  static const Register ScopeInfoRegister();
   static const Register SlotsRegister();
 };
 
@@ -531,13 +492,6 @@ class FastNewObjectDescriptor : public CallInterfaceDescriptor {
   DECLARE_DESCRIPTOR(FastNewObjectDescriptor, CallInterfaceDescriptor)
   static const Register TargetRegister();
   static const Register NewTargetRegister();
-};
-
-class FastNewArgumentsDescriptor : public CallInterfaceDescriptor {
- public:
-  DEFINE_PARAMETERS(kFunction)
-  DECLARE_DESCRIPTOR(FastNewArgumentsDescriptor, CallInterfaceDescriptor)
-  static const Register TargetRegister();
 };
 
 class RecordWriteDescriptor final : public CallInterfaceDescriptor {
@@ -561,13 +515,6 @@ class TypeConversionStackParameterDescriptor final
   DEFINE_PARAMETERS(kArgument)
   DECLARE_DESCRIPTOR_WITH_CUSTOM_FUNCTION_TYPE(
       TypeConversionStackParameterDescriptor, CallInterfaceDescriptor)
-};
-
-class ForInPrepareDescriptor final : public CallInterfaceDescriptor {
- public:
-  DEFINE_PARAMETERS(kObject)
-  DECLARE_DEFAULT_DESCRIPTOR(ForInPrepareDescriptor, CallInterfaceDescriptor,
-                             kParameterCount)
 };
 
 class GetPropertyDescriptor final : public CallInterfaceDescriptor {
@@ -672,12 +619,6 @@ class CallFunctionDescriptor : public CallInterfaceDescriptor {
   DECLARE_DESCRIPTOR(CallFunctionDescriptor, CallInterfaceDescriptor)
 };
 
-class TransitionElementsKindDescriptor : public CallInterfaceDescriptor {
- public:
-  DEFINE_PARAMETERS(kObject, kMap)
-  DECLARE_DESCRIPTOR(TransitionElementsKindDescriptor, CallInterfaceDescriptor)
-};
-
 class AbortJSDescriptor : public CallInterfaceDescriptor {
  public:
   DEFINE_PARAMETERS(kObject)
@@ -701,12 +642,7 @@ class BuiltinDescriptor : public CallInterfaceDescriptor {
   static const Register TargetRegister();
 };
 
-class IteratingArrayBuiltinDescriptor : public BuiltinDescriptor {
- public:
-  DEFINE_BUILTIN_PARAMETERS(kCallback, kThisArg)
-  DECLARE_BUILTIN_DESCRIPTOR(IteratingArrayBuiltinDescriptor)
-};
-
+// TODO(jgruber): Replace with generic TFS descriptor.
 class ArrayConstructorDescriptor : public CallInterfaceDescriptor {
  public:
   DEFINE_PARAMETERS(kTarget, kNewTarget, kActualArgumentsCount, kAllocationSite)
@@ -751,13 +687,6 @@ class BinaryOpDescriptor : public CallInterfaceDescriptor {
   DECLARE_DESCRIPTOR(BinaryOpDescriptor, CallInterfaceDescriptor)
 };
 
-
-class StringAddDescriptor : public CallInterfaceDescriptor {
- public:
-  DEFINE_PARAMETERS(kLeft, kRight)
-  DECLARE_DESCRIPTOR(StringAddDescriptor, CallInterfaceDescriptor)
-};
-
 // This desciptor is shared among String.p.charAt/charCodeAt/codePointAt
 // as they all have the same interface.
 class StringAtDescriptor final : public CallInterfaceDescriptor {
@@ -797,22 +726,6 @@ class ApiGetterDescriptor : public CallInterfaceDescriptor {
   static const Register ReceiverRegister();
   static const Register HolderRegister();
   static const Register CallbackRegister();
-};
-
-class MathPowTaggedDescriptor : public CallInterfaceDescriptor {
- public:
-  DEFINE_PARAMETERS(kExponent)
-  DECLARE_DESCRIPTOR(MathPowTaggedDescriptor, CallInterfaceDescriptor)
-
-  static const Register exponent();
-};
-
-class MathPowIntegerDescriptor : public CallInterfaceDescriptor {
- public:
-  DEFINE_PARAMETERS(kExponent)
-  DECLARE_DESCRIPTOR(MathPowIntegerDescriptor, CallInterfaceDescriptor)
-
-  static const Register exponent();
 };
 
 // TODO(turbofan): We should probably rename this to GrowFastElementsDescriptor.

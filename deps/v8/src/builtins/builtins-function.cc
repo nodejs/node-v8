@@ -10,6 +10,7 @@
 #include "src/counters.h"
 #include "src/lookup.h"
 #include "src/objects-inl.h"
+#include "src/objects/api-callbacks.h"
 #include "src/string-builder.h"
 
 namespace v8 {
@@ -172,7 +173,8 @@ BUILTIN(AsyncFunctionConstructor) {
   // Do not lazily compute eval position for AsyncFunction, as they may not be
   // determined after the function is resumed.
   Handle<JSFunction> func = Handle<JSFunction>::cast(maybe_func);
-  Handle<Script> script = handle(Script::cast(func->shared()->script()));
+  Handle<Script> script =
+      handle(Script::cast(func->shared()->script()), isolate);
   int position = script->GetEvalPosition();
   USE(position);
 
@@ -190,7 +192,8 @@ BUILTIN(AsyncGeneratorFunctionConstructor) {
   // Do not lazily compute eval position for AsyncFunction, as they may not be
   // determined after the function is resumed.
   Handle<JSFunction> func = Handle<JSFunction>::cast(maybe_func);
-  Handle<Script> script = handle(Script::cast(func->shared()->script()));
+  Handle<Script> script =
+      handle(Script::cast(func->shared()->script()), isolate);
   int position = script->GetEvalPosition();
   USE(position);
 

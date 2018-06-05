@@ -30,12 +30,6 @@ RUNTIME_FUNCTION(Runtime_CheckIsBootstrapping) {
   return isolate->heap()->undefined_value();
 }
 
-RUNTIME_FUNCTION(Runtime_IsScriptWrapper) {
-  SealHandleScope shs(isolate);
-  DCHECK_EQ(1, args.length());
-  return isolate->heap()->ToBoolean(args[0]->IsScriptWrapper());
-}
-
 RUNTIME_FUNCTION(Runtime_ExportFromRuntime) {
   HandleScope scope(isolate);
   DCHECK_EQ(1, args.length());
@@ -353,7 +347,7 @@ Handle<String> RenderCallSite(Isolate* isolate, Handle<Object> object,
                               CallPrinter::ErrorHint* hint) {
   MessageLocation location;
   if (ComputeLocation(isolate, &location)) {
-    ParseInfo info(location.shared());
+    ParseInfo info(isolate, location.shared());
     if (parsing::ParseAny(&info, location.shared(), isolate)) {
       info.ast_value_factory()->Internalize(isolate);
       CallPrinter printer(isolate, location.shared()->IsUserJavaScript());
@@ -430,11 +424,6 @@ RUNTIME_FUNCTION(Runtime_ThrowConstructedNonConstructable) {
 RUNTIME_FUNCTION(Runtime_ThrowConstructorReturnedNonObject) {
   HandleScope scope(isolate);
   DCHECK_EQ(0, args.length());
-  if (FLAG_harmony_restrict_constructor_return) {
-    THROW_NEW_ERROR_RETURN_FAILURE(
-        isolate,
-        NewTypeError(MessageTemplate::kClassConstructorReturnedNonObject));
-  }
 
   THROW_NEW_ERROR_RETURN_FAILURE(
       isolate,
@@ -482,15 +471,6 @@ RUNTIME_FUNCTION(Runtime_IncrementUseCounter) {
   DCHECK_EQ(1, args.length());
   CONVERT_SMI_ARG_CHECKED(counter, 0);
   isolate->CountUsage(static_cast<v8::Isolate::UseCounterFeature>(counter));
-  return isolate->heap()->undefined_value();
-}
-
-RUNTIME_FUNCTION(
-    Runtime_IncrementUseCounterConstructorReturnNonUndefinedPrimitive) {
-  HandleScope scope(isolate);
-  DCHECK_EQ(0, args.length());
-  isolate->CountUsage(
-      v8::Isolate::UseCounterFeature::kConstructorNonUndefinedPrimitiveReturn);
   return isolate->heap()->undefined_value();
 }
 

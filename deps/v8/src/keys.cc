@@ -10,6 +10,9 @@
 #include "src/identity-map.h"
 #include "src/isolate-inl.h"
 #include "src/objects-inl.h"
+#include "src/objects/api-callbacks.h"
+#include "src/objects/hash-table-inl.h"
+#include "src/objects/module-inl.h"
 #include "src/property-descriptor.h"
 #include "src/prototype.h"
 
@@ -133,9 +136,7 @@ MaybeHandle<FixedArray> FilterProxyKeys(KeyAccumulator* accumulator,
     }
     store_position++;
   }
-  if (store_position == 0) return isolate->factory()->empty_fixed_array();
-  keys->Shrink(store_position);
-  return keys;
+  return FixedArray::ShrinkOrEmpty(keys, store_position);
 }
 
 // Returns "nothing" in case of exception, "true" on success.
@@ -373,10 +374,6 @@ MaybeHandle<FixedArray> GetOwnKeysWithElements(Isolate* isolate,
   return result;
 }
 
-bool OnlyHasSimpleProperties(Map* map) {
-  return map->instance_type() > LAST_CUSTOM_ELEMENTS_RECEIVER;
-}
-
 }  // namespace
 
 MaybeHandle<FixedArray> FastKeyAccumulator::GetKeys(
@@ -396,7 +393,7 @@ MaybeHandle<FixedArray> FastKeyAccumulator::GetKeysFast(
     GetKeysConversion keys_conversion) {
   bool own_only = has_empty_prototype_ || mode_ == KeyCollectionMode::kOwnOnly;
   Map* map = receiver_->map();
-  if (!own_only || !OnlyHasSimpleProperties(map)) {
+  if (!own_only || map->IsCustomElementsReceiverMap()) {
     return MaybeHandle<FixedArray>();
   }
 
@@ -594,7 +591,7 @@ int CollectOwnPropertyNamesInternal(Handle<JSObject> object,
 
     if (filter & ONLY_ALL_CAN_READ) {
       if (details.kind() != kAccessor) continue;
-      Object* accessors = descs->GetValue(i);
+      Object* accessors = descs->GetStrongValue(i);
       if (!accessors->IsAccessorInfo()) continue;
       if (!AccessorInfo::cast(accessors)->all_can_read()) continue;
     }

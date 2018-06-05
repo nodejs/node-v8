@@ -31,7 +31,6 @@ namespace internal {
 // Forward declarations.
 class DebugScope;
 
-
 // Step actions. NOTE: These values are in macros.py as well.
 enum StepAction : int8_t {
   StepNone = -1,  // Stepping not prepared.
@@ -225,8 +224,9 @@ class Debug {
   void OnCompileError(Handle<Script> script);
   void OnAfterCompile(Handle<Script> script);
 
-  V8_WARN_UNUSED_RESULT MaybeHandle<Object> Call(Handle<Object> fun,
-                                                 Handle<Object> data);
+  void OnAsyncFunctionStateChanged(Handle<JSPromise> promise,
+                                   debug::DebugAsyncActionType);
+
   Handle<Context> GetDebugContext();
   void HandleDebugBreak(IgnoreBreakMode ignore_break_mode);
 
@@ -264,7 +264,9 @@ class Debug {
   void PrepareStepInSuspendedGenerator();
   void PrepareStepOnThrow();
   void ClearStepping();
-  void ClearStepOut();
+
+  void SetBreakOnNextFunctionCall();
+  void ClearBreakOnNextFunctionCall();
 
   void DeoptimizeFunction(Handle<SharedFunctionInfo> shared);
   void PrepareFunctionForDebugExecution(Handle<SharedFunctionInfo> shared);
@@ -276,7 +278,7 @@ class Debug {
   void RunPromiseHook(PromiseHookType hook_type, Handle<JSPromise> promise,
                       Handle<Object> parent);
 
-  int NextAsyncTaskId(Handle<JSObject> promise);
+  int NextAsyncTaskId(Handle<JSPromise> promise);
 
   bool IsBlackboxed(Handle<SharedFunctionInfo> shared);
 
@@ -328,10 +330,6 @@ class Debug {
   void FreeThreadResources() { }
   void Iterate(RootVisitor* v);
 
-  bool CheckExecutionState(int id) {
-    return CheckExecutionState() && break_id() == id;
-  }
-
   bool CheckExecutionState() {
     return is_active() && !debug_context().is_null() && break_id() != 0;
   }
@@ -345,9 +343,11 @@ class Debug {
   void ApplySideEffectChecks(Handle<DebugInfo> debug_info);
   void ClearSideEffectChecks(Handle<DebugInfo> debug_info);
 
-  bool PerformSideEffectCheck(Handle<JSFunction> function);
+  bool PerformSideEffectCheck(Handle<JSFunction> function,
+                              Handle<Object> receiver);
   bool PerformSideEffectCheckForCallback(Handle<Object> callback_info);
   bool PerformSideEffectCheckAtBytecode(InterpretedFrame* frame);
+  bool PerformSideEffectCheckForObject(Handle<Object> object);
 
   // Flags and states.
   DebugScope* debugger_entry() {
@@ -404,6 +404,9 @@ class Debug {
   }
 
   StepAction last_step_action() { return thread_local_.last_step_action_; }
+  bool break_on_next_function_call() const {
+    return thread_local_.break_on_next_function_call_;
+  }
 
   DebugFeatureTracker* feature_tracker() { return &feature_tracker_; }
 
@@ -444,17 +447,7 @@ class Debug {
 
   void OnException(Handle<Object> exception, Handle<Object> promise);
 
-  // Constructors for debug event objects.
-  V8_WARN_UNUSED_RESULT MaybeHandle<Object> MakeExecutionState();
-  V8_WARN_UNUSED_RESULT MaybeHandle<Object> MakeExceptionEvent(
-      Handle<Object> exception, bool uncaught, Handle<Object> promise);
-  V8_WARN_UNUSED_RESULT MaybeHandle<Object> MakeCompileEvent(
-      Handle<Script> script, v8::DebugEvent type);
-  V8_WARN_UNUSED_RESULT MaybeHandle<Object> MakeAsyncTaskEvent(
-      v8::debug::PromiseDebugActionType type, int id);
-
-  void ProcessCompileEvent(v8::DebugEvent event, Handle<Script> script);
-  void ProcessDebugEvent(v8::DebugEvent event, Handle<JSObject> event_data);
+  void ProcessCompileEvent(bool has_compile_error, Handle<Script> script);
 
   // Find the closest source position for a break point for a given position.
   int FindBreakablePosition(Handle<DebugInfo> debug_info, int source_position);
@@ -485,7 +478,6 @@ class Debug {
                                    bool catch_exceptions = true);
 
   inline void AssertDebugContext() {
-    DCHECK(isolate_->context() == *debug_context());
     DCHECK(in_debug_scope());
   }
 
@@ -534,6 +526,8 @@ class Debug {
   // Used for side effect check to mark temporary objects.
   class TemporaryObjectsTracker;
   std::unique_ptr<TemporaryObjectsTracker> temporary_objects_;
+
+  Handle<RegExpMatchInfo> regexp_match_info_;
 
   // Used to collect histogram data on debugger feature usage.
   DebugFeatureTracker feature_tracker_;
@@ -585,6 +579,10 @@ class Debug {
 
     // Last used inspector breakpoint id.
     int last_breakpoint_id_;
+
+    // This flag is true when SetBreakOnNextFunctionCall is called and it forces
+    // debugger to break on next function call.
+    bool break_on_next_function_call_;
   };
 
   // Storage location for registers when handling debug break calls
@@ -598,76 +596,11 @@ class Debug {
   friend class LiveEdit;
   friend class SuppressDebug;
   friend class NoSideEffectScope;
-  friend class LegacyDebugDelegate;
 
   friend Handle<FixedArray> GetDebuggedFunctions();  // In test-debug.cc
   friend void CheckDebuggerUnloaded();               // In test-debug.cc
 
   DISALLOW_COPY_AND_ASSIGN(Debug);
-};
-
-class LegacyDebugDelegate : public v8::debug::DebugDelegate {
- public:
-  explicit LegacyDebugDelegate(Isolate* isolate) : isolate_(isolate) {}
-  void PromiseEventOccurred(v8::debug::PromiseDebugActionType type, int id,
-                            bool is_blackboxed) override;
-  void ScriptCompiled(v8::Local<v8::debug::Script> script, bool is_live_edited,
-                      bool has_compile_error) override;
-  void BreakProgramRequested(v8::Local<v8::Context> paused_context,
-                             v8::Local<v8::Object> exec_state,
-                             const std::vector<debug::BreakpointId>&) override;
-  void ExceptionThrown(v8::Local<v8::Context> paused_context,
-                       v8::Local<v8::Object> exec_state,
-                       v8::Local<v8::Value> exception,
-                       v8::Local<v8::Value> promise, bool is_uncaught) override;
-  bool IsFunctionBlackboxed(v8::Local<v8::debug::Script> script,
-                            const v8::debug::Location& start,
-                            const v8::debug::Location& end) override {
-    return false;
-  }
-
- protected:
-  Isolate* isolate_;
-
- private:
-  void ProcessDebugEvent(v8::DebugEvent event, Handle<JSObject> event_data);
-  virtual void ProcessDebugEvent(v8::DebugEvent event,
-                                 Handle<JSObject> event_data,
-                                 Handle<JSObject> exec_state) = 0;
-};
-
-class NativeDebugDelegate : public LegacyDebugDelegate {
- public:
-  NativeDebugDelegate(Isolate* isolate, v8::Debug::EventCallback callback,
-                      Handle<Object> data);
-  virtual ~NativeDebugDelegate();
-
- private:
-  // Details of the debug event delivered to the debug event listener.
-  class EventDetails : public v8::Debug::EventDetails {
-   public:
-    EventDetails(DebugEvent event, Handle<JSObject> exec_state,
-                 Handle<JSObject> event_data, Handle<Object> callback_data);
-    virtual DebugEvent GetEvent() const;
-    virtual v8::Local<v8::Object> GetExecutionState() const;
-    virtual v8::Local<v8::Object> GetEventData() const;
-    virtual v8::Local<v8::Context> GetEventContext() const;
-    virtual v8::Local<v8::Value> GetCallbackData() const;
-    virtual v8::Isolate* GetIsolate() const;
-
-   private:
-    DebugEvent event_;              // Debug event causing the break.
-    Handle<JSObject> exec_state_;   // Current execution state.
-    Handle<JSObject> event_data_;   // Data associated with the event.
-    Handle<Object> callback_data_;  // User data passed with the callback
-                                    // when it was registered.
-  };
-
-  void ProcessDebugEvent(v8::DebugEvent event, Handle<JSObject> event_data,
-                         Handle<JSObject> exec_state) override;
-
-  v8::Debug::EventCallback callback_;
-  Handle<Object> data_;
 };
 
 // This scope is used to load and enter the debug context and create a new
@@ -681,9 +614,6 @@ class DebugScope BASE_EMBEDDED {
   // Check whether loading was successful.
   inline bool failed() { return failed_; }
 
-  // Get the active context from before entering the debugger.
-  inline Handle<Context> GetContext() { return save_.context(); }
-
  private:
   Isolate* isolate() { return debug_->isolate_; }
 
@@ -692,7 +622,6 @@ class DebugScope BASE_EMBEDDED {
   StackFrame::Id break_frame_id_;  // Previous break frame id.
   int break_id_;                   // Previous break id.
   bool failed_;                    // Did the debug context fail to load?
-  SaveContext save_;               // Saves previous context.
   PostponeInterruptsScope no_termination_exceptons_;
 };
 

@@ -9,8 +9,10 @@
 
 #include "src/field-type.h"
 #include "src/objects-inl.h"
+#include "src/objects/api-callbacks-inl.h"
 #include "src/objects/descriptor-array.h"
 #include "src/objects/shared-function-info.h"
+#include "src/objects/templates-inl.h"
 #include "src/property.h"
 #include "src/transitions.h"
 
@@ -68,8 +70,6 @@ BIT_FIELD_ACCESSORS(Map, bit_field3, may_have_interesting_symbols,
 BIT_FIELD_ACCESSORS(Map, bit_field3, construction_counter,
                     Map::ConstructionCounterBits)
 
-TYPE_CHECKER(Map, MAP_TYPE)
-
 InterceptorInfo* Map::GetNamedInterceptor() {
   DCHECK(has_named_interceptor());
   FunctionTemplateInfo* info = GetFunctionTemplateInfo();
@@ -86,8 +86,9 @@ bool Map::IsInplaceGeneralizableField(PropertyConstness constness,
                                       Representation representation,
                                       FieldType* field_type) {
   if (FLAG_track_constant_fields && FLAG_modify_map_inplace &&
-      (constness == kConst)) {
-    // kConst -> kMutable field generalization may happen in-place.
+      (constness == PropertyConstness::kConst)) {
+    // VariableMode::kConst -> PropertyConstness::kMutable field generalization
+    // may happen in-place.
     return true;
   }
   if (representation.IsHeapObject() && !field_type->IsAny()) {
@@ -117,9 +118,9 @@ void Map::GeneralizeIfCanHaveTransitionableFastElementsKind(
     // do not have fields that can be generalized in-place (without creation
     // of a new map).
     if (FLAG_track_constant_fields && FLAG_modify_map_inplace) {
-      // The constness is either already kMutable or should become kMutable if
-      // it was kConst.
-      *constness = kMutable;
+      // The constness is either already PropertyConstness::kMutable or should
+      // become PropertyConstness::kMutable if it was VariableMode::kConst.
+      *constness = PropertyConstness::kMutable;
     }
     if (representation->IsHeapObject()) {
       // The field type is either already Any or should become Any if it was
@@ -486,25 +487,25 @@ void Map::NotifyLeafMapLayoutChange() {
   }
 }
 
+bool Map::IsJSObject(InstanceType type) {
+  STATIC_ASSERT(LAST_TYPE == LAST_JS_OBJECT_TYPE);
+  return type >= FIRST_JS_OBJECT_TYPE;
+}
+
 bool Map::CanTransition() const {
   // Only JSObject and subtypes have map transitions and back pointers.
-  STATIC_ASSERT(LAST_TYPE == LAST_JS_OBJECT_TYPE);
-  return instance_type() >= FIRST_JS_OBJECT_TYPE;
+  return IsJSObject(instance_type());
 }
 
 bool Map::IsBooleanMap() const { return this == GetHeap()->boolean_map(); }
 bool Map::IsPrimitiveMap() const {
-  STATIC_ASSERT(FIRST_PRIMITIVE_TYPE == FIRST_TYPE);
   return instance_type() <= LAST_PRIMITIVE_TYPE;
 }
 bool Map::IsJSReceiverMap() const {
   STATIC_ASSERT(LAST_JS_RECEIVER_TYPE == LAST_TYPE);
   return instance_type() >= FIRST_JS_RECEIVER_TYPE;
 }
-bool Map::IsJSObjectMap() const {
-  STATIC_ASSERT(LAST_JS_OBJECT_TYPE == LAST_TYPE);
-  return instance_type() >= FIRST_JS_OBJECT_TYPE;
-}
+bool Map::IsJSObjectMap() const { return IsJSObject(instance_type()); }
 bool Map::IsJSPromiseMap() const { return instance_type() == JS_PROMISE_TYPE; }
 bool Map::IsJSArrayMap() const { return instance_type() == JS_ARRAY_TYPE; }
 bool Map::IsJSFunctionMap() const {

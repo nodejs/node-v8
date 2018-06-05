@@ -34,7 +34,7 @@ void RecordWriteDescriptor::InitializePlatformSpecific(
   data->InitializePlatformSpecific(kParameterCount, default_stub_registers);
 }
 
-const Register FastNewFunctionContextDescriptor::FunctionRegister() {
+const Register FastNewFunctionContextDescriptor::ScopeInfoRegister() {
   return x1;
 }
 const Register FastNewFunctionContextDescriptor::SlotsRegister() { return x0; }
@@ -58,12 +58,6 @@ const Register StoreTransitionDescriptor::MapRegister() { return x5; }
 
 const Register ApiGetterDescriptor::HolderRegister() { return x0; }
 const Register ApiGetterDescriptor::CallbackRegister() { return x3; }
-
-const Register MathPowTaggedDescriptor::exponent() { return x11; }
-
-
-const Register MathPowIntegerDescriptor::exponent() { return x12; }
-
 
 const Register GrowArrayElementsDescriptor::ObjectRegister() { return x0; }
 const Register GrowArrayElementsDescriptor::KeyRegister() { return x3; }
@@ -190,14 +184,6 @@ void ConstructTrampolineDescriptor::InitializePlatformSpecific(
 }
 
 
-void TransitionElementsKindDescriptor::InitializePlatformSpecific(
-    CallInterfaceDescriptorData* data) {
-  // x0: value (js_array)
-  // x1: to_map
-  Register registers[] = {x0, x1};
-  data->InitializePlatformSpecific(arraysize(registers), registers);
-}
-
 void AbortJSDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   Register registers[] = {x1};
@@ -253,14 +239,6 @@ void CompareDescriptor::InitializePlatformSpecific(
 
 
 void BinaryOpDescriptor::InitializePlatformSpecific(
-    CallInterfaceDescriptorData* data) {
-  // x1: left operand
-  // x0: right operand
-  Register registers[] = {x1, x0};
-  data->InitializePlatformSpecific(arraysize(registers), registers);
-}
-
-void StringAddDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   // x1: left operand
   // x0: right operand

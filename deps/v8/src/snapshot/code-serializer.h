@@ -45,13 +45,13 @@ class ScriptData {
 
 class CodeSerializer : public Serializer<> {
  public:
-  static ScriptCompiler::CachedData* Serialize(Handle<SharedFunctionInfo> info,
-                                               Handle<String> source);
+  static ScriptCompiler::CachedData* Serialize(Handle<SharedFunctionInfo> info);
 
-  ScriptData* Serialize(Handle<HeapObject> obj);
+  ScriptData* SerializeSharedFunctionInfo(Handle<SharedFunctionInfo> info);
 
   V8_WARN_UNUSED_RESULT static MaybeHandle<SharedFunctionInfo> Deserialize(
-      Isolate* isolate, ScriptData* cached_data, Handle<String> source);
+      Isolate* isolate, ScriptData* cached_data, Handle<String> source,
+      ScriptOriginOptions origin_options);
 
   const std::vector<uint32_t>* stub_keys() const { return &stub_keys_; }
 
@@ -149,7 +149,8 @@ class SerializedCodeData : public SerializedData {
 
   Vector<const uint32_t> CodeStubKeys() const;
 
-  static uint32_t SourceHash(Handle<String> source);
+  static uint32_t SourceHash(Handle<String> source,
+                             ScriptOriginOptions origin_options);
 
  private:
   explicit SerializedCodeData(ScriptData* data);

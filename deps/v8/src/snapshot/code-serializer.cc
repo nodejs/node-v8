@@ -8,6 +8,7 @@
 
 #include "src/code-stubs.h"
 #include "src/counters.h"
+#include "src/debug/debug.h"
 #include "src/log.h"
 #include "src/macro-assembler.h"
 #include "src/objects-inl.h"
@@ -32,7 +33,7 @@ ScriptData::ScriptData(const byte* data, int length)
 
 // static
 ScriptCompiler::CachedData* CodeSerializer::Serialize(
-    Handle<SharedFunctionInfo> info, Handle<String> source) {
+    Handle<SharedFunctionInfo> info) {
   Isolate* isolate = info->GetIsolate();
   TRACE_EVENT_CALL_STATS_SCOPED(isolate, "v8", "V8.Execute");
   HistogramTimerScope histogram_timer(isolate->counters()->compile_serialize());
@@ -45,8 +46,7 @@ ScriptCompiler::CachedData* CodeSerializer::Serialize(
   Handle<Script> script(Script::cast(info->script()), isolate);
   if (FLAG_trace_serializer) {
     PrintF("[Serializing from");
-    Object* script = info->script();
-    Script::cast(script)->name()->ShortPrint();
+    script->name()->ShortPrint();
     PrintF("]\n");
   }
   // TODO(7110): Enable serialization of Asm modules once the AsmWasmData is
@@ -54,11 +54,15 @@ ScriptCompiler::CachedData* CodeSerializer::Serialize(
   if (script->ContainsAsmModule()) return nullptr;
   if (isolate->debug()->is_loaded()) return nullptr;
 
+  isolate->heap()->read_only_space()->ClearStringPaddingIfNeeded();
+
   // Serialize code object.
-  CodeSerializer cs(isolate, SerializedCodeData::SourceHash(source));
+  Handle<String> source(String::cast(script->source()), isolate);
+  CodeSerializer cs(isolate, SerializedCodeData::SourceHash(
+                                 source, script->origin_options()));
   DisallowHeapAllocation no_gc;
   cs.reference_map()->AddAttachedReference(*source);
-  ScriptData* script_data = cs.Serialize(info);
+  ScriptData* script_data = cs.SerializeSharedFunctionInfo(info);
 
   if (FLAG_profile_deserialization) {
     double ms = timer.Elapsed().InMillisecondsF();
@@ -75,11 +79,12 @@ ScriptCompiler::CachedData* CodeSerializer::Serialize(
   return result;
 }
 
-ScriptData* CodeSerializer::Serialize(Handle<HeapObject> obj) {
+ScriptData* CodeSerializer::SerializeSharedFunctionInfo(
+    Handle<SharedFunctionInfo> info) {
   DisallowHeapAllocation no_gc;
 
   VisitRootPointer(Root::kHandleScope, nullptr,
-                   Handle<Object>::cast(obj).location());
+                   Handle<Object>::cast(info).location());
   SerializeDeferredObjects();
   Pad();
 
@@ -247,7 +252,8 @@ void CodeSerializer::SerializeCodeStub(Code* code_stub, HowToCode how_to_code,
 }
 
 MaybeHandle<SharedFunctionInfo> CodeSerializer::Deserialize(
-    Isolate* isolate, ScriptData* cached_data, Handle<String> source) {
+    Isolate* isolate, ScriptData* cached_data, Handle<String> source,
+    ScriptOriginOptions origin_options) {
   base::ElapsedTimer timer;
   if (FLAG_profile_deserialization) timer.Start();
 
@@ -256,7 +262,8 @@ MaybeHandle<SharedFunctionInfo> CodeSerializer::Deserialize(
   SerializedCodeData::SanityCheckResult sanity_check_result =
       SerializedCodeData::CHECK_SUCCESS;
   const SerializedCodeData scd = SerializedCodeData::FromCachedData(
-      isolate, cached_data, SerializedCodeData::SourceHash(source),
+      isolate, cached_data,
+      SerializedCodeData::SourceHash(source, origin_options),
       &sanity_check_result);
   if (sanity_check_result != SerializedCodeData::CHECK_SUCCESS) {
     if (FLAG_profile_deserialization) PrintF("[Cached code failed check]\n");
@@ -283,7 +290,8 @@ MaybeHandle<SharedFunctionInfo> CodeSerializer::Deserialize(
     PrintF("[Deserializing from %d bytes took %0.3f ms]\n", length, ms);
   }
 
-  if (isolate->logger()->is_logging_code_events() || isolate->is_profiling()) {
+  if (isolate->logger()->is_listening_to_code_events() ||
+      isolate->is_profiling()) {
     String* name = isolate->heap()->empty_string();
     if (result->script()->IsScript()) {
       Script* script = Script::cast(result->script());
@@ -422,8 +430,15 @@ SerializedCodeData::SanityCheckResult SerializedCodeData::SanityCheck(
   return CHECK_SUCCESS;
 }
 
-uint32_t SerializedCodeData::SourceHash(Handle<String> source) {
-  return source->length();
+uint32_t SerializedCodeData::SourceHash(Handle<String> source,
+                                        ScriptOriginOptions origin_options) {
+  const uint32_t source_length = source->length();
+
+  static constexpr uint32_t kModuleFlagMask = (1 << 31);
+  const uint32_t is_module = origin_options.IsModule() ? kModuleFlagMask : 0;
+  DCHECK_EQ(0, source_length & kModuleFlagMask);
+
+  return source_length | is_module;
 }
 
 // Return ScriptData object and relinquish ownership over it to the caller.

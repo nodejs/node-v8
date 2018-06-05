@@ -25,7 +25,7 @@ RUNTIME_FUNCTION(Runtime_LiveEditFindSharedFunctionInfosForScript) {
   CONVERT_ARG_CHECKED(JSValue, script_value, 0);
 
   CHECK(script_value->value()->IsScript());
-  Handle<Script> script = Handle<Script>(Script::cast(script_value->value()));
+  Handle<Script> script(Script::cast(script_value->value()), isolate);
 
   std::vector<Handle<SharedFunctionInfo>> found;
   Heap* heap = isolate->heap();
@@ -36,7 +36,7 @@ RUNTIME_FUNCTION(Runtime_LiveEditFindSharedFunctionInfosForScript) {
       if (!heap_obj->IsSharedFunctionInfo()) continue;
       SharedFunctionInfo* shared = SharedFunctionInfo::cast(heap_obj);
       if (shared->script() != *script) continue;
-      found.push_back(Handle<SharedFunctionInfo>(shared));
+      found.push_back(Handle<SharedFunctionInfo>(shared, isolate));
     }
   }
 
@@ -69,7 +69,7 @@ RUNTIME_FUNCTION(Runtime_LiveEditGatherCompileInfo) {
   CONVERT_ARG_HANDLE_CHECKED(String, source, 1);
 
   CHECK(script->value()->IsScript());
-  Handle<Script> script_handle = Handle<Script>(Script::cast(script->value()));
+  Handle<Script> script_handle(Script::cast(script->value()), isolate);
 
   RETURN_RESULT_OR_FAILURE(isolate,
                            LiveEdit::GatherCompileInfo(script_handle, source));
@@ -184,8 +184,8 @@ RUNTIME_FUNCTION(Runtime_LiveEditReplaceRefToNestedFunction) {
   CHECK(orig_wrapper->value()->IsSharedFunctionInfo());
   CHECK(subst_wrapper->value()->IsSharedFunctionInfo());
 
-  LiveEdit::ReplaceRefToNestedFunction(parent_wrapper, orig_wrapper,
-                                       subst_wrapper);
+  LiveEdit::ReplaceRefToNestedFunction(isolate->heap(), parent_wrapper,
+                                       orig_wrapper, subst_wrapper);
   return isolate->heap()->undefined_value();
 }
 
@@ -265,42 +265,6 @@ RUNTIME_FUNCTION(Runtime_LiveEditCompareStrings) {
   }
 
   return *result;
-}
-
-
-// Restarts a call frame and completely drops all frames above.
-// Returns true if successful. Otherwise returns undefined or an error message.
-RUNTIME_FUNCTION(Runtime_LiveEditRestartFrame) {
-  HandleScope scope(isolate);
-  CHECK(isolate->debug()->live_edit_enabled());
-  DCHECK_EQ(2, args.length());
-  CONVERT_NUMBER_CHECKED(int, break_id, Int32, args[0]);
-  CHECK(isolate->debug()->CheckExecutionState(break_id));
-
-  CONVERT_NUMBER_CHECKED(int, index, Int32, args[1]);
-  Heap* heap = isolate->heap();
-
-  // Find the relevant frame with the requested index.
-  StackFrame::Id id = isolate->debug()->break_frame_id();
-  if (id == StackFrame::NO_ID) {
-    // If there are no JavaScript stack frames return undefined.
-    return heap->undefined_value();
-  }
-
-  StackTraceFrameIterator it(isolate, id);
-  int inlined_jsframe_index =
-      DebugFrameHelper::FindIndexedNonNativeFrame(&it, index);
-  // Liveedit is not supported on Wasm.
-  if (inlined_jsframe_index == -1 || it.is_wasm()) {
-    return heap->undefined_value();
-  }
-  // We don't really care what the inlined frame index is, since we are
-  // throwing away the entire frame anyways.
-  const char* error_message = LiveEdit::RestartFrame(it.javascript_frame());
-  if (error_message) {
-    return *(isolate->factory()->InternalizeUtf8String(error_message));
-  }
-  return heap->true_value();
 }
 }  // namespace internal
 }  // namespace v8

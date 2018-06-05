@@ -25,6 +25,7 @@ namespace internal {
   V(Code)                  \
   V(CodeDataContainer)     \
   V(ConsString)            \
+  V(DataHandler)           \
   V(DataObject)            \
   V(FeedbackCell)          \
   V(FeedbackVector)        \
@@ -44,6 +45,7 @@ namespace internal {
   V(Oddball)               \
   V(PropertyArray)         \
   V(PropertyCell)          \
+  V(PrototypeInfo)         \
   V(SeqOneByteString)      \
   V(SeqTwoByteString)      \
   V(SharedFunctionInfo)    \
@@ -57,7 +59,7 @@ namespace internal {
   V(TransitionArray)       \
   V(WasmInstanceObject)    \
   V(WeakCell)              \
-  V(WeakFixedArray)
+  V(WeakArray)
 
 // For data objects, JS objects and structs along with generic visitor which
 // can visit object of any size we provide visitors specialized by
@@ -126,7 +128,8 @@ typedef std::vector<Handle<Map>> MapHandles;
 //      |          |   - elements_kind (bits 3..7)               |
 // +----+----------+---------------------------------------------+
 // | Int           | [bit_field3]                                |
-// |               |   - number_of_own_descriptors (bit 0..19)   |
+// |               |   - enum_length (bit 0..9)                  |
+// |               |   - number_of_own_descriptors (bit 10..19)  |
 // |               |   - is_dictionary_map (bit 20)              |
 // |               |   - owns_descriptors (bit 21)               |
 // |               |   - has_hidden_prototype (bit 22)           |
@@ -484,8 +487,8 @@ class Map : public HeapObject {
   // optimized code to more general elements kind.
   // This generalization is necessary in order to ensure that elements kind
   // transitions performed by stubs / optimized code don't silently transition
-  // kMutable fields back to kConst state or fields with HeapObject
-  // representation and "Any" type back to "Class" type.
+  // PropertyConstness::kMutable fields back to VariableMode::kConst state or
+  // fields with HeapObject representation and "Any" type back to "Class" type.
   static inline void GeneralizeIfCanHaveTransitionableFastElementsKind(
       Isolate* isolate, InstanceType instance_type,
       PropertyConstness* constness, Representation* representation,
@@ -645,8 +648,8 @@ class Map : public HeapObject {
                                           Descriptor* descriptor,
                                           TransitionFlag flag);
 
-  static Handle<Object> WrapFieldType(Handle<FieldType> type);
-  static FieldType* UnwrapFieldType(Object* wrapped_type);
+  static MaybeObjectHandle WrapFieldType(Handle<FieldType> type);
+  static FieldType* UnwrapFieldType(MaybeObject* wrapped_type);
 
   V8_WARN_UNUSED_RESULT static MaybeHandle<Map> CopyWithField(
       Handle<Map> map, Handle<Name> name, Handle<FieldType> type,
@@ -736,6 +739,8 @@ class Map : public HeapObject {
   // found at all.
   Map* FindElementsKindTransitionedMap(MapHandles const& candidates);
 
+  inline static bool IsJSObject(InstanceType type);
+
   inline bool CanTransition() const;
 
   inline bool IsBooleanMap() const;
@@ -754,6 +759,8 @@ class Map : public HeapObject {
   inline bool IsJSDataViewMap() const;
 
   inline bool IsSpecialReceiverMap() const;
+
+  inline bool IsCustomElementsReceiverMap() const;
 
   static void AddDependentCode(Handle<Map> map,
                                DependentCode::DependencyGroup group,
@@ -923,7 +930,7 @@ class Map : public HeapObject {
   void UpdateFieldType(int descriptor_number, Handle<Name> name,
                        PropertyConstness new_constness,
                        Representation new_representation,
-                       Handle<Object> new_wrapped_type);
+                       MaybeObjectHandle new_wrapped_type);
 
   // TODO(ishell): Move to MapUpdater.
   void PrintReconfiguration(FILE* file, int modify_index, PropertyKind kind,

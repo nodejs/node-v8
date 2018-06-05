@@ -11,6 +11,7 @@
 #include "src/code-factory.h"
 #include "src/code-stub-assembler.h"
 #include "src/objects-inl.h"
+#include "src/objects/js-promise.h"
 
 namespace v8 {
 namespace internal {
@@ -221,8 +222,7 @@ Node* PromiseBuiltinsAssembler::CreatePromiseAllResolveElementContext(
 }
 
 Node* PromiseBuiltinsAssembler::CreatePromiseAllResolveElementFunction(
-    Node* context, Node* index, Node* native_context) {
-  CSA_ASSERT(this, TaggedIsSmi(index));
+    Node* context, TNode<Smi> index, Node* native_context) {
   CSA_ASSERT(this, SmiGreaterThan(index, SmiConstant(0)));
   CSA_ASSERT(this, SmiLessThanOrEqual(
                        index, SmiConstant(PropertyArray::HashField::kMax)));
@@ -266,8 +266,9 @@ Node* PromiseBuiltinsAssembler::PromiseHasHandler(Node* promise) {
 }
 
 void PromiseBuiltinsAssembler::PromiseSetHasHandler(Node* promise) {
-  Node* const flags = LoadObjectField(promise, JSPromise::kFlagsOffset);
-  Node* const new_flags =
+  TNode<Smi> const flags =
+      CAST(LoadObjectField(promise, JSPromise::kFlagsOffset));
+  TNode<Smi> const new_flags =
       SmiOr(flags, SmiConstant(1 << JSPromise::kHasHandlerBit));
   StoreObjectFieldNoWriteBarrier(promise, JSPromise::kFlagsOffset, new_flags);
 }
@@ -279,7 +280,8 @@ Node* PromiseBuiltinsAssembler::IsPromiseStatus(
 
 Node* PromiseBuiltinsAssembler::PromiseStatus(Node* promise) {
   STATIC_ASSERT(JSPromise::kStatusShift == 0);
-  Node* const flags = LoadObjectField(promise, JSPromise::kFlagsOffset);
+  TNode<Smi> const flags =
+      CAST(LoadObjectField(promise, JSPromise::kFlagsOffset));
   return Word32And(SmiToInt32(flags), Int32Constant(JSPromise::kStatusMask));
 }
 
@@ -289,15 +291,17 @@ void PromiseBuiltinsAssembler::PromiseSetStatus(
              IsPromiseStatus(PromiseStatus(promise), v8::Promise::kPending));
   CHECK_NE(status, v8::Promise::kPending);
 
-  Node* mask = SmiConstant(status);
-  Node* const flags = LoadObjectField(promise, JSPromise::kFlagsOffset);
+  TNode<Smi> mask = SmiConstant(status);
+  TNode<Smi> const flags =
+      CAST(LoadObjectField(promise, JSPromise::kFlagsOffset));
   StoreObjectFieldNoWriteBarrier(promise, JSPromise::kFlagsOffset,
                                  SmiOr(flags, mask));
 }
 
 void PromiseBuiltinsAssembler::PromiseSetHandledHint(Node* promise) {
-  Node* const flags = LoadObjectField(promise, JSPromise::kFlagsOffset);
-  Node* const new_flags =
+  TNode<Smi> const flags =
+      CAST(LoadObjectField(promise, JSPromise::kFlagsOffset));
+  TNode<Smi> const new_flags =
       SmiOr(flags, SmiConstant(1 << JSPromise::kHandledHintBit));
   StoreObjectFieldNoWriteBarrier(promise, JSPromise::kFlagsOffset, new_flags);
 }
@@ -1801,7 +1805,7 @@ Node* PromiseBuiltinsAssembler::PerformPromiseAll(
   Node* const resolve_element_context =
       CreatePromiseAllResolveElementContext(capability, native_context);
 
-  VARIABLE(var_index, MachineRepresentation::kTagged, SmiConstant(1));
+  TVARIABLE(Smi, var_index, SmiConstant(1));
   Label loop(this, &var_index), done_loop(this),
       too_many_elements(this, Label::kDeferred),
       close_iterator(this, Label::kDeferred);
@@ -1831,14 +1835,14 @@ Node* PromiseBuiltinsAssembler::PerformPromiseAll(
                       var_exception);
 
     // Check if we reached the limit.
-    Node* const index = var_index.value();
+    TNode<Smi> const index = var_index.value();
     GotoIf(SmiEqual(index, SmiConstant(PropertyArray::HashField::kMax)),
            &too_many_elements);
 
     // Set remainingElementsCount.[[Value]] to
     //     remainingElementsCount.[[Value]] + 1.
-    Node* const remaining_elements_count = LoadContextElement(
-        resolve_element_context, kPromiseAllResolveElementRemainingSlot);
+    TNode<Smi> const remaining_elements_count = CAST(LoadContextElement(
+        resolve_element_context, kPromiseAllResolveElementRemainingSlot));
     StoreContextElementNoWriteBarrier(
         resolve_element_context, kPromiseAllResolveElementRemainingSlot,
         SmiAdd(remaining_elements_count, SmiConstant(1)));
@@ -1877,7 +1881,7 @@ Node* PromiseBuiltinsAssembler::PerformPromiseAll(
     });
 
     // Set index to index + 1.
-    var_index.Bind(SmiAdd(index, SmiConstant(1)));
+    var_index = SmiAdd(index, SmiConstant(1));
     Goto(&loop);
   }
 
@@ -1911,8 +1915,8 @@ Node* PromiseBuiltinsAssembler::PerformPromiseAll(
     // Set iteratorRecord.[[Done]] to true.
     // Set remainingElementsCount.[[Value]] to
     //    remainingElementsCount.[[Value]] - 1.
-    Node* remaining_elements_count = LoadContextElement(
-        resolve_element_context, kPromiseAllResolveElementRemainingSlot);
+    TNode<Smi> remaining_elements_count = CAST(LoadContextElement(
+        resolve_element_context, kPromiseAllResolveElementRemainingSlot));
     remaining_elements_count = SmiSub(remaining_elements_count, SmiConstant(1));
     StoreContextElementNoWriteBarrier(resolve_element_context,
                                       kPromiseAllResolveElementRemainingSlot,
@@ -1927,8 +1931,8 @@ Node* PromiseBuiltinsAssembler::PerformPromiseAll(
     Node* const values_array = LoadContextElement(
         resolve_element_context, kPromiseAllResolveElementValuesArraySlot);
     Node* const old_elements = LoadElements(values_array);
-    Node* const old_capacity = LoadFixedArrayBaseLength(old_elements);
-    Node* const new_capacity = var_index.value();
+    TNode<Smi> const old_capacity = LoadFixedArrayBaseLength(old_elements);
+    TNode<Smi> const new_capacity = var_index.value();
     GotoIf(SmiGreaterThanOrEqual(old_capacity, new_capacity), &return_promise);
     Node* const new_elements =
         AllocateFixedArray(PACKED_ELEMENTS, new_capacity, SMI_PARAMETERS,
@@ -2019,9 +2023,9 @@ TF_BUILTIN(PromiseAll, PromiseBuiltinsAssembler) {
 }
 
 TF_BUILTIN(PromiseAllResolveElementClosure, PromiseBuiltinsAssembler) {
-  Node* const value = Parameter(Descriptor::kValue);
-  Node* const context = Parameter(Descriptor::kContext);
-  Node* const function = LoadFromFrame(StandardFrameConstants::kFunctionOffset);
+  TNode<Object> value = CAST(Parameter(Descriptor::kValue));
+  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  Node* function = LoadFromFrame(StandardFrameConstants::kFunctionOffset);
 
   Label already_called(this, Label::kDeferred), resolve_promise(this);
 
@@ -2033,22 +2037,22 @@ TF_BUILTIN(PromiseAllResolveElementClosure, PromiseBuiltinsAssembler) {
   GotoIf(IsNativeContext(context), &already_called);
   CSA_ASSERT(this, SmiEqual(LoadFixedArrayBaseLength(context),
                             SmiConstant(kPromiseAllResolveElementLength)));
-  Node* const native_context = LoadNativeContext(context);
+  TNode<Context> native_context = LoadNativeContext(context);
   StoreObjectField(function, JSFunction::kContextOffset, native_context);
 
   // Determine the index from the {function}.
   Label unreachable(this, Label::kDeferred);
   STATIC_ASSERT(PropertyArray::kNoHashSentinel == 0);
-  Node* const identity_hash =
+  TNode<IntPtrT> identity_hash =
       LoadJSReceiverIdentityHash(function, &unreachable);
   CSA_ASSERT(this, IntPtrGreaterThan(identity_hash, IntPtrConstant(0)));
-  Node* const index = IntPtrSub(identity_hash, IntPtrConstant(1));
+  TNode<IntPtrT> index = IntPtrSub(identity_hash, IntPtrConstant(1));
 
   // Check if we need to grow the [[ValuesArray]] to store {value} at {index}.
-  Node* const values_array =
-      LoadContextElement(context, kPromiseAllResolveElementValuesArraySlot);
-  Node* const elements = LoadElements(values_array);
-  Node* const values_length =
+  TNode<JSArray> values_array = CAST(
+      LoadContextElement(context, kPromiseAllResolveElementValuesArraySlot));
+  TNode<FixedArray> elements = CAST(LoadElements(values_array));
+  TNode<IntPtrT> values_length =
       LoadAndUntagObjectField(values_array, JSArray::kLengthOffset);
   Label if_inbounds(this), if_outofbounds(this), done(this);
   Branch(IntPtrLessThan(index, values_length), &if_inbounds, &if_outofbounds);
@@ -2056,8 +2060,8 @@ TF_BUILTIN(PromiseAllResolveElementClosure, PromiseBuiltinsAssembler) {
   BIND(&if_outofbounds);
   {
     // Check if we need to grow the backing store.
-    Node* const new_length = IntPtrAdd(index, IntPtrConstant(1));
-    Node* const elements_length =
+    TNode<IntPtrT> new_length = IntPtrAdd(index, IntPtrConstant(1));
+    TNode<IntPtrT> elements_length =
         LoadAndUntagObjectField(elements, FixedArray::kLengthOffset);
     Label if_grow(this, Label::kDeferred), if_nogrow(this);
     Branch(IntPtrLessThan(index, elements_length), &if_nogrow, &if_grow);
@@ -2065,14 +2069,14 @@ TF_BUILTIN(PromiseAllResolveElementClosure, PromiseBuiltinsAssembler) {
     BIND(&if_grow);
     {
       // We need to grow the backing store to fit the {index} as well.
-      Node* const new_elements_length =
+      TNode<IntPtrT> new_elements_length =
           IntPtrMin(CalculateNewElementsCapacity(new_length),
                     IntPtrConstant(PropertyArray::HashField::kMax + 1));
       CSA_ASSERT(this, IntPtrLessThan(index, new_elements_length));
       CSA_ASSERT(this, IntPtrLessThan(elements_length, new_elements_length));
-      Node* const new_elements = AllocateFixedArray(
-          PACKED_ELEMENTS, new_elements_length, INTPTR_PARAMETERS,
-          AllocationFlag::kAllowLargeObjectAllocation);
+      TNode<FixedArray> new_elements =
+          AllocateFixedArray(PACKED_ELEMENTS, new_elements_length,
+                             AllocationFlag::kAllowLargeObjectAllocation);
       CopyFixedArrayElements(PACKED_ELEMENTS, elements, PACKED_ELEMENTS,
                              new_elements, elements_length,
                              new_elements_length);
@@ -2105,8 +2109,8 @@ TF_BUILTIN(PromiseAllResolveElementClosure, PromiseBuiltinsAssembler) {
   }
 
   BIND(&done);
-  Node* remaining_elements_count =
-      LoadContextElement(context, kPromiseAllResolveElementRemainingSlot);
+  TNode<Smi> remaining_elements_count =
+      CAST(LoadContextElement(context, kPromiseAllResolveElementRemainingSlot));
   remaining_elements_count = SmiSub(remaining_elements_count, SmiConstant(1));
   StoreContextElement(context, kPromiseAllResolveElementRemainingSlot,
                       remaining_elements_count);
@@ -2114,9 +2118,9 @@ TF_BUILTIN(PromiseAllResolveElementClosure, PromiseBuiltinsAssembler) {
   Return(UndefinedConstant());
 
   BIND(&resolve_promise);
-  Node* const capability =
-      LoadContextElement(context, kPromiseAllResolveElementCapabilitySlot);
-  Node* const resolve =
+  TNode<PromiseCapability> capability = CAST(
+      LoadContextElement(context, kPromiseAllResolveElementCapabilitySlot));
+  TNode<Object> resolve =
       LoadObjectField(capability, PromiseCapability::kResolveOffset);
   CallJS(CodeFactory::Call(isolate(), ConvertReceiverMode::kNullOrUndefined),
          context, resolve, UndefinedConstant(), values_array);

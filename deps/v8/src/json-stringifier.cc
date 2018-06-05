@@ -94,7 +94,6 @@ MaybeHandle<Object> JsonStringifier::Stringify(Handle<Object> object,
   if (!gap->IsUndefined(isolate_) && !InitializeGap(gap)) {
     return MaybeHandle<Object>();
   }
-  PostponeInterruptsScope no_debug_breaks(isolate_, StackGuard::DEBUGBREAK);
   Result result = SerializeObject(object);
   if (result == UNCHANGED) return factory()->undefined_value();
   if (result == SUCCESS) return builder_.Finish();
@@ -521,7 +520,7 @@ JsonStringifier::Result JsonStringifier::SerializeJSObject(
   if (stack_push != SUCCESS) return stack_push;
 
   if (property_list_.is_null() &&
-      object->map()->instance_type() > LAST_CUSTOM_ELEMENTS_RECEIVER &&
+      !object->map()->IsCustomElementsReceiverMap() &&
       object->HasFastProperties() &&
       Handle<JSObject>::cast(object)->elements()->length() == 0) {
     DCHECK(object->IsJSObject());

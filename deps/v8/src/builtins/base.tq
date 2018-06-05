@@ -1,0 +1,402 @@
+// Copyright 2018 the V8 project authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+type Arguments constexpr 'CodeStubArguments*';
+type void generates 'void';
+type never generates 'void';
+
+type Tagged generates 'TNode<Object>';
+type Smi extends Tagged generates 'TNode<Smi>';
+type HeapObject extends Tagged generates 'TNode<HeapObject>';
+type Object = Smi | HeapObject;
+type int32 generates 'TNode<Int32T>' constexpr 'int32_t';
+type intptr generates 'TNode<IntPtrT>' constexpr 'intptr_t';
+type float64 generates 'TNode<Float64T>' constexpr 'double';
+type bool generates 'TNode<BoolT>' constexpr 'bool';
+
+type int31 extends int32 generates 'TNode<Int32T>' constexpr 'int32_t';
+type RawPtr generates 'TNode<RawPtrT>' constexpr 'void*';
+type AbstractCode extends HeapObject generates 'TNode<AbstractCode>';
+type Code extends AbstractCode generates 'TNode<Code>';
+type JSReceiver extends HeapObject generates 'TNode<JSReceiver>';
+type Context extends HeapObject generates 'TNode<Context>';
+type String extends HeapObject generates 'TNode<String>';
+type Oddball extends HeapObject generates 'TNode<Oddball>';
+type HeapNumber extends HeapObject generates 'TNode<HeapNumber>';
+type Number = Smi | HeapNumber;
+type Boolean extends Oddball generates 'TNode<Oddball>';
+type JSProxy extends JSReceiver generates 'TNode<JSProxy>';
+type JSObject extends JSReceiver generates 'TNode<JSObject>';
+type JSArray extends JSObject generates 'TNode<JSArray>';
+type JSFunction extends JSObject generates 'TNode<JSFunction>';
+type JSBoundFunction extends JSObject generates 'TNode<JSBoundFunction>';
+type Callable = JSFunction | JSBoundFunction | JSProxy;
+type Map extends HeapObject generates 'TNode<Map>';
+type FixedArrayBase extends HeapObject generates 'TNode<FixedArrayBase>';
+type FixedArray extends FixedArrayBase generates 'TNode<FixedArray>';
+type FixedDoubleArray extends FixedArrayBase generates
+'TNode<FixedDoubleArray>';
+type FixedTypedArrayBase extends FixedArrayBase generates
+'TNode<FixedTypedArrayBase>';
+type FixedTypedArray extends FixedTypedArrayBase generates
+'TNode<FixedTypedArray>';
+
+type JSArrayBuffer extends JSObject generates 'TNode<JSArrayBuffer>';
+type JSArrayBufferView extends JSObject generates 'TNode<JSArrayBufferView>';
+type JSTypedArray extends JSArrayBufferView generates 'TNode<JSTypedArray>';
+type JSDataView extends JSArrayBufferView generates 'TNode<JSDataView>';
+
+type InstanceType generates 'TNode<Int32T>' constexpr 'InstanceType';
+type ElementsKind generates 'TNode<Int32T>' constexpr 'ElementsKind';
+type LanguageMode generates 'TNode<Smi>' constexpr 'LanguageMode';
+type ExtractFixedArrayFlags generates
+'TNode<Smi>' constexpr 'ExtractFixedArrayFlags';
+type ParameterMode generates 'TNode<Int32T>' constexpr 'ParameterMode';
+
+type MessageTemplate constexpr 'MessageTemplate';
+type HasPropertyLookupMode constexpr 'HasPropertyLookupMode';
+
+const NO_ELEMENTS: constexpr ElementsKind = 'NO_ELEMENTS';
+
+const PACKED_SMI_ELEMENTS: constexpr ElementsKind = 'PACKED_SMI_ELEMENTS';
+const HOLEY_SMI_ELEMENTS: constexpr ElementsKind = 'HOLEY_SMI_ELEMENTS';
+const PACKED_ELEMENTS: constexpr ElementsKind = 'PACKED_ELEMENTS';
+const HOLEY_ELEMENTS: constexpr ElementsKind = 'HOLEY_ELEMENTS';
+const PACKED_DOUBLE_ELEMENTS: constexpr ElementsKind = 'PACKED_DOUBLE_ELEMENTS';
+const HOLEY_DOUBLE_ELEMENTS: constexpr ElementsKind = 'HOLEY_DOUBLE_ELEMENTS';
+
+const UINT8_ELEMENTS: constexpr ElementsKind = 'UINT8_ELEMENTS';
+const INT8_ELEMENTS: constexpr ElementsKind = 'INT8_ELEMENTS';
+const UINT16_ELEMENTS: constexpr ElementsKind = 'UINT16_ELEMENTS';
+const INT16_ELEMENTS: constexpr ElementsKind = 'INT16_ELEMENTS';
+const UINT32_ELEMENTS: constexpr ElementsKind = 'UINT32_ELEMENTS';
+const INT32_ELEMENTS: constexpr ElementsKind = 'INT32_ELEMENTS';
+const FLOAT32_ELEMENTS: constexpr ElementsKind = 'FLOAT32_ELEMENTS';
+const FLOAT64_ELEMENTS: constexpr ElementsKind = 'FLOAT64_ELEMENTS';
+const UINT8_CLAMPED_ELEMENTS: constexpr ElementsKind = 'UINT8_CLAMPED_ELEMENTS';
+const BIGUINT64_ELEMENTS: constexpr ElementsKind = 'BIGUINT64_ELEMENTS';
+const BIGINT64_ELEMENTS: constexpr ElementsKind = 'BIGINT64_ELEMENTS';
+
+type FixedUint8Array extends FixedTypedArray;
+type FixedInt8Array extends FixedTypedArray;
+type FixedUint16Array extends FixedTypedArray;
+type FixedInt16Array extends FixedTypedArray;
+type FixedUint32Array extends FixedTypedArray;
+type FixedInt32Array extends FixedTypedArray;
+type FixedFloat32Array extends FixedTypedArray;
+type FixedFloat64Array extends FixedTypedArray;
+type FixedUint8ClampedArray extends FixedTypedArray;
+type FixedBigUint64Array extends FixedTypedArray;
+type FixedBigInt64Array extends FixedTypedArray;
+
+const kAllFixedArrays: constexpr ExtractFixedArrayFlags =
+    'ExtractFixedArrayFlag::kAllFixedArrays';
+
+const kCOWMap: Map = 'LoadRoot(Heap::kFixedCOWArrayMapRootIndex)';
+const kEmptyFixedArray: FixedArrayBase =
+    'UncheckedCast<FixedArrayBase>(LoadRoot(Heap::kEmptyFixedArrayRootIndex))';
+
+const kInvalidArrayLength: constexpr MessageTemplate =
+    'MessageTemplate::kInvalidArrayLength';
+const kCalledNonCallable: constexpr MessageTemplate =
+    'MessageTemplate::kCalledNonCallable';
+const kCalledOnNullOrUndefined: constexpr MessageTemplate =
+    'MessageTemplate::kCalledOnNullOrUndefined';
+
+const kHasProperty: constexpr HasPropertyLookupMode = 'kHasProperty';
+
+const kMaxSafeInteger: constexpr float64 = 'kMaxSafeInteger';
+
+const kNotTypedArray: constexpr MessageTemplate =
+    'MessageTemplate::kNotTypedArray';
+const kDetachedOperation: constexpr MessageTemplate =
+    'MessageTemplate::kDetachedOperation';
+const kBadSortComparisonFunction: constexpr MessageTemplate =
+    'MessageTemplate::kBadSortComparisonFunction';
+const kIncompatibleMethodReceiver: constexpr MessageTemplate =
+    'MessageTemplate::kIncompatibleMethodReceiver';
+
+const Hole: Oddball = 'TheHoleConstant()';
+const Null: Oddball = 'NullConstant()';
+const Undefined: Oddball = 'UndefinedConstant()';
+const True: Boolean = 'TrueConstant()';
+const False: Boolean = 'FalseConstant()';
+const true: constexpr bool = 'true';
+const false: constexpr bool = 'false';
+
+const kStrict: constexpr LanguageMode = 'LanguageMode::kStrict';
+const kSloppy: constexpr LanguageMode = 'LanguageMode::kSloppy';
+
+const SMI_PARAMETERS: constexpr ParameterMode = 'SMI_PARAMETERS';
+const INTPTR_PARAMETERS: constexpr ParameterMode = 'INTPTR_PARAMETERS';
+
+extern macro Print(Object);
+extern macro DebugBreak();
+extern macro ToInteger_Inline(Context, Object): Number;
+extern macro ToLength_Inline(Context, Object): Number;
+extern macro ToNumber_Inline(Context, Object): Number;
+extern macro ToString_Inline(Context, Object): String;
+extern macro GetProperty(Context, Object, Object): Object;
+extern macro HasProperty(
+    HeapObject, Object, Context, constexpr HasPropertyLookupMode): Oddball;
+extern macro ThrowRangeError(Context, constexpr MessageTemplate): never;
+extern macro ThrowTypeError(Context, constexpr MessageTemplate): never;
+extern macro ThrowTypeError(Context, constexpr MessageTemplate, Object): never;
+extern macro ArraySpeciesCreate(Context, Object, Number): Object;
+extern macro EnsureArrayPushable(Map): ElementsKind labels Bailout;
+
+extern builtin ToObject(Context, Object): Object;
+extern macro IsNullOrUndefined(Object): bool;
+extern macro IsTheHole(Object): bool;
+extern macro IsString(HeapObject): bool;
+extern builtin ToString(Context, Object): String;
+
+extern runtime CreateDataProperty(Context, Object, Object, Object);
+extern runtime SetProperty(Context, Object, Object, Object, LanguageMode);
+extern runtime DeleteProperty(Context, Object, Object, LanguageMode);
+
+extern runtime StringEqual(Context, String, String): Oddball;
+extern builtin StringLessThan(Context, String, String): Boolean;
+
+extern macro StrictEqual(Object, Object): Boolean;
+extern runtime SmiLexicographicCompare(Context, Object, Object): Number;
+
+extern operator '==' macro Word32Equal(int32, int32): bool;
+extern operator '!=' macro Word32NotEqual(int32, int32): bool;
+extern operator '<' macro Int32LessThan(int32, int32): bool;
+extern operator '>' macro Int32GreaterThan(int32, int32): bool;
+extern operator '<=' macro Int32LessThanOrEqual(int32, int32): bool;
+extern operator '>=' macro Int32GreaterThanOrEqual(int32, int32): bool;
+
+extern operator '==' macro SmiEqual(Smi, Smi): bool;
+extern operator '!=' macro SmiNotEqual(Smi, Smi): bool;
+extern operator '<' macro SmiLessThan(Smi, Smi): bool;
+extern operator '<=' macro SmiLessThanOrEqual(Smi, Smi): bool;
+extern operator '>' macro SmiGreaterThan(Smi, Smi): bool;
+extern operator '>=' macro SmiGreaterThanOrEqual(Smi, Smi): bool;
+
+extern operator '==' macro ElementsKindEqual(
+    constexpr ElementsKind, constexpr ElementsKind): constexpr bool;
+extern macro IsFastElementsKind(constexpr ElementsKind): constexpr bool;
+
+extern macro SmiAbove(Smi, Smi): bool;
+
+extern operator '==' macro WordEqual(intptr, intptr): bool;
+extern operator '!=' macro WordNotEqual(intptr, intptr): bool;
+extern operator '<' macro IntPtrLessThan(intptr, intptr): bool;
+extern operator '>' macro IntPtrGreaterThan(intptr, intptr): bool;
+extern operator '<=' macro IntPtrLessThanOrEqual(intptr, intptr): bool;
+extern operator '>=' macro IntPtrGreaterThanOrEqual(intptr, intptr): bool;
+
+extern operator '==' macro Float64Equal(float64, float64): bool;
+
+extern operator
+'<' macro BranchIfNumberLessThan(Number, Number): never labels Taken, NotTaken;
+extern operator
+'<=' macro BranchIfNumberLessThanOrEqual(Number, Number): never labels Taken,
+    NotTaken;
+extern operator
+'>' macro BranchIfNumberGreaterThan(Number, Number): never labels Taken,
+    NotTaken;
+extern operator '>=' macro BranchIfNumberGreaterThanOrEqual(Number, Number):
+    never labels Taken,
+    NotTaken;
+
+extern operator '==' macro WordEqual(Object, Object): bool;
+extern operator '!=' macro WordNotEqual(Object, Object): bool;
+
+extern operator '+' macro SmiAdd(Smi, Smi): Smi;
+extern operator '-' macro SmiSub(Smi, Smi): Smi;
+extern operator '>>>' macro SmiShr(Smi, constexpr int31): Smi;
+
+extern operator '+' macro IntPtrAdd(intptr, intptr): intptr;
+extern operator '-' macro IntPtrSub(intptr, intptr): intptr;
+extern operator '>>>' macro WordShr(intptr, intptr): intptr;
+
+extern operator '+' macro NumberAdd(Number, Number): Number;
+extern operator '-' macro NumberSub(Number, Number): Number;
+extern operator 'min' macro NumberMin(Number, Number): Number;
+extern operator 'max' macro NumberMax(Number, Number): Number;
+
+extern operator '!' macro ConstexprBoolNot(constexpr bool): constexpr bool;
+extern operator '!' macro Word32BinaryNot(bool): bool;
+
+extern operator '.map' macro LoadMap(HeapObject): Map;
+extern operator '.map=' macro StoreMap(HeapObject, Map);
+extern operator
+    '.instanceType' macro LoadInstanceType(HeapObject): InstanceType;
+
+extern operator '.length' macro LoadStringLengthAsWord(String): intptr;
+
+extern operator '.length' macro GetArgumentsLength(constexpr Arguments): intptr;
+extern operator
+    '[]' macro GetArgumentValue(constexpr Arguments, intptr): Object;
+
+extern operator 'is<Smi>' macro TaggedIsSmi(Object): bool;
+extern operator 'isnt<Smi>' macro TaggedIsNotSmi(Object): bool;
+
+extern operator
+'cast<>' macro TaggedToJSDataView(Object): JSDataView labels CastError;
+extern operator
+'cast<>' macro TaggedToHeapObject(Object): HeapObject labels CastError;
+extern operator 'cast<>' macro TaggedToSmi(Object): Smi labels CastError;
+extern operator
+'cast<>' macro TaggedToJSArray(Object): JSArray labels CastError;
+extern operator
+'cast<>' macro TaggedToCallable(Object): Callable labels CastError;
+extern operator 'cast<>' macro ConvertFixedArrayBaseToFixedArray(
+    FixedArrayBase): FixedArray labels CastError;
+extern operator 'cast<>' macro ConvertFixedArrayBaseToFixedDoubleArray(
+    FixedArrayBase): FixedDoubleArray labels CastError;
+extern operator 'cast<>' macro TaggedToNumber(
+      Object): Number labels CastError;
+
+extern macro AllocateHeapNumberWithValue(float64): HeapNumber;
+
+extern implicit operator
+'convert<>' macro NumberConstant(constexpr float64): Number;
+extern implicit operator
+'convert<>' macro IntPtrConstant(constexpr int31): intptr;
+extern implicit operator
+'convert<>' macro Int32Constant(constexpr int31): int32;
+extern implicit operator 'convert<>' macro SmiConstant(constexpr int31): Smi;
+extern implicit operator
+'convert<>' macro NumberConstant(constexpr int31): Number;
+extern implicit operator 'convert<>' macro BoolConstant(constexpr bool): bool;
+extern implicit operator 'convert<>' macro LanguageModeConstant(
+    constexpr LanguageMode): LanguageMode;
+extern operator
+'convert<>' macro Int32Constant(constexpr ElementsKind): ElementsKind;
+extern implicit operator 'convert<>' macro SmiFromInt32(ElementsKind): Smi;
+
+extern operator 'convert<>' macro ChangeInt32ToTagged(int32): Number;
+extern operator 'convert<>' macro TruncateWordToWord32(intptr): int32;
+extern operator 'convert<>' macro SmiTag(intptr): Smi;
+extern operator 'convert<>' macro SmiFromInt32(int32): Smi;
+extern operator 'convert<>' macro SmiUntag(Smi): intptr;
+extern operator 'convert<>' macro LoadHeapNumberValue(HeapNumber): float64;
+extern operator 'convert<>' macro ChangeNumberToFloat64(Number): float64;
+
+extern macro BranchIfFastJSArray(Object, Context): never labels Taken, NotTaken;
+extern macro BranchIfNotFastJSArray(Object, Context): never labels Taken,
+    NotTaken;
+
+extern macro IsPrototypeInitialArrayPrototype(Context, Map): bool;
+extern macro IsNoElementsProtectorCellInvalid(): bool;
+extern macro IsArraySpeciesProtectorCellInvalid(): bool;
+extern macro IsTypedArraySpeciesProtectorCellInvalid(): bool;
+extern macro IsPromiseSpeciesProtectorCellInvalid(): bool;
+
+extern operator
+'.buffer' macro LoadTypedArrayBuffer(JSTypedArray): JSArrayBuffer;
+
+extern operator '.data_ptr' macro LoadDataPtr(JSTypedArray): RawPtr;
+
+extern operator '.elements_kind' macro LoadMapElementsKind(Map): ElementsKind;
+extern operator
+'.elements_kind' macro LoadElementsKind(JSTypedArray): ElementsKind;
+
+extern operator '.elements' macro LoadElements(JSObject): FixedArrayBase;
+extern operator '.elements=' macro StoreElements(JSObject, FixedArrayBase);
+
+extern operator '.length' macro LoadTypedArrayLength(JSTypedArray): Smi;
+extern operator '.length' macro LoadJSArrayLength(JSArray): Number;
+extern operator '.length_fast' macro LoadFastJSArrayLength(JSArray): Smi;
+extern operator '.length=' macro StoreJSArrayLength(JSArray, Smi);
+
+extern operator '.length' macro LoadFixedArrayBaseLength(FixedArrayBase): Smi;
+extern operator '[]' macro LoadFixedArrayElement(FixedArray, intptr): Object;
+extern operator '[]' macro LoadFixedArrayElement(FixedArray, Smi): Object;
+extern operator
+'[]=' macro StoreFixedArrayElement(FixedArray, intptr, Object): void;
+extern operator
+'[]=' macro StoreFixedArrayElementSmi(FixedArray, Smi, Object): void;
+
+extern macro LoadFixedDoubleArrayElement(FixedDoubleArray, Smi): float64;
+extern macro Float64SilenceNaN(float64): float64;
+
+extern macro StoreFixedDoubleArrayElement(
+    FixedDoubleArray, Object, float64, constexpr ParameterMode);
+macro StoreFixedDoubleArrayElementWithSmiIndex(
+    array: FixedDoubleArray, index: Smi, value: float64) {
+  StoreFixedDoubleArrayElement(array, index, value, SMI_PARAMETERS);
+}
+
+extern macro IsFastElementsKind(ElementsKind): bool;
+extern macro IsFastSmiOrTaggedElementsKind(ElementsKind): bool;
+extern macro IsFastSmiElementsKind(ElementsKind): bool;
+extern macro IsHoleyFastElementsKind(ElementsKind): bool;
+
+extern macro AllocateFixedArray(constexpr ElementsKind, Smi): FixedArray;
+extern macro AllocateFixedArray(constexpr ElementsKind, Smi, Map): FixedArray;
+
+extern macro CopyFixedArrayElements(
+    constexpr ElementsKind, FixedArray, constexpr ElementsKind, FixedArray,
+    intptr, intptr, intptr): void;
+extern macro CopyFixedArrayElements(
+    constexpr ElementsKind, FixedArray, constexpr ElementsKind, FixedArray, Smi,
+    Smi, Smi): void;
+
+extern macro AllocateJSArray(constexpr ElementsKind, Map, intptr, Smi): JSArray;
+extern macro AllocateJSArray(constexpr ElementsKind, Map, Smi, Smi): JSArray;
+extern macro IsElementsKindGreaterThan(
+    ElementsKind, constexpr ElementsKind): bool;
+
+extern macro LoadDoubleWithHoleCheck(FixedDoubleArray, Smi): float64
+labels IfHole;
+
+extern macro Call(Context, Callable, Object, ...): Object;
+
+extern macro ExtractFixedArray(
+    FixedArray, Smi, Smi, Smi, constexpr ExtractFixedArrayFlags): FixedArray;
+
+extern builtin ExtractFastJSArray(Context, JSArray, Smi, Smi): JSArray;
+
+macro LoadElementNoHole<T : type>(a: JSArray, index: Smi): Object labels IfHole;
+
+LoadElementNoHole<FixedArray>(a: JSArray, index: Smi): Object
+labels IfHole {
+  try {
+    let elements: FixedArray =
+        cast<FixedArray>(a.elements) otherwise Unexpected;
+    let e: Object = elements[index];
+    if (e == Hole) {
+      goto IfHole;
+    }
+    return e;
+  }
+  label Unexpected {
+    unreachable;
+  }
+}
+
+LoadElementNoHole<FixedDoubleArray>(a: JSArray, index: Smi): Object
+labels IfHole {
+  try {
+    let elements: FixedDoubleArray =
+        cast<FixedDoubleArray>(a.elements) otherwise Unexpected;
+    let e: float64 = LoadDoubleWithHoleCheck(elements, index) otherwise IfHole;
+    return AllocateHeapNumberWithValue(e);
+  }
+  label Unexpected {
+    unreachable;
+  }
+}
+
+macro HasPropertyObject(
+    o: Object, p: Object, c: Context, f: constexpr HasPropertyLookupMode): Oddball {
+  try {
+    return HasProperty(cast<HeapObject>(o) otherwise CastError, p, c, f);
+  }
+  label CastError {
+    return False;
+  }
+}
+
+extern macro IsCallable(HeapObject): bool;
+extern macro IsJSArray(HeapObject): bool;
+extern macro TaggedIsCallable(Object): bool;
+extern macro IsDetachedBuffer(JSArrayBuffer): bool;
+
+extern macro NumberIsNaN(Number): bool;

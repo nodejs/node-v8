@@ -163,7 +163,7 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
   // This only deserializes the scope chain, but doesn't connect the scopes to
   // their corresponding scope infos. Therefore, looking up variables in the
   // deserialized scopes is not possible.
-  void DeserializeScopeChain(ParseInfo* info,
+  void DeserializeScopeChain(Isolate* isolate, ParseInfo* info,
                              MaybeHandle<ScopeInfo> maybe_outer_scope_info);
 
   // Move statistics to Isolate
@@ -923,8 +923,9 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
       // BuildParamerterInitializationBlock.
       scope->DeclareParameter(
           is_simple ? parameter->name : ast_value_factory()->empty_string(),
-          is_simple ? VAR : TEMPORARY, is_optional, parameter->is_rest,
-          has_duplicate, ast_value_factory(), parameter->position);
+          is_simple ? VariableMode::kVar : VariableMode::kTemporary,
+          is_optional, parameter->is_rest, has_duplicate, ast_value_factory(),
+          parameter->position);
     }
   }
 

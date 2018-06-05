@@ -31,6 +31,7 @@ constexpr Register kJavaScriptCallNewTargetRegister = edx;
 constexpr Register kOffHeapTrampolineRegister = ecx;
 constexpr Register kRuntimeCallFunctionRegister = ebx;
 constexpr Register kRuntimeCallArgCountRegister = eax;
+constexpr Register kWasmInstanceRegister = esi;
 
 // Convenience for platform-independent signatures.  We do not normally
 // distinguish memory operands from other operands on ia32.
@@ -113,6 +114,7 @@ class TurboAssembler : public Assembler {
 
   void Move(Register dst, Handle<HeapObject> handle);
 
+  void Call(Register reg) { call(reg); }
   void Call(Handle<Code> target, RelocInfo::Mode rmode) { call(target, rmode); }
   void Call(Label* target) { call(target); }
 
@@ -128,6 +130,7 @@ class TurboAssembler : public Assembler {
   inline bool AllowThisStubCall(CodeStub* stub);
   void CallStubDelayed(CodeStub* stub);
 
+  // TODO(jgruber): Remove in favor of MacroAssembler::CallRuntime.
   void CallRuntimeDelayed(Zone* zone, Runtime::FunctionId fid,
                           SaveFPRegsMode save_doubles = kDontSaveFPRegs);
 
@@ -202,6 +205,10 @@ class TurboAssembler : public Assembler {
   // may be bigger than 2^16 - 1.  Requires a scratch register.
   void Ret(int bytes_dropped, Register scratch);
 
+  void Pshufhw(XMMRegister dst, XMMRegister src, uint8_t shuffle) {
+    Pshufhw(dst, Operand(src), shuffle);
+  }
+  void Pshufhw(XMMRegister dst, Operand src, uint8_t shuffle);
   void Pshuflw(XMMRegister dst, XMMRegister src, uint8_t shuffle) {
     Pshuflw(dst, Operand(src), shuffle);
   }
@@ -249,6 +256,8 @@ class TurboAssembler : public Assembler {
   AVX_OP3_WITH_TYPE(macro_name, name, XMMRegister, XMMRegister) \
   AVX_OP3_WITH_TYPE(macro_name, name, XMMRegister, Operand)
 
+  AVX_OP3_XO(Pcmpeqb, pcmpeqb)
+  AVX_OP3_XO(Pcmpeqw, pcmpeqw)
   AVX_OP3_XO(Pcmpeqd, pcmpeqd)
   AVX_OP3_XO(Psubb, psubb)
   AVX_OP3_XO(Psubw, psubw)
@@ -265,8 +274,15 @@ class TurboAssembler : public Assembler {
 #undef AVX_OP3_WITH_TYPE
 
   // Non-SSE2 instructions.
+  void Ptest(XMMRegister dst, XMMRegister src) { Ptest(dst, Operand(src)); }
+  void Ptest(XMMRegister dst, Operand src);
+
   void Pshufb(XMMRegister dst, XMMRegister src) { Pshufb(dst, Operand(src)); }
   void Pshufb(XMMRegister dst, Operand src);
+  void Pblendw(XMMRegister dst, XMMRegister src, uint8_t imm8) {
+    Pblendw(dst, Operand(src), imm8);
+  }
+  void Pblendw(XMMRegister dst, Operand src, uint8_t imm8);
 
   void Psignb(XMMRegister dst, XMMRegister src) { Psignb(dst, Operand(src)); }
   void Psignb(XMMRegister dst, Operand src);
@@ -285,21 +301,29 @@ class TurboAssembler : public Assembler {
   void Pinsrd(XMMRegister dst, Operand src, int8_t imm8,
               bool is_64_bits = false);
 
-  void LoadUint32(XMMRegister dst, Register src) {
-    LoadUint32(dst, Operand(src));
-  }
-  void LoadUint32(XMMRegister dst, Operand src);
-
   // Expression support
   // cvtsi2sd instruction only writes to the low 64-bit of dst register, which
   // hinders register renaming and makes dependence chains longer. So we use
   // xorps to clear the dst register before cvtsi2sd to solve this issue.
+  void Cvtsi2ss(XMMRegister dst, Register src) { Cvtsi2ss(dst, Operand(src)); }
+  void Cvtsi2ss(XMMRegister dst, Operand src);
   void Cvtsi2sd(XMMRegister dst, Register src) { Cvtsi2sd(dst, Operand(src)); }
   void Cvtsi2sd(XMMRegister dst, Operand src);
 
-  void Cvtui2ss(XMMRegister dst, Register src, Register tmp);
-
-  void SlowTruncateToIDelayed(Zone* zone, Register result_reg);
+  void Cvtui2ss(XMMRegister dst, Register src, Register tmp) {
+    Cvtui2ss(dst, Operand(src), tmp);
+  }
+  void Cvtui2ss(XMMRegister dst, Operand src, Register tmp);
+  void Cvttss2ui(Register dst, XMMRegister src, XMMRegister tmp) {
+    Cvttss2ui(dst, Operand(src), tmp);
+  }
+  void Cvttss2ui(Register dst, Operand src, XMMRegister tmp);
+  void Cvtui2sd(XMMRegister dst, Register src) { Cvtui2sd(dst, Operand(src)); }
+  void Cvtui2sd(XMMRegister dst, Operand src);
+  void Cvttsd2ui(Register dst, XMMRegister src, XMMRegister tmp) {
+    Cvttsd2ui(dst, Operand(src), tmp);
+  }
+  void Cvttsd2ui(Register dst, Operand src, XMMRegister tmp);
 
   void Push(Register src) { push(src); }
   void Push(Operand src) { push(src); }
@@ -343,11 +367,17 @@ class TurboAssembler : public Assembler {
 
   void ResetSpeculationPoisonRegister();
 
- private:
-  bool has_frame_ = false;
-  Isolate* const isolate_;
+  bool root_array_available() const { return root_array_available_; }
+  void set_root_array_available(bool v) { root_array_available_ = v; }
+
+ protected:
   // This handle will be patched with the code object on installation.
   Handle<HeapObject> code_object_;
+
+ private:
+  bool has_frame_ = false;
+  bool root_array_available_ = false;
+  Isolate* const isolate_;
 };
 
 // MacroAssembler implements a collection of frequently used macros.

@@ -16,6 +16,7 @@
 #include "src/interpreter/bytecode-array-iterator.h"
 #include "src/interpreter/bytecodes.h"
 #include "src/isolate-inl.h"
+#include "src/objects/api-callbacks.h"
 #include "src/snapshot/snapshot.h"
 
 namespace v8 {
@@ -112,8 +113,8 @@ MaybeHandle<Object> DebugEvaluate::WithTopmostArguments(Isolate* isolate,
   Handle<Context> evaluation_context =
       factory->NewDebugEvaluateContext(native_context, scope_info, materialized,
                                        Handle<Context>(), Handle<StringSet>());
-  Handle<SharedFunctionInfo> outer_info(native_context->closure()->shared(),
-                                        isolate);
+  Handle<SharedFunctionInfo> outer_info(
+      native_context->empty_function()->shared(), isolate);
   Handle<JSObject> receiver(native_context->global_proxy());
   const bool throw_on_side_effect = false;
   MaybeHandle<Object> maybe_result =
@@ -331,10 +332,8 @@ bool IntrinsicHasNoSideEffect(Runtime::FunctionId id) {
   V(IsArray)                             \
   V(IsDate)                              \
   V(IsFunction)                          \
-  V(IsJSMap)                             \
   V(IsJSProxy)                           \
   V(IsJSReceiver)                        \
-  V(IsJSSet)                             \
   V(IsJSWeakMap)                         \
   V(IsJSWeakSet)                         \
   V(IsRegExp)                            \
@@ -347,10 +346,23 @@ bool IntrinsicHasNoSideEffect(Runtime::FunctionId id) {
   V(EstimateNumberOfElements)            \
   V(GetArrayKeys)                        \
   V(HasComplexElements)                  \
+  V(HasFastPackedElements)               \
   V(NewArray)                            \
   V(NormalizeElements)                   \
+  V(PrepareElementsForSort)              \
   V(TrySliceSimpleNonFastElements)       \
   V(TypedArrayGetBuffer)                 \
+  /* DataView */                         \
+  V(DataViewGetInt8)                     \
+  V(DataViewGetUint8)                    \
+  V(DataViewGetInt16)                    \
+  V(DataViewGetUint16)                   \
+  V(DataViewGetInt32)                    \
+  V(DataViewGetUint32)                   \
+  V(DataViewGetFloat32)                  \
+  V(DataViewGetFloat64)                  \
+  V(DataViewGetBigInt64)                 \
+  V(DataViewGetBigUint64)                \
   /* Errors */                           \
   V(NewTypeError)                        \
   V(ReThrow)                             \
@@ -407,13 +419,16 @@ bool IntrinsicHasNoSideEffect(Runtime::FunctionId id) {
   V(ThrowRangeError)                     \
   V(ThrowTypeError)                      \
   V(ToName)                              \
+  V(TransitionElementsKind)              \
   /* Misc. */                            \
   V(Call)                                \
   V(CompleteInobjectSlackTrackingForMap) \
   V(HasInPrototypeChain)                 \
   V(MaxSmi)                              \
   V(NewObject)                           \
+  V(SmiLexicographicCompare)             \
   V(StringMaxLength)                     \
+  V(StringToArray)                       \
   /* Test */                             \
   V(GetOptimizationStatus)               \
   V(OptimizeFunctionOnNextCall)          \
@@ -491,6 +506,8 @@ bool BytecodeHasNoSideEffect(interpreter::Bytecode bytecode) {
     case Bytecode::kLdaGlobal:
     case Bytecode::kLdaNamedProperty:
     case Bytecode::kLdaKeyedProperty:
+    case Bytecode::kLdaGlobalInsideTypeof:
+    case Bytecode::kLdaLookupSlotInsideTypeof:
     // Arithmetics.
     case Bytecode::kAdd:
     case Bytecode::kAddSmi:
@@ -548,15 +565,16 @@ bool BytecodeHasNoSideEffect(interpreter::Bytecode bytecode) {
     case Bytecode::kTestGreaterThanOrEqual:
     case Bytecode::kTestInstanceOf:
     case Bytecode::kTestIn:
-    case Bytecode::kTestEqualStrictNoFeedback:
+    case Bytecode::kTestReferenceEqual:
     case Bytecode::kTestUndetectable:
     case Bytecode::kTestTypeOf:
     case Bytecode::kTestUndefined:
     case Bytecode::kTestNull:
     // Conversions.
     case Bytecode::kToObject:
-    case Bytecode::kToNumber:
     case Bytecode::kToName:
+    case Bytecode::kToNumber:
+    case Bytecode::kToNumeric:
     case Bytecode::kToString:
     // Misc.
     case Bytecode::kForInEnumerate:
@@ -580,7 +598,8 @@ bool BytecodeHasNoSideEffect(interpreter::Bytecode bytecode) {
   }
 }
 
-bool BuiltinHasNoSideEffect(Builtins::Name id) {
+SharedFunctionInfo::SideEffectState BuiltinGetSideEffectState(
+    Builtins::Name id) {
   switch (id) {
     // Whitelist for builtins.
     // Object builtins.
@@ -611,8 +630,11 @@ bool BuiltinHasNoSideEffect(Builtins::Name id) {
     case Builtins::kArrayPrototypeEntries:
     case Builtins::kArrayPrototypeFind:
     case Builtins::kArrayPrototypeFindIndex:
+    case Builtins::kArrayPrototypeFlat:
+    case Builtins::kArrayPrototypeFlatMap:
     case Builtins::kArrayPrototypeKeys:
     case Builtins::kArrayPrototypeSlice:
+    case Builtins::kArrayPrototypeSort:
     case Builtins::kArrayForEach:
     case Builtins::kArrayEvery:
     case Builtins::kArraySome:
@@ -852,13 +874,44 @@ bool BuiltinHasNoSideEffect(Builtins::Name id) {
     case Builtins::kMakeSyntaxError:
     case Builtins::kMakeRangeError:
     case Builtins::kMakeURIError:
-      return true;
+    // RegExp builtins.
+    case Builtins::kRegExpConstructor:
+      return SharedFunctionInfo::kHasNoSideEffect;
+    // Set builtins.
+    case Builtins::kSetIteratorPrototypeNext:
+    case Builtins::kSetPrototypeAdd:
+    case Builtins::kSetPrototypeClear:
+    case Builtins::kSetPrototypeDelete:
+    // Array builtins.
+    case Builtins::kArrayIteratorPrototypeNext:
+    case Builtins::kArrayPrototypePop:
+    case Builtins::kArrayPrototypePush:
+    case Builtins::kArrayPrototypeShift:
+    case Builtins::kArraySplice:
+    case Builtins::kArrayUnshift:
+    // Map builtins.
+    case Builtins::kMapIteratorPrototypeNext:
+    case Builtins::kMapPrototypeClear:
+    case Builtins::kMapPrototypeDelete:
+    case Builtins::kMapPrototypeSet:
+    // RegExp builtins.
+    case Builtins::kRegExpPrototypeTest:
+    case Builtins::kRegExpPrototypeExec:
+    case Builtins::kRegExpPrototypeSplit:
+    case Builtins::kRegExpPrototypeFlagsGetter:
+    case Builtins::kRegExpPrototypeGlobalGetter:
+    case Builtins::kRegExpPrototypeIgnoreCaseGetter:
+    case Builtins::kRegExpPrototypeMultilineGetter:
+    case Builtins::kRegExpPrototypeDotAllGetter:
+    case Builtins::kRegExpPrototypeUnicodeGetter:
+    case Builtins::kRegExpPrototypeStickyGetter:
+      return SharedFunctionInfo::kRequiresRuntimeChecks;
     default:
       if (FLAG_trace_side_effect_free_debug_evaluate) {
         PrintF("[debug-evaluate] built-in %s may cause side effect.\n",
                Builtins::name(id));
       }
-      return false;
+      return SharedFunctionInfo::kHasSideEffects;
   }
 }
 
@@ -880,7 +933,7 @@ bool BytecodeRequiresRuntimeCheck(interpreter::Bytecode bytecode) {
 }  // anonymous namespace
 
 // static
-DebugEvaluate::SideEffectState DebugEvaluate::FunctionGetSideEffectState(
+SharedFunctionInfo::SideEffectState DebugEvaluate::FunctionGetSideEffectState(
     Handle<SharedFunctionInfo> info) {
   if (FLAG_trace_side_effect_free_debug_evaluate) {
     PrintF("[debug-evaluate] Checking function %s for side effect.\n",
@@ -903,7 +956,7 @@ DebugEvaluate::SideEffectState DebugEvaluate::FunctionGetSideEffectState(
                 ? it.GetIntrinsicIdOperand(0)
                 : it.GetRuntimeIdOperand(0);
         if (IntrinsicHasNoSideEffect(id)) continue;
-        return kHasSideEffects;
+        return SharedFunctionInfo::kHasSideEffects;
       }
 
       if (BytecodeHasNoSideEffect(bytecode)) continue;
@@ -918,23 +971,27 @@ DebugEvaluate::SideEffectState DebugEvaluate::FunctionGetSideEffectState(
       }
 
       // Did not match whitelist.
-      return kHasSideEffects;
+      return SharedFunctionInfo::kHasSideEffects;
     }
-    return requires_runtime_checks ? kRequiresRuntimeChecks : kHasNoSideEffect;
+    return requires_runtime_checks ? SharedFunctionInfo::kRequiresRuntimeChecks
+                                   : SharedFunctionInfo::kHasNoSideEffect;
   } else if (info->IsApiFunction()) {
     if (info->GetCode()->is_builtin()) {
       return info->GetCode()->builtin_index() == Builtins::kHandleApiCall
-                 ? kHasNoSideEffect
-                 : kHasSideEffects;
+                 ? SharedFunctionInfo::kHasNoSideEffect
+                 : SharedFunctionInfo::kHasSideEffects;
     }
   } else {
     // Check built-ins against whitelist.
     int builtin_index =
         info->HasBuiltinId() ? info->builtin_id() : Builtins::kNoBuiltinId;
     DCHECK_NE(Builtins::kDeserializeLazy, builtin_index);
-    if (Builtins::IsBuiltinId(builtin_index) &&
-        BuiltinHasNoSideEffect(static_cast<Builtins::Name>(builtin_index))) {
+    if (!Builtins::IsBuiltinId(builtin_index))
+      return SharedFunctionInfo::kHasSideEffects;
+    SharedFunctionInfo::SideEffectState state =
+        BuiltinGetSideEffectState(static_cast<Builtins::Name>(builtin_index));
 #ifdef DEBUG
+    if (state == SharedFunctionInfo::kHasNoSideEffect) {
       Isolate* isolate = info->GetIsolate();
       Code* code = isolate->builtins()->builtin(builtin_index);
       if (code->builtin_index() == Builtins::kDeserializeLazy) {
@@ -963,12 +1020,12 @@ DebugEvaluate::SideEffectState DebugEvaluate::FunctionGetSideEffectState(
         }
         DCHECK(!failed);
       }
-#endif  // DEBUG
-      return kHasNoSideEffect;
     }
+#endif  // DEBUG
+    return state;
   }
 
-  return kHasSideEffects;
+  return SharedFunctionInfo::kHasSideEffects;
 }
 
 // static

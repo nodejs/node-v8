@@ -54,7 +54,11 @@ namespace v8 {
  */
 class V8_EXPORT TracingCpuProfiler {
  public:
-  static std::unique_ptr<TracingCpuProfiler> Create(Isolate*);
+  V8_DEPRECATED(
+      "The profiler is created automatically with the isolate.\n"
+      "No need to create it explicitly.",
+      static std::unique_ptr<TracingCpuProfiler> Create(Isolate*));
+
   virtual ~TracingCpuProfiler() = default;
 
  protected:
@@ -273,6 +277,16 @@ class V8_EXPORT CpuProfile {
   void Delete();
 };
 
+enum CpuProfilingMode {
+  // In the resulting CpuProfile tree, intermediate nodes in a stack trace
+  // (from the root to a leaf) will have line numbers that point to the start
+  // line of the function, rather than the line of the callsite of the child.
+  kLeafNodeLineNumbers,
+  // In the resulting CpuProfile tree, nodes are separated based on the line
+  // number of their callsite in their parent.
+  kCallerLineNumbers,
+};
+
 /**
  * Interface for controlling CPU profiling. Instance of the
  * profiler can be created using v8::CpuProfiler::New method.
@@ -315,6 +329,13 @@ class V8_EXPORT CpuProfiler {
    *
    * |record_samples| parameter controls whether individual samples should
    * be recorded in addition to the aggregated tree.
+   */
+  void StartProfiling(Local<String> title, CpuProfilingMode mode,
+                      bool record_samples = false);
+  /**
+   * The same as StartProfiling above, but the CpuProfilingMode defaults to
+   * kLeafNodeLineNumbers mode, which was the previous default behavior of the
+   * profiler.
    */
   void StartProfiling(Local<String> title, bool record_samples = false);
 
@@ -988,6 +1009,76 @@ struct HeapStatsUpdate {
   uint32_t size;  // New value of size field for the interval with this index.
 };
 
+#define CODE_EVENTS_LIST(V) \
+  V(Builtin)                \
+  V(Callback)               \
+  V(Eval)                   \
+  V(Function)               \
+  V(InterpretedFunction)    \
+  V(Handler)                \
+  V(BytecodeHandler)        \
+  V(LazyCompile)            \
+  V(RegExp)                 \
+  V(Script)                 \
+  V(Stub)
+
+/**
+ * Note that this enum may be extended in the future. Please include a default
+ * case if this enum is used in a switch statement.
+ */
+enum CodeEventType {
+  kUnknownType = 0
+#define V(Name) , k##Name##Type
+  CODE_EVENTS_LIST(V)
+#undef V
+};
+
+/**
+ * Representation of a code creation event
+ */
+class V8_EXPORT CodeEvent {
+ public:
+  uintptr_t GetCodeStartAddress();
+  size_t GetCodeSize();
+  Local<String> GetFunctionName();
+  Local<String> GetScriptName();
+  int GetScriptLine();
+  int GetScriptColumn();
+  /**
+   * NOTE (mmarchini): We can't allocate objects in the heap when we collect
+   * existing code, and both the code type and the comment are not stored in the
+   * heap, so we return those as const char*.
+   */
+  CodeEventType GetCodeType();
+  const char* GetComment();
+
+  static const char* GetCodeEventTypeName(CodeEventType code_event_type);
+};
+
+/**
+ * Interface to listen to code creation events.
+ */
+class V8_EXPORT CodeEventHandler {
+ public:
+  /**
+   * Creates a new listener for the |isolate|. The isolate must be initialized.
+   * The listener object must be disposed after use by calling |Dispose| method.
+   * Multiple listeners can be created for the same isolate.
+   */
+  explicit CodeEventHandler(Isolate* isolate);
+  virtual ~CodeEventHandler();
+
+  virtual void Handle(CodeEvent* code_event) = 0;
+
+  void Enable();
+  void Disable();
+
+ private:
+  CodeEventHandler();
+  CodeEventHandler(const CodeEventHandler&);
+  CodeEventHandler& operator=(const CodeEventHandler&);
+  void* internal_listener_;
+};
 
 }  // namespace v8
 

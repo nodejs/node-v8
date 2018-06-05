@@ -312,9 +312,12 @@ TEST(FeedbackVectorPreservedAcrossRecompiles) {
   Handle<FeedbackVector> feedback_vector(f->feedback_vector());
   CHECK(!feedback_vector->is_empty());
   FeedbackSlot slot_for_a(0);
-  Object* object = feedback_vector->Get(slot_for_a);
-  CHECK(object->IsWeakCell() &&
-        WeakCell::cast(object)->value()->IsJSFunction());
+  MaybeObject* object = feedback_vector->Get(slot_for_a);
+  {
+    HeapObject* heap_object;
+    CHECK(object->ToWeakHeapObject(&heap_object));
+    CHECK(heap_object->IsJSFunction());
+  }
 
   CompileRun("%OptimizeFunctionOnNextCall(f); f(fun1);");
 
@@ -322,8 +325,11 @@ TEST(FeedbackVectorPreservedAcrossRecompiles) {
   // of the full code.
   CHECK(f->IsOptimized());
   object = f->feedback_vector()->Get(slot_for_a);
-  CHECK(object->IsWeakCell() &&
-        WeakCell::cast(object)->value()->IsJSFunction());
+  {
+    HeapObject* heap_object;
+    CHECK(object->ToWeakHeapObject(&heap_object));
+    CHECK(heap_object->IsJSFunction());
+  }
 }
 
 

@@ -338,34 +338,22 @@ bool RelocInfo::IsInConstantPool() {
   return Assembler::is_constant_pool_load(pc_);
 }
 
-Address RelocInfo::embedded_address() const {
-  return Assembler::target_address_at(pc_, constant_pool_);
-}
-
-uint32_t RelocInfo::embedded_size() const {
-  return reinterpret_cast<uint32_t>(
-      Assembler::target_address_at(pc_, constant_pool_));
-}
-
-void RelocInfo::set_embedded_address(Address address,
-                                     ICacheFlushMode flush_mode) {
-  Assembler::set_target_address_at(pc_, constant_pool_, address, flush_mode);
-}
-
-void RelocInfo::set_embedded_size(uint32_t size, ICacheFlushMode flush_mode) {
-  Assembler::set_target_address_at(pc_, constant_pool_,
-                                   reinterpret_cast<Address>(size), flush_mode);
-}
-
 void RelocInfo::set_js_to_wasm_address(Address address,
                                        ICacheFlushMode icache_flush_mode) {
   DCHECK_EQ(rmode_, JS_TO_WASM_CALL);
-  set_embedded_address(address, icache_flush_mode);
+  Assembler::set_target_address_at(pc_, constant_pool_, address,
+                                   icache_flush_mode);
 }
 
 Address RelocInfo::js_to_wasm_address() const {
   DCHECK_EQ(rmode_, JS_TO_WASM_CALL);
-  return embedded_address();
+  return Assembler::target_address_at(pc_, constant_pool_);
+}
+
+uint32_t RelocInfo::wasm_stub_call_tag() const {
+  DCHECK_EQ(rmode_, WASM_STUB_CALL);
+  return static_cast<uint32_t>(
+      Assembler::target_address_at(pc_, constant_pool_));
 }
 
 // -----------------------------------------------------------------------------
@@ -374,7 +362,7 @@ Address RelocInfo::js_to_wasm_address() const {
 
 Operand::Operand(Handle<HeapObject> handle) {
   rm_ = no_reg;
-  value_.immediate = reinterpret_cast<intptr_t>(handle.address());
+  value_.immediate = static_cast<intptr_t>(handle.address());
   rmode_ = RelocInfo::EMBEDDED_OBJECT;
 }
 
@@ -491,7 +479,7 @@ void Assembler::AllocateAndInstallRequestedHeapObjects(Isolate* isolate) {
         object = request.code_stub()->GetCode();
         break;
     }
-    Address pc = buffer_ + request.offset();
+    Address pc = reinterpret_cast<Address>(buffer_) + request.offset();
     Memory::Address_at(constant_pool_entry_address(pc, 0 /* unused */)) =
         object.address();
   }
@@ -5152,7 +5140,7 @@ void Assembler::RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data) {
     return;
   }
   DCHECK_GE(buffer_space(), kMaxRelocSize);  // too late to grow buffer here
-  RelocInfo rinfo(pc_, rmode, data, nullptr);
+  RelocInfo rinfo(reinterpret_cast<Address>(pc_), rmode, data, nullptr);
   reloc_info_writer.Write(&rinfo);
 }
 
@@ -5191,7 +5179,7 @@ void Assembler::ConstantPoolAddEntry(int position, RelocInfo::Mode rmode,
       value != 0) {
     // Sharing entries here relies on canonicalized handles - without them, we
     // will miss the optimisation opportunity.
-    Address handle_address = reinterpret_cast<Address>(value);
+    Address handle_address = static_cast<Address>(value);
     auto existing = handle_to_index_map_.find(handle_address);
     if (existing != handle_to_index_map_.end()) {
       int index = existing->second;
@@ -5476,9 +5464,7 @@ PatchingAssembler::~PatchingAssembler() {
   DCHECK_EQ(reloc_info_writer.pos(), buffer_ + buffer_size_);
 }
 
-void PatchingAssembler::Emit(Address addr) {
-  emit(reinterpret_cast<Instr>(addr));
-}
+void PatchingAssembler::Emit(Address addr) { emit(static_cast<Instr>(addr)); }
 
 UseScratchRegisterScope::UseScratchRegisterScope(Assembler* assembler)
     : assembler_(assembler),

@@ -9,6 +9,7 @@
 #include "src/heap/mark-compact.h"
 #include "src/heap/objects-visiting-inl.h"
 #include "src/heap/remembered-set.h"
+#include "src/objects/js-collection-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -379,6 +380,16 @@ void MarkCompactCollector::MarkRootObject(Root root, HeapObject* obj) {
     }
   }
 }
+
+#ifdef ENABLE_MINOR_MC
+
+void MinorMarkCompactCollector::MarkRootObject(HeapObject* obj) {
+  if (heap_->InNewSpace(obj) && non_atomic_marking_state_.WhiteToGrey(obj)) {
+    worklist_->Push(kMainThread, obj);
+  }
+}
+
+#endif
 
 void MarkCompactCollector::MarkExternallyReferencedObject(HeapObject* obj) {
   if (marking_state()->WhiteToGrey(obj)) {

@@ -42,26 +42,6 @@ namespace internal {
 
 #define __ assm.
 
-void Disassemble(FILE* f, byte* begin, byte* end) {
-  disasm::NameConverter converter;
-  disasm::Disassembler d(converter);
-  for (byte* pc = begin; pc < end;) {
-    v8::internal::EmbeddedVector<char, 128> buffer;
-    buffer[0] = '\0';
-    byte* prev_pc = pc;
-    pc += d.InstructionDecodeForTesting(buffer, pc);
-    fprintf(f, "%p", static_cast<void*>(prev_pc));
-    fprintf(f, "    ");
-
-    for (byte* bp = prev_pc; bp < pc; bp++) {
-      fprintf(f, "%02x", *bp);
-    }
-    for (int i = 6 - (pc - prev_pc); i >= 0; i--) {
-      fprintf(f, "  ");
-    }
-    fprintf(f, "  %s\n", buffer.start());
-  }
-}
 static void DummyStaticFunction(Object* result) {
 }
 
@@ -516,6 +496,8 @@ TEST(DisasmIa320) {
     __ psrlq(xmm0, 17);
     __ psrlq(xmm0, xmm1);
 
+    __ pshufhw(xmm5, xmm1, 5);
+    __ pshufhw(xmm5, Operand(edx, 4), 5);
     __ pshuflw(xmm5, xmm1, 5);
     __ pshuflw(xmm5, Operand(edx, 4), 5);
     __ pshufd(xmm5, xmm1, 5);
@@ -567,6 +549,8 @@ TEST(DisasmIa320) {
     if (CpuFeatures::IsSupported(SSSE3)) {
       CpuFeatureScope scope(&assm, SSSE3);
       SSSE3_INSTRUCTION_LIST(EMIT_SSE34_INSTR)
+      __ palignr(xmm5, xmm1, 5);
+      __ palignr(xmm5, Operand(edx, 4), 5);
     }
   }
 
@@ -588,6 +572,8 @@ TEST(DisasmIa320) {
       __ pinsrd(xmm1, eax, 0);
       __ pinsrd(xmm1, Operand(edx, 4), 0);
       __ extractps(eax, xmm1, 0);
+      __ ptest(xmm5, xmm1);
+      __ ptest(xmm5, Operand(edx, 4));
 
       SSE4_INSTRUCTION_LIST(EMIT_SSE34_INSTR)
     }
@@ -680,6 +666,9 @@ TEST(DisasmIa320) {
       __ vmaxpd(xmm0, xmm1, xmm2);
       __ vmaxpd(xmm0, xmm1, Operand(ebx, ecx, times_4, 10000));
 
+      __ vptest(xmm5, xmm1);
+      __ vptest(xmm5, Operand(edx, 4));
+
       __ vpsllw(xmm0, xmm7, 21);
       __ vpslld(xmm0, xmm7, 21);
       __ vpsrlw(xmm0, xmm7, 21);
@@ -687,12 +676,16 @@ TEST(DisasmIa320) {
       __ vpsraw(xmm0, xmm7, 21);
       __ vpsrad(xmm0, xmm7, 21);
 
+      __ vpshufhw(xmm5, xmm1, 5);
+      __ vpshufhw(xmm5, Operand(edx, 4), 5);
       __ vpshuflw(xmm5, xmm1, 5);
       __ vpshuflw(xmm5, Operand(edx, 4), 5);
       __ vpshufd(xmm5, xmm1, 5);
       __ vpshufd(xmm5, Operand(edx, 4), 5);
       __ vpblendw(xmm5, xmm1, xmm0, 5);
       __ vpblendw(xmm5, xmm1, Operand(edx, 4), 5);
+      __ vpalignr(xmm5, xmm1, xmm0, 5);
+      __ vpalignr(xmm5, xmm1, Operand(edx, 4), 5);
       __ vpextrb(eax, xmm0, 1);
       __ vpextrb(Operand(edx, 4), xmm0, 1);
       __ vpextrw(eax, xmm0, 1);
@@ -900,9 +893,10 @@ TEST(DisasmIa320) {
 #ifdef OBJECT_PRINT
   OFStream os(stdout);
   code->Print(os);
-  byte* begin = code->raw_instruction_start();
-  byte* end = begin + code->raw_instruction_size();
-  Disassemble(stdout, begin, end);
+  Address begin = code->raw_instruction_start();
+  Address end = code->raw_instruction_end();
+  disasm::Disassembler::Disassemble(stdout, reinterpret_cast<byte*>(begin),
+                                    reinterpret_cast<byte*>(end));
 #endif
 }
 

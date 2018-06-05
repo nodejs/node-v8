@@ -432,7 +432,6 @@ TEST(RegExpParser) {
   CHECK_MIN_MAX("a(?=bbb|bb)c", 2, 2);
   CHECK_MIN_MAX("a(?!bbb|bb)c", 2, 2);
 
-  FLAG_harmony_regexp_named_captures = true;
   CheckParseEq("(?<a>x)(?<b>x)(?<c>x)\\k<a>",
                "(: (^ 'x') (^ 'x') (^ 'x') (<- 1))", true);
   CheckParseEq("(?<a>x)(?<b>x)(?<c>x)\\k<b>",
@@ -447,7 +446,6 @@ TEST(RegExpParser) {
 
   CheckParseEq("(?<\\u{03C0}>a)", "(^ 'a')", true);
   CheckParseEq("(?<\\u03C0>a)", "(^ 'a')", true);
-  FLAG_harmony_regexp_named_captures = false;
 }
 
 TEST(ParserRegression) {
@@ -501,7 +499,6 @@ TEST(Errors) {
   }
   ExpectError(os.str().c_str(), kTooManyCaptures);
 
-  FLAG_harmony_regexp_named_captures = true;
   const char* kInvalidCaptureName = "Invalid capture group name";
   ExpectError("(?<>.)", kInvalidCaptureName, true);
   ExpectError("(?<1>.)", kInvalidCaptureName, true);
@@ -516,7 +513,6 @@ TEST(Errors) {
   ExpectError("(?<b>)\\k<a>", kInvalidCaptureReferenced, true);
   const char* kInvalidNamedReference = "Invalid named reference";
   ExpectError("\\ka", kInvalidNamedReference, true);
-  FLAG_harmony_regexp_named_captures = false;
 }
 
 
@@ -794,22 +790,14 @@ class ContextInitializer {
   v8::Local<v8::Context> env_;
 };
 
-
-static ArchRegExpMacroAssembler::Result Execute(Code* code,
-                                                String* input,
+static ArchRegExpMacroAssembler::Result Execute(Code* code, String* input,
                                                 int start_offset,
-                                                const byte* input_start,
-                                                const byte* input_end,
+                                                Address input_start,
+                                                Address input_end,
                                                 int* captures) {
   return NativeRegExpMacroAssembler::Execute(
-      code,
-      input,
-      start_offset,
-      input_start,
-      input_end,
-      captures,
-      0,
-      CcTest::i_isolate());
+      code, input, start_offset, reinterpret_cast<byte*>(input_start),
+      reinterpret_cast<byte*>(input_end), captures, 0, CcTest::i_isolate());
 }
 
 
@@ -832,8 +820,7 @@ TEST(MacroAssemblerNativeSuccess) {
   int captures[4] = {42, 37, 87, 117};
   Handle<String> input = factory->NewStringFromStaticChars("foofoo");
   Handle<SeqOneByteString> seq_input = Handle<SeqOneByteString>::cast(input);
-  const byte* start_adr =
-      reinterpret_cast<const byte*>(seq_input->GetCharsAddress());
+  Address start_adr = seq_input->GetCharsAddress();
 
   NativeRegExpMacroAssembler::Result result =
       Execute(*code,

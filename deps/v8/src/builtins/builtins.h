@@ -39,7 +39,7 @@ class Builtins {
   void IterateBuiltins(RootVisitor* v);
 
   // Disassembler support.
-  const char* Lookup(byte* pc);
+  const char* Lookup(Address pc);
 
   enum Name : int32_t {
 #define DEF_ENUM(Name, ...) k##Name,
@@ -113,6 +113,10 @@ class Builtins {
   // necessarily mean that its kind is Code::BUILTIN.
   static bool IsBuiltin(const Code* code);
 
+  // As above, but safe to access off the main thread since the check is done
+  // by handle location. Similar to Heap::IsRootHandle.
+  bool IsBuiltinHandle(Handle<Code> code, int* index) const;
+
   // True, iff the given code object is a builtin with off-heap embedded code.
   static bool IsEmbeddedBuiltin(const Code* code);
 
@@ -142,6 +146,10 @@ class Builtins {
 
   static void Generate_Adaptor(MacroAssembler* masm, Address builtin_address,
                                ExitFrameType exit_frame_type);
+
+  static void Generate_CEntry(MacroAssembler* masm, int result_size,
+                              SaveFPRegsMode save_doubles, ArgvMode argv_mode,
+                              bool builtin_exit_frame);
 
   static bool AllowDynamicFunction(Isolate* isolate, Handle<JSFunction> target,
                                    Handle<JSObject> target_global_proxy);

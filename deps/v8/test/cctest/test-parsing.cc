@@ -641,7 +641,7 @@ TEST(ScopeUsesArgumentsSuperThis) {
           factory->NewStringFromUtf8(i::CStrVector(program.start()))
               .ToHandleChecked();
       i::Handle<i::Script> script = factory->NewScript(source);
-      i::ParseInfo info(script);
+      i::ParseInfo info(isolate, script);
       // The information we're checking is only produced when eager parsing.
       info.set_allow_lazy_parsing(false);
       CHECK(i::parsing::ParseProgram(&info, isolate));
@@ -708,7 +708,7 @@ static void CheckParsesToNumber(const char* source) {
 
   i::Handle<i::Script> script = factory->NewScript(source_code);
 
-  i::ParseInfo info(script);
+  i::ParseInfo info(isolate, script);
   info.set_allow_lazy_parsing(false);
   info.set_toplevel(true);
 
@@ -1017,7 +1017,7 @@ TEST(ScopePositions) {
         i::CStrVector(program.start())).ToHandleChecked();
     CHECK_EQ(source->length(), kProgramSize);
     i::Handle<i::Script> script = factory->NewScript(source);
-    i::ParseInfo info(script);
+    i::ParseInfo info(isolate, script);
     info.set_language_mode(source_data[i].language_mode);
     i::parsing::ParseProgram(&info, isolate);
     CHECK_NOT_NULL(info.literal());
@@ -1063,7 +1063,7 @@ TEST(DiscardFunctionBody) {
     i::Handle<i::String> source_code =
         factory->NewStringFromUtf8(i::CStrVector(source)).ToHandleChecked();
     i::Handle<i::Script> script = factory->NewScript(source_code);
-    i::ParseInfo info(script);
+    i::ParseInfo info(isolate, script);
     i::parsing::ParseProgram(&info, isolate);
     function = info.literal();
     CHECK_NOT_NULL(function);
@@ -1199,7 +1199,7 @@ void TestParserSyncWithFlags(i::Handle<i::String> source,
   i::FunctionLiteral* function;
   {
     i::Handle<i::Script> script = factory->NewScript(source);
-    i::ParseInfo info(script);
+    i::ParseInfo info(isolate, script);
     info.set_allow_lazy_parsing(flags.Contains(kAllowLazy));
     SetGlobalFlags(flags);
     if (is_module) info.set_module();
@@ -3060,7 +3060,8 @@ TEST(InnerAssignment) {
           i::Handle<i::Object> o = v8::Utils::OpenHandle(*v);
           i::Handle<i::JSFunction> f = i::Handle<i::JSFunction>::cast(o);
           i::Handle<i::SharedFunctionInfo> shared = i::handle(f->shared());
-          info = std::unique_ptr<i::ParseInfo>(new i::ParseInfo(shared));
+          info =
+              std::unique_ptr<i::ParseInfo>(new i::ParseInfo(isolate, shared));
           CHECK(i::parsing::ParseFunction(info.get(), shared, isolate));
         } else {
           i::Handle<i::String> source =
@@ -3068,7 +3069,8 @@ TEST(InnerAssignment) {
           source->PrintOn(stdout);
           printf("\n");
           i::Handle<i::Script> script = factory->NewScript(source);
-          info = std::unique_ptr<i::ParseInfo>(new i::ParseInfo(script));
+          info =
+              std::unique_ptr<i::ParseInfo>(new i::ParseInfo(isolate, script));
           info->set_allow_lazy_parsing(false);
           CHECK(i::parsing::ParseProgram(info.get(), isolate));
         }
@@ -3173,7 +3175,7 @@ TEST(MaybeAssignedParameters) {
       i::Handle<i::Object> o = v8::Utils::OpenHandle(*v);
       i::Handle<i::JSFunction> f = i::Handle<i::JSFunction>::cast(o);
       i::Handle<i::SharedFunctionInfo> shared = i::handle(f->shared());
-      info = std::unique_ptr<i::ParseInfo>(new i::ParseInfo(shared));
+      info = std::unique_ptr<i::ParseInfo>(new i::ParseInfo(isolate, shared));
       info->set_allow_lazy_parsing(allow_lazy);
       CHECK(i::parsing::ParseFunction(info.get(), shared, isolate));
       CHECK(i::Compiler::Analyze(info.get()));
@@ -3210,7 +3212,7 @@ static void TestMaybeAssigned(Input input, const char* variable, bool module,
   i::Handle<i::Script> script = factory->NewScript(string);
 
   std::unique_ptr<i::ParseInfo> info;
-  info = std::unique_ptr<i::ParseInfo>(new i::ParseInfo(script));
+  info = std::unique_ptr<i::ParseInfo>(new i::ParseInfo(isolate, script));
   info->set_module(module);
   info->set_allow_lazy_parsing(allow_lazy_parsing);
 
@@ -3731,24 +3733,9 @@ TEST(LineOrParagraphSeparatorAsLineTerminator) {
 }
 
 TEST(LineOrParagraphSeparatorInStringLiteral) {
-  // Tests that both preparsing and parsing treat U+2028 LINE SEPARATOR and
-  // U+2029 PARAGRAPH SEPARATOR as line terminators within string literals
-  // when the "subsume JSON" flag is disabled.
-  v8::internal::FLAG_harmony_subsume_json = false;
-  const char* context_data[][2] = {
-      {"\"", "\""}, {"'", "'"}, {nullptr, nullptr}};
-  const char* statement_data[] = {"\x31\xE2\x80\xA8\x32",  // 1<U+2028>2
-                                  "\x31\xE2\x80\xA9\x32",  // 1<U+2029>2
-                                  nullptr};
-
-  RunParserSyncTest(context_data, statement_data, kError);
-}
-
-TEST(LineOrParagraphSeparatorInStringLiteralHarmony) {
   // Tests that both preparsing and parsing don't treat U+2028 LINE SEPARATOR
-  // and U+2029 PARAGRAPH SEPARATOR as line terminators within string literals
-  // when the "subsume JSON" flag is enabled.
-  v8::internal::FLAG_harmony_subsume_json = true;
+  // and U+2029 PARAGRAPH SEPARATOR as line terminators within string literals.
+  // https://github.com/tc39/proposal-json-superset
   const char* context_data[][2] = {
       {"\"", "\""}, {"'", "'"}, {nullptr, nullptr}};
   const char* statement_data[] = {"\x31\xE2\x80\xA8\x32",  // 1<U+2028>2
@@ -6221,7 +6208,7 @@ TEST(BasicImportExportParsing) {
     // Show that parsing as a module works
     {
       i::Handle<i::Script> script = factory->NewScript(source);
-      i::ParseInfo info(script);
+      i::ParseInfo info(isolate, script);
       info.set_module();
       if (!i::parsing::ParseProgram(&info, isolate)) {
         i::Handle<i::JSObject> exception_handle(
@@ -6244,7 +6231,7 @@ TEST(BasicImportExportParsing) {
     // And that parsing a script does not.
     {
       i::Handle<i::Script> script = factory->NewScript(source);
-      i::ParseInfo info(script);
+      i::ParseInfo info(isolate, script);
       CHECK(!i::parsing::ParseProgram(&info, isolate));
       isolate->clear_pending_exception();
     }
@@ -6334,7 +6321,7 @@ TEST(ImportExportParsingErrors) {
         factory->NewStringFromAsciiChecked(kErrorSources[i]);
 
     i::Handle<i::Script> script = factory->NewScript(source);
-    i::ParseInfo info(script);
+    i::ParseInfo info(isolate, script);
     info.set_module();
     CHECK(!i::parsing::ParseProgram(&info, isolate));
     isolate->clear_pending_exception();
@@ -6370,7 +6357,7 @@ TEST(ModuleTopLevelFunctionDecl) {
         factory->NewStringFromAsciiChecked(kErrorSources[i]);
 
     i::Handle<i::Script> script = factory->NewScript(source);
-    i::ParseInfo info(script);
+    i::ParseInfo info(isolate, script);
     info.set_module();
     CHECK(!i::parsing::ParseProgram(&info, isolate));
     isolate->clear_pending_exception();
@@ -6567,7 +6554,7 @@ TEST(ModuleParsingInternals) {
       "export {foob};";
   i::Handle<i::String> source = factory->NewStringFromAsciiChecked(kSource);
   i::Handle<i::Script> script = factory->NewScript(source);
-  i::ParseInfo info(script);
+  i::ParseInfo info(isolate, script);
   info.set_module();
   CHECK(i::parsing::ParseProgram(&info, isolate));
   CHECK(i::Compiler::Analyze(&info));
@@ -6582,54 +6569,62 @@ TEST(ModuleParsingInternals) {
   CHECK_EQ(13, declarations->LengthForTest());
 
   CHECK(declarations->AtForTest(0)->proxy()->raw_name()->IsOneByteEqualTo("x"));
-  CHECK(declarations->AtForTest(0)->proxy()->var()->mode() == i::LET);
+  CHECK(declarations->AtForTest(0)->proxy()->var()->mode() ==
+        i::VariableMode::kLet);
   CHECK(declarations->AtForTest(0)->proxy()->var()->binding_needs_init());
   CHECK(declarations->AtForTest(0)->proxy()->var()->location() ==
         i::VariableLocation::MODULE);
 
   CHECK(declarations->AtForTest(1)->proxy()->raw_name()->IsOneByteEqualTo("z"));
-  CHECK(declarations->AtForTest(1)->proxy()->var()->mode() == i::CONST);
+  CHECK(declarations->AtForTest(1)->proxy()->var()->mode() ==
+        i::VariableMode::kConst);
   CHECK(declarations->AtForTest(1)->proxy()->var()->binding_needs_init());
   CHECK(declarations->AtForTest(1)->proxy()->var()->location() ==
         i::VariableLocation::MODULE);
 
   CHECK(declarations->AtForTest(2)->proxy()->raw_name()->IsOneByteEqualTo("n"));
-  CHECK(declarations->AtForTest(2)->proxy()->var()->mode() == i::CONST);
+  CHECK(declarations->AtForTest(2)->proxy()->var()->mode() ==
+        i::VariableMode::kConst);
   CHECK(declarations->AtForTest(2)->proxy()->var()->binding_needs_init());
   CHECK(declarations->AtForTest(2)->proxy()->var()->location() ==
         i::VariableLocation::MODULE);
 
   CHECK(
       declarations->AtForTest(3)->proxy()->raw_name()->IsOneByteEqualTo("foo"));
-  CHECK(declarations->AtForTest(3)->proxy()->var()->mode() == i::VAR);
+  CHECK(declarations->AtForTest(3)->proxy()->var()->mode() ==
+        i::VariableMode::kVar);
   CHECK(!declarations->AtForTest(3)->proxy()->var()->binding_needs_init());
   CHECK(declarations->AtForTest(3)->proxy()->var()->location() ==
         i::VariableLocation::MODULE);
 
   CHECK(
       declarations->AtForTest(4)->proxy()->raw_name()->IsOneByteEqualTo("goo"));
-  CHECK(declarations->AtForTest(4)->proxy()->var()->mode() == i::LET);
+  CHECK(declarations->AtForTest(4)->proxy()->var()->mode() ==
+        i::VariableMode::kLet);
   CHECK(!declarations->AtForTest(4)->proxy()->var()->binding_needs_init());
   CHECK(declarations->AtForTest(4)->proxy()->var()->location() ==
         i::VariableLocation::MODULE);
 
   CHECK(
       declarations->AtForTest(5)->proxy()->raw_name()->IsOneByteEqualTo("hoo"));
-  CHECK(declarations->AtForTest(5)->proxy()->var()->mode() == i::LET);
+  CHECK(declarations->AtForTest(5)->proxy()->var()->mode() ==
+        i::VariableMode::kLet);
   CHECK(declarations->AtForTest(5)->proxy()->var()->binding_needs_init());
   CHECK(declarations->AtForTest(5)->proxy()->var()->location() ==
         i::VariableLocation::MODULE);
 
   CHECK(
       declarations->AtForTest(6)->proxy()->raw_name()->IsOneByteEqualTo("joo"));
-  CHECK(declarations->AtForTest(6)->proxy()->var()->mode() == i::CONST);
+  CHECK(declarations->AtForTest(6)->proxy()->var()->mode() ==
+        i::VariableMode::kConst);
   CHECK(declarations->AtForTest(6)->proxy()->var()->binding_needs_init());
   CHECK(declarations->AtForTest(6)->proxy()->var()->location() ==
         i::VariableLocation::MODULE);
 
   CHECK(declarations->AtForTest(7)->proxy()->raw_name()->IsOneByteEqualTo(
       "*default*"));
-  CHECK(declarations->AtForTest(7)->proxy()->var()->mode() == i::CONST);
+  CHECK(declarations->AtForTest(7)->proxy()->var()->mode() ==
+        i::VariableMode::kConst);
   CHECK(declarations->AtForTest(7)->proxy()->var()->binding_needs_init());
   CHECK(declarations->AtForTest(7)->proxy()->var()->location() ==
         i::VariableLocation::MODULE);
@@ -6642,28 +6637,32 @@ TEST(ModuleParsingInternals) {
 
   CHECK(
       declarations->AtForTest(9)->proxy()->raw_name()->IsOneByteEqualTo("mm"));
-  CHECK(declarations->AtForTest(9)->proxy()->var()->mode() == i::CONST);
+  CHECK(declarations->AtForTest(9)->proxy()->var()->mode() ==
+        i::VariableMode::kConst);
   CHECK(declarations->AtForTest(9)->proxy()->var()->binding_needs_init());
   CHECK(declarations->AtForTest(9)->proxy()->var()->location() ==
         i::VariableLocation::MODULE);
 
   CHECK(
       declarations->AtForTest(10)->proxy()->raw_name()->IsOneByteEqualTo("aa"));
-  CHECK(declarations->AtForTest(10)->proxy()->var()->mode() == i::CONST);
+  CHECK(declarations->AtForTest(10)->proxy()->var()->mode() ==
+        i::VariableMode::kConst);
   CHECK(declarations->AtForTest(10)->proxy()->var()->binding_needs_init());
   CHECK(declarations->AtForTest(10)->proxy()->var()->location() ==
         i::VariableLocation::MODULE);
 
   CHECK(declarations->AtForTest(11)->proxy()->raw_name()->IsOneByteEqualTo(
       "loo"));
-  CHECK(declarations->AtForTest(11)->proxy()->var()->mode() == i::CONST);
+  CHECK(declarations->AtForTest(11)->proxy()->var()->mode() ==
+        i::VariableMode::kConst);
   CHECK(!declarations->AtForTest(11)->proxy()->var()->binding_needs_init());
   CHECK(declarations->AtForTest(11)->proxy()->var()->location() !=
         i::VariableLocation::MODULE);
 
   CHECK(declarations->AtForTest(12)->proxy()->raw_name()->IsOneByteEqualTo(
       "foob"));
-  CHECK(declarations->AtForTest(12)->proxy()->var()->mode() == i::CONST);
+  CHECK(declarations->AtForTest(12)->proxy()->var()->mode() ==
+        i::VariableMode::kConst);
   CHECK(!declarations->AtForTest(12)->proxy()->var()->binding_needs_init());
   CHECK(declarations->AtForTest(12)->proxy()->var()->location() ==
         i::VariableLocation::MODULE);
@@ -6816,7 +6815,7 @@ void TestLanguageMode(const char* source,
 
   i::Handle<i::Script> script =
       factory->NewScript(factory->NewStringFromAsciiChecked(source));
-  i::ParseInfo info(script);
+  i::ParseInfo info(isolate, script);
   i::parsing::ParseProgram(&info, isolate);
   CHECK_NOT_NULL(info.literal());
   CHECK_EQ(expected_language_mode, info.literal()->language_mode());
@@ -9578,7 +9577,7 @@ TEST(NoPessimisticContextAllocation) {
       printf("\n");
 
       i::Handle<i::Script> script = factory->NewScript(source);
-      i::ParseInfo info(script);
+      i::ParseInfo info(isolate, script);
 
       CHECK(i::parsing::ParseProgram(&info, isolate));
       CHECK(i::Compiler::Analyze(&info));
@@ -10138,7 +10137,7 @@ TEST(LexicalLoopVariable) {
     i::Handle<i::String> source =
         factory->NewStringFromUtf8(i::CStrVector(program)).ToHandleChecked();
     i::Handle<i::Script> script = factory->NewScript(source);
-    i::ParseInfo info(script);
+    i::ParseInfo info(isolate, script);
 
     info.set_allow_lazy_parsing(false);
     CHECK(i::parsing::ParseProgram(&info, isolate));
@@ -10324,7 +10323,7 @@ TEST(PrivateNamesSyntaxError) {
     i::Handle<i::String> source =
         factory->NewStringFromUtf8(i::CStrVector(program)).ToHandleChecked();
     i::Handle<i::Script> script = factory->NewScript(source);
-    i::ParseInfo info(script);
+    i::ParseInfo info(isolate, script);
 
     info.set_allow_lazy_parsing(is_lazy);
     i::FLAG_harmony_private_fields = true;

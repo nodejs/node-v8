@@ -19,6 +19,10 @@ class ByteArray;
 class BytecodeArray;
 class CodeDataContainer;
 
+namespace interpreter {
+class Register;
+}
+
 // Code describes objects with on-the-fly generated machine code.
 class Code : public HeapObject {
  public:
@@ -49,7 +53,7 @@ class Code : public HeapObject {
 
 #ifdef ENABLE_DISASSEMBLER
   void Disassemble(const char* name, std::ostream& os,
-                   void* current_pc = nullptr);  // NOLINT
+                   Address current_pc = kNullAddress);
 #endif
 
   // [instruction_size]: Size of the native instructions, including embedded
@@ -69,7 +73,7 @@ class Code : public HeapObject {
 
   // [relocation_info]: Code relocation information
   DECL_ACCESSORS(relocation_info, ByteArray)
-  void InvalidateEmbeddedObjects();
+  void InvalidateEmbeddedObjects(Heap* heap);
 
   // [deoptimization_data]: Array containing data for deopt.
   DECL_ACCESSORS(deoptimization_data, FixedArray)
@@ -211,7 +215,7 @@ class Code : public HeapObject {
   static inline Object* GetObjectFromCodeEntry(Address code_entry);
 
   // Returns the address of the first instruction.
-  inline byte* raw_instruction_start() const;
+  inline Address raw_instruction_start() const;
 
   // Returns the address of the first instruction. For off-heap code objects
   // this differs from instruction_start (which would point to the off-heap
@@ -222,7 +226,7 @@ class Code : public HeapObject {
 #endif
 
   // Returns the address right after the last instruction.
-  inline byte* raw_instruction_end() const;
+  inline Address raw_instruction_end() const;
 
   // Returns the address right after the last instruction. For off-heap code
   // objects this differs from instruction_end (which would point to the
@@ -242,6 +246,9 @@ class Code : public HeapObject {
 
   // Returns the address of the first relocation info (read backwards!).
   inline byte* relocation_start() const;
+
+  // Returns the address right after the relocation info (read backwards!).
+  inline byte* relocation_end() const;
 
   // [has_unwinding_info]: Whether this code object has unwinding information.
   // If it doesn't, unwinding_information_start() will point to invalid data.
@@ -281,23 +288,30 @@ class Code : public HeapObject {
   inline void set_unwinding_info_size(int value);
 
   // Returns the address of the unwinding information, if any.
-  inline byte* unwinding_info_start() const;
+  inline Address unwinding_info_start() const;
 
   // Returns the address right after the end of the unwinding information.
-  inline byte* unwinding_info_end() const;
+  inline Address unwinding_info_end() const;
 
   // Code entry point.
-  inline byte* entry() const;
+  inline Address entry() const;
 
   // Returns true if pc is inside this object's instructions.
-  inline bool contains(byte* pc);
+  inline bool contains(Address pc);
 
   // Relocate the code by delta bytes. Called to signal that this code
   // object has been moved by delta bytes.
   void Relocate(intptr_t delta);
 
   // Migrate code described by desc.
-  void CopyFrom(const CodeDesc& desc);
+  void CopyFrom(Heap* heap, const CodeDesc& desc);
+
+  // Migrate code from desc without flushing the instruction cache.
+  void CopyFromNoFlush(Heap* heap, const CodeDesc& desc);
+
+  // Flushes the instruction cache for the executable instructions of this code
+  // object.
+  void FlushICache() const;
 
   // Returns the object size for a given body (used for allocation).
   static int SizeFor(int body_size) {
@@ -330,7 +344,7 @@ class Code : public HeapObject {
 #endif  // DEBUG
 
 #ifdef V8_EMBEDDED_BUILTINS
-  bool IsProcessIndependent();
+  bool IsProcessIndependent(Isolate* isolate);
 #endif
 
   inline bool CanContainWeakObjects();
@@ -424,7 +438,8 @@ class Code : public HeapObject {
       MarkedForDeoptimizationField::kShift;
 
   static const int kArgumentsBits = 16;
-  static const int kMaxArguments = (1 << kArgumentsBits) - 1;
+  // Reserve one argument count value as the "don't adapt arguments" sentinel.
+  static const int kMaxArguments = (1 << kArgumentsBits) - 2;
 
  private:
   friend class RelocIterator;
@@ -533,7 +548,7 @@ class AbstractCode : public HeapObject {
   inline int SizeIncludingMetadata();
 
   // Returns true if pc is inside this object's instructions.
-  inline bool contains(byte* pc);
+  inline bool contains(Address pc);
 
   // Returns the AbstractCode::Kind of the code.
   inline Kind kind();

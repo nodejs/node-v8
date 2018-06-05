@@ -7,6 +7,8 @@
 
 #include <memory>
 
+#include "src/bailout-reason.h"
+#include "src/code-reference.h"
 #include "src/compilation-dependencies.h"
 #include "src/feedback-vector.h"
 #include "src/frames.h"
@@ -41,30 +43,20 @@ class V8_EXPORT_PRIVATE OptimizedCompilationInfo final {
     kAccessorInliningEnabled = 1 << 0,
     kFunctionContextSpecializing = 1 << 1,
     kInliningEnabled = 1 << 2,
-    kPoisonLoads = 1 << 3,
-    kDisableFutureOptimization = 1 << 4,
-    kSplittingEnabled = 1 << 5,
-    kSourcePositionsEnabled = 1 << 6,
-    kBailoutOnUninitialized = 1 << 7,
-    kLoopPeelingEnabled = 1 << 8,
-    kUntrustedCodeMitigations = 1 << 9,
-    kSwitchJumpTableEnabled = 1 << 10,
-    kCalledWithCodeStartRegister = 1 << 11,
-    kPoisonRegisterArguments = 1 << 12,
-    kAllocationFoldingEnabled = 1 << 13,
-    kAnalyzeEnvironmentLiveness = 1 << 14,
-  };
-
-  // TODO(mtrofin): investigate if this might be generalized outside wasm, with
-  // the goal of better separating the compiler from where compilation lands. At
-  // that point, the Handle<Code> member of OptimizedCompilationInfo would also
-  // be removed.
-  struct WasmCodeDesc {
-    CodeDesc code_desc;
-    size_t safepoint_table_offset = 0;
-    size_t handler_table_offset = 0;
-    uint32_t frame_slot_count = 0;
-    Handle<ByteArray> source_positions_table;
+    kDisableFutureOptimization = 1 << 3,
+    kSplittingEnabled = 1 << 4,
+    kSourcePositionsEnabled = 1 << 5,
+    kBailoutOnUninitialized = 1 << 6,
+    kLoopPeelingEnabled = 1 << 7,
+    kUntrustedCodeMitigations = 1 << 8,
+    kSwitchJumpTableEnabled = 1 << 9,
+    kCalledWithCodeStartRegister = 1 << 10,
+    kPoisonRegisterArguments = 1 << 11,
+    kAllocationFoldingEnabled = 1 << 12,
+    kAnalyzeEnvironmentLiveness = 1 << 13,
+    kTraceTurboJson = 1 << 14,
+    kTraceTurboGraph = 1 << 15,
+    kTraceTurboScheduled = 1 << 16,
   };
 
   // Construct a compilation info for optimized compilation.
@@ -82,7 +74,11 @@ class V8_EXPORT_PRIVATE OptimizedCompilationInfo final {
   Handle<SharedFunctionInfo> shared_info() const { return shared_info_; }
   bool has_shared_info() const { return !shared_info().is_null(); }
   Handle<JSFunction> closure() const { return closure_; }
-  Handle<Code> code() const { return code_; }
+  Handle<Code> code() const { return code_.as_js_code(); }
+
+  wasm::WasmCode* wasm_code() const {
+    return const_cast<wasm::WasmCode*>(code_.as_wasm_code());
+  }
   AbstractCode::Kind abstract_code_kind() const { return code_kind_; }
   Code::Kind code_kind() const {
     DCHECK(code_kind_ < static_cast<AbstractCode::Kind>(Code::NUMBER_OF_KINDS));
@@ -117,8 +113,12 @@ class V8_EXPORT_PRIVATE OptimizedCompilationInfo final {
   void MarkAsInliningEnabled() { SetFlag(kInliningEnabled); }
   bool is_inlining_enabled() const { return GetFlag(kInliningEnabled); }
 
-  void MarkAsPoisonLoads() { SetFlag(kPoisonLoads); }
-  bool is_poison_loads() const { return GetFlag(kPoisonLoads); }
+  void SetPoisoningMitigationLevel(PoisoningMitigationLevel poisoning_level) {
+    poisoning_level_ = poisoning_level;
+  }
+  PoisoningMitigationLevel GetPoisoningMitigationLevel() const {
+    return poisoning_level_;
+  }
 
   void MarkAsSplittingEnabled() { SetFlag(kSplittingEnabled); }
   bool is_splitting_enabled() const { return GetFlag(kSplittingEnabled); }
@@ -167,9 +167,20 @@ class V8_EXPORT_PRIVATE OptimizedCompilationInfo final {
     return GetFlag(kAnalyzeEnvironmentLiveness);
   }
 
+  bool trace_turbo_json_enabled() const { return GetFlag(kTraceTurboJson); }
+
+  bool trace_turbo_graph_enabled() const { return GetFlag(kTraceTurboGraph); }
+
+  bool trace_turbo_scheduled_enabled() const {
+    return GetFlag(kTraceTurboScheduled);
+  }
+
   // Code getters and setters.
 
-  void SetCode(Handle<Code> code) { code_ = code; }
+  template <typename T>
+  void SetCode(T code) {
+    code_ = CodeReference(code);
+  }
 
   bool has_context() const;
   Context* context() const;
@@ -255,8 +266,6 @@ class V8_EXPORT_PRIVATE OptimizedCompilationInfo final {
 
   StackFrame::Type GetOutputStackFrameType() const;
 
-  WasmCodeDesc* wasm_code_desc() { return &wasm_code_desc_; }
-
  private:
   OptimizedCompilationInfo(Vector<const char> debug_name,
                            AbstractCode::Kind code_kind, Zone* zone);
@@ -264,8 +273,12 @@ class V8_EXPORT_PRIVATE OptimizedCompilationInfo final {
   void SetFlag(Flag flag) { flags_ |= flag; }
   bool GetFlag(Flag flag) const { return (flags_ & flag) != 0; }
 
+  void SetTracingFlags(bool passes_filter);
+
   // Compilation flags.
   unsigned flags_;
+  PoisoningMitigationLevel poisoning_level_ =
+      PoisoningMitigationLevel::kDontPoison;
 
   AbstractCode::Kind code_kind_;
   uint32_t stub_key_;
@@ -276,8 +289,7 @@ class V8_EXPORT_PRIVATE OptimizedCompilationInfo final {
   Handle<JSFunction> closure_;
 
   // The compiled code.
-  Handle<Code> code_;
-  WasmCodeDesc wasm_code_desc_;
+  CodeReference code_;
 
   // Entry point when compiling for OSR, {BailoutId::None} otherwise.
   BailoutId osr_offset_;

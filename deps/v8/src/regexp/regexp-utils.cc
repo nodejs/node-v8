@@ -7,6 +7,7 @@
 #include "src/heap/factory.h"
 #include "src/isolate.h"
 #include "src/objects-inl.h"
+#include "src/objects/js-regexp-inl.h"
 #include "src/regexp/jsregexp.h"
 
 namespace v8 {
@@ -126,7 +127,7 @@ Maybe<bool> RegExpUtils::IsRegExp(Isolate* isolate, Handle<Object> object) {
       JSObject::GetProperty(receiver, isolate->factory()->match_symbol()),
       Nothing<bool>());
 
-  if (!match->IsUndefined(isolate)) return Just(match->BooleanValue());
+  if (!match->IsUndefined(isolate)) return Just(match->BooleanValue(isolate));
   return Just(object->IsJSRegExp());
 }
 

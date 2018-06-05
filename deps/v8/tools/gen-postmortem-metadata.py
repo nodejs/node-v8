@@ -201,8 +201,8 @@ consts_misc = [
     { 'name': 'jsarray_buffer_was_neutered_shift',
         'value': 'JSArrayBuffer::WasNeutered::kShift' },
 
-    { 'name': 'context_idx_closure',
-        'value': 'Context::CLOSURE_INDEX' },
+    { 'name': 'context_idx_scope_info',
+        'value': 'Context::SCOPE_INFO_INDEX' },
     { 'name': 'context_idx_native',
         'value': 'Context::NATIVE_CONTEXT_INDEX' },
     { 'name': 'context_idx_prev',
@@ -268,9 +268,9 @@ extras_accessors = [
     'SharedFunctionInfo, function_token_position, int, kFunctionTokenPositionOffset',
     'SharedFunctionInfo, start_position_and_type, int, kStartPositionAndTypeOffset',
     'SharedFunctionInfo, end_position, int, kEndPositionOffset',
-    'SharedFunctionInfo, internal_formal_parameter_count, int, kFormalParameterCountOffset',
+    'SharedFunctionInfo, internal_formal_parameter_count, uint16_t, kFormalParameterCountOffset',
     'SharedFunctionInfo, flags, int, kFlagsOffset',
-    'SharedFunctionInfo, length, int, kLengthOffset',
+    'SharedFunctionInfo, length, uint16_t, kLengthOffset',
     'SlicedString, parent, String, kParentOffset',
     'Code, instruction_start, uintptr_t, kHeaderSize',
     'Code, instruction_size, int, kInstructionSizeOffset',
@@ -306,6 +306,8 @@ header = '''
 #include "src/frames.h"
 #include "src/frames-inl.h" /* for architecture-specific frame constants */
 #include "src/contexts.h"
+#include "src/objects.h"
+#include "src/objects/js-regexp-string-iterator.h"
 
 using namespace v8::internal;
 

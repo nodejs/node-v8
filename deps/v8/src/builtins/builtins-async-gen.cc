@@ -6,6 +6,7 @@
 
 #include "src/builtins/builtins-utils-gen.h"
 #include "src/heap/factory-inl.h"
+#include "src/objects/js-promise.h"
 #include "src/objects/shared-function-info.h"
 
 namespace v8 {
@@ -98,9 +99,8 @@ Node* AsyncBuiltinsAssembler::Await(
     // Add PromiseHooks if needed
     Label next(this);
     GotoIfNot(IsPromiseHookEnabledOrDebugIsActive(), &next);
-    CallRuntime(Runtime::kPromiseHookInit, context, wrapped_value,
-                outer_promise);
-    CallRuntime(Runtime::kPromiseHookInit, context, throwaway, wrapped_value);
+    CallRuntime(Runtime::kAwaitPromisesInit, context, wrapped_value,
+                outer_promise, throwaway);
     Goto(&next);
     BIND(&next);
   }

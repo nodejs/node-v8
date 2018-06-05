@@ -58,6 +58,7 @@ namespace internal {
 #define kOffHeapTrampolineRegister ip0
 #define kRuntimeCallFunctionRegister x1
 #define kRuntimeCallArgCountRegister x0
+#define kWasmInstanceRegister x7
 
 #define LS_MACRO_LIST(V)                                     \
   V(Ldrb, Register&, rt, LDRB_w)                             \
@@ -96,11 +97,6 @@ namespace internal {
 
 // Generate a MemOperand for loading a field from an object.
 inline MemOperand FieldMemOperand(Register object, int offset);
-inline MemOperand UntagSmiFieldMemOperand(Register object, int offset);
-
-// Generate a MemOperand for loading a SMI from memory.
-inline MemOperand UntagSmiMemOperand(Register object, int offset);
-
 
 // ----------------------------------------------------------------------------
 // MacroAssembler
@@ -182,10 +178,10 @@ class TurboAssembler : public Assembler {
                  CodeObjectRequired create_code_object);
 
   // The Abort method should call a V8 runtime function, but the CallRuntime
-  // mechanism depends on CEntryStub. If use_real_aborts is false, Abort will
-  // use a simpler abort mechanism that doesn't depend on CEntryStub.
+  // mechanism depends on CEntry. If use_real_aborts is false, Abort will
+  // use a simpler abort mechanism that doesn't depend on CEntry.
   //
-  // The purpose of this is to allow Aborts to be compiled whilst CEntryStub is
+  // The purpose of this is to allow Aborts to be compiled whilst CEntry is
   // being generated.
   bool use_real_aborts() const { return use_real_aborts_; }
 
@@ -219,6 +215,14 @@ class TurboAssembler : public Assembler {
   bool allow_macro_instructions() const { return allow_macro_instructions_; }
 #endif
 
+  // We should not use near calls or jumps for JS->WASM calls and calls to
+  // external references, since the code spaces are not guaranteed to be close
+  // to each other.
+  bool CanUseNearCallOrJump(RelocInfo::Mode rmode) {
+    return rmode != RelocInfo::JS_TO_WASM_CALL &&
+           rmode != RelocInfo::EXTERNAL_REFERENCE;
+  }
+
   // Activation support.
   void EnterFrame(StackFrame::Type type);
   void EnterFrame(StackFrame::Type type, bool load_constant_pool_pointer_reg) {
@@ -231,6 +235,7 @@ class TurboAssembler : public Assembler {
 
   void Mov(const Register& rd, const Operand& operand,
            DiscardMoveMode discard_mode = kDontDiscardForSameWReg);
+  void Mov(const Register& rd, ExternalReference reference);
   void Mov(const Register& rd, uint64_t imm);
   inline void Mov(const Register& rd, const Register& rm);
   void Mov(const VRegister& vd, int vd_index, const VRegister& vn,
@@ -563,6 +568,7 @@ class TurboAssembler : public Assembler {
 
   bool AllowThisStubCall(CodeStub* stub);
   void CallStubDelayed(CodeStub* stub);
+  // TODO(jgruber): Remove in favor of MacroAssembler::CallRuntime.
   void CallRuntimeDelayed(Zone* zone, Runtime::FunctionId fid,
                           SaveFPRegsMode save_doubles = kDontSaveFPRegs);
 
@@ -576,11 +582,16 @@ class TurboAssembler : public Assembler {
                           Register scratch1);
 
   inline void SmiUntag(Register dst, Register src);
+  inline void SmiUntag(Register dst, const MemOperand& src);
   inline void SmiUntag(Register smi);
 
   // Calls Abort(msg) if the condition cond is not satisfied.
   // Use --debug_code to enable.
   void Assert(Condition cond, AbortReason reason);
+
+  // Like Assert(), but without condition.
+  // Use --debug_code to enable.
+  void AssertUnreachable(AbortReason reason);
 
   void AssertSmi(Register object,
                  AbortReason reason = AbortReason::kOperandIsNotASmi);
@@ -867,26 +878,32 @@ class TurboAssembler : public Assembler {
             int shift_amount = 0);
   void Movi(const VRegister& vd, uint64_t hi, uint64_t lo);
 
-  void Jump(Register target);
+#ifdef V8_EMBEDDED_BUILTINS
+  void LookupConstant(Register destination, Handle<Object> object);
+  void LookupExternalReference(Register destination,
+                               ExternalReference reference);
+#endif  // V8_EMBEDDED_BUILTINS
+
+  void Jump(Register target, Condition cond = al);
   void Jump(Address target, RelocInfo::Mode rmode, Condition cond = al);
   void Jump(Handle<Code> code, RelocInfo::Mode rmode, Condition cond = al);
-  void Jump(intptr_t target, RelocInfo::Mode rmode, Condition cond = al);
 
   void Call(Register target);
-  void Call(Label* target);
   void Call(Address target, RelocInfo::Mode rmode);
   void Call(Handle<Code> code, RelocInfo::Mode rmode = RelocInfo::CODE_TARGET);
   void Call(ExternalReference target);
+
+  // Generate an indirect call (for when a direct call's range is not adequate).
+  void IndirectCall(Address target, RelocInfo::Mode rmode);
 
   void CallForDeoptimization(Address target, RelocInfo::Mode rmode);
 
   // For every Call variant, there is a matching CallSize function that returns
   // the size (in bytes) of the call sequence.
   static int CallSize(Register target);
-  static int CallSize(Label* target);
-  static int CallSize(Address target, RelocInfo::Mode rmode);
-  static int CallSize(Handle<Code> code,
-                      RelocInfo::Mode rmode = RelocInfo::CODE_TARGET);
+  int CallSize(Address target, RelocInfo::Mode rmode);
+  int CallSize(Handle<Code> code,
+               RelocInfo::Mode rmode = RelocInfo::CODE_TARGET);
 
   // Calls a C function.
   // The called function is not allowed to trigger a
@@ -902,8 +919,8 @@ class TurboAssembler : public Assembler {
   // Performs a truncating conversion of a floating point number as used by
   // the JS bitwise operations. See ECMA-262 9.5: ToInt32.
   // Exits with 'result' holding the answer.
-  void TruncateDoubleToIDelayed(Zone* zone, Register result,
-                                DoubleRegister double_input);
+  void TruncateDoubleToI(Isolate* isolate, Zone* zone, Register result,
+                         DoubleRegister double_input);
 
   inline void Mul(const Register& rd, const Register& rn, const Register& rm);
 
@@ -983,6 +1000,10 @@ class TurboAssembler : public Assembler {
   // Poke 'src' onto the stack. The offset is in bytes. The stack pointer must
   // be 16 byte aligned.
   void Poke(const CPURegister& src, const Operand& offset);
+
+  // Peek at a value on the stack, and put it in 'dst'. The offset is in bytes.
+  // The stack pointer must be aligned to 16 bytes.
+  void Peek(const CPURegister& dst, const Operand& offset);
 
   // Poke 'src1' and 'src2' onto the stack. The values written will be adjacent
   // with 'src2' at a higher address than 'src1'. The offset is in bytes. The
@@ -1206,6 +1227,9 @@ class TurboAssembler : public Assembler {
 
   void ResetSpeculationPoisonRegister();
 
+  bool root_array_available() const { return root_array_available_; }
+  void set_root_array_available(bool v) { root_array_available_ = v; }
+
  protected:
   // The actual Push and Pop implementations. These don't generate any code
   // other than that required for the push or pop. This allows
@@ -1238,8 +1262,12 @@ class TurboAssembler : public Assembler {
   // have mixed types. The format string (x0) should not be included.
   void CallPrintf(int arg_count = 0, const CPURegister* args = nullptr);
 
+  // This handle will be patched with the code object on installation.
+  Handle<HeapObject> code_object_;
+
  private:
   bool has_frame_ = false;
+  bool root_array_available_ = true;
   Isolate* const isolate_;
 #if DEBUG
   // Tell whether any of the macro instruction can be used. When false the
@@ -1247,8 +1275,7 @@ class TurboAssembler : public Assembler {
   // of instructions is called.
   bool allow_macro_instructions_;
 #endif
-  // This handle will be patched with the code object on installation.
-  Handle<HeapObject> code_object_;
+
 
   // Scratch registers available for use by the MacroAssembler.
   CPURegList tmp_list_;
@@ -1276,6 +1303,9 @@ class TurboAssembler : public Assembler {
 
   void LoadStorePairMacro(const CPURegister& rt, const CPURegister& rt2,
                           const MemOperand& addr, LoadStorePairOp op);
+
+  static bool IsNearCallOffset(int64_t offset);
+  void JumpHelper(int64_t offset, RelocInfo::Mode rmode, Condition cond = al);
 };
 
 class MacroAssembler : public TurboAssembler {
@@ -1606,10 +1636,6 @@ class MacroAssembler : public TurboAssembler {
     std::vector<CPURegister> queued_;
   };
 
-  // Peek at a value on the stack, and put it in 'dst'. The offset is in bytes.
-  // The stack pointer must be aligned to 16 bytes.
-  void Peek(const CPURegister& dst, const Operand& offset);
-
   // Peek at two values on the stack, and put them in 'dst1' and 'dst2'. The
   // values peeked will be adjacent, with the value in 'dst2' being from a
   // higher address than 'dst1'. The offset is in bytes. The stack pointer must
@@ -1686,8 +1712,6 @@ class MacroAssembler : public TurboAssembler {
 
   inline void SmiTag(Register dst, Register src);
   inline void SmiTag(Register smi);
-  inline void SmiUntagToDouble(VRegister dst, Register src);
-  inline void SmiUntagToFloat(VRegister dst, Register src);
 
   inline void JumpIfNotSmi(Register value, Label* not_smi_label);
   inline void JumpIfBothSmi(Register value1, Register value2,

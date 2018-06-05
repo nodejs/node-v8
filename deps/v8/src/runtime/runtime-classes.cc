@@ -13,6 +13,7 @@
 #include "src/elements.h"
 #include "src/isolate-inl.h"
 #include "src/messages.h"
+#include "src/objects/hash-table-inl.h"
 #include "src/objects/literal-objects-inl.h"
 #include "src/runtime/runtime.h"
 
@@ -294,7 +295,7 @@ bool AddDescriptorsByTemplate(
   // Read values from |descriptors_template| and store possibly post-processed
   // values into "instantiated" |descriptors| array.
   for (int i = 0; i < nof_descriptors; i++) {
-    Object* value = descriptors_template->GetValue(i);
+    Object* value = descriptors_template->GetStrongValue(i);
     if (value->IsAccessorPair()) {
       Handle<AccessorPair> pair =
           AccessorPair::Copy(handle(AccessorPair::cast(value), isolate));
@@ -334,7 +335,7 @@ bool AddDescriptorsByTemplate(
       DCHECK(!details.representation().IsDouble());
     }
     DCHECK(value->FitsRepresentation(details.representation()));
-    descriptors->Set(i, name, value, details);
+    descriptors->Set(i, name, MaybeObject::FromObject(value), details);
   }
 
   map->InitializeDescriptors(*descriptors,
@@ -627,7 +628,7 @@ MaybeHandle<JSReceiver> GetSuperHolder(
     Isolate* isolate, Handle<Object> receiver, Handle<JSObject> home_object,
     SuperMode mode, MaybeHandle<Name> maybe_name, uint32_t index) {
   if (home_object->IsAccessCheckNeeded() &&
-      !isolate->MayAccess(handle(isolate->context()), home_object)) {
+      !isolate->MayAccess(handle(isolate->context(), isolate), home_object)) {
     isolate->ReportFailedAccessCheck(home_object);
     RETURN_EXCEPTION_IF_SCHEDULED_EXCEPTION(isolate, JSReceiver);
   }
