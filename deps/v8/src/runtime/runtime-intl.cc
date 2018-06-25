@@ -14,6 +14,7 @@
 #include "src/api-natives.h"
 #include "src/api.h"
 #include "src/arguments.h"
+#include "src/date.h"
 #include "src/global-handles.h"
 #include "src/heap/factory.h"
 #include "src/intl.h"
@@ -31,8 +32,6 @@
 #include "unicode/decimfmt.h"
 #include "unicode/dtfmtsym.h"
 #include "unicode/dtptngen.h"
-#include "unicode/fieldpos.h"
-#include "unicode/fpositer.h"
 #include "unicode/locid.h"
 #include "unicode/numfmt.h"
 #include "unicode/numsys.h"
@@ -40,7 +39,6 @@
 #include "unicode/rbbi.h"
 #include "unicode/smpdtfmt.h"
 #include "unicode/timezone.h"
-#include "unicode/translit.h"
 #include "unicode/uchar.h"
 #include "unicode/ucol.h"
 #include "unicode/ucurr.h"
@@ -230,7 +228,7 @@ RUNTIME_FUNCTION(Runtime_CreateDateTimeFormat) {
   CONVERT_ARG_HANDLE_CHECKED(JSObject, resolved, 2);
 
   Handle<JSFunction> constructor(
-      isolate->native_context()->intl_date_time_format_function());
+      isolate->native_context()->intl_date_time_format_function(), isolate);
 
   Handle<JSObject> local_object;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, local_object,
@@ -260,9 +258,8 @@ RUNTIME_FUNCTION(Runtime_InternalDateFormat) {
   CONVERT_ARG_HANDLE_CHECKED(JSObject, date_format_holder, 0);
   CONVERT_NUMBER_ARG_HANDLE_CHECKED(date, 1);
 
-  double date_value = date->Number();
-  // Check for +-Infinity and Nan
-  if (!std::isfinite(date_value)) {
+  double date_value = DateCache::TimeClip(date->Number());
+  if (std::isnan(date_value)) {
     THROW_NEW_ERROR_RETURN_FAILURE(
         isolate, NewRangeError(MessageTemplate::kInvalidTimeValue));
   }
@@ -280,143 +277,6 @@ RUNTIME_FUNCTION(Runtime_InternalDateFormat) {
                    result.length())));
 }
 
-namespace {
-// The list comes from third_party/icu/source/i18n/unicode/udat.h.
-// They're mapped to DateTimeFormat components listed at
-// https://tc39.github.io/ecma402/#sec-datetimeformat-abstracts .
-
-Handle<String> IcuDateFieldIdToDateType(int32_t field_id, Isolate* isolate) {
-  switch (field_id) {
-    case -1:
-      return isolate->factory()->literal_string();
-    case UDAT_YEAR_FIELD:
-    case UDAT_EXTENDED_YEAR_FIELD:
-    case UDAT_YEAR_NAME_FIELD:
-      return isolate->factory()->year_string();
-    case UDAT_MONTH_FIELD:
-    case UDAT_STANDALONE_MONTH_FIELD:
-      return isolate->factory()->month_string();
-    case UDAT_DATE_FIELD:
-      return isolate->factory()->day_string();
-    case UDAT_HOUR_OF_DAY1_FIELD:
-    case UDAT_HOUR_OF_DAY0_FIELD:
-    case UDAT_HOUR1_FIELD:
-    case UDAT_HOUR0_FIELD:
-      return isolate->factory()->hour_string();
-    case UDAT_MINUTE_FIELD:
-      return isolate->factory()->minute_string();
-    case UDAT_SECOND_FIELD:
-      return isolate->factory()->second_string();
-    case UDAT_DAY_OF_WEEK_FIELD:
-    case UDAT_DOW_LOCAL_FIELD:
-    case UDAT_STANDALONE_DAY_FIELD:
-      return isolate->factory()->weekday_string();
-    case UDAT_AM_PM_FIELD:
-      return isolate->factory()->dayperiod_string();
-    case UDAT_TIMEZONE_FIELD:
-    case UDAT_TIMEZONE_RFC_FIELD:
-    case UDAT_TIMEZONE_GENERIC_FIELD:
-    case UDAT_TIMEZONE_SPECIAL_FIELD:
-    case UDAT_TIMEZONE_LOCALIZED_GMT_OFFSET_FIELD:
-    case UDAT_TIMEZONE_ISO_FIELD:
-    case UDAT_TIMEZONE_ISO_LOCAL_FIELD:
-      return isolate->factory()->timeZoneName_string();
-    case UDAT_ERA_FIELD:
-      return isolate->factory()->era_string();
-    default:
-      // Other UDAT_*_FIELD's cannot show up because there is no way to specify
-      // them via options of Intl.DateTimeFormat.
-      UNREACHABLE();
-      // To prevent MSVC from issuing C4715 warning.
-      return Handle<String>();
-  }
-}
-
-bool AddElement(Handle<JSArray> array, int index, int32_t field_id,
-                const icu::UnicodeString& formatted, int32_t begin, int32_t end,
-                Isolate* isolate) {
-  HandleScope scope(isolate);
-  Factory* factory = isolate->factory();
-  Handle<JSObject> element = factory->NewJSObject(isolate->object_function());
-  Handle<String> value = IcuDateFieldIdToDateType(field_id, isolate);
-  JSObject::AddProperty(element, factory->type_string(), value, NONE);
-
-  icu::UnicodeString field(formatted.tempSubStringBetween(begin, end));
-  ASSIGN_RETURN_ON_EXCEPTION_VALUE(
-      isolate, value,
-      factory->NewStringFromTwoByte(Vector<const uint16_t>(
-          reinterpret_cast<const uint16_t*>(field.getBuffer()),
-          field.length())),
-      false);
-
-  JSObject::AddProperty(element, factory->value_string(), value, NONE);
-  RETURN_ON_EXCEPTION_VALUE(
-      isolate, JSObject::AddDataElement(array, index, element, NONE), false);
-  return true;
-}
-
-}  // namespace
-
-RUNTIME_FUNCTION(Runtime_InternalDateFormatToParts) {
-  HandleScope scope(isolate);
-  Factory* factory = isolate->factory();
-
-  DCHECK_EQ(2, args.length());
-
-  CONVERT_ARG_HANDLE_CHECKED(JSObject, date_format_holder, 0);
-  CONVERT_NUMBER_ARG_HANDLE_CHECKED(date, 1);
-
-  double date_value = date->Number();
-  if (!std::isfinite(date_value)) {
-    THROW_NEW_ERROR_RETURN_FAILURE(
-        isolate, NewRangeError(MessageTemplate::kInvalidTimeValue));
-  }
-
-  icu::SimpleDateFormat* date_format =
-      DateFormat::UnpackDateFormat(isolate, date_format_holder);
-  CHECK_NOT_NULL(date_format);
-
-  icu::UnicodeString formatted;
-  icu::FieldPositionIterator fp_iter;
-  icu::FieldPosition fp;
-  UErrorCode status = U_ZERO_ERROR;
-  date_format->format(date_value, formatted, &fp_iter, status);
-  if (U_FAILURE(status)) return isolate->heap()->undefined_value();
-
-  Handle<JSArray> result = factory->NewJSArray(0);
-  int32_t length = formatted.length();
-  if (length == 0) return *result;
-
-  int index = 0;
-  int32_t previous_end_pos = 0;
-  while (fp_iter.next(fp)) {
-    int32_t begin_pos = fp.getBeginIndex();
-    int32_t end_pos = fp.getEndIndex();
-
-    if (previous_end_pos < begin_pos) {
-      if (!AddElement(result, index, -1, formatted, previous_end_pos, begin_pos,
-                      isolate)) {
-        return isolate->heap()->undefined_value();
-      }
-      ++index;
-    }
-    if (!AddElement(result, index, fp.getField(), formatted, begin_pos, end_pos,
-                    isolate)) {
-      return isolate->heap()->undefined_value();
-    }
-    previous_end_pos = end_pos;
-    ++index;
-  }
-  if (previous_end_pos < length) {
-    if (!AddElement(result, index, -1, formatted, previous_end_pos, length,
-                    isolate)) {
-      return isolate->heap()->undefined_value();
-    }
-  }
-  JSObject::ValidateElements(*result);
-  return *result;
-}
-
 RUNTIME_FUNCTION(Runtime_CreateNumberFormat) {
   HandleScope scope(isolate);
 
@@ -427,7 +287,7 @@ RUNTIME_FUNCTION(Runtime_CreateNumberFormat) {
   CONVERT_ARG_HANDLE_CHECKED(JSObject, resolved, 2);
 
   Handle<JSFunction> constructor(
-      isolate->native_context()->intl_number_format_function());
+      isolate->native_context()->intl_number_format_function(), isolate);
 
   Handle<JSObject> local_object;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, local_object,
@@ -499,7 +359,7 @@ RUNTIME_FUNCTION(Runtime_CreateCollator) {
   CONVERT_ARG_HANDLE_CHECKED(JSObject, resolved, 2);
 
   Handle<JSFunction> constructor(
-      isolate->native_context()->intl_collator_function());
+      isolate->native_context()->intl_collator_function(), isolate);
 
   Handle<JSObject> collator_holder;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, collator_holder,
@@ -525,8 +385,8 @@ RUNTIME_FUNCTION(Runtime_InternalCompare) {
   icu::Collator* collator = Collator::UnpackCollator(isolate, collator_holder);
   CHECK_NOT_NULL(collator);
 
-  string1 = String::Flatten(string1);
-  string2 = String::Flatten(string2);
+  string1 = String::Flatten(isolate, string1);
+  string2 = String::Flatten(isolate, string2);
 
   UCollationResult result;
   UErrorCode status = U_ZERO_ERROR;
@@ -559,7 +419,7 @@ RUNTIME_FUNCTION(Runtime_CreatePluralRules) {
   CONVERT_ARG_HANDLE_CHECKED(JSObject, resolved, 2);
 
   Handle<JSFunction> constructor(
-      isolate->native_context()->intl_plural_rules_function());
+      isolate->native_context()->intl_plural_rules_function(), isolate);
 
   Handle<JSObject> local_object;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, local_object,
@@ -635,7 +495,7 @@ RUNTIME_FUNCTION(Runtime_CreateBreakIterator) {
   CONVERT_ARG_HANDLE_CHECKED(JSObject, resolved, 2);
 
   Handle<JSFunction> constructor(
-      isolate->native_context()->intl_v8_break_iterator_function());
+      isolate->native_context()->intl_v8_break_iterator_function(), isolate);
 
   Handle<JSObject> local_object;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, local_object,
@@ -677,7 +537,7 @@ RUNTIME_FUNCTION(Runtime_BreakIteratorAdoptText) {
   delete u_text;
 
   int length = text->length();
-  text = String::Flatten(text);
+  text = String::Flatten(isolate, text);
   DisallowHeapAllocation no_gc;
   String::FlatContent flat = text->GetFlatContent();
   std::unique_ptr<uc16[]> sap;
@@ -767,7 +627,7 @@ RUNTIME_FUNCTION(Runtime_StringToLowerCaseIntl) {
   HandleScope scope(isolate);
   DCHECK_EQ(args.length(), 1);
   CONVERT_ARG_HANDLE_CHECKED(String, s, 0);
-  s = String::Flatten(s);
+  s = String::Flatten(isolate, s);
   return ConvertToLower(s, isolate);
 }
 
@@ -775,7 +635,7 @@ RUNTIME_FUNCTION(Runtime_StringToUpperCaseIntl) {
   HandleScope scope(isolate);
   DCHECK_EQ(args.length(), 1);
   CONVERT_ARG_HANDLE_CHECKED(String, s, 0);
-  s = String::Flatten(s);
+  s = String::Flatten(isolate, s);
   return ConvertToUpper(s, isolate);
 }
 
@@ -789,8 +649,8 @@ RUNTIME_FUNCTION(Runtime_StringLocaleConvertCase) {
   // Primary language tag can be up to 8 characters long in theory.
   // https://tools.ietf.org/html/bcp47#section-2.2.1
   DCHECK_LE(lang_arg->length(), 8);
-  lang_arg = String::Flatten(lang_arg);
-  s = String::Flatten(s);
+  lang_arg = String::Flatten(isolate, lang_arg);
+  s = String::Flatten(isolate, s);
 
   // All the languages requiring special-handling have two-letter codes.
   // Note that we have to check for '!= 2' here because private-use language

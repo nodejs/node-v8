@@ -48,8 +48,9 @@ Handle<JSObject> CallOptimization::LookupHolderOfExpectedType(
     return Handle<JSObject>::null();
   }
   if (object_map->has_hidden_prototype()) {
-    Handle<JSObject> prototype(JSObject::cast(object_map->prototype()));
-    object_map = handle(prototype->map());
+    JSObject* raw_prototype = JSObject::cast(object_map->prototype());
+    Handle<JSObject> prototype(raw_prototype, raw_prototype->GetIsolate());
+    object_map = handle(prototype->map(), prototype->GetIsolate());
     if (expected_receiver_type_->IsTemplateFor(*object_map)) {
       *holder_lookup = kHolderFound;
       return prototype;
@@ -64,7 +65,7 @@ bool CallOptimization::IsCompatibleReceiver(Handle<Object> receiver,
                                             Handle<JSObject> holder) const {
   DCHECK(is_simple_api_call());
   if (!receiver->IsHeapObject()) return false;
-  Handle<Map> map(HeapObject::cast(*receiver)->map());
+  Handle<Map> map(HeapObject::cast(*receiver)->map(), holder->GetIsolate());
   return IsCompatibleReceiverMap(map, holder);
 }
 
@@ -99,12 +100,13 @@ void CallOptimization::Initialize(
     Handle<FunctionTemplateInfo> function_template_info) {
   Isolate* isolate = function_template_info->GetIsolate();
   if (function_template_info->call_code()->IsUndefined(isolate)) return;
-  api_call_info_ =
-      handle(CallHandlerInfo::cast(function_template_info->call_code()));
+  api_call_info_ = handle(
+      CallHandlerInfo::cast(function_template_info->call_code()), isolate);
 
   if (!function_template_info->signature()->IsUndefined(isolate)) {
     expected_receiver_type_ =
-        handle(FunctionTemplateInfo::cast(function_template_info->signature()));
+        handle(FunctionTemplateInfo::cast(function_template_info->signature()),
+               isolate);
   }
   is_simple_api_call_ = true;
 }

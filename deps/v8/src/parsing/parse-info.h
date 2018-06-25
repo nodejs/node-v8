@@ -37,15 +37,16 @@ class Zone;
 // A container for the inputs, configuration options, and outputs of parsing.
 class V8_EXPORT_PRIVATE ParseInfo {
  public:
-  explicit ParseInfo(AccountingAllocator* zone_allocator);
-  ParseInfo(Handle<Script> script);
-  ParseInfo(Handle<SharedFunctionInfo> shared);
+  ParseInfo(AccountingAllocator* zone_allocator);
+  ParseInfo(Isolate* isolate, Handle<Script> script);
+  ParseInfo(Isolate* isolate, Handle<SharedFunctionInfo> shared);
 
   ~ParseInfo();
 
   void InitFromIsolate(Isolate* isolate);
 
-  static ParseInfo* AllocateWithoutScript(Handle<SharedFunctionInfo> shared);
+  static ParseInfo* AllocateWithoutScript(Isolate* isolate,
+                                          Handle<SharedFunctionInfo> shared);
 
   // Either returns the ast-value-factory associcated with this ParseInfo, or
   // creates and returns a new factory if none exists.
@@ -220,16 +221,6 @@ class V8_EXPORT_PRIVATE ParseInfo {
   void set_language_mode(LanguageMode language_mode) {
     STATIC_ASSERT(LanguageModeSize == 2);
     set_strict_mode(is_strict(language_mode));
-  }
-
-  void ReopenHandlesInNewHandleScope() {
-    if (!script_.is_null()) {
-      script_ = Handle<Script>(*script_);
-    }
-    Handle<ScopeInfo> outer_scope_info;
-    if (maybe_outer_scope_info_.ToHandle(&outer_scope_info)) {
-      maybe_outer_scope_info_ = Handle<ScopeInfo>(*outer_scope_info);
-    }
   }
 
   void EmitBackgroundParseStatisticsOnBackgroundThread();

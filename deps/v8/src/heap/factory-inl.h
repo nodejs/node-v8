@@ -30,6 +30,14 @@ ROOT_LIST(ROOT_ACCESSOR)
 STRUCT_LIST(STRUCT_MAP_ACCESSOR)
 #undef STRUCT_MAP_ACCESSOR
 
+#define ALLOCATION_SITE_MAP_ACCESSOR(NAME, Name, Size, name)             \
+  Handle<Map> Factory::name##_map() {                                    \
+    return Handle<Map>(bit_cast<Map**>(                                  \
+        &isolate()->heap()->roots_[Heap::k##Name##Size##MapRootIndex])); \
+  }
+ALLOCATION_SITE_LIST(ALLOCATION_SITE_MAP_ACCESSOR)
+#undef ALLOCATION_SITE_MAP_ACCESSOR
+
 #define DATA_HANDLER_MAP_ACCESSOR(NAME, Name, Size, name)                \
   Handle<Map> Factory::name##_map() {                                    \
     return Handle<Map>(bit_cast<Map**>(                                  \
@@ -143,7 +151,8 @@ Handle<Object> Factory::NewURIError() {
 Handle<String> Factory::Uint32ToString(uint32_t value) {
   Handle<String> result = NumberToString(NewNumberFromUint(value));
 
-  if (result->length() <= String::kMaxArrayIndexSize) {
+  if (result->length() <= String::kMaxArrayIndexSize &&
+      result->hash_field() == String::kEmptyHashField) {
     uint32_t field = StringHasher::MakeArrayIndexHash(value, result->length());
     result->set_hash_field(field);
   }

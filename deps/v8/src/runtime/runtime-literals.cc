@@ -9,6 +9,8 @@
 #include "src/ast/ast.h"
 #include "src/ast/compile-time-value.h"
 #include "src/isolate-inl.h"
+#include "src/objects/hash-table-inl.h"
+#include "src/objects/js-regexp-inl.h"
 #include "src/runtime/runtime.h"
 
 namespace v8 {
@@ -104,7 +106,8 @@ MaybeHandle<JSObject> JSObjectWalkVisitor<ContextObject>::StructureWalk(
   // Deep copy own properties. Arrays only have 1 property "length".
   if (!copy->IsJSArray()) {
     if (copy->HasFastProperties()) {
-      Handle<DescriptorArray> descriptors(copy->map()->instance_descriptors());
+      Handle<DescriptorArray> descriptors(copy->map()->instance_descriptors(),
+                                          isolate);
       int limit = copy->map()->NumberOfOwnDescriptors();
       for (int i = 0; i < limit; i++) {
         DCHECK_EQ(kField, descriptors->GetDetails(i).location());
@@ -126,7 +129,7 @@ MaybeHandle<JSObject> JSObjectWalkVisitor<ContextObject>::StructureWalk(
         }
       }
     } else {
-      Handle<NameDictionary> dict(copy->property_dictionary());
+      Handle<NameDictionary> dict(copy->property_dictionary(), isolate);
       for (int i = 0; i < dict->Capacity(); i++) {
         Object* raw = dict->ValueAt(i);
         if (!raw->IsJSObject()) continue;
@@ -146,7 +149,7 @@ MaybeHandle<JSObject> JSObjectWalkVisitor<ContextObject>::StructureWalk(
   switch (copy->GetElementsKind()) {
     case PACKED_ELEMENTS:
     case HOLEY_ELEMENTS: {
-      Handle<FixedArray> elements(FixedArray::cast(copy->elements()));
+      Handle<FixedArray> elements(FixedArray::cast(copy->elements()), isolate);
       if (elements->map() == isolate->heap()->fixed_cow_array_map()) {
 #ifdef DEBUG
         for (int i = 0; i < elements->length(); i++) {
@@ -166,7 +169,8 @@ MaybeHandle<JSObject> JSObjectWalkVisitor<ContextObject>::StructureWalk(
       break;
     }
     case DICTIONARY_ELEMENTS: {
-      Handle<NumberDictionary> element_dictionary(copy->element_dictionary());
+      Handle<NumberDictionary> element_dictionary(copy->element_dictionary(),
+                                                  isolate);
       int capacity = element_dictionary->Capacity();
       for (int i = 0; i < capacity; i++) {
         Object* raw = element_dictionary->ValueAt(i);
@@ -238,19 +242,22 @@ class AllocationSiteCreationContext : public AllocationSiteContext {
     if (top().is_null()) {
       // We are creating the top level AllocationSite as opposed to a nested
       // AllocationSite.
-      InitializeTraversal(isolate()->factory()->NewAllocationSite());
+      InitializeTraversal(isolate()->factory()->NewAllocationSite(true));
       scope_site = Handle<AllocationSite>(*top(), isolate());
       if (FLAG_trace_creation_allocation_sites) {
-        PrintF("*** Creating top level AllocationSite %p\n",
+        PrintF("*** Creating top level %s AllocationSite %p\n", "Fat",
                static_cast<void*>(*scope_site));
       }
     } else {
       DCHECK(!current().is_null());
-      scope_site = isolate()->factory()->NewAllocationSite();
+      scope_site = isolate()->factory()->NewAllocationSite(false);
       if (FLAG_trace_creation_allocation_sites) {
-        PrintF("Creating nested site (top, current, new) (%p, %p, %p)\n",
-               static_cast<void*>(*top()), static_cast<void*>(*current()),
-               static_cast<void*>(*scope_site));
+        PrintF(
+            "*** Creating nested %s AllocationSite (top, current, new) (%p, "
+            "%p, "
+            "%p)\n",
+            "Slim", static_cast<void*>(*top()), static_cast<void*>(*current()),
+            static_cast<void*>(*scope_site));
       }
       current()->set_nested_site(*scope_site);
       update_current_site(*scope_site);
@@ -268,7 +275,7 @@ class AllocationSiteCreationContext : public AllocationSiteContext {
         PrintF("*** Setting AllocationSite %p transition_info %p\n",
                static_cast<void*>(*scope_site), static_cast<void*>(*object));
       } else {
-        PrintF("Setting AllocationSite (%p, %p) transition_info %p\n",
+        PrintF("*** Setting AllocationSite (%p, %p) transition_info %p\n",
                static_cast<void*>(*top()), static_cast<void*>(*scope_site),
                static_cast<void*>(*object));
       }
@@ -390,8 +397,8 @@ struct ArrayBoilerplate {
     ElementsKind constant_elements_kind =
         static_cast<ElementsKind>(elements->elements_kind());
 
-    Handle<FixedArrayBase> constant_elements_values(
-        elements->constant_values());
+    Handle<FixedArrayBase> constant_elements_values(elements->constant_values(),
+                                                    isolate);
     Handle<FixedArrayBase> copied_elements_values;
     if (IsDoubleElementsKind(constant_elements_kind)) {
       copied_elements_values = isolate->factory()->CopyFixedDoubleArray(
@@ -422,7 +429,8 @@ struct ArrayBoilerplate {
                 // boilerplate description of a simple object or
                 // array literal.
                 Handle<FixedArray> compile_time_value(
-                    FixedArray::cast(fixed_array_values->get(i)));
+                    FixedArray::cast(fixed_array_values->get(i)),
+                    for_with_handle_isolate);
                 Handle<Object> result = InnerCreateBoilerplate(
                     isolate, compile_time_value, pretenure_flag);
                 fixed_array_values_copy->set(i, *result);
@@ -456,7 +464,7 @@ MaybeHandle<JSObject> CreateLiteral(Isolate* isolate,
                                     Handle<HeapObject> description, int flags) {
   FeedbackSlot literals_slot(FeedbackVector::ToSlot(literals_index));
   CHECK(literals_slot.ToInt() < vector->length());
-  Handle<Object> literal_site(vector->Get(literals_slot), isolate);
+  Handle<Object> literal_site(vector->Get(literals_slot)->ToObject(), isolate);
   DeepCopyHints copy_hints =
       (flags & AggregateLiteral::kIsShallow) ? kObjectIsShallow : kNoHints;
   if (FLAG_track_double_fields && !FLAG_unbox_double_fields) {
@@ -552,7 +560,7 @@ RUNTIME_FUNCTION(Runtime_CreateRegExpLiteral) {
   FeedbackSlot literal_slot(FeedbackVector::ToSlot(index));
 
   // Check if boilerplate exists. If not, create it first.
-  Handle<Object> literal_site(vector->Get(literal_slot), isolate);
+  Handle<Object> literal_site(vector->Get(literal_slot)->ToObject(), isolate);
   Handle<Object> boilerplate;
   if (!HasBoilerplate(isolate, literal_site)) {
     ASSIGN_RETURN_FAILURE_ON_EXCEPTION(

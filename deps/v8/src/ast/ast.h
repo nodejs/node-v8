@@ -1429,6 +1429,8 @@ class ArrayLiteral final : public AggregateLiteral {
 
   ZoneList<Expression*>* values() const { return values_; }
 
+  int first_spread_index() const { return first_spread_index_; }
+
   bool is_empty() const;
 
   // Populate the depth field and flags, returns the depth.
@@ -1452,16 +1454,6 @@ class ArrayLiteral final : public AggregateLiteral {
   int ComputeFlags(bool disable_mementos = false) const {
     return AggregateLiteral::ComputeFlags(disable_mementos);
   }
-
-  // Provide a mechanism for iterating through values to rewrite spreads.
-  ZoneList<Expression*>::iterator FirstSpreadOrEndValue() const {
-    return (first_spread_index_ >= 0) ? values_->begin() + first_spread_index_
-                                      : values_->end();
-  }
-  ZoneList<Expression*>::iterator BeginValue() const {
-    return values_->begin();
-  }
-  ZoneList<Expression*>::iterator EndValue() const { return values_->end(); }
 
  private:
   friend class AstNodeFactory;
@@ -3192,7 +3184,7 @@ class AstNodeFactory final BASE_EMBEDDED {
         body, expected_property_count, parameter_count, parameter_count,
         FunctionLiteral::kAnonymousExpression,
         FunctionLiteral::kNoDuplicateParameters,
-        FunctionLiteral::kShouldLazyCompile, 0, true,
+        FunctionLiteral::kShouldLazyCompile, 0, /* has_braces */ false,
         FunctionLiteral::kIdTypeTopLevel);
   }
 

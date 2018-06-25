@@ -72,10 +72,14 @@ class LowLevelLogger;
 class PerfBasicLogger;
 class PerfJitLogger;
 class Profiler;
-class ProfilerListener;
 class RuntimeCallTimer;
 class Ticker;
 class WasmCompiledModule;
+
+namespace interpreter {
+enum class Bytecode : uint8_t;
+enum class OperandScale : uint8_t;
+}  // namespace interpreter
 
 namespace wasm {
 class WasmCode;
@@ -131,15 +135,7 @@ class Logger : public CodeEventListener {
   void SetCodeEventHandler(uint32_t options,
                            JitCodeEventHandler event_handler);
 
-  // Sets up ProfilerListener.
-  void SetUpProfilerListener();
-
-  // Tear down ProfilerListener if it has no observers.
-  void TearDownProfilerListener();
-
   sampler::Sampler* sampler();
-
-  ProfilerListener* profiler_listener() { return profiler_listener_.get(); }
 
   // Frees resources acquired in SetUp.
   // When a temporary file is used for the log, returns its stream descriptor,
@@ -187,8 +183,8 @@ class Logger : public CodeEventListener {
   void ApiEntryCall(const char* name);
 
   // ==== Events logged by --log-code. ====
-  void addCodeEventListener(CodeEventListener* listener);
-  void removeCodeEventListener(CodeEventListener* listener);
+  void AddCodeEventListener(CodeEventListener* listener);
+  void RemoveCodeEventListener(CodeEventListener* listener);
 
   // Emits a code event for a callback function.
   void CallbackEvent(Name* name, Address entry_point);
@@ -224,7 +220,7 @@ class Logger : public CodeEventListener {
 
   void CodeNameEvent(Address addr, int pos, const char* code_name);
 
-  void CodeDeoptEvent(Code* code, DeoptKind kind, Address pc,
+  void CodeDeoptEvent(Code* code, DeoptimizeKind kind, Address pc,
                       int fp_to_sp_delta);
 
   void ICEvent(const char* type, bool keyed, Map* map, Object* key,
@@ -250,8 +246,8 @@ class Logger : public CodeEventListener {
 
   static void DefaultEventLoggerSentinel(const char* name, int event) {}
 
-  INLINE(static void CallEventLogger(Isolate* isolate, const char* name,
-                                     StartEnd se, bool expose_to_api));
+  V8_INLINE static void CallEventLogger(Isolate* isolate, const char* name,
+                                        StartEnd se, bool expose_to_api);
 
   bool is_logging() {
     return is_logging_;
@@ -282,8 +278,8 @@ class Logger : public CodeEventListener {
   void LogMaps();
 
   // Converts tag to a corresponding NATIVE_... if the script is native.
-  INLINE(static CodeEventListener::LogEventsAndTags ToNativeByScript(
-      CodeEventListener::LogEventsAndTags, Script*));
+  V8_INLINE static CodeEventListener::LogEventsAndTags ToNativeByScript(
+      CodeEventListener::LogEventsAndTags, Script*);
 
   // Callback from Log, stops profiling in case of insufficient resources.
   void LogFailure();
@@ -348,7 +344,6 @@ class Logger : public CodeEventListener {
   PerfJitLogger* perf_jit_logger_;
   LowLevelLogger* ll_logger_;
   JitLogger* jit_logger_;
-  std::unique_ptr<ProfilerListener> profiler_listener_;
   std::set<int> logged_source_code_;
   uint32_t next_source_info_id_ = 0;
 
@@ -424,7 +419,7 @@ class CodeEventLogger : public CodeEventListener {
   void SetterCallbackEvent(Name* name, Address entry_point) override {}
   void SharedFunctionInfoMoveEvent(Address from, Address to) override {}
   void CodeMovingGCEvent() override {}
-  void CodeDeoptEvent(Code* code, DeoptKind kind, Address pc,
+  void CodeDeoptEvent(Code* code, DeoptimizeKind kind, Address pc,
                       int fp_to_sp_delta) override {}
 
  private:
@@ -475,7 +470,7 @@ class ExternalCodeEventListener : public CodeEventListener {
   void CodeDisableOptEvent(AbstractCode* code,
                            SharedFunctionInfo* shared) override {}
   void CodeMovingGCEvent() override {}
-  void CodeDeoptEvent(Code* code, DeoptKind kind, Address pc,
+  void CodeDeoptEvent(Code* code, DeoptimizeKind kind, Address pc,
                       int fp_to_sp_delta) override {}
 
   void StartListening(CodeEventHandler* code_event_handler);

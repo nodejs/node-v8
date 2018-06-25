@@ -29,9 +29,9 @@ InstructionSelectorTest::Stream InstructionSelectorTest::StreamBuilder::Build(
     InstructionSelector::SourcePositionMode source_position_mode) {
   Schedule* schedule = Export();
   if (FLAG_trace_turbo) {
-    OFStream out(stdout);
-    out << "=== Schedule before instruction selection ===" << std::endl
-        << *schedule;
+    StdoutStream{} << "=== Schedule before instruction selection ==="
+                   << std::endl
+                   << *schedule;
   }
   size_t const node_count = graph()->NodeCount();
   EXPECT_NE(0u, node_count);
@@ -47,14 +47,14 @@ InstructionSelectorTest::Stream InstructionSelectorTest::StreamBuilder::Build(
                                source_position_mode, features,
                                InstructionSelector::kDisableScheduling,
                                InstructionSelector::kDisableSerialization,
-                               PoisoningMitigationLevel::kOn);
+                               PoisoningMitigationLevel::kPoisonAll);
   selector.SelectInstructions();
   if (FLAG_trace_turbo) {
-    OFStream out(stdout);
     PrintableInstructionSequence printable = {RegisterConfiguration::Default(),
                                               &sequence};
-    out << "=== Code sequence after instruction selection ===" << std::endl
-        << printable;
+    StdoutStream{} << "=== Code sequence after instruction selection ==="
+                   << std::endl
+                   << printable;
   }
   Stream s;
   s.virtual_registers_ = selector.GetVirtualRegistersForTesting();
@@ -422,8 +422,8 @@ TARGET_TEST_F(InstructionSelectorTest, CallStubWithDeopt) {
 
   Callable callable = Builtins::CallableFor(isolate(), Builtins::kToObject);
   auto call_descriptor = Linkage::GetStubCallDescriptor(
-      isolate(), zone(), callable.descriptor(), 1,
-      CallDescriptor::kNeedsFrameState, Operator::kNoProperties);
+      zone(), callable.descriptor(), 1, CallDescriptor::kNeedsFrameState,
+      Operator::kNoProperties);
 
   // Build frame state for the state before the call.
   Node* parameters = m.AddNode(
@@ -517,8 +517,8 @@ TARGET_TEST_F(InstructionSelectorTest, CallStubWithDeoptRecursiveFrameState) {
 
   Callable callable = Builtins::CallableFor(isolate(), Builtins::kToObject);
   auto call_descriptor = Linkage::GetStubCallDescriptor(
-      isolate(), zone(), callable.descriptor(), 1,
-      CallDescriptor::kNeedsFrameState, Operator::kNoProperties);
+      zone(), callable.descriptor(), 1, CallDescriptor::kNeedsFrameState,
+      Operator::kNoProperties);
 
   // Build frame state for the state before the call.
   Node* parameters = m.AddNode(

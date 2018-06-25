@@ -26,7 +26,7 @@ class AllocationBuilder final {
 
   // Primitive allocation of static size.
   void Allocate(int size, PretenureFlag pretenure = NOT_TENURED,
-                Type* type = Type::Any()) {
+                Type type = Type::Any()) {
     DCHECK_LE(size, kMaxRegularHeapObjectSize);
     effect_ = graph()->NewNode(
         common()->BeginRegion(RegionObservability::kNotObservable), effect_);
@@ -90,6 +90,7 @@ class AllocationBuilder final {
 
  protected:
   JSGraph* jsgraph() { return jsgraph_; }
+  Isolate* isolate() const { return jsgraph_->isolate(); }
   Graph* graph() { return jsgraph_->graph(); }
   CommonOperatorBuilder* common() { return jsgraph_->common(); }
   SimplifiedOperatorBuilder* simplified() { return jsgraph_->simplified(); }

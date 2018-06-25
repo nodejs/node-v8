@@ -129,7 +129,7 @@ void UnoptimizedCompileJob::PrepareOnMainThread(Isolate* isolate) {
         source, shared_->StartPosition(), shared_->EndPosition()));
     parse_info_->set_character_stream(std::move(stream));
   } else {
-    source = String::Flatten(source);
+    source = String::Flatten(isolate, source);
     const void* data;
     int offset = 0;
     int length = source->length();
@@ -206,9 +206,9 @@ void UnoptimizedCompileJob::PrepareOnMainThread(Isolate* isolate) {
   parser_.reset(new Parser(parse_info_.get()));
   MaybeHandle<ScopeInfo> outer_scope_info;
   if (shared_->HasOuterScopeInfo()) {
-    outer_scope_info = handle(shared_->GetOuterScopeInfo());
+    outer_scope_info = handle(shared_->GetOuterScopeInfo(), isolate);
   }
-  parser_->DeserializeScopeChain(parse_info_.get(), outer_scope_info);
+  parser_->DeserializeScopeChain(isolate, parse_info_.get(), outer_scope_info);
 
   Handle<String> name(shared_->Name());
   parse_info_->set_function_name(
@@ -288,8 +288,7 @@ void UnoptimizedCompileJob::FinalizeOnMainThread(Isolate* isolate) {
     // Internalize ast values onto the heap.
     parse_info_->ast_value_factory()->Internalize(isolate);
     // Allocate scope infos for the literal.
-    DeclarationScope::AllocateScopeInfos(parse_info_.get(), isolate,
-                                         AnalyzeMode::kRegular);
+    DeclarationScope::AllocateScopeInfos(parse_info_.get(), isolate);
     if (compilation_job_->state() == CompilationJob::State::kFailed ||
         !Compiler::FinalizeCompilationJob(compilation_job_.release(), shared_,
                                           isolate)) {

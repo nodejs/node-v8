@@ -5,6 +5,7 @@
 #ifndef V8_OBJECTS_SHARED_FUNCTION_INFO_H_
 #define V8_OBJECTS_SHARED_FUNCTION_INFO_H_
 
+#include "src/bailout-reason.h"
 #include "src/objects.h"
 #include "src/objects/script.h"
 
@@ -17,6 +18,7 @@ namespace internal {
 class BytecodeArray;
 class CoverageInfo;
 class DebugInfo;
+class WasmExportedFunctionData;
 
 class PreParsedScopeData : public Struct {
  public:
@@ -91,7 +93,7 @@ class SharedFunctionInfo : public HeapObject {
   static const int kInitialLength = kEntriesStart + kEntryLength;
 
   static const int kNotFound = -1;
-  static const int kInvalidLength = -1;
+  static const uint16_t kInvalidLength = static_cast<uint16_t>(-1);
 
   // Helpers for assembly code that does a backwards walk of the optimized code
   // map.
@@ -127,16 +129,17 @@ class SharedFunctionInfo : public HeapObject {
   inline bool is_compiled() const;
 
   // [length]: The function length - usually the number of declared parameters.
-  // Use up to 2^30 parameters. The value is only reliable when the function has
-  // been compiled.
-  inline int GetLength() const;
+  // Use up to 2^16-2 parameters (16 bits of values, where one is reserved for
+  // kDontAdaptArgumentsSentinel). The value is only reliable when the function
+  // has been compiled.
+  inline uint16_t GetLength() const;
   inline bool HasLength() const;
   inline void set_length(int value);
 
   // [internal formal parameter count]: The declared number of parameters.
   // For subclass constructors, also includes new.target.
   // The size of function's frame is internal_formal_parameter_count + 1.
-  DECL_INT_ACCESSORS(internal_formal_parameter_count)
+  DECL_UINT16_ACCESSORS(internal_formal_parameter_count)
 
   // Set the formal parameter count so the function code will be
   // called without using argument adaptor frames.
@@ -166,7 +169,7 @@ class SharedFunctionInfo : public HeapObject {
   //  - a FixedArray with Asm->Wasm conversion [HasAsmWasmData()].
   //  - a Smi containing the builtin id [HasBuiltinId()]
   //  - a PreParsedScopeData for the parser [HasPreParsedScopeData()]
-  //  - a Code object otherwise [HasCodeObject()]
+  //  - a WasmExportedFunctionData for Wasm [HasWasmExportedFunctionData()]
   DECL_ACCESSORS(function_data, Object)
 
   inline bool IsApiFunction() const;
@@ -194,9 +197,9 @@ class SharedFunctionInfo : public HeapObject {
   inline PreParsedScopeData* preparsed_scope_data() const;
   inline void set_preparsed_scope_data(PreParsedScopeData* data);
   inline void ClearPreParsedScopeData();
-  inline bool HasCodeObject() const;
-  inline Code* code_object() const;
-  inline void set_code_object();
+  inline bool HasWasmExportedFunctionData() const;
+  inline WasmExportedFunctionData* wasm_exported_function_data() const;
+  inline void set_wasm_exported_function_data(WasmExportedFunctionData* data);
 
   // [function identifier]: This field holds an additional identifier for the
   // function.
@@ -256,15 +259,6 @@ class SharedFunctionInfo : public HeapObject {
   // Indicates that the the shared function info is deserialized from cache.
   DECL_BOOLEAN_ACCESSORS(deserialized)
 
-  // Indicates that the function cannot cause side-effects.
-  DECL_BOOLEAN_ACCESSORS(has_no_side_effect)
-
-  // Indicates that the function requires runtime side-effect checks.
-  DECL_BOOLEAN_ACCESSORS(requires_runtime_side_effect_checks);
-
-  // Indicates that |has_no_side_effect| has been computed and set.
-  DECL_BOOLEAN_ACCESSORS(computed_has_no_side_effect)
-
   // Indicates that the function should be skipped during stepping.
   DECL_BOOLEAN_ACCESSORS(debug_is_blackboxed)
 
@@ -282,8 +276,14 @@ class SharedFunctionInfo : public HeapObject {
   // The function's name if it is non-empty, otherwise the inferred name.
   String* DebugName();
 
-  // The function cannot cause any side effects.
-  static bool HasNoSideEffect(Handle<SharedFunctionInfo> info);
+  enum SideEffectState {
+    kNotComputed = 0,
+    kHasSideEffects = 1,
+    kRequiresRuntimeChecks = 2,
+    kHasNoSideEffect = 3,
+  };
+  static SideEffectState GetSideEffectState(Isolate* isolate,
+                                            Handle<SharedFunctionInfo> info);
 
   // Used for flags such as --turbo-filter.
   bool PassesFilter(const char* raw_filter);
@@ -467,7 +467,7 @@ class SharedFunctionInfo : public HeapObject {
   DECL_CAST(SharedFunctionInfo)
 
   // Constants.
-  static const int kDontAdaptArgumentsSentinel = -1;
+  static const uint16_t kDontAdaptArgumentsSentinel = static_cast<uint16_t>(-1);
 
 #if V8_SFI_HAS_UNIQUE_ID
   static const int kUniqueIdFieldSize = kInt32Size;
@@ -490,8 +490,8 @@ class SharedFunctionInfo : public HeapObject {
   /* Raw data fields. */                                   \
   V(kFunctionLiteralIdOffset, kInt32Size)                  \
   V(kUniqueIdOffset, kUniqueIdFieldSize)                   \
-  V(kLengthOffset, kInt32Size)                             \
-  V(kFormalParameterCountOffset, kInt32Size)               \
+  V(kLengthOffset, kUInt16Size)                            \
+  V(kFormalParameterCountOffset, kUInt16Size)              \
   V(kExpectedNofPropertiesOffset, kInt32Size)              \
   V(kStartPositionAndTypeOffset, kInt32Size)               \
   V(kEndPositionOffset, kInt32Size)                        \
@@ -549,16 +549,14 @@ class SharedFunctionInfo : public HeapObject {
   STATIC_ASSERT(kLastFunctionKind <= FunctionKindBits::kMax);
 
 // Bit positions in |debugger_hints|.
-#define DEBUGGER_HINTS_BIT_FIELDS(V, _)             \
-  V(IsAnonymousExpressionBit, bool, 1, _)           \
-  V(NameShouldPrintAsAnonymousBit, bool, 1, _)      \
-  V(IsDeserializedBit, bool, 1, _)                  \
-  V(HasNoSideEffectBit, bool, 1, _)                 \
-  V(RequiresRuntimeSideEffectChecksBit, bool, 1, _) \
-  V(ComputedHasNoSideEffectBit, bool, 1, _)         \
-  V(DebugIsBlackboxedBit, bool, 1, _)               \
-  V(ComputedDebugIsBlackboxedBit, bool, 1, _)       \
-  V(HasReportedBinaryCoverageBit, bool, 1, _)       \
+#define DEBUGGER_HINTS_BIT_FIELDS(V, _)        \
+  V(IsAnonymousExpressionBit, bool, 1, _)      \
+  V(NameShouldPrintAsAnonymousBit, bool, 1, _) \
+  V(IsDeserializedBit, bool, 1, _)             \
+  V(SideEffectStateBits, int, 2, _)            \
+  V(DebugIsBlackboxedBit, bool, 1, _)          \
+  V(ComputedDebugIsBlackboxedBit, bool, 1, _)  \
+  V(HasReportedBinaryCoverageBit, bool, 1, _)  \
   V(DebuggingIdBits, int, 20, _)
 
   DEFINE_BIT_FIELDS(DEBUGGER_HINTS_BIT_FIELDS)
@@ -580,6 +578,9 @@ class SharedFunctionInfo : public HeapObject {
   // function.
   DECL_ACCESSORS(outer_scope_info, HeapObject)
 
+  inline int side_effect_state() const;
+  inline void set_side_effect_state(int value);
+
   inline void set_kind(FunctionKind kind);
 
   inline void set_needs_home_object(bool value);
@@ -588,7 +589,7 @@ class SharedFunctionInfo : public HeapObject {
   friend class V8HeapExplorer;
   FRIEND_TEST(PreParserTest, LazyFunctionLength);
 
-  inline int length() const;
+  inline uint16_t length() const;
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(SharedFunctionInfo);
 };
