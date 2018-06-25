@@ -150,7 +150,6 @@ function getExpectedSymbols() {
     'v8dbg_scopeinfo_idx_first_vars',
     'v8dbg_scopeinfo_idx_ncontextlocals',
     'v8dbg_scopeinfo_idx_nparams',
-    'v8dbg_scopeinfo_idx_nstacklocals',
     'v8dbg_sharedfunctioninfo_start_position_mask',
     'v8dbg_sharedfunctioninfo_start_position_shift',
     'v8dbg_type_Code__CODE_TYPE',
