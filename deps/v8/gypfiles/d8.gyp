@@ -26,6 +26,8 @@
       ],
       'sources': [
         '<(SHARED_INTERMEDIATE_DIR)/d8-js.cc',
+        '../src/async-hooks-wrapper.cc',
+        '../src/async-hooks-wrapper.h',
         '../src/d8-console.cc',
         '../src/d8-console.h',
         '../src/d8.cc',
