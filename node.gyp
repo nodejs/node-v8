@@ -1103,7 +1103,7 @@
               ],
               'action': [
                 'python',
-                'deps/v8/third_party/inspector_protocol/ConvertProtocolToJSON.py',
+                'deps/v8/third_party/inspector_protocol/convert_protocol_to_json.py',
                 '<@(_inputs)',
                 '<@(_outputs)',
               ],
@@ -1158,7 +1158,7 @@
               ],
               'action': [
                 'python',
-                'deps/v8/third_party/inspector_protocol/ConvertProtocolToJSON.py',
+                'deps/v8/third_party/inspector_protocol/convert_protocol_to_json.py',
                 '<@(_inputs)',
                 '<@(_outputs)',
               ],
@@ -1174,7 +1174,7 @@
               ],
               'action': [
                 'python',
-                'deps/v8/third_party/inspector_protocol/ConcatenateProtocols.py',
+                'deps/v8/third_party/inspector_protocol/concatenate_protocols.py',
                 '<@(_inputs)',
                 '<@(_outputs)',
               ],

@@ -76,7 +76,7 @@ class JSGraph : public EmbedderGraph {
     return n;
   }
 
-  void AddEdge(Node* from, Node* to) override {
+  void AddEdge(Node* from, Node* to, const char* name) override {
     edges_[from].insert(to);
   }
 
