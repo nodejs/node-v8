@@ -136,6 +136,10 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kIA32I32x4ExtractLane:
     case kSSEI32x4ReplaceLane:
     case kAVXI32x4ReplaceLane:
+    case kSSEI32x4SConvertF32x4:
+    case kAVXI32x4SConvertF32x4:
+    case kIA32I32x4SConvertI16x8Low:
+    case kIA32I32x4SConvertI16x8High:
     case kIA32I32x4Neg:
     case kSSEI32x4Shl:
     case kAVXI32x4Shl:
@@ -161,6 +165,10 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kAVXI32x4GtS:
     case kSSEI32x4GeS:
     case kAVXI32x4GeS:
+    case kSSEI32x4UConvertF32x4:
+    case kAVXI32x4UConvertF32x4:
+    case kIA32I32x4UConvertI16x8Low:
+    case kIA32I32x4UConvertI16x8High:
     case kSSEI32x4ShrU:
     case kAVXI32x4ShrU:
     case kSSEI32x4MinU:
@@ -175,11 +183,15 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kIA32I16x8ExtractLane:
     case kSSEI16x8ReplaceLane:
     case kAVXI16x8ReplaceLane:
+    case kIA32I16x8SConvertI8x16Low:
+    case kIA32I16x8SConvertI8x16High:
     case kIA32I16x8Neg:
     case kSSEI16x8Shl:
     case kAVXI16x8Shl:
     case kSSEI16x8ShrS:
     case kAVXI16x8ShrS:
+    case kSSEI16x8SConvertI32x4:
+    case kAVXI16x8SConvertI32x4:
     case kSSEI16x8Add:
     case kAVXI16x8Add:
     case kSSEI16x8AddSaturateS:
@@ -204,8 +216,12 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kAVXI16x8GtS:
     case kSSEI16x8GeS:
     case kAVXI16x8GeS:
+    case kIA32I16x8UConvertI8x16Low:
+    case kIA32I16x8UConvertI8x16High:
     case kSSEI16x8ShrU:
     case kAVXI16x8ShrU:
+    case kSSEI16x8UConvertI32x4:
+    case kAVXI16x8UConvertI32x4:
     case kSSEI16x8AddSaturateU:
     case kAVXI16x8AddSaturateU:
     case kSSEI16x8SubSaturateU:
@@ -222,11 +238,12 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kIA32I8x16ExtractLane:
     case kSSEI8x16ReplaceLane:
     case kAVXI8x16ReplaceLane:
+    case kSSEI8x16SConvertI16x8:
+    case kAVXI8x16SConvertI16x8:
     case kIA32I8x16Neg:
     case kSSEI8x16Shl:
     case kAVXI8x16Shl:
-    case kSSEI8x16ShrS:
-    case kAVXI8x16ShrS:
+    case kIA32I8x16ShrS:
     case kSSEI8x16Add:
     case kAVXI8x16Add:
     case kSSEI8x16AddSaturateS:
@@ -249,12 +266,13 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kAVXI8x16GtS:
     case kSSEI8x16GeS:
     case kAVXI8x16GeS:
+    case kSSEI8x16UConvertI16x8:
+    case kAVXI8x16UConvertI16x8:
     case kSSEI8x16AddSaturateU:
     case kAVXI8x16AddSaturateU:
     case kSSEI8x16SubSaturateU:
     case kAVXI8x16SubSaturateU:
-    case kSSEI8x16ShrU:
-    case kAVXI8x16ShrU:
+    case kIA32I8x16ShrU:
     case kSSEI8x16MinU:
     case kAVXI8x16MinU:
     case kSSEI8x16MaxU:
@@ -276,6 +294,45 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kAVXS128Select:
     case kIA32S8x16Shuffle:
     case kIA32S32x4Swizzle:
+    case kIA32S32x4Shuffle:
+    case kIA32S16x8Blend:
+    case kIA32S16x8HalfShuffle1:
+    case kIA32S16x8HalfShuffle2:
+    case kIA32S8x16Alignr:
+    case kIA32S16x8Dup:
+    case kIA32S8x16Dup:
+    case kSSES16x8UnzipHigh:
+    case kAVXS16x8UnzipHigh:
+    case kSSES16x8UnzipLow:
+    case kAVXS16x8UnzipLow:
+    case kSSES8x16UnzipHigh:
+    case kAVXS8x16UnzipHigh:
+    case kSSES8x16UnzipLow:
+    case kAVXS8x16UnzipLow:
+    case kIA32S64x2UnpackHigh:
+    case kIA32S32x4UnpackHigh:
+    case kIA32S16x8UnpackHigh:
+    case kIA32S8x16UnpackHigh:
+    case kIA32S64x2UnpackLow:
+    case kIA32S32x4UnpackLow:
+    case kIA32S16x8UnpackLow:
+    case kIA32S8x16UnpackLow:
+    case kSSES8x16TransposeLow:
+    case kAVXS8x16TransposeLow:
+    case kSSES8x16TransposeHigh:
+    case kAVXS8x16TransposeHigh:
+    case kSSES8x8Reverse:
+    case kAVXS8x8Reverse:
+    case kSSES8x4Reverse:
+    case kAVXS8x4Reverse:
+    case kSSES8x2Reverse:
+    case kAVXS8x2Reverse:
+    case kIA32S1x4AnyTrue:
+    case kIA32S1x4AllTrue:
+    case kIA32S1x8AnyTrue:
+    case kIA32S1x8AllTrue:
+    case kIA32S1x16AnyTrue:
+    case kIA32S1x16AllTrue:
       return (instr->addressing_mode() == kMode_None)
           ? kNoOpcodeFlags
           : kIsLoadOperation | kHasSideEffect;

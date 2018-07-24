@@ -14,7 +14,6 @@
 // array.js has to come before typedarray.js for this to work
 var ArrayToString = utils.ImportNow("ArrayToString");
 var InnerArrayJoin;
-var InnerArraySort;
 var InnerArrayToLocaleString;
 
 macro TYPED_ARRAYS(FUNCTION)
@@ -45,7 +44,6 @@ var GlobalTypedArray = %object_get_prototype_of(GlobalUint8Array);
 
 utils.Import(function(from) {
   InnerArrayJoin = from.InnerArrayJoin;
-  InnerArraySort = from.InnerArraySort;
   InnerArrayToLocaleString = from.InnerArrayToLocaleString;
 });
 
@@ -59,36 +57,18 @@ function ValidateTypedArray(array, methodName) {
     throw %make_type_error(kDetachedOperation, methodName);
 }
 
-// ES6 draft 05-18-15, section 22.2.3.25
-DEFINE_METHOD(
-  GlobalTypedArray.prototype,
-  sort(comparefn) {
-    ValidateTypedArray(this, "%TypedArray%.prototype.sort");
-
-    if (!IS_UNDEFINED(comparefn) && !IS_CALLABLE(comparefn)) {
-      throw %make_type_error(kBadSortComparisonFunction, comparefn);
-    }
-
-    var length = %_TypedArrayGetLength(this);
-
-    if (IS_UNDEFINED(comparefn)) {
-      return %TypedArraySortFast(this);
-    }
-
-    return InnerArraySort(this, length, comparefn);
-  }
-);
-
 
 // ES6 section 22.2.3.27
+// ecma402 #sup-array.prototype.tolocalestring
 DEFINE_METHOD(
   GlobalTypedArray.prototype,
   toLocaleString() {
     ValidateTypedArray(this, "%TypedArray%.prototype.toLocaleString");
 
+    var locales = arguments[0];
+    var options = arguments[1];
     var length = %_TypedArrayGetLength(this);
-
-    return InnerArrayToLocaleString(this, length);
+    return InnerArrayToLocaleString(this, length, locales, options);
   }
 );
 

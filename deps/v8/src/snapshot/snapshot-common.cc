@@ -6,7 +6,7 @@
 
 #include "src/snapshot/snapshot.h"
 
-#include "src/api.h"
+#include "src/assembler-inl.h"
 #include "src/base/platform/platform.h"
 #include "src/callable.h"
 #include "src/interface-descriptors.h"
@@ -259,8 +259,9 @@ v8::StartupData Snapshot::CreateSnapshotBlob(
             reinterpret_cast<const char*>(startup_snapshot->RawData().start()),
             payload_length);
   if (FLAG_profile_deserialization) {
-    PrintF("Snapshot blob consists of:\n%10d bytes for startup\n",
-           payload_length);
+    PrintF("Snapshot blob consists of:\n%10d bytes in %d chunks for startup\n",
+           payload_length,
+           static_cast<uint32_t>(startup_snapshot->Reservations().size()));
   }
   payload_offset += payload_length;
 
@@ -285,7 +286,8 @@ v8::StartupData Snapshot::CreateSnapshotBlob(
         reinterpret_cast<const char*>(context_snapshot->RawData().start()),
         payload_length);
     if (FLAG_profile_deserialization) {
-      PrintF("%10d bytes for context #%d\n", payload_length, i);
+      PrintF("%10d bytes in %d chunks for context #%d\n", payload_length,
+             static_cast<uint32_t>(context_snapshot->Reservations().size()), i);
     }
     payload_offset += payload_length;
   }
@@ -295,7 +297,6 @@ v8::StartupData Snapshot::CreateSnapshotBlob(
   return result;
 }
 
-#ifdef V8_EMBEDDED_BUILTINS
 namespace {
 bool BuiltinAliasesOffHeapTrampolineRegister(Isolate* isolate, Code* code) {
   DCHECK(Builtins::IsIsolateIndependent(code->builtin_index()));
@@ -327,6 +328,48 @@ bool BuiltinAliasesOffHeapTrampolineRegister(Isolate* isolate, Code* code) {
 
   return false;
 }
+
+void FinalizeEmbeddedCodeTargets(Isolate* isolate, EmbeddedData* blob) {
+  static const int kRelocMask =
+      RelocInfo::ModeMask(RelocInfo::CODE_TARGET) |
+      RelocInfo::ModeMask(RelocInfo::RELATIVE_CODE_TARGET);
+
+  for (int i = 0; i < Builtins::builtin_count; i++) {
+    if (!Builtins::IsIsolateIndependent(i)) continue;
+
+    Code* code = isolate->builtins()->builtin(i);
+    RelocIterator on_heap_it(code, kRelocMask);
+    RelocIterator off_heap_it(blob, code, kRelocMask);
+
+#if defined(V8_TARGET_ARCH_X64) || defined(V8_TARGET_ARCH_ARM64) || \
+    defined(V8_TARGET_ARCH_ARM)
+    // On X64, ARM, ARM64 we emit relative builtin-to-builtin jumps for isolate
+    // independent builtins in the snapshot. This fixes up the relative jumps
+    // to the right offsets in the snapshot.
+    while (!on_heap_it.done()) {
+      DCHECK(!off_heap_it.done());
+
+      RelocInfo* rinfo = on_heap_it.rinfo();
+      DCHECK_EQ(rinfo->rmode(), off_heap_it.rinfo()->rmode());
+      Code* target = Code::GetCodeFromTargetAddress(rinfo->target_address());
+      CHECK(Builtins::IsIsolateIndependentBuiltin(target));
+
+      off_heap_it.rinfo()->set_target_address(
+          blob->InstructionStartOfBuiltin(target->builtin_index()));
+
+      on_heap_it.next();
+      off_heap_it.next();
+    }
+    DCHECK(off_heap_it.done());
+#else
+    // Architectures other than x64 and arm/arm64 do not use pc-relative calls
+    // and thus must not contain embedded code targets. Instead, we use an
+    // indirection through the root register.
+    CHECK(on_heap_it.done());
+    CHECK(off_heap_it.done());
+#endif  // defined(V8_TARGET_ARCH_X64) || defined(V8_TARGET_ARCH_ARM64)
+  }
+}
 }  // namespace
 
 // static
@@ -345,11 +388,11 @@ EmbeddedData EmbeddedData::FromIsolate(Isolate* isolate) {
     if (Builtins::IsIsolateIndependent(i)) {
       DCHECK(!Builtins::IsLazy(i));
 
-      // Sanity-check that the given builtin is process-independent and does not
+      // Sanity-check that the given builtin is isolate-independent and does not
       // use the trampoline register in its calling convention.
-      if (!code->IsProcessIndependent()) {
+      if (!code->IsIsolateIndependent(isolate)) {
         saw_unsafe_builtin = true;
-        fprintf(stderr, "%s is not process-independent.\n", Builtins::name(i));
+        fprintf(stderr, "%s is not isolate-independent.\n", Builtins::name(i));
       }
       if (BuiltinAliasesOffHeapTrampolineRegister(isolate, code)) {
         saw_unsafe_builtin = true;
@@ -370,7 +413,11 @@ EmbeddedData EmbeddedData::FromIsolate(Isolate* isolate) {
       lengths[i] = 0;
     }
   }
-  CHECK(!saw_unsafe_builtin);
+  CHECK_WITH_MSG(
+      !saw_unsafe_builtin,
+      "One or more builtins marked as isolate-independent either contains "
+      "isolate-dependent code or aliases the off-heap trampoline register. "
+      "If in doubt, ask jgruber@");
 
   const uint32_t blob_size = RawDataOffset() + raw_data_size;
   uint8_t* blob = new uint8_t[blob_size];
@@ -391,11 +438,26 @@ EmbeddedData EmbeddedData::FromIsolate(Isolate* isolate) {
     uint8_t* dst = blob + RawDataOffset() + offset;
     DCHECK_LE(RawDataOffset() + offset + code->raw_instruction_size(),
               blob_size);
-    std::memcpy(dst, code->raw_instruction_start(),
+    std::memcpy(dst, reinterpret_cast<uint8_t*>(code->raw_instruction_start()),
                 code->raw_instruction_size());
   }
 
-  return {blob, blob_size};
+  EmbeddedData d(blob, blob_size);
+
+  // Fix up call targets that point to other embedded builtins.
+  FinalizeEmbeddedCodeTargets(isolate, &d);
+
+  // Hash the blob and store the result.
+  STATIC_ASSERT(HashSize() == kSizetSize);
+  const size_t hash = d.CreateHash();
+  std::memcpy(blob + HashOffset(), &hash, HashSize());
+
+  DCHECK_EQ(hash, d.CreateHash());
+  DCHECK_EQ(hash, d.Hash());
+
+  if (FLAG_serialization_statistics) d.PrintStatistics();
+
+  return d;
 }
 
 EmbeddedData EmbeddedData::FromBlob() {
@@ -406,13 +468,13 @@ EmbeddedData EmbeddedData::FromBlob() {
   return {data, size};
 }
 
-const uint8_t* EmbeddedData::InstructionStartOfBuiltin(int i) const {
+Address EmbeddedData::InstructionStartOfBuiltin(int i) const {
   DCHECK(Builtins::IsBuiltinId(i));
-
   const uint32_t* offsets = Offsets();
   const uint8_t* result = RawData() + offsets[i];
-  DCHECK_LT(result, data_ + size_);
-  return result;
+  DCHECK_LE(result, data_ + size_);
+  DCHECK_IMPLIES(result == data_ + size_, InstructionSizeOfBuiltin(i) == 0);
+  return reinterpret_cast<Address>(result);
 }
 
 uint32_t EmbeddedData::InstructionSizeOfBuiltin(int i) const {
@@ -420,12 +482,59 @@ uint32_t EmbeddedData::InstructionSizeOfBuiltin(int i) const {
   const uint32_t* lengths = Lengths();
   return lengths[i];
 }
-#endif
+
+size_t EmbeddedData::CreateHash() const {
+  STATIC_ASSERT(HashOffset() == 0);
+  STATIC_ASSERT(HashSize() == kSizetSize);
+  return base::hash_range(data_ + HashSize(), data_ + size_);
+}
 
 uint32_t Snapshot::ExtractNumContexts(const v8::StartupData* data) {
   CHECK_LT(kNumberOfContextsOffset, data->raw_size);
   uint32_t num_contexts = GetHeaderValue(data, kNumberOfContextsOffset);
   return num_contexts;
+}
+
+void EmbeddedData::PrintStatistics() const {
+  DCHECK(FLAG_serialization_statistics);
+
+  constexpr int kCount = Builtins::builtin_count;
+
+  int embedded_count = 0;
+  int instruction_size = 0;
+  int sizes[kCount];
+  for (int i = 0; i < kCount; i++) {
+    if (!Builtins::IsIsolateIndependent(i)) continue;
+    const int size = InstructionSizeOfBuiltin(i);
+    instruction_size += size;
+    sizes[embedded_count] = size;
+    embedded_count++;
+  }
+
+  // Sort for percentiles.
+  std::sort(&sizes[0], &sizes[embedded_count]);
+
+  const int k50th = embedded_count * 0.5;
+  const int k75th = embedded_count * 0.75;
+  const int k90th = embedded_count * 0.90;
+  const int k99th = embedded_count * 0.99;
+
+  const int metadata_size =
+      static_cast<int>(HashSize() + OffsetsSize() + LengthsSize());
+
+  PrintF("EmbeddedData:\n");
+  PrintF("  Total size:                         %d\n",
+         static_cast<int>(size()));
+  PrintF("  Metadata size:                      %d\n", metadata_size);
+  PrintF("  Instruction size:                   %d\n", instruction_size);
+  PrintF("  Padding:                            %d\n",
+         static_cast<int>(size() - metadata_size - instruction_size));
+  PrintF("  Embedded builtin count:             %d\n", embedded_count);
+  PrintF("  Instruction size (50th percentile): %d\n", sizes[k50th]);
+  PrintF("  Instruction size (75th percentile): %d\n", sizes[k75th]);
+  PrintF("  Instruction size (90th percentile): %d\n", sizes[k90th]);
+  PrintF("  Instruction size (99th percentile): %d\n", sizes[k99th]);
+  PrintF("\n");
 }
 
 uint32_t Snapshot::ExtractContextOffset(const v8::StartupData* data,

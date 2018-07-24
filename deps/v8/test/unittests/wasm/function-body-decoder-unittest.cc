@@ -205,10 +205,11 @@ constexpr size_t kMaxByteSizedLeb128 = 127;
 class TestModuleBuilder {
  public:
   explicit TestModuleBuilder(ModuleOrigin origin = kWasmOrigin) {
-    mod.set_origin(origin);
+    mod.origin = origin;
   }
   byte AddGlobal(ValueType type, bool mutability = true) {
-    mod.globals.push_back({type, mutability, WasmInitExpr(), 0, false, false});
+    mod.globals.push_back(
+        {type, mutability, WasmInitExpr(), {0}, false, false});
     CHECK_LE(mod.globals.size(), kMaxByteSizedLeb128);
     return static_cast<byte>(mod.globals.size() - 1);
   }
@@ -244,7 +245,7 @@ class TestModuleBuilder {
     mod.maximum_pages = 100;
   }
 
-  void InitializeFunctionTable() { mod.function_tables.emplace_back(); }
+  void InitializeTable() { mod.tables.emplace_back(); }
 
   WasmModule* module() { return &mod; }
 
@@ -306,7 +307,7 @@ TEST_F(FunctionBodyDecoderTest, Int64Const) {
 
 TEST_F(FunctionBodyDecoderTest, Float32Const) {
   byte code[] = {kExprF32Const, 0, 0, 0, 0};
-  float* ptr = reinterpret_cast<float*>(code + 1);
+  Address ptr = reinterpret_cast<Address>(code + 1);
   for (int i = 0; i < 30; i++) {
     WriteLittleEndianValue<float>(ptr, i * -7.75f);
     EXPECT_VERIFIES_C(f_ff, code);
@@ -315,7 +316,7 @@ TEST_F(FunctionBodyDecoderTest, Float32Const) {
 
 TEST_F(FunctionBodyDecoderTest, Float64Const) {
   byte code[] = {kExprF64Const, 0, 0, 0, 0, 0, 0, 0, 0};
-  double* ptr = reinterpret_cast<double*>(code + 1);
+  Address ptr = reinterpret_cast<Address>(code + 1);
   for (int i = 0; i < 30; i++) {
     WriteLittleEndianValue<double>(ptr, i * 33.45);
     EXPECT_VERIFIES_C(d_dd, code);
@@ -1387,7 +1388,7 @@ TEST_F(FunctionBodyDecoderTest, AllLoadMemCombinations) {
       MachineType mem_type = machineTypes[j];
       byte code[] = {WASM_LOAD_MEM(mem_type, WASM_ZERO)};
       FunctionSig sig(1, 0, &local_type);
-      if (local_type == WasmOpcodes::ValueTypeFor(mem_type)) {
+      if (local_type == ValueTypes::ValueTypeFor(mem_type)) {
         EXPECT_VERIFIES_SC(&sig, code);
       } else {
         EXPECT_FAILURE_SC(&sig, code);
@@ -1406,7 +1407,7 @@ TEST_F(FunctionBodyDecoderTest, AllStoreMemCombinations) {
       MachineType mem_type = machineTypes[j];
       byte code[] = {WASM_STORE_MEM(mem_type, WASM_ZERO, WASM_GET_LOCAL(0))};
       FunctionSig sig(0, 1, &local_type);
-      if (local_type == WasmOpcodes::ValueTypeFor(mem_type)) {
+      if (local_type == ValueTypes::ValueTypeFor(mem_type)) {
         EXPECT_VERIFIES_SC(&sig, code);
       } else {
         EXPECT_FAILURE_SC(&sig, code);
@@ -1521,7 +1522,7 @@ TEST_F(FunctionBodyDecoderTest, MultiReturnType) {
 TEST_F(FunctionBodyDecoderTest, SimpleIndirectCalls) {
   FunctionSig* sig = sigs.i_i();
   TestModuleBuilder builder;
-  builder.InitializeFunctionTable();
+  builder.InitializeTable();
   module = builder.module();
 
   byte f0 = builder.AddSignature(sigs.i_v());
@@ -1537,7 +1538,7 @@ TEST_F(FunctionBodyDecoderTest, SimpleIndirectCalls) {
 TEST_F(FunctionBodyDecoderTest, IndirectCallsOutOfBounds) {
   FunctionSig* sig = sigs.i_i();
   TestModuleBuilder builder;
-  builder.InitializeFunctionTable();
+  builder.InitializeTable();
   module = builder.module();
 
   EXPECT_FAILURE_S(sig, WASM_CALL_INDIRECT0(0, WASM_ZERO));
@@ -1554,7 +1555,7 @@ TEST_F(FunctionBodyDecoderTest, IndirectCallsOutOfBounds) {
 TEST_F(FunctionBodyDecoderTest, IndirectCallsWithMismatchedSigs3) {
   FunctionSig* sig = sigs.i_i();
   TestModuleBuilder builder;
-  builder.InitializeFunctionTable();
+  builder.InitializeTable();
   module = builder.module();
 
   byte f0 = builder.AddFunction(sigs.i_f());
@@ -1592,7 +1593,7 @@ TEST_F(FunctionBodyDecoderTest, IndirectCallsWithoutTableCrash) {
 TEST_F(FunctionBodyDecoderTest, IncompleteIndirectCall) {
   FunctionSig* sig = sigs.i_i();
   TestModuleBuilder builder;
-  builder.InitializeFunctionTable();
+  builder.InitializeTable();
   module = builder.module();
 
   static byte code[] = {kExprCallIndirect};
@@ -1603,7 +1604,7 @@ TEST_F(FunctionBodyDecoderTest, IncompleteStore) {
   FunctionSig* sig = sigs.i_i();
   TestModuleBuilder builder;
   builder.InitializeMemory();
-  builder.InitializeFunctionTable();
+  builder.InitializeTable();
   module = builder.module();
 
   static byte code[] = {kExprI32StoreMem};
@@ -1615,7 +1616,7 @@ TEST_F(FunctionBodyDecoderTest, IncompleteS8x16Shuffle) {
   FunctionSig* sig = sigs.i_i();
   TestModuleBuilder builder;
   builder.InitializeMemory();
-  builder.InitializeFunctionTable();
+  builder.InitializeTable();
   module = builder.module();
 
   static byte code[] = {kSimdPrefix,
@@ -2691,14 +2692,14 @@ class BranchTableIteratorTest : public TestWithZone {
   BranchTableIteratorTest() : TestWithZone() {}
   void CheckBrTableSize(const byte* start, const byte* end) {
     Decoder decoder(start, end);
-    BranchTableOperand<Decoder::kValidate> operand(&decoder, start);
+    BranchTableImmediate<Decoder::kValidate> operand(&decoder, start);
     BranchTableIterator<Decoder::kValidate> iterator(&decoder, operand);
     EXPECT_EQ(end - start - 1u, iterator.length());
     EXPECT_TRUE(decoder.ok());
   }
   void CheckBrTableError(const byte* start, const byte* end) {
     Decoder decoder(start, end);
-    BranchTableOperand<Decoder::kValidate> operand(&decoder, start);
+    BranchTableImmediate<Decoder::kValidate> operand(&decoder, start);
     BranchTableIterator<Decoder::kValidate> iterator(&decoder, operand);
     iterator.length();
     EXPECT_FALSE(decoder.ok());
@@ -2974,7 +2975,6 @@ TEST_F(WasmOpcodeLengthTest, SimpleExpressions) {
   EXPECT_LENGTH(1, kExprF64ReinterpretI64);
   EXPECT_LENGTH(1, kExprI32ReinterpretF32);
   EXPECT_LENGTH(1, kExprI64ReinterpretF64);
-  EXPECT_LENGTH(1, kExprRefEq);
 }
 
 TEST_F(WasmOpcodeLengthTest, SimdExpressions) {
@@ -3027,8 +3027,8 @@ TEST_F(LocalDeclDecoderTest, OneLocal) {
   EXPERIMENTAL_FLAG_SCOPE(anyref);
   for (size_t i = 0; i < arraysize(kValueTypes); i++) {
     ValueType type = kValueTypes[i];
-    const byte data[] = {
-        1, 1, static_cast<byte>(WasmOpcodes::ValueTypeCodeFor(type))};
+    const byte data[] = {1, 1,
+                         static_cast<byte>(ValueTypes::ValueTypeCodeFor(type))};
     BodyLocalDecls decls(zone());
     bool result = DecodeLocalDecls(&decls, data, data + sizeof(data));
     EXPECT_TRUE(result);
@@ -3043,8 +3043,8 @@ TEST_F(LocalDeclDecoderTest, FiveLocals) {
   EXPERIMENTAL_FLAG_SCOPE(anyref);
   for (size_t i = 0; i < arraysize(kValueTypes); i++) {
     ValueType type = kValueTypes[i];
-    const byte data[] = {
-        1, 5, static_cast<byte>(WasmOpcodes::ValueTypeCodeFor(type))};
+    const byte data[] = {1, 5,
+                         static_cast<byte>(ValueTypes::ValueTypeCodeFor(type))};
     BodyLocalDecls decls(zone());
     bool result = DecodeLocalDecls(&decls, data, data + sizeof(data));
     EXPECT_TRUE(result);

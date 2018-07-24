@@ -6,6 +6,7 @@
 #include "src/builtins/builtins.h"
 #include "src/conversions.h"
 #include "src/counters.h"
+#include "src/maybe-handles-inl.h"
 #include "src/objects-inl.h"
 
 namespace v8 {
@@ -82,7 +83,8 @@ BUILTIN(ArrayBufferConstructor) {
 // all cases, or we will expose uinitialized memory to user code.
 BUILTIN(ArrayBufferConstructor_DoNotInitialize) {
   HandleScope scope(isolate);
-  Handle<JSFunction> target(isolate->native_context()->array_buffer_fun());
+  Handle<JSFunction> target(isolate->native_context()->array_buffer_fun(),
+                            isolate);
   Handle<Object> length = args.atOrUndefined(isolate, 1);
   return ConstructBuffer(isolate, target, target, length, false);
 }

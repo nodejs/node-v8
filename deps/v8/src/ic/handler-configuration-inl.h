@@ -8,6 +8,7 @@
 #include "src/ic/handler-configuration.h"
 
 #include "src/field-index-inl.h"
+#include "src/handles-inl.h"
 #include "src/objects-inl.h"
 #include "src/objects/data-handler-inl.h"
 
@@ -163,8 +164,9 @@ Handle<Smi> StoreHandler::StoreField(Isolate* isolate, int descriptor,
                                      FieldIndex field_index,
                                      PropertyConstness constness,
                                      Representation representation) {
-  DCHECK_IMPLIES(!FLAG_track_constant_fields, constness == kMutable);
-  Kind kind = constness == kMutable ? kField : kConstField;
+  DCHECK_IMPLIES(!FLAG_track_constant_fields,
+                 constness == PropertyConstness::kMutable);
+  Kind kind = constness == PropertyConstness::kMutable ? kField : kConstField;
   return StoreField(isolate, kind, descriptor, field_index, representation);
 }
 
@@ -185,14 +187,6 @@ Handle<Smi> StoreHandler::StoreApiSetter(Isolate* isolate,
   int config = KindBits::encode(
       holder_is_receiver ? kApiSetter : kApiSetterHolderIsPrototype);
   return handle(Smi::FromInt(config), isolate);
-}
-
-// static
-WeakCell* StoreHandler::GetTransitionCell(Object* handler) {
-  DCHECK(handler->IsStoreHandler());
-  WeakCell* cell = WeakCell::cast(StoreHandler::cast(handler)->data1());
-  DCHECK(!cell->cleared());
-  return cell;
 }
 
 }  // namespace internal

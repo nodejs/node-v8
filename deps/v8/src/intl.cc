@@ -166,7 +166,7 @@ V8_WARN_UNUSED_RESULT Object* LocaleConvertCase(Handle<String> s,
   Handle<SeqTwoByteString> result;
   std::unique_ptr<uc16[]> sap;
 
-  if (dest_length == 0) return isolate->heap()->empty_string();
+  if (dest_length == 0) return ReadOnlyRoots(isolate).empty_string();
 
   // This is not a real loop. It'll be executed only once (no overflow) or
   // twice (overflow).
@@ -206,8 +206,7 @@ V8_WARN_UNUSED_RESULT Object* LocaleConvertCase(Handle<String> s,
 // strings and does not allocate. Note that {src} could still be, e.g., a
 // one-byte sliced string with a two-byte parent string.
 // Called from TF builtins.
-V8_WARN_UNUSED_RESULT Object* ConvertOneByteToLower(String* src, String* dst,
-                                                    Isolate* isolate) {
+V8_WARN_UNUSED_RESULT Object* ConvertOneByteToLower(String* src, String* dst) {
   DCHECK_EQ(src->length(), dst->length());
   DCHECK(src->HasOnlyOneByteChars());
   DCHECK(src->IsFlat());
@@ -281,7 +280,7 @@ V8_WARN_UNUSED_RESULT Object* ConvertToLower(Handle<String> s,
   Handle<SeqOneByteString> result =
       isolate->factory()->NewRawOneByteString(length).ToHandleChecked();
 
-  return ConvertOneByteToLower(*s, *result, isolate);
+  return ConvertOneByteToLower(*s, *result);
 }
 
 V8_WARN_UNUSED_RESULT Object* ConvertToUpper(Handle<String> s,

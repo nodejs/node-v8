@@ -10,6 +10,7 @@
 #include "src/wasm/wasm-engine.h"
 #include "src/wasm/wasm-module-builder.h"
 #include "src/wasm/wasm-module.h"
+#include "src/wasm/wasm-objects.h"
 #include "src/zone/accounting-allocator.h"
 #include "src/zone/zone.h"
 #include "test/common/wasm/flag-utils.h"
@@ -58,14 +59,18 @@ int FuzzWasmSection(SectionCode section, const uint8_t* data, size_t size) {
 
   ErrorThrower thrower(i_isolate, "decoder");
 
-  std::unique_ptr<const WasmModule> module(testing::DecodeWasmModuleForTesting(
-      i_isolate, &thrower, buffer.begin(), buffer.end(), kWasmOrigin));
+  testing::DecodeWasmModuleForTesting(i_isolate, &thrower, buffer.begin(),
+                                      buffer.end(), kWasmOrigin);
 
   return 0;
 }
 
 void InterpretAndExecuteModule(i::Isolate* isolate,
                                Handle<WasmModuleObject> module_object) {
+  // We do not instantiate the module if there is a start function, because a
+  // start function can contain an infinite loop which we cannot handle.
+  if (module_object->module()->start_function_index >= 0) return;
+
   ErrorThrower thrower(isolate, "WebAssembly Instantiation");
   MaybeHandle<WasmInstanceObject> maybe_instance;
   Handle<WasmInstanceObject> instance;
@@ -143,6 +148,7 @@ struct PrintName {
 std::ostream& operator<<(std::ostream& os, const PrintName& name) {
   return os.write(name.name.start(), name.name.size());
 }
+}  // namespace
 
 void GenerateTestCase(Isolate* isolate, ModuleWireBytes wire_bytes,
                       bool compiles) {
@@ -154,7 +160,7 @@ void GenerateTestCase(Isolate* isolate, ModuleWireBytes wire_bytes,
   WasmModule* module = module_res.val.get();
   CHECK_NOT_NULL(module);
 
-  OFStream os(stdout);
+  StdoutStream os;
 
   os << "// Copyright 2018 the V8 project authors. All rights reserved.\n"
         "// Use of this source code is governed by a BSD-style license that "
@@ -170,10 +176,15 @@ void GenerateTestCase(Isolate* isolate, ModuleWireBytes wire_bytes,
   if (module->has_memory) {
     os << "  builder.addMemory(" << module->initial_pages;
     if (module->has_maximum_pages) {
-      os << ", " << module->maximum_pages << ");\n";
+      os << ", " << module->maximum_pages;
     } else {
-      os << ");\n";
+      os << ", undefined";
     }
+    os << ", " << (module->mem_export ? "true" : "false");
+    if (FLAG_experimental_wasm_threads && module->has_shared_memory) {
+      os << ", shared";
+    }
+    os << ");\n";
   }
 
   for (WasmGlobal& glob : module->globals) {
@@ -205,7 +216,7 @@ void GenerateTestCase(Isolate* isolate, ModuleWireBytes wire_bytes,
         ValueType type = decls.type_list[pos];
         while (pos + count < locals && decls.type_list[pos + count] == type)
           ++count;
-        os << ".addLocals({" << WasmOpcodes::TypeName(type)
+        os << ".addLocals({" << ValueTypes::TypeName(type)
            << "_count: " << count << "})";
       }
       os << "\n";
@@ -235,9 +246,8 @@ void GenerateTestCase(Isolate* isolate, ModuleWireBytes wire_bytes,
   }
   os << "})();\n";
 }
-}  // namespace
 
-int WasmExecutionFuzzer::FuzzWasmModule(const uint8_t* data, size_t size,
+int WasmExecutionFuzzer::FuzzWasmModule(Vector<const uint8_t> data,
                                         bool require_valid) {
   v8_fuzzer::FuzzerSupport* support = v8_fuzzer::FuzzerSupport::Get();
   v8::Isolate* isolate = support->GetIsolate();
@@ -259,7 +269,11 @@ int WasmExecutionFuzzer::FuzzWasmModule(const uint8_t* data, size_t size,
   int32_t num_args = 0;
   std::unique_ptr<WasmValue[]> interpreter_args;
   std::unique_ptr<Handle<Object>[]> compiler_args;
-  if (!GenerateModule(i_isolate, &zone, data, size, buffer, num_args,
+  // The first byte builds the bitmask to control which function will be
+  // compiled with Turbofan and which one with Liftoff.
+  uint8_t tier_mask = data.is_empty() ? 0 : data[0];
+  if (!data.is_empty()) data += 1;
+  if (!GenerateModule(i_isolate, &zone, data, buffer, num_args,
                       interpreter_args, compiler_args)) {
     return 0;
   }
@@ -272,7 +286,11 @@ int WasmExecutionFuzzer::FuzzWasmModule(const uint8_t* data, size_t size,
   // Compile with Turbofan here. Liftoff will be tested later.
   MaybeHandle<WasmModuleObject> compiled_module;
   {
-    FlagScope<bool> no_liftoff(&FLAG_liftoff, false);
+    // Explicitly enable Liftoff, disable tiering and set the tier_mask. This
+    // way, we deterministically test a combination of Liftoff and Turbofan.
+    FlagScope<bool> liftoff(&FLAG_liftoff, true);
+    FlagScope<bool> no_tier_up(&FLAG_wasm_tier_up, false);
+    FlagScope<int> tier_mask_scope(&FLAG_wasm_tier_mask_for_testing, tier_mask);
     compiled_module = i_isolate->wasm_engine()->SyncCompile(
         i_isolate, &interpreter_thrower, wire_bytes);
   }
@@ -314,54 +332,40 @@ int WasmExecutionFuzzer::FuzzWasmModule(const uint8_t* data, size_t size,
     return 0;
   }
 
+  // The WebAssembly spec allows the sign bit of NaN to be non-deterministic.
+  // This sign bit can make the difference between an infinite loop and
+  // terminating code. With possible non-determinism we cannot guarantee that
+  // the generated code will not go into an infinite loop and cause a timeout in
+  // Clusterfuzz. Therefore we do not execute the generated code if the result
+  // may be non-deterministic.
+  if (possible_nondeterminism) {
+    return 0;
+  }
+
   bool expect_exception =
       result_interpreter == static_cast<int32_t>(0xDEADBEEF);
 
-  int32_t result_turbofan;
+  int32_t result_compiled;
   {
-    ErrorThrower compiler_thrower(i_isolate, "Turbofan");
+    ErrorThrower compiler_thrower(i_isolate, "Compile");
     MaybeHandle<WasmInstanceObject> compiled_instance =
         i_isolate->wasm_engine()->SyncInstantiate(
             i_isolate, &compiler_thrower, compiled_module.ToHandleChecked(),
             MaybeHandle<JSReceiver>(), MaybeHandle<JSArrayBuffer>());
 
     DCHECK(!compiler_thrower.error());
-    result_turbofan = testing::CallWasmFunctionForTesting(
+    result_compiled = testing::CallWasmFunctionForTesting(
         i_isolate, compiled_instance.ToHandleChecked(), &compiler_thrower,
         "main", num_args, compiler_args.get());
   }
 
-  // The WebAssembly spec allows the sign bit of NaN to be non-deterministic.
-  // This sign bit may cause result_interpreter to be different than
-  // result_turbofan. Therefore we do not check the equality of the results
-  // if the execution may have produced a NaN at some point.
-  if (!possible_nondeterminism) {
-    CHECK_EQ(expect_exception, i_isolate->has_pending_exception());
-
-    if (!expect_exception) CHECK_EQ(result_interpreter, result_turbofan);
+  if (expect_exception != i_isolate->has_pending_exception()) {
+    const char* exception_text[] = {"no exception", "exception"};
+    FATAL("interpreter: %s; compiled: %s", exception_text[expect_exception],
+          exception_text[i_isolate->has_pending_exception()]);
   }
 
-  // Clear any pending exceptions for the next run.
-  i_isolate->clear_pending_exception();
-
-  int32_t result_liftoff;
-  {
-    FlagScope<bool> liftoff(&FLAG_liftoff, true);
-    ErrorThrower compiler_thrower(i_isolate, "Liftoff");
-    // Re-compile with Liftoff.
-    MaybeHandle<WasmInstanceObject> compiled_instance =
-        testing::CompileAndInstantiateForTesting(i_isolate, &compiler_thrower,
-                                                 wire_bytes);
-    DCHECK(!compiler_thrower.error());
-    result_liftoff = testing::CallWasmFunctionForTesting(
-        i_isolate, compiled_instance.ToHandleChecked(), &compiler_thrower,
-        "main", num_args, compiler_args.get());
-  }
-  if (!possible_nondeterminism) {
-    CHECK_EQ(expect_exception, i_isolate->has_pending_exception());
-
-    if (!expect_exception) CHECK_EQ(result_interpreter, result_liftoff);
-  }
+  if (!expect_exception) CHECK_EQ(result_interpreter, result_compiled);
 
   // Cleanup any pending exception.
   i_isolate->clear_pending_exception();

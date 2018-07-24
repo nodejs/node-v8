@@ -13,6 +13,7 @@
 #include "src/interpreter/interpreter-assembler.h"
 #include "src/interpreter/interpreter-intrinsics.h"
 #include "src/objects-inl.h"
+#include "src/objects/js-generator.h"
 #include "src/objects/module.h"
 
 namespace v8 {
@@ -168,18 +169,6 @@ Node* IntrinsicsGenerator::IsTypedArray(
     const InterpreterAssembler::RegListNodePair& args, Node* context) {
   Node* input = __ LoadRegisterFromRegisterList(args, 0);
   return IsInstanceType(input, JS_TYPED_ARRAY_TYPE);
-}
-
-Node* IntrinsicsGenerator::IsJSMap(
-    const InterpreterAssembler::RegListNodePair& args, Node* context) {
-  Node* input = __ LoadRegisterFromRegisterList(args, 0);
-  return IsInstanceType(input, JS_MAP_TYPE);
-}
-
-Node* IntrinsicsGenerator::IsJSSet(
-    const InterpreterAssembler::RegListNodePair& args, Node* context) {
-  Node* input = __ LoadRegisterFromRegisterList(args, 0);
-  return IsInstanceType(input, JS_SET_TYPE);
 }
 
 Node* IntrinsicsGenerator::IsJSWeakMap(

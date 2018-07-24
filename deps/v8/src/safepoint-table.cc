@@ -71,6 +71,7 @@ SafepointEntry SafepointTable::FindEntry(Address pc) const {
   // We use kMaxUInt32 as sentinel value, so check that we don't hit that.
   DCHECK_NE(kMaxUInt32, pc_offset);
   unsigned len = length();
+  CHECK_GT(len, 0);
   // If pc == kMaxUInt32, then this entry covers all call sites in the function.
   if (len == 1 && GetPcOffset(0) == kMaxUInt32) return GetEntry(0);
   for (unsigned i = 0; i < len; i++) {
@@ -120,9 +121,8 @@ void SafepointTable::PrintBits(std::ostream& os,  // NOLINT
   }
 }
 
-
-void Safepoint::DefinePointerRegister(Register reg, Zone* zone) {
-  registers_->Add(reg.code(), zone);
+void Safepoint::DefinePointerRegister(Register reg) {
+  registers_->push_back(reg.code());
 }
 
 
@@ -198,12 +198,11 @@ void SafepointTableBuilder::Emit(Assembler* assembler, int bits_per_entry) {
   }
 
   // Emit table of bitmaps.
-  ZoneList<uint8_t> bits(bytes_per_entry, zone_);
+  ZoneVector<uint8_t> bits(bytes_per_entry, 0, zone_);
   for (int i = 0; i < length; i++) {
-    ZoneList<int>* indexes = deoptimization_info_[i].indexes;
-    ZoneList<int>* registers = deoptimization_info_[i].registers;
-    bits.Clear();
-    bits.AddBlock(0, bytes_per_entry, zone_);
+    ZoneChunkList<int>* indexes = deoptimization_info_[i].indexes;
+    ZoneChunkList<int>* registers = deoptimization_info_[i].registers;
+    std::fill(bits.begin(), bits.end(), 0);
 
     // Run through the registers (if any).
     DCHECK(IsAligned(kNumSafepointRegisters, kBitsPerByte));
@@ -213,8 +212,7 @@ void SafepointTableBuilder::Emit(Assembler* assembler, int bits_per_entry) {
         bits[j] = SafepointTable::kNoRegisters;
       }
     } else {
-      for (int j = 0; j < registers->length(); j++) {
-        int index = registers->at(j);
+      for (int index : *registers) {
         DCHECK(index >= 0 && index < kNumSafepointRegisters);
         int byte_index = index >> kBitsPerByteLog2;
         int bit_index = index & (kBitsPerByte - 1);
@@ -223,8 +221,8 @@ void SafepointTableBuilder::Emit(Assembler* assembler, int bits_per_entry) {
     }
 
     // Run through the indexes and build a bitmap.
-    for (int j = 0; j < indexes->length(); j++) {
-      int index = bits_per_entry - 1 - indexes->at(j);
+    for (int idx : *indexes) {
+      int index = bits_per_entry - 1 - idx;
       int byte_index = index >> kBitsPerByteLog2;
       int bit_index = index & (kBitsPerByte - 1);
       bits[byte_index] |= (1U << bit_index);
@@ -272,20 +270,21 @@ bool SafepointTableBuilder::IsIdenticalExceptForPc(
 
   if (info1.deopt_index != info2.deopt_index) return false;
 
-  ZoneList<int>* indexes1 = info1.indexes;
-  ZoneList<int>* indexes2 = info2.indexes;
-  if (indexes1->length() != indexes2->length()) return false;
-  for (int i = 0; i < indexes1->length(); ++i) {
-    if (indexes1->at(i) != indexes2->at(i)) return false;
+  ZoneChunkList<int>* indexes1 = info1.indexes;
+  ZoneChunkList<int>* indexes2 = info2.indexes;
+  if (indexes1->size() != indexes2->size()) return false;
+  if (!std::equal(indexes1->begin(), indexes1->end(), indexes2->begin())) {
+    return false;
   }
 
-  ZoneList<int>* registers1 = info1.registers;
-  ZoneList<int>* registers2 = info2.registers;
+  ZoneChunkList<int>* registers1 = info1.registers;
+  ZoneChunkList<int>* registers2 = info2.registers;
   if (registers1) {
     if (!registers2) return false;
-    if (registers1->length() != registers2->length()) return false;
-    for (int i = 0; i < registers1->length(); ++i) {
-      if (registers1->at(i) != registers2->at(i)) return false;
+    if (registers1->size() != registers2->size()) return false;
+    if (!std::equal(registers1->begin(), registers1->end(),
+                    registers2->begin())) {
+      return false;
     }
   } else if (registers2) {
     return false;

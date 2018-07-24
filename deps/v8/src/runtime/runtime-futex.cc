@@ -30,7 +30,7 @@ RUNTIME_FUNCTION(Runtime_AtomicsNumWaitersForTesting) {
   Handle<JSArrayBuffer> array_buffer = sta->GetBuffer();
   size_t addr = (index << 2) + NumberToSize(sta->byte_offset());
 
-  return FutexEmulation::NumWaitersForTesting(isolate, array_buffer, addr);
+  return FutexEmulation::NumWaitersForTesting(array_buffer, addr);
 }
 
 RUNTIME_FUNCTION(Runtime_SetAllowAtomicsWait) {
@@ -39,7 +39,7 @@ RUNTIME_FUNCTION(Runtime_SetAllowAtomicsWait) {
   CONVERT_BOOLEAN_ARG_CHECKED(set, 0);
 
   isolate->set_allow_atomics_wait(set);
-  return isolate->heap()->undefined_value();
+  return ReadOnlyRoots(isolate).undefined_value();
 }
 }  // namespace internal
 }  // namespace v8

@@ -4,7 +4,6 @@
 
 #include "src/elements-kind.h"
 
-#include "src/api.h"
 #include "src/base/lazy-instance.h"
 #include "src/elements.h"
 #include "src/objects-inl.h"
@@ -49,6 +48,9 @@ int ElementsKindToShiftSize(ElementsKind elements_kind) {
   UNREACHABLE();
 }
 
+int ElementsKindToByteSize(ElementsKind elements_kind) {
+  return 1 << ElementsKindToShiftSize(elements_kind);
+}
 
 int GetDefaultHeaderSizeForElementsKind(ElementsKind elements_kind) {
   STATIC_ASSERT(FixedArray::kHeaderSize == FixedDoubleArray::kHeaderSize);

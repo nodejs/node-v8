@@ -23,6 +23,16 @@ class TimeZone;
 namespace v8 {
 namespace internal {
 
+enum class IcuService {
+  kBreakIterator,
+  kCollator,
+  kDateFormat,
+  kNumberFormat,
+  kPluralRules,
+  kResourceBundle,
+  kRelativeDateTimeFormatter
+};
+
 const UChar* GetUCharBufferFromFlat(const String::FlatContent& flat,
                                     std::unique_ptr<uc16[]>* dest,
                                     int32_t length);
@@ -37,8 +47,7 @@ V8_WARN_UNUSED_RESULT Object* ConvertToUpper(Handle<String> s,
 V8_WARN_UNUSED_RESULT Object* ConvertCase(Handle<String> s, bool is_upper,
                                           Isolate* isolate);
 
-V8_WARN_UNUSED_RESULT Object* ConvertOneByteToLower(String* src, String* dst,
-                                                    Isolate* isolate);
+V8_WARN_UNUSED_RESULT Object* ConvertOneByteToLower(String* src, String* dst);
 
 const uint8_t* ToLatin1LowerTable();
 

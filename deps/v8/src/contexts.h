@@ -22,7 +22,6 @@ enum ContextLookupFlags {
   FOLLOW_CHAINS = FOLLOW_CONTEXT_CHAIN | FOLLOW_PROTOTYPE_CHAIN,
 };
 
-
 // Heap-allocated activation contexts.
 //
 // Contexts are implemented as FixedArray objects; the Context
@@ -72,8 +71,6 @@ enum ContextLookupFlags {
   V(ASYNC_GENERATOR_AWAIT_UNCAUGHT, JSFunction, async_generator_await_uncaught)
 
 #define NATIVE_CONTEXT_IMPORTED_FIELDS(V)                                 \
-  V(ARRAY_POP_INDEX, JSFunction, array_pop)                               \
-  V(ARRAY_PUSH_INDEX, JSFunction, array_push)                             \
   V(ARRAY_SHIFT_INDEX, JSFunction, array_shift)                           \
   V(ARRAY_SPLICE_INDEX, JSFunction, array_splice)                         \
   V(ARRAY_UNSHIFT_INDEX, JSFunction, array_unshift)                       \
@@ -97,6 +94,7 @@ enum ContextLookupFlags {
   V(PROMISE_FUNCTION_INDEX, JSFunction, promise_function)                 \
   V(RANGE_ERROR_FUNCTION_INDEX, JSFunction, range_error_function)         \
   V(REFERENCE_ERROR_FUNCTION_INDEX, JSFunction, reference_error_function) \
+  V(RESOLVE_LOCALE_FUNCTION_INDEX, JSFunction, resolve_locale)            \
   V(SET_ADD_INDEX, JSFunction, set_add)                                   \
   V(SET_DELETE_INDEX, JSFunction, set_delete)                             \
   V(SET_HAS_INDEX, JSFunction, set_has)                                   \
@@ -112,7 +110,7 @@ enum ContextLookupFlags {
   V(WEAKSET_ADD_INDEX, JSFunction, weakset_add)
 
 #define NATIVE_CONTEXT_FIELDS(V)                                               \
-  V(GLOBAL_PROXY_INDEX, JSObject, global_proxy_object)                         \
+  V(GLOBAL_PROXY_INDEX, JSGlobalProxy, global_proxy_object)                    \
   V(EMBEDDER_DATA_INDEX, FixedArray, embedder_data)                            \
   /* Below is alpha-sorted */                                                  \
   V(ACCESSOR_PROPERTY_DESCRIPTOR_MAP_INDEX, Map,                               \
@@ -162,6 +160,7 @@ enum ContextLookupFlags {
   V(DATA_VIEW_FUN_INDEX, JSFunction, data_view_fun)                            \
   V(DATE_FUNCTION_INDEX, JSFunction, date_function)                            \
   V(DEBUG_CONTEXT_ID_INDEX, Object, debug_context_id)                          \
+  V(EMPTY_FUNCTION_INDEX, JSFunction, empty_function)                          \
   V(ERROR_MESSAGE_FOR_CODE_GEN_FROM_STRINGS_INDEX, Object,                     \
     error_message_for_code_gen_from_strings)                                   \
   V(ERRORS_THROWN_INDEX, Smi, errors_thrown)                                   \
@@ -182,7 +181,6 @@ enum ContextLookupFlags {
   V(INITIAL_ARRAY_ITERATOR_PROTOTYPE_INDEX, JSObject,                          \
     initial_array_iterator_prototype)                                          \
   V(INITIAL_ARRAY_PROTOTYPE_INDEX, JSObject, initial_array_prototype)          \
-  V(INITIAL_ARRAY_PROTOTYPE_MAP_INDEX, Map, initial_array_prototype_map)       \
   V(INITIAL_ERROR_PROTOTYPE_INDEX, JSObject, initial_error_prototype)          \
   V(INITIAL_GENERATOR_PROTOTYPE_INDEX, JSObject, initial_generator_prototype)  \
   V(INITIAL_ASYNC_GENERATOR_PROTOTYPE_INDEX, JSObject,                         \
@@ -203,6 +201,9 @@ enum ContextLookupFlags {
     intl_date_time_format_function)                                            \
   V(INTL_NUMBER_FORMAT_FUNCTION_INDEX, JSFunction,                             \
     intl_number_format_function)                                               \
+  V(INTL_NUMBER_FORMAT_INTERNAL_FORMAT_NUMBER_SHARED_FUN, SharedFunctionInfo,  \
+    number_format_internal_format_number_shared_fun)                           \
+  V(INTL_LOCALE_FUNCTION_INDEX, JSFunction, intl_locale_function)              \
   V(INTL_COLLATOR_FUNCTION_INDEX, JSFunction, intl_collator_function)          \
   V(INTL_PLURAL_RULES_FUNCTION_INDEX, JSFunction, intl_plural_rules_function)  \
   V(INTL_V8_BREAK_ITERATOR_FUNCTION_INDEX, JSFunction,                         \
@@ -271,7 +272,6 @@ enum ContextLookupFlags {
     initial_regexp_string_iterator_prototype_map_index)                        \
   V(REGEXP_RESULT_MAP_INDEX, Map, regexp_result_map)                           \
   V(SCRIPT_CONTEXT_TABLE_INDEX, ScriptContextTable, script_context_table)      \
-  V(SCRIPT_FUNCTION_INDEX, JSFunction, script_function)                        \
   V(SECURITY_TOKEN_INDEX, Object, security_token)                              \
   V(SELF_WEAK_CELL_INDEX, WeakCell, self_weak_cell)                            \
   V(SERIALIZED_OBJECTS, FixedArray, serialized_objects)                        \
@@ -366,7 +366,8 @@ class ScriptContextTable : public FixedArray {
   inline int used() const;
   inline void set_used(int used);
 
-  static inline Handle<Context> GetContext(Handle<ScriptContextTable> table,
+  static inline Handle<Context> GetContext(Isolate* isolate,
+                                           Handle<ScriptContextTable> table,
                                            int i);
 
   // Lookup a variable `name` in a ScriptContextTable.
@@ -374,8 +375,8 @@ class ScriptContextTable : public FixedArray {
   // valid information about its location.
   // If it returns false, `result` is untouched.
   V8_WARN_UNUSED_RESULT
-  static bool Lookup(Handle<ScriptContextTable> table, Handle<String> name,
-                     LookupResult* result);
+  static bool Lookup(Isolate* isolate, Handle<ScriptContextTable> table,
+                     Handle<String> name, LookupResult* result);
 
   V8_WARN_UNUSED_RESULT
   static Handle<ScriptContextTable> Extend(Handle<ScriptContextTable> table,
@@ -396,40 +397,30 @@ class ScriptContextTable : public FixedArray {
 // stack, with the top-most context being the current context. All contexts
 // have the following slots:
 //
-// [ closure   ]  This is the current function. It is the same for all
-//                contexts inside a function. It provides access to the
-//                incoming context (i.e., the outer context, which may
-//                or may not become the current function's context), and
-//                it provides access to the functions code and thus it's
-//                scope information, which in turn contains the names of
-//                statically allocated context slots. The names are needed
-//                for dynamic lookups in the presence of 'with' or 'eval'.
+// [ scope_info     ]  This is the scope info describing the current context. It
+//                     contains the names of statically allocated context slots,
+//                     and stack-allocated locals.  The names are needed for
+//                     dynamic lookups in the presence of 'with' or 'eval', and
+//                     for the debugger.
 //
-// [ previous  ]  A pointer to the previous context.
+// [ previous       ]  A pointer to the previous context.
 //
-// [ extension ]  Additional data.
+// [ extension      ]  Additional data.
 //
-//                For script contexts, it contains the respective ScopeInfo.
+//                     For module contexts, it contains the module object.
 //
-//                For catch contexts, it contains a ContextExtension object
-//                consisting of the ScopeInfo and the name of the catch
-//                variable.
+//                     For block contexts, it may contain an "extension object"
+//                     (see below).
 //
-//                For module contexts, it contains the module object.
+//                     For with contexts, it contains an "extension object".
 //
-//                For block contexts, it contains either the respective
-//                ScopeInfo or a ContextExtension object consisting of the
-//                ScopeInfo and an "extension object" (see below).
-//
-//                For with contexts, it contains a ContextExtension object
-//                consisting of the ScopeInfo and an "extension object".
-//
-//                An "extension object" is used to dynamically extend a context
-//                with additional variables, namely in the implementation of the
-//                'with' construct and the 'eval' construct.  For instance,
-//                Context::Lookup also searches the extension object for
-//                properties.  (Storing the extension object is the original
-//                purpose of this context slot, hence the name.)
+//                     An "extension object" is used to dynamically extend a
+//                     context with additional variables, namely in the
+//                     implementation of the 'with' construct and the 'eval'
+//                     construct.  For instance, Context::Lookup also searches
+//                     the extension object for properties.  (Storing the
+//                     extension object is the original purpose of this context
+//                     slot, hence the name.)
 //
 // [ native_context ]  A pointer to the native context.
 //
@@ -444,15 +435,20 @@ class ScriptContextTable : public FixedArray {
 // Script contexts from all top-level scripts are gathered in
 // ScriptContextTable.
 
-class Context: public FixedArray {
+class Context : public FixedArray, public NeverReadOnlySpaceObject {
  public:
+  // Use the mixin methods over the HeapObject methods.
+  // TODO(v8:7786) Remove once the HeapObject methods are gone.
+  using NeverReadOnlySpaceObject::GetHeap;
+  using NeverReadOnlySpaceObject::GetIsolate;
+
   // Conversions.
   static inline Context* cast(Object* context);
 
   // The default context slot layout; indices are FixedArray slot indices.
   enum Field {
     // These slots are in all contexts.
-    CLOSURE_INDEX,
+    SCOPE_INFO_INDEX,
     PREVIOUS_INDEX,
     // The extension slot is used for either the global object (in native
     // contexts), eval extension object (function contexts), subject of with
@@ -461,7 +457,7 @@ class Context: public FixedArray {
     EXTENSION_INDEX,
     NATIVE_CONTEXT_INDEX,
 
-    // These slots are only in native contexts.
+// These slots are only in native contexts.
 #define NATIVE_CONTEXT_SLOT(index, type, name) index,
     NATIVE_CONTEXT_FIELDS(NATIVE_CONTEXT_SLOT)
 #undef NATIVE_CONTEXT_SLOT
@@ -499,9 +495,7 @@ class Context: public FixedArray {
   int GetErrorsThrown();
 
   // Direct slot access.
-  inline JSFunction* closure();
-  inline void set_closure(JSFunction* closure);
-
+  inline void set_scope_info(ScopeInfo* scope_info);
   inline Context* previous();
   inline void set_previous(Context* context);
 
@@ -513,7 +507,6 @@ class Context: public FixedArray {
   JSObject* extension_object();
   JSReceiver* extension_receiver();
   ScopeInfo* scope_info();
-  String* catch_name();
 
   // Find the module context (assuming there is one) and return the associated
   // module object.
@@ -528,8 +521,8 @@ class Context: public FixedArray {
   Context* closure_context();
 
   // Returns a JSGlobalProxy object or null.
-  JSObject* global_proxy();
-  void set_global_proxy(JSObject* global);
+  JSGlobalProxy* global_proxy();
+  void set_global_proxy(JSGlobalProxy* global);
 
   // Get the JSGlobalObject object.
   V8_EXPORT_PRIVATE JSGlobalObject* global_object();

@@ -38,10 +38,11 @@ void Exit() {
   Terminate();
 }
 
-v8::internal::Vector<uint16_t> ToVector(v8::Local<v8::String> str) {
+v8::internal::Vector<uint16_t> ToVector(v8::Isolate* isolate,
+                                        v8::Local<v8::String> str) {
   v8::internal::Vector<uint16_t> buffer =
       v8::internal::Vector<uint16_t>::New(str->Length());
-  str->Write(buffer.start(), 0, str->Length());
+  str->Write(isolate, buffer.start(), 0, str->Length());
   return buffer;
 }
 
@@ -107,7 +108,7 @@ class FrontendChannelImpl : public v8_inspector::V8Inspector::Channel {
     SendMessageTask(FrontendChannelImpl* channel,
                     const v8::internal::Vector<uint16_t>& message)
         : channel_(channel), message_(message) {}
-    virtual ~SendMessageTask() {}
+    virtual ~SendMessageTask() { message_.Dispose(); }
     bool is_priority_task() final { return false; }
 
    private:
@@ -200,14 +201,14 @@ void RunAsyncTask(TaskRunner* task_runner,
 
 class ExecuteStringTask : public TaskRunner::Task {
  public:
-  ExecuteStringTask(int context_group_id,
+  ExecuteStringTask(v8::Isolate* isolate, int context_group_id,
                     const v8::internal::Vector<uint16_t>& expression,
                     v8::Local<v8::String> name,
                     v8::Local<v8::Integer> line_offset,
                     v8::Local<v8::Integer> column_offset,
                     v8::Local<v8::Boolean> is_module)
       : expression_(expression),
-        name_(ToVector(name)),
+        name_(ToVector(isolate, name)),
         line_offset_(line_offset.As<v8::Int32>()->Value()),
         column_offset_(column_offset.As<v8::Int32>()->Value()),
         is_module_(is_module->Value()),
@@ -215,6 +216,11 @@ class ExecuteStringTask : public TaskRunner::Task {
   ExecuteStringTask(const v8::internal::Vector<const char>& expression,
                     int context_group_id)
       : expression_utf8_(expression), context_group_id_(context_group_id) {}
+
+  virtual ~ExecuteStringTask() {
+    if (expression_.start()) expression_.Dispose();
+    if (expression_utf8_.start()) expression_utf8_.Dispose();
+  }
   bool is_priority_task() override { return false; }
   void Run(IsolateData* data) override {
     v8::MicrotasksScope microtasks_scope(data->isolate(),
@@ -240,6 +246,7 @@ class ExecuteStringTask : public TaskRunner::Task {
                           expression_utf8_.length());
 
     v8::ScriptCompiler::Source scriptSource(source, origin);
+    v8::Isolate::SafeForTerminationScope allowTermination(data->isolate());
     if (!is_module_) {
       v8::Local<v8::Script> script;
       if (!v8::ScriptCompiler::Compile(context, &scriptSource).ToLocal(&script))
@@ -390,8 +397,10 @@ class UtilsExtension : public IsolateData::SetupGlobalTask {
     }
     v8::internal::Vector<const char> chars;
     v8::Isolate* isolate = args.GetIsolate();
-    if (ReadFile(isolate, args[0], &chars))
+    if (ReadFile(isolate, args[0], &chars)) {
       args.GetReturnValue().Set(ToV8String(isolate, chars.start()));
+      chars.Dispose();
+    }
   }
 
   static void Load(const v8::FunctionCallbackInfo<v8::Value>& args) {
@@ -422,7 +431,8 @@ class UtilsExtension : public IsolateData::SetupGlobalTask {
     }
 
     backend_runner_->Append(new ExecuteStringTask(
-        args[0].As<v8::Int32>()->Value(), ToVector(args[1].As<v8::String>()),
+        args.GetIsolate(), args[0].As<v8::Int32>()->Value(),
+        ToVector(args.GetIsolate(), args[1].As<v8::String>()),
         args[2].As<v8::String>(), args[3].As<v8::Int32>(),
         args[4].As<v8::Int32>(), args[5].As<v8::Boolean>()));
   }
@@ -455,8 +465,10 @@ class UtilsExtension : public IsolateData::SetupGlobalTask {
               "'reason', 'details').");
       Exit();
     }
-    v8::internal::Vector<uint16_t> reason = ToVector(args[1].As<v8::String>());
-    v8::internal::Vector<uint16_t> details = ToVector(args[2].As<v8::String>());
+    v8::internal::Vector<uint16_t> reason =
+        ToVector(args.GetIsolate(), args[1].As<v8::String>());
+    v8::internal::Vector<uint16_t> details =
+        ToVector(args.GetIsolate(), args[2].As<v8::String>());
     int context_group_id = args[0].As<v8::Int32>()->Value();
     RunSyncTask(backend_runner_, [&context_group_id, &reason,
                                   &details](IsolateData* data) {
@@ -529,7 +541,8 @@ class UtilsExtension : public IsolateData::SetupGlobalTask {
         IsolateData::FromContext(context)->GetContextGroupId(context),
         args.GetIsolate(), args[2].As<v8::Function>());
 
-    v8::internal::Vector<uint16_t> state = ToVector(args[1].As<v8::String>());
+    v8::internal::Vector<uint16_t> state =
+        ToVector(args.GetIsolate(), args[1].As<v8::String>());
     int context_group_id = args[0].As<v8::Int32>()->Value();
     int session_id = 0;
     RunSyncTask(backend_runner_, [&context_group_id, &session_id, &channel,
@@ -567,7 +580,8 @@ class UtilsExtension : public IsolateData::SetupGlobalTask {
       Exit();
     }
     backend_runner_->Append(new SendMessageToBackendTask(
-        args[0].As<v8::Int32>()->Value(), ToVector(args[1].As<v8::String>())));
+        args[0].As<v8::Int32>()->Value(),
+        ToVector(args.GetIsolate(), args[1].As<v8::String>())));
   }
 
   static std::map<int, std::unique_ptr<FrontendChannelImpl>> channels_;
@@ -635,7 +649,8 @@ class SetTimeoutExtension : public IsolateData::SetupGlobalTask {
       RunAsyncTask(
           data->task_runner(), task_name_view,
           new ExecuteStringTask(
-              context_group_id, ToVector(args[0].As<v8::String>()),
+              isolate, context_group_id,
+              ToVector(isolate, args[0].As<v8::String>()),
               v8::String::Empty(isolate), v8::Integer::New(isolate, 0),
               v8::Integer::New(isolate, 0), v8::Boolean::New(isolate, false)));
     }
@@ -774,9 +789,11 @@ class InspectorExtension : public IsolateData::SetupGlobalTask {
     }
     v8::Local<v8::Context> context = args.GetIsolate()->GetCurrentContext();
     IsolateData* data = IsolateData::FromContext(context);
-    v8::internal::Vector<uint16_t> reason = ToVector(args[0].As<v8::String>());
+    v8::internal::Vector<uint16_t> reason =
+        ToVector(args.GetIsolate(), args[0].As<v8::String>());
     v8_inspector::StringView reason_view(reason.start(), reason.length());
-    v8::internal::Vector<uint16_t> details = ToVector(args[1].As<v8::String>());
+    v8::internal::Vector<uint16_t> details =
+        ToVector(args.GetIsolate(), args[1].As<v8::String>());
     v8_inspector::StringView details_view(details.start(), details.length());
     data->BreakProgram(data->GetContextGroupId(context), reason_view,
                        details_view);
@@ -804,9 +821,11 @@ class InspectorExtension : public IsolateData::SetupGlobalTask {
               "Internal error: callWithScheduledBreak('reason', 'details').");
       Exit();
     }
-    v8::internal::Vector<uint16_t> reason = ToVector(args[1].As<v8::String>());
+    v8::internal::Vector<uint16_t> reason =
+        ToVector(args.GetIsolate(), args[1].As<v8::String>());
     v8_inspector::StringView reason_view(reason.start(), reason.length());
-    v8::internal::Vector<uint16_t> details = ToVector(args[2].As<v8::String>());
+    v8::internal::Vector<uint16_t> details =
+        ToVector(args.GetIsolate(), args[2].As<v8::String>());
     v8_inspector::StringView details_view(details.start(), details.length());
     v8::Local<v8::Context> context = args.GetIsolate()->GetCurrentContext();
     IsolateData* data = IsolateData::FromContext(context);
@@ -895,7 +914,7 @@ class InspectorExtension : public IsolateData::SetupGlobalTask {
     v8::Local<v8::Context> context = isolate->GetCurrentContext();
     IsolateData* data = IsolateData::FromContext(context);
     v8::internal::Vector<uint16_t> description =
-        ToVector(args[0].As<v8::String>());
+        ToVector(isolate, args[0].As<v8::String>());
     v8_inspector::StringView description_view(description.start(),
                                               description.length());
     v8_inspector::V8StackTraceId id =
@@ -952,7 +971,7 @@ class InspectorExtension : public IsolateData::SetupGlobalTask {
     if (with_empty_stack) context->Exit();
 
     v8::internal::Vector<uint16_t> task_name =
-        ToVector(args[1].As<v8::String>());
+        ToVector(isolate, args[1].As<v8::String>());
     v8_inspector::StringView task_name_view(task_name.start(),
                                             task_name.length());
 
@@ -974,6 +993,50 @@ class InspectorExtension : public IsolateData::SetupGlobalTask {
   }
 };
 
+bool RunExtraCode(v8::Isolate* isolate, v8::Local<v8::Context> context,
+                  const char* utf8_source, const char* name) {
+  v8::Context::Scope context_scope(context);
+  v8::TryCatch try_catch(isolate);
+  v8::Local<v8::String> source_string;
+  if (!v8::String::NewFromUtf8(isolate, utf8_source, v8::NewStringType::kNormal)
+           .ToLocal(&source_string)) {
+    return false;
+  }
+  v8::Local<v8::String> resource_name =
+      v8::String::NewFromUtf8(isolate, name, v8::NewStringType::kNormal)
+          .ToLocalChecked();
+  v8::ScriptOrigin origin(resource_name);
+  v8::ScriptCompiler::Source source(source_string, origin);
+  v8::Local<v8::Script> script;
+  if (!v8::ScriptCompiler::Compile(context, &source).ToLocal(&script))
+    return false;
+  if (script->Run(context).IsEmpty()) return false;
+  CHECK(!try_catch.HasCaught());
+  return true;
+}
+
+v8::StartupData CreateSnapshotDataBlob(const char* embedded_source = nullptr) {
+  // Create a new isolate and a new context from scratch, optionally run
+  // a script to embed, and serialize to create a snapshot blob.
+  v8::StartupData result = {nullptr, 0};
+  {
+    v8::SnapshotCreator snapshot_creator;
+    v8::Isolate* isolate = snapshot_creator.GetIsolate();
+    {
+      v8::HandleScope scope(isolate);
+      v8::Local<v8::Context> context = v8::Context::New(isolate);
+      if (embedded_source != nullptr &&
+          !RunExtraCode(isolate, context, embedded_source, "<embedded>")) {
+        return result;
+      }
+      snapshot_creator.SetDefaultContext(context);
+    }
+    result = snapshot_creator.CreateBlob(
+        v8::SnapshotCreator::FunctionCodeHandling::kClear);
+  }
+  return result;
+}
+
 }  //  namespace
 
 int main(int argc, char* argv[]) {
@@ -991,7 +1054,7 @@ int main(int argc, char* argv[]) {
     if (strcmp(argv[i], "--embed") == 0) {
       argv[i++] = nullptr;
       printf("Embedding script '%s'\n", argv[i]);
-      startup_data = v8::V8::CreateSnapshotDataBlob(argv[i]);
+      startup_data = CreateSnapshotDataBlob(argv[i]);
       argv[i] = nullptr;
     }
   }

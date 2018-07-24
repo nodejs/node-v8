@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "src/api.h"
+#include "src/api-inl.h"
 #include "src/builtins/builtins-utils.h"
 #include "src/builtins/builtins.h"
 #include "src/counters.h"
@@ -21,7 +21,7 @@ using v8::tracing::TracedValue;
 class MaybeUtf8 {
  public:
   explicit MaybeUtf8(Isolate* isolate, Handle<String> string) : buf_(data_) {
-    string = String::Flatten(string);
+    string = String::Flatten(isolate, string);
     int len;
     if (string->IsOneByteRepresentation()) {
       // Technically this allows unescaped latin1 characters but the trace
@@ -38,10 +38,11 @@ class MaybeUtf8 {
       }
     } else {
       Local<v8::String> local = Utils::ToLocal(string);
-      len = local->Utf8Length();
+      auto* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+      len = local->Utf8Length(v8_isolate);
       AllocateSufficientSpace(len);
       if (len > 0) {
-        local->WriteUtf8(reinterpret_cast<char*>(buf_));
+        local->WriteUtf8(v8_isolate, reinterpret_cast<char*>(buf_));
       }
     }
     buf_[len] = 0;
@@ -119,7 +120,7 @@ BUILTIN(Trace) {
 
   // Exit early if the category group is not enabled.
   if (!*category_group_enabled) {
-    return isolate->heap()->false_value();
+    return ReadOnlyRoots(isolate).false_value();
   }
 
   if (!phase_arg->IsNumber()) {
@@ -184,7 +185,7 @@ BUILTIN(Trace) {
       category_group_enabled, *name, tracing::kGlobalScope, id, tracing::kNoId,
       num_args, &arg_name, &arg_type, &arg_value, flags);
 
-  return isolate->heap()->true_value();
+  return ReadOnlyRoots(isolate).true_value();
 }
 
 }  // namespace internal

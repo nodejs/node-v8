@@ -5,6 +5,7 @@
 #ifndef V8_WASM_WASM_MEMORY_H_
 #define V8_WASM_WASM_MEMORY_H_
 
+#include <atomic>
 #include <unordered_map>
 
 #include "src/base/platform/mutex.h"
@@ -27,8 +28,9 @@ class WasmMemoryTracker {
   // allocate the buffer), false otherwise.
   bool ReserveAddressSpace(size_t num_bytes);
 
-  void RegisterAllocation(void* allocation_base, size_t allocation_length,
-                          void* buffer_start, size_t buffer_length);
+  void RegisterAllocation(Isolate* isolate, void* allocation_base,
+                          size_t allocation_length, void* buffer_start,
+                          size_t buffer_length);
 
   struct AllocationData {
     void* allocation_base = nullptr;
@@ -61,29 +63,39 @@ class WasmMemoryTracker {
   void ReleaseReservation(size_t num_bytes);
 
   // Removes an allocation from the tracker
-  AllocationData ReleaseAllocation(const void* buffer_start);
+  AllocationData ReleaseAllocation(Isolate* isolate, const void* buffer_start);
 
   bool IsWasmMemory(const void* buffer_start);
+
+  // Returns whether the given buffer is a Wasm memory with guard regions large
+  // enough to safely use trap handlers.
+  bool HasFullGuardRegions(const void* buffer_start);
 
   // Returns a pointer to a Wasm buffer's allocation data, or nullptr if the
   // buffer is not tracked.
   const AllocationData* FindAllocationData(const void* buffer_start);
 
-  // Empty WebAssembly memories are all backed by a shared inaccessible
-  // reservation. This method creates this store or returns the existing one if
-  // already created.
-  void* GetEmptyBackingStore(void** allocation_base, size_t* allocation_length,
-                             Heap* heap);
-
-  bool IsEmptyBackingStore(const void* buffer_start) const;
-
   // Checks if a buffer points to a Wasm memory and if so does any necessary
   // work to reclaim the buffer. If this function returns false, the caller must
   // free the buffer manually.
-  bool FreeMemoryIfIsWasmMemory(const void* buffer_start);
+  bool FreeMemoryIfIsWasmMemory(Isolate* isolate, const void* buffer_start);
+
+  // Allocation results are reported to UMA
+  //
+  // See wasm_memory_allocation_result in counters.h
+  enum class AllocationStatus {
+    kSuccess,  // Succeeded on the first try
+
+    kSuccessAfterRetry,  // Succeeded after garbage collection
+
+    kAddressSpaceLimitReachedFailure,  // Failed because Wasm is at its address
+                                       // space limit
+
+    kOtherFailure  // Failed for an unknown reason
+  };
 
  private:
-  AllocationData InternalReleaseAllocation(const void* buffer_start);
+  void AddAddressSpaceSample(Isolate* isolate);
 
   // Clients use a two-part process. First they "reserve" the address space,
   // which signifies an intent to actually allocate it. This determines whether
@@ -105,17 +117,14 @@ class WasmMemoryTracker {
   // buffer, rather than by the start of the allocation.
   std::unordered_map<const void*, AllocationData> allocations_;
 
-  // Empty backing stores still need to be backed by mapped pages when using
-  // trap handlers. Because this could eat up address space quickly, we keep a
-  // shared backing store here.
-  AllocationData empty_backing_store_;
-
   DISALLOW_COPY_AND_ASSIGN(WasmMemoryTracker);
 };
 
+// Attempts to allocate an array buffer with guard regions suitable for trap
+// handling. If address space is not available, it will return a buffer with
+// mini-guards that will require bounds checks.
 MaybeHandle<JSArrayBuffer> NewArrayBuffer(
-    Isolate*, size_t size, bool require_guard_regions,
-    SharedFlag shared = SharedFlag::kNotShared);
+    Isolate*, size_t size, SharedFlag shared = SharedFlag::kNotShared);
 
 Handle<JSArrayBuffer> SetupArrayBuffer(
     Isolate*, void* backing_store, size_t size, bool is_external,

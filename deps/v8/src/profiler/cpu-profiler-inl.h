@@ -35,7 +35,11 @@ void CodeDisableOptEventRecord::UpdateCodeMap(CodeMap* code_map) {
 
 void CodeDeoptEventRecord::UpdateCodeMap(CodeMap* code_map) {
   CodeEntry* entry = code_map->FindEntry(start);
-  if (entry != nullptr) entry->set_deopt_info(deopt_reason, deopt_id);
+  if (entry == nullptr) return;
+  std::vector<CpuProfileDeoptFrame> frames_vector(
+      deopt_frames, deopt_frames + deopt_frame_count);
+  entry->set_deopt_info(deopt_reason, deopt_id, std::move(frames_vector));
+  delete[] deopt_frames;
 }
 
 
@@ -54,7 +58,7 @@ TickSample* ProfilerEventsProcessor::StartTickSample() {
   void* address = ticks_buffer_.StartEnqueue();
   if (address == nullptr) return nullptr;
   TickSampleEventRecord* evt =
-      new (address) TickSampleEventRecord(last_code_event_id_.Value());
+      new (address) TickSampleEventRecord(last_code_event_id_);
   return &evt->sample;
 }
 

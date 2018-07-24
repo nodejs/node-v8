@@ -6,7 +6,7 @@
 
 #include <stdint.h>
 #include <memory>
-#include "src/api.h"
+#include "src/api-inl.h"
 #include "src/base/ieee754.h"
 #include "src/base/utils/random-number-generator.h"
 #include "src/frames-inl.h"
@@ -204,7 +204,7 @@ SamplingHeapProfiler::AllocationNode* SamplingHeapProfiler::AddStack() {
   // the first element in the list.
   for (auto it = stack.rbegin(); it != stack.rend(); ++it) {
     SharedFunctionInfo* shared = *it;
-    const char* name = this->names()->GetFunctionName(shared->DebugName());
+    const char* name = this->names()->GetName(shared->DebugName());
     int script_id = v8::UnboundScript::kNoScriptId;
     if (shared->script()->IsScript()) {
       Script* script = Script::cast(shared->script());
@@ -282,7 +282,7 @@ v8::AllocationProfile* SamplingHeapProfiler::GetAllocationProfile() {
   {
     Script::Iterator iterator(isolate_);
     while (Script* script = iterator.Next()) {
-      scripts[script->id()] = handle(script);
+      scripts[script->id()] = handle(script, isolate_);
     }
   }
   auto profile = new v8::internal::AllocationProfile();

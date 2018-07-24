@@ -9,6 +9,7 @@
 #include "src/counters.h"
 #include "src/messages.h"
 #include "src/objects-inl.h"
+#include "src/objects/api-callbacks.h"
 #include "src/property-descriptor.h"
 #include "src/string-builder.h"
 
@@ -74,7 +75,7 @@ BUILTIN(ErrorCaptureStackTrace) {
 
   RETURN_FAILURE_ON_EXCEPTION(
       isolate, JSObject::SetAccessor(object, name, error_stack, DONT_ENUM));
-  return isolate->heap()->undefined_value();
+  return ReadOnlyRoots(isolate).undefined_value();
 }
 
 // ES6 section 19.5.3.4 Error.prototype.toString ( )

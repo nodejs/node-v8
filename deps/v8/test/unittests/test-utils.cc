@@ -6,7 +6,7 @@
 
 #include "include/libplatform/libplatform.h"
 #include "include/v8.h"
-#include "src/api.h"
+#include "src/api-inl.h"
 #include "src/base/platform/time.h"
 #include "src/flags.h"
 #include "src/isolate.h"
@@ -88,6 +88,10 @@ TestWithIsolate::~TestWithIsolate() {}
 TestWithIsolateAndZone::~TestWithIsolateAndZone() {}
 
 Factory* TestWithIsolate::factory() const { return isolate()->factory(); }
+
+Handle<Object> TestWithIsolate::RunJSInternal(const char* source) {
+  return Utils::OpenHandle(*::v8::TestWithIsolate::RunJS(source));
+}
 
 base::RandomNumberGenerator* TestWithIsolate::random_number_generator() const {
   return isolate()->random_number_generator();

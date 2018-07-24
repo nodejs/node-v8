@@ -9,6 +9,7 @@
 
 #include "src/globals.h"
 #include "src/handles.h"
+#include "src/maybe-handles.h"
 #include "src/objects.h"
 #include "src/objects/name.h"
 #include "src/property-details.h"
@@ -26,58 +27,52 @@ class Descriptor final BASE_EMBEDDED {
   Descriptor() : details_(Smi::kZero) {}
 
   Handle<Name> GetKey() const { return key_; }
-  Handle<Object> GetValue() const { return value_; }
+  MaybeObjectHandle GetValue() const { return value_; }
   PropertyDetails GetDetails() const { return details_; }
 
   void SetSortedKeyIndex(int index) { details_ = details_.set_pointer(index); }
 
-  static Descriptor DataField(Handle<Name> key, int field_index,
-                              PropertyAttributes attributes,
+  static Descriptor DataField(Isolate* isolate, Handle<Name> key,
+                              int field_index, PropertyAttributes attributes,
                               Representation representation);
 
   static Descriptor DataField(Handle<Name> key, int field_index,
                               PropertyAttributes attributes,
                               PropertyConstness constness,
                               Representation representation,
-                              Handle<Object> wrapped_field_type);
+                              MaybeObjectHandle wrapped_field_type);
 
   static Descriptor DataConstant(Handle<Name> key, Handle<Object> value,
                                  PropertyAttributes attributes) {
-    return Descriptor(key, value, kData, attributes, kDescriptor, kConst,
+    return Descriptor(key, MaybeObjectHandle(value), kData, attributes,
+                      kDescriptor, PropertyConstness::kConst,
                       value->OptimalRepresentation(), 0);
   }
 
-  static Descriptor DataConstant(Handle<Name> key, int field_index,
-                                 Handle<Object> value,
+  static Descriptor DataConstant(Isolate* isolate, Handle<Name> key,
+                                 int field_index, Handle<Object> value,
                                  PropertyAttributes attributes);
 
   static Descriptor AccessorConstant(Handle<Name> key, Handle<Object> foreign,
                                      PropertyAttributes attributes) {
-    return Descriptor(key, foreign, kAccessor, attributes, kDescriptor, kConst,
+    return Descriptor(key, MaybeObjectHandle(foreign), kAccessor, attributes,
+                      kDescriptor, PropertyConstness::kConst,
                       Representation::Tagged(), 0);
   }
 
  private:
   Handle<Name> key_;
-  Handle<Object> value_;
+  MaybeObjectHandle value_;
   PropertyDetails details_;
 
  protected:
-  void Init(Handle<Name> key, Handle<Object> value, PropertyDetails details) {
-    DCHECK(key->IsUniqueName());
-    DCHECK_IMPLIES(key->IsPrivate(), !details.IsEnumerable());
-    key_ = key;
-    value_ = value;
-    details_ = details;
-  }
-
-  Descriptor(Handle<Name> key, Handle<Object> value, PropertyDetails details)
+  Descriptor(Handle<Name> key, MaybeObjectHandle value, PropertyDetails details)
       : key_(key), value_(value), details_(details) {
     DCHECK(key->IsUniqueName());
     DCHECK_IMPLIES(key->IsPrivate(), !details_.IsEnumerable());
   }
 
-  Descriptor(Handle<Name> key, Handle<Object> value, PropertyKind kind,
+  Descriptor(Handle<Name> key, MaybeObjectHandle value, PropertyKind kind,
              PropertyAttributes attributes, PropertyLocation location,
              PropertyConstness constness, Representation representation,
              int field_index)
@@ -89,8 +84,6 @@ class Descriptor final BASE_EMBEDDED {
     DCHECK_IMPLIES(key->IsPrivate(), !details_.IsEnumerable());
   }
 
-  friend class DescriptorArray;
-  friend class Map;
   friend class MapUpdater;
 };
 

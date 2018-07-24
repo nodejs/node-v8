@@ -4,6 +4,7 @@
 # found in the LICENSE file.
 
 import os
+import pipes
 import shutil
 import stat
 import subprocess
@@ -22,7 +23,14 @@ def EnsureDepotTools(v8_path, fetch_if_not_exist):
       pass
     if fetch_if_not_exist:
       print "Checking out depot_tools."
-      subprocess.check_call(["git", "clone", DEPOT_TOOLS_URL, depot_tools])
+      # shell=True needed on Windows to resolve git.bat.
+      subprocess.check_call("git clone {} {}".format(
+          pipes.quote(DEPOT_TOOLS_URL),
+          pipes.quote(depot_tools)), shell=True)
+      # Using check_output to hide warning messages.
+      subprocess.check_output(
+          [sys.executable, gclient_path, "metrics", "--opt-out"],
+          cwd=depot_tools)
       return depot_tools
     return None
   depot_tools = _Get(v8_path)

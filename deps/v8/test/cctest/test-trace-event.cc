@@ -263,7 +263,12 @@ TEST(TestEventWithTimestamp) {
                                       TRACE_EVENT_SCOPE_GLOBAL, 4104, "val", 1);
   TRACE_EVENT_MARK_WITH_TIMESTAMP2("v8-cat", "mark", 13832, "a", 1, "b", 2);
 
-  CHECK_EQ(3, GET_TRACE_OBJECTS_LIST->size());
+  TRACE_EVENT_COPY_NESTABLE_ASYNC_BEGIN_WITH_TIMESTAMP0("v8-cat", "begin", 5,
+                                                        20683);
+  TRACE_EVENT_COPY_NESTABLE_ASYNC_END_WITH_TIMESTAMP0("v8-cat", "end", 5,
+                                                      32832);
+
+  CHECK_EQ(5, GET_TRACE_OBJECTS_LIST->size());
 
   CHECK_EQ(1729, GET_TRACE_OBJECT(0)->timestamp);
   CHECK_EQ(0, GET_TRACE_OBJECT(0)->num_args);
@@ -273,6 +278,9 @@ TEST(TestEventWithTimestamp) {
 
   CHECK_EQ(13832, GET_TRACE_OBJECT(2)->timestamp);
   CHECK_EQ(2, GET_TRACE_OBJECT(2)->num_args);
+
+  CHECK_EQ(20683, GET_TRACE_OBJECT(3)->timestamp);
+  CHECK_EQ(32832, GET_TRACE_OBJECT(4)->timestamp);
 }
 
 TEST(BuiltinsIsTraceCategoryEnabled) {
@@ -281,6 +289,7 @@ TEST(BuiltinsIsTraceCategoryEnabled) {
 
   v8::Isolate* isolate = CcTest::isolate();
   v8::HandleScope handle_scope(isolate);
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
   LocalContext env;
 
   v8::Local<v8::Object> binding = env->GetExtrasBindingObject();
@@ -299,7 +308,7 @@ TEST(BuiltinsIsTraceCategoryEnabled) {
                       .ToLocalChecked()
                       .As<v8::Boolean>();
 
-    CHECK(result->BooleanValue());
+    CHECK(result->BooleanValue(context).ToChecked());
   }
 
   {
@@ -309,7 +318,7 @@ TEST(BuiltinsIsTraceCategoryEnabled) {
                       .ToLocalChecked()
                       .As<v8::Boolean>();
 
-    CHECK(!result->BooleanValue());
+    CHECK(!result->BooleanValue(context).ToChecked());
   }
 
   {
@@ -319,7 +328,7 @@ TEST(BuiltinsIsTraceCategoryEnabled) {
                       .ToLocalChecked()
                       .As<v8::Boolean>();
 
-    CHECK(result->BooleanValue());
+    CHECK(result->BooleanValue(context).ToChecked());
   }
 }
 
@@ -329,6 +338,7 @@ TEST(BuiltinsTrace) {
 
   v8::Isolate* isolate = CcTest::isolate();
   v8::HandleScope handle_scope(isolate);
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
   LocalContext env;
 
   v8::Local<v8::Object> binding = env->GetExtrasBindingObject();
@@ -352,7 +362,7 @@ TEST(BuiltinsTrace) {
                       .ToLocalChecked()
                       .As<v8::Boolean>();
 
-    CHECK(!result->BooleanValue());
+    CHECK(!result->BooleanValue(context).ToChecked());
     CHECK_EQ(0, GET_TRACE_OBJECTS_LIST->size());
   }
 
@@ -360,7 +370,6 @@ TEST(BuiltinsTrace) {
   {
     v8::Local<v8::String> category = v8_str("v8-cat");
     v8::Local<v8::String> name = v8_str("name");
-    v8::Local<v8::Context> context = isolate->GetCurrentContext();
     v8::Local<v8::Object> data = v8::Object::New(isolate);
     data->Set(context, v8_str("foo"), v8_str("bar")).FromJust();
     v8::Local<v8::Value> argv[] = {
@@ -372,7 +381,7 @@ TEST(BuiltinsTrace) {
                       .ToLocalChecked()
                       .As<v8::Boolean>();
 
-    CHECK(result->BooleanValue());
+    CHECK(result->BooleanValue(context).ToChecked());
     CHECK_EQ(1, GET_TRACE_OBJECTS_LIST->size());
 
     CHECK_EQ(123, GET_TRACE_OBJECT(0)->id);
@@ -385,7 +394,6 @@ TEST(BuiltinsTrace) {
   {
     v8::Local<v8::String> category = v8_str("v8-cat\u20ac");
     v8::Local<v8::String> name = v8_str("name\u20ac");
-    v8::Local<v8::Context> context = isolate->GetCurrentContext();
     v8::Local<v8::Object> data = v8::Object::New(isolate);
     data->Set(context, v8_str("foo"), v8_str("bar")).FromJust();
     v8::Local<v8::Value> argv[] = {
@@ -397,7 +405,7 @@ TEST(BuiltinsTrace) {
                       .ToLocalChecked()
                       .As<v8::Boolean>();
 
-    CHECK(result->BooleanValue());
+    CHECK(result->BooleanValue(context).ToChecked());
     CHECK_EQ(2, GET_TRACE_OBJECTS_LIST->size());
 
     CHECK_EQ(123, GET_TRACE_OBJECT(1)->id);

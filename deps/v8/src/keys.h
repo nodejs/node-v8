@@ -7,9 +7,12 @@
 
 #include "src/objects.h"
 #include "src/objects/hash-table.h"
+#include "src/objects/ordered-hash-table.h"
 
 namespace v8 {
 namespace internal {
+
+class JSProxy;
 
 enum AddKeyConversion { DO_NOT_CONVERT, CONVERT_TO_ARRAY_INDEX };
 

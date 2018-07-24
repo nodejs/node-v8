@@ -4,6 +4,7 @@
 
 #include <stdlib.h>
 
+#include "src/base/iterator.h"
 #include "src/globals.h"
 #include "src/utils.h"
 #include "src/zone/zone.h"
@@ -63,6 +64,9 @@ class ZoneChunkList : public ZoneObject {
 
   T& front() const;
   T& back() const;
+
+  const T& at(size_t index) const;
+  T& at(size_t index);
 
   void push_back(const T& item);
   void pop_back();
@@ -142,7 +146,8 @@ class ZoneChunkList : public ZoneObject {
 };
 
 template <typename T, bool backwards, bool modifiable>
-class ZoneChunkListIterator {
+class ZoneChunkListIterator
+    : public base::iterator<std::bidirectional_iterator_tag, T> {
  private:
   template <typename S>
   using maybe_const =
@@ -259,6 +264,18 @@ T& ZoneChunkList<T>::back() const {
   } else {
     return back_->items()[back_->position_ - 1];
   }
+}
+
+template <typename T>
+const T& ZoneChunkList<T>::at(size_t index) const {
+  DCHECK_LT(index, size());
+  return *Find(index);
+}
+
+template <typename T>
+T& ZoneChunkList<T>::at(size_t index) {
+  DCHECK_LT(index, size());
+  return *Find(index);
 }
 
 template <typename T>

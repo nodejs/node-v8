@@ -22,14 +22,13 @@ namespace compiler {
 
 class StubTester {
  public:
-  StubTester(Isolate* isolate, Zone* zone, CodeStub* stub)
+  StubTester(Zone* zone, CodeStub* stub)
       : zone_(zone),
         info_(ArrayVector("test"), zone, Code::STUB),
         interface_descriptor_(stub->GetCallInterfaceDescriptor()),
         descriptor_(Linkage::GetStubCallDescriptor(
-            isolate, zone, interface_descriptor_,
-            stub->GetStackParameterCount(), CallDescriptor::kNoFlags,
-            Operator::kNoProperties)),
+            zone, interface_descriptor_, stub->GetStackParameterCount(),
+            CallDescriptor::kNoFlags, Operator::kNoProperties)),
         graph_(zone_),
         common_(zone_),
         tester_(InitializeFunctionTester(stub->GetCode()),
@@ -41,20 +40,22 @@ class StubTester {
         interface_descriptor_(
             Builtins::CallableFor(isolate, name).descriptor()),
         descriptor_(Linkage::GetStubCallDescriptor(
-            isolate, zone, interface_descriptor_,
+            zone, interface_descriptor_,
             interface_descriptor_.GetStackParameterCount(),
             CallDescriptor::kNoFlags, Operator::kNoProperties)),
         graph_(zone_),
         common_(zone_),
         tester_(InitializeFunctionTester(
-                    Handle<Code>(isolate->builtins()->builtin(name))),
+                    Handle<Code>(isolate->builtins()->builtin(name), isolate)),
                 GetParameterCountWithContext()) {}
 
   template <typename... Args>
   Handle<Object> Call(Args... args) {
     DCHECK_EQ(interface_descriptor_.GetParameterCount(), sizeof...(args));
     MaybeHandle<Object> result =
-        tester_.Call(args..., Handle<HeapObject>(tester_.function->context()))
+        tester_
+            .Call(args...,
+                  Handle<HeapObject>(tester_.function->context(), ft().isolate))
             .ToHandleChecked();
     return result.ToHandleChecked();
   }

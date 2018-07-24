@@ -60,14 +60,17 @@ void RelocInfo::apply(intptr_t delta) {
     // absolute code pointer inside code object moves with the code object.
     int32_t* p = reinterpret_cast<int32_t*>(pc_);
     *p += delta;  // relocate entry
+  } else if (RelocInfo::IsRelativeCodeTarget(rmode_)) {
+    Instruction* branch = Instruction::At(pc_);
+    int32_t branch_offset = branch->GetBranchOffset() + delta;
+    branch->SetBranchOffset(branch_offset);
   }
-  // We do not use pc relative addressing on ARM, so there is
-  // nothing else to do.
 }
 
 
 Address RelocInfo::target_address() {
-  DCHECK(IsCodeTarget(rmode_) || IsRuntimeEntry(rmode_) || IsWasmCall(rmode_));
+  DCHECK(IsCodeTargetMode(rmode_) || IsRuntimeEntry(rmode_) ||
+         IsWasmCall(rmode_));
   return Assembler::target_address_at(pc_, constant_pool_);
 }
 
@@ -76,7 +79,7 @@ Address RelocInfo::target_address_address() {
          IsEmbeddedObject(rmode_) || IsExternalReference(rmode_) ||
          IsOffHeapTarget(rmode_));
   if (Assembler::IsMovW(Memory::int32_at(pc_))) {
-    return reinterpret_cast<Address>(pc_);
+    return pc_;
   } else {
     DCHECK(Assembler::IsLdrPcImmediateOffset(Memory::int32_at(pc_)));
     return constant_pool_entry_address();
@@ -101,12 +104,15 @@ HeapObject* RelocInfo::target_object() {
 }
 
 Handle<HeapObject> RelocInfo::target_object_handle(Assembler* origin) {
-  DCHECK(IsCodeTarget(rmode_) || rmode_ == EMBEDDED_OBJECT);
-  return Handle<HeapObject>(reinterpret_cast<HeapObject**>(
-      Assembler::target_address_at(pc_, constant_pool_)));
+  if (IsCodeTarget(rmode_) || rmode_ == EMBEDDED_OBJECT) {
+    return Handle<HeapObject>(reinterpret_cast<HeapObject**>(
+        Assembler::target_address_at(pc_, constant_pool_)));
+  }
+  DCHECK(IsRelativeCodeTarget(rmode_));
+  return origin->relative_code_target_object_handle_at(pc_);
 }
 
-void RelocInfo::set_target_object(HeapObject* target,
+void RelocInfo::set_target_object(Heap* heap, HeapObject* target,
                                   WriteBarrierMode write_barrier_mode,
                                   ICacheFlushMode icache_flush_mode) {
   DCHECK(IsCodeTarget(rmode_) || rmode_ == EMBEDDED_OBJECT);
@@ -114,9 +120,8 @@ void RelocInfo::set_target_object(HeapObject* target,
                                    reinterpret_cast<Address>(target),
                                    icache_flush_mode);
   if (write_barrier_mode == UPDATE_WRITE_BARRIER && host() != nullptr) {
-    host()->GetHeap()->incremental_marking()->RecordWriteIntoCode(host(), this,
-                                                                  target);
-    host()->GetHeap()->RecordWriteIntoCode(host(), this, target);
+    heap->incremental_marking()->RecordWriteIntoCode(host(), this, target);
+    heap->RecordWriteIntoCode(host(), this, target);
   }
 }
 
@@ -141,14 +146,7 @@ Address RelocInfo::target_internal_reference() {
 
 Address RelocInfo::target_internal_reference_address() {
   DCHECK(rmode_ == INTERNAL_REFERENCE);
-  return reinterpret_cast<Address>(pc_);
-}
-
-void RelocInfo::set_wasm_code_table_entry(Address target,
-                                          ICacheFlushMode icache_flush_mode) {
-  DCHECK(rmode_ == RelocInfo::WASM_CODE_TABLE_ENTRY);
-  Assembler::set_target_address_at(pc_, constant_pool_, target,
-                                   icache_flush_mode);
+  return pc_;
 }
 
 Address RelocInfo::target_runtime_entry(Assembler* origin) {
@@ -174,10 +172,17 @@ void RelocInfo::WipeOut() {
          IsRuntimeEntry(rmode_) || IsExternalReference(rmode_) ||
          IsInternalReference(rmode_));
   if (IsInternalReference(rmode_)) {
-    Memory::Address_at(pc_) = nullptr;
+    Memory::Address_at(pc_) = kNullAddress;
   } else {
-    Assembler::set_target_address_at(pc_, constant_pool_, nullptr);
+    Assembler::set_target_address_at(pc_, constant_pool_, kNullAddress);
   }
+}
+
+Handle<Code> Assembler::relative_code_target_object_handle_at(
+    Address pc) const {
+  Instruction* branch = Instruction::At(pc);
+  int code_target_index = branch->GetBranchOffset() / Instruction::kInstrSize;
+  return GetCodeTarget(code_target_index);
 }
 
 template <typename ObjectVisitor>
@@ -185,7 +190,7 @@ void RelocInfo::Visit(ObjectVisitor* visitor) {
   RelocInfo::Mode mode = rmode();
   if (mode == RelocInfo::EMBEDDED_OBJECT) {
     visitor->VisitEmbeddedPointer(host(), this);
-  } else if (RelocInfo::IsCodeTarget(mode)) {
+  } else if (RelocInfo::IsCodeTargetMode(mode)) {
     visitor->VisitCodeTarget(host(), this);
   } else if (mode == RelocInfo::EXTERNAL_REFERENCE) {
     visitor->VisitExternalReference(host(), this);
@@ -206,7 +211,7 @@ Operand Operand::Zero() { return Operand(static_cast<int32_t>(0)); }
 
 Operand::Operand(const ExternalReference& f)
     : rmode_(RelocInfo::EXTERNAL_REFERENCE) {
-  value_.immediate = reinterpret_cast<int32_t>(f.address());
+  value_.immediate = static_cast<int32_t>(f.address());
 }
 
 Operand::Operand(Smi* value) : rmode_(RelocInfo::NONE) {
@@ -298,6 +303,10 @@ void Assembler::deserialization_set_special_target_at(
   Memory::Address_at(constant_pool_entry) = target;
 }
 
+int Assembler::deserialization_special_target_size(Address location) {
+  return kSpecialTargetSize;
+}
+
 void Assembler::deserialization_set_target_internal_reference_at(
     Address pc, Address target, RelocInfo::Mode mode) {
   Memory::Address_at(pc) = target;
@@ -313,7 +322,7 @@ Address Assembler::constant_pool_entry_address(Address pc,
                                                Address constant_pool) {
   DCHECK(Assembler::IsLdrPcImmediateOffset(Memory::int32_at(pc)));
   Instr instr = Memory::int32_at(pc);
-  return pc + GetLdrRegisterImmediateOffset(instr) + kPcLoadDelta;
+  return pc + GetLdrRegisterImmediateOffset(instr) + Instruction::kPcLoadDelta;
 }
 
 
@@ -321,16 +330,15 @@ Address Assembler::target_address_at(Address pc, Address constant_pool) {
   if (is_constant_pool_load(pc)) {
     // This is a constant pool lookup. Return the value in the constant pool.
     return Memory::Address_at(constant_pool_entry_address(pc, constant_pool));
-  } else if (CpuFeatures::IsSupported(ARMv7)) {
+  } else if (CpuFeatures::IsSupported(ARMv7) && IsMovW(Memory::int32_at(pc))) {
     // This is an movw / movt immediate load. Return the immediate.
     DCHECK(IsMovW(Memory::int32_at(pc)) &&
            IsMovT(Memory::int32_at(pc + kInstrSize)));
     Instruction* movw_instr = Instruction::At(pc);
     Instruction* movt_instr = Instruction::At(pc + kInstrSize);
-    return reinterpret_cast<Address>(
-        (movt_instr->ImmedMovwMovtValue() << 16) |
-         movw_instr->ImmedMovwMovtValue());
-  } else {
+    return static_cast<Address>((movt_instr->ImmedMovwMovtValue() << 16) |
+                                movw_instr->ImmedMovwMovtValue());
+  } else if (IsMovImmed(Memory::int32_at(pc))) {
     // This is an mov / orr immediate load. Return the immediate.
     DCHECK(IsMovImmed(Memory::int32_at(pc)) &&
            IsOrrImmed(Memory::int32_at(pc + kInstrSize)) &&
@@ -340,10 +348,14 @@ Address Assembler::target_address_at(Address pc, Address constant_pool) {
     Instr orr_instr_1 = instr_at(pc + kInstrSize);
     Instr orr_instr_2 = instr_at(pc + 2 * kInstrSize);
     Instr orr_instr_3 = instr_at(pc + 3 * kInstrSize);
-    Address ret = reinterpret_cast<Address>(
+    Address ret = static_cast<Address>(
         DecodeShiftImm(mov_instr) | DecodeShiftImm(orr_instr_1) |
         DecodeShiftImm(orr_instr_2) | DecodeShiftImm(orr_instr_3));
     return ret;
+  } else {
+    Instruction* branch = Instruction::At(pc);
+    int32_t delta = branch->GetBranchOffset();
+    return pc + delta + Instruction::kPcLoadDelta;
   }
 }
 
@@ -361,13 +373,13 @@ void Assembler::set_target_address_at(Address pc, Address constant_pool,
     // ldr   ip, [pp, #...]
     // since the instruction accessing this address in the constant pool remains
     // unchanged.
-  } else if (CpuFeatures::IsSupported(ARMv7)) {
+  } else if (CpuFeatures::IsSupported(ARMv7) && IsMovW(Memory::int32_at(pc))) {
     // This is an movw / movt immediate load. Patch the immediate embedded in
     // the instructions.
     DCHECK(IsMovW(Memory::int32_at(pc)));
     DCHECK(IsMovT(Memory::int32_at(pc + kInstrSize)));
     uint32_t* instr_ptr = reinterpret_cast<uint32_t*>(pc);
-    uint32_t immediate = reinterpret_cast<uint32_t>(target);
+    uint32_t immediate = static_cast<uint32_t>(target);
     instr_ptr[0] = PatchMovwImmediate(instr_ptr[0], immediate & 0xFFFF);
     instr_ptr[1] = PatchMovwImmediate(instr_ptr[1], immediate >> 16);
     DCHECK(IsMovW(Memory::int32_at(pc)));
@@ -375,7 +387,7 @@ void Assembler::set_target_address_at(Address pc, Address constant_pool,
     if (icache_flush_mode != SKIP_ICACHE_FLUSH) {
       Assembler::FlushICache(pc, 2 * kInstrSize);
     }
-  } else {
+  } else if (IsMovImmed(Memory::int32_at(pc))) {
     // This is an mov / orr immediate load. Patch the immediate embedded in
     // the instructions.
     DCHECK(IsMovImmed(Memory::int32_at(pc)) &&
@@ -383,7 +395,7 @@ void Assembler::set_target_address_at(Address pc, Address constant_pool,
            IsOrrImmed(Memory::int32_at(pc + 2 * kInstrSize)) &&
            IsOrrImmed(Memory::int32_at(pc + 3 * kInstrSize)));
     uint32_t* instr_ptr = reinterpret_cast<uint32_t*>(pc);
-    uint32_t immediate = reinterpret_cast<uint32_t>(target);
+    uint32_t immediate = static_cast<uint32_t>(target);
     instr_ptr[0] = PatchShiftImm(instr_ptr[0], immediate & kImm8Mask);
     instr_ptr[1] = PatchShiftImm(instr_ptr[1], immediate & (kImm8Mask << 8));
     instr_ptr[2] = PatchShiftImm(instr_ptr[2], immediate & (kImm8Mask << 16));
@@ -394,6 +406,13 @@ void Assembler::set_target_address_at(Address pc, Address constant_pool,
            IsOrrImmed(Memory::int32_at(pc + 3 * kInstrSize)));
     if (icache_flush_mode != SKIP_ICACHE_FLUSH) {
       Assembler::FlushICache(pc, 4 * kInstrSize);
+    }
+  } else {
+    intptr_t branch_offset = target - pc - Instruction::kPcLoadDelta;
+    Instruction* branch = Instruction::At(pc);
+    branch->SetBranchOffset(branch_offset);
+    if (icache_flush_mode != SKIP_ICACHE_FLUSH) {
+      Assembler::FlushICache(pc, kInstrSize);
     }
   }
 }
