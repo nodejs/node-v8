@@ -336,11 +336,12 @@
         '<(DEPTH)',
       ],
       'sources': [
-        '<(SHARED_INTERMEDIATE_DIR)/libraries.cc',
-        '<(SHARED_INTERMEDIATE_DIR)/extras-libraries.cc',
         '<(SHARED_INTERMEDIATE_DIR)/experimental-extras-libraries.cc',
+        '<(SHARED_INTERMEDIATE_DIR)/extras-libraries.cc',
+        '<(SHARED_INTERMEDIATE_DIR)/libraries.cc',
         '<(INTERMEDIATE_DIR)/snapshot.cc',
         '../src/setup-isolate-deserialize.cc',
+        '../src/snapshot/embedded-empty.cc',
       ],
       'actions': [
         {
@@ -396,9 +397,10 @@
         '<(DEPTH)',
       ],
       'sources': [
-        '<(SHARED_INTERMEDIATE_DIR)/libraries.cc',
-        '<(SHARED_INTERMEDIATE_DIR)/extras-libraries.cc',
         '<(SHARED_INTERMEDIATE_DIR)/experimental-extras-libraries.cc',
+        '<(SHARED_INTERMEDIATE_DIR)/extras-libraries.cc',
+        '<(SHARED_INTERMEDIATE_DIR)/libraries.cc',
+        '../src/snapshot/embedded-empty.cc',
         '../src/snapshot/snapshot-empty.cc',
       ],
       'conditions': [
@@ -462,6 +464,7 @@
           ],
           'sources': [
             '../src/setup-isolate-deserialize.cc',
+            '../src/snapshot/embedded-empty.cc',
             '../src/snapshot/natives-external.cc',
             '../src/snapshot/snapshot-external.cc',
           ],
