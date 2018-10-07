@@ -79,7 +79,7 @@ std::ostream& operator<<(std::ostream& os, FieldAccess const& access) {
 #endif
   os << access.type << ", " << access.machine_type << ", "
      << access.write_barrier_kind;
-  if (FLAG_untrusted_code_mitigations || FLAG_branch_load_poisoning) {
+  if (FLAG_untrusted_code_mitigations) {
     os << ", " << access.load_sensitivity;
   }
   os << "]";
@@ -118,7 +118,7 @@ std::ostream& operator<<(std::ostream& os, ElementAccess const& access) {
   os << access.base_is_tagged << ", " << access.header_size << ", "
      << access.type << ", " << access.machine_type << ", "
      << access.write_barrier_kind;
-  if (FLAG_untrusted_code_mitigations || FLAG_branch_load_poisoning) {
+  if (FLAG_untrusted_code_mitigations) {
     os << ", " << access.load_sensitivity;
   }
   return os;
@@ -509,10 +509,8 @@ Handle<Map> FastMapParameterOf(const Operator* op) {
 
 std::ostream& operator<<(std::ostream& os, NumberOperationHint hint) {
   switch (hint) {
-    case NumberOperationHint::kSignedSmall:
-      return os << "SignedSmall";
-    case NumberOperationHint::kSignedSmallInputs:
-      return os << "SignedSmallInputs";
+    case NumberOperationHint::kSigned32Inputs:
+      return os << "Signed32Inputs";
     case NumberOperationHint::kSigned32:
       return os << "Signed32";
     case NumberOperationHint::kNumber:
@@ -709,6 +707,7 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(NumberToUint32, Operator::kNoProperties, 1, 0)               \
   V(NumberToUint8Clamped, Operator::kNoProperties, 1, 0)         \
   V(NumberSilenceNaN, Operator::kNoProperties, 1, 0)             \
+  V(StringConcat, Operator::kNoProperties, 3, 0)                 \
   V(StringToNumber, Operator::kNoProperties, 1, 0)               \
   V(StringFromSingleCharCode, Operator::kNoProperties, 1, 0)     \
   V(StringIndexOf, Operator::kNoProperties, 3, 0)                \
@@ -720,14 +719,18 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(PlainPrimitiveToWord32, Operator::kNoProperties, 1, 0)       \
   V(PlainPrimitiveToFloat64, Operator::kNoProperties, 1, 0)      \
   V(ChangeTaggedSignedToInt32, Operator::kNoProperties, 1, 0)    \
+  V(ChangeTaggedSignedToInt64, Operator::kNoProperties, 1, 0)    \
   V(ChangeTaggedToInt32, Operator::kNoProperties, 1, 0)          \
+  V(ChangeTaggedToInt64, Operator::kNoProperties, 1, 0)          \
   V(ChangeTaggedToUint32, Operator::kNoProperties, 1, 0)         \
   V(ChangeTaggedToFloat64, Operator::kNoProperties, 1, 0)        \
   V(ChangeTaggedToTaggedSigned, Operator::kNoProperties, 1, 0)   \
   V(ChangeFloat64ToTaggedPointer, Operator::kNoProperties, 1, 0) \
   V(ChangeInt31ToTaggedSigned, Operator::kNoProperties, 1, 0)    \
   V(ChangeInt32ToTagged, Operator::kNoProperties, 1, 0)          \
+  V(ChangeInt64ToTagged, Operator::kNoProperties, 1, 0)          \
   V(ChangeUint32ToTagged, Operator::kNoProperties, 1, 0)         \
+  V(ChangeUint64ToTagged, Operator::kNoProperties, 1, 0)         \
   V(ChangeTaggedToBit, Operator::kNoProperties, 1, 0)            \
   V(ChangeBitToTagged, Operator::kNoProperties, 1, 0)            \
   V(TruncateTaggedToBit, Operator::kNoProperties, 1, 0)          \
@@ -798,11 +801,15 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(CheckSmi, 1, 1)                      \
   V(CheckString, 1, 1)                   \
   V(CheckedInt32ToTaggedSigned, 1, 1)    \
+  V(CheckedInt64ToInt32, 1, 1)           \
+  V(CheckedInt64ToTaggedSigned, 1, 1)    \
   V(CheckedTaggedSignedToInt32, 1, 1)    \
   V(CheckedTaggedToTaggedPointer, 1, 1)  \
   V(CheckedTaggedToTaggedSigned, 1, 1)   \
   V(CheckedUint32ToInt32, 1, 1)          \
-  V(CheckedUint32ToTaggedSigned, 1, 1)
+  V(CheckedUint32ToTaggedSigned, 1, 1)   \
+  V(CheckedUint64ToInt32, 1, 1)          \
+  V(CheckedUint64ToTaggedSigned, 1, 1)
 
 struct SimplifiedOperatorGlobalCache final {
 #define PURE(Name, properties, value_input_count, control_input_count)     \
@@ -890,13 +897,6 @@ struct SimplifiedOperatorGlobalCache final {
       kStringFromSingleCodePointOperatorUTF16;
   StringFromSingleCodePointOperator<UnicodeEncoding::UTF32>
       kStringFromSingleCodePointOperatorUTF32;
-
-  struct ArrayBufferWasNeuteredOperator final : public Operator {
-    ArrayBufferWasNeuteredOperator()
-        : Operator(IrOpcode::kArrayBufferWasNeutered, Operator::kEliminatable,
-                   "ArrayBufferWasNeutered", 1, 1, 1, 1, 1, 0) {}
-  };
-  ArrayBufferWasNeuteredOperator kArrayBufferWasNeutered;
 
   struct FindOrderedHashMapEntryOperator final : public Operator {
     FindOrderedHashMapEntryOperator()
@@ -1082,10 +1082,8 @@ struct SimplifiedOperatorGlobalCache final {
               IrOpcode::k##Name, Operator::kFoldable | Operator::kNoThrow,  \
               #Name, 2, 1, 1, 1, 1, 0, kHint) {}                            \
   };                                                                        \
-  Name##Operator<NumberOperationHint::kSignedSmall>                         \
-      k##Name##SignedSmallOperator;                                         \
-  Name##Operator<NumberOperationHint::kSignedSmallInputs>                   \
-      k##Name##SignedSmallInputsOperator;                                   \
+  Name##Operator<NumberOperationHint::kSigned32Inputs>                      \
+      k##Name##Signed32InputsOperator;                                      \
   Name##Operator<NumberOperationHint::kSigned32> k##Name##Signed32Operator; \
   Name##Operator<NumberOperationHint::kNumber> k##Name##NumberOperator;     \
   Name##Operator<NumberOperationHint::kNumberOrOddball>                     \
@@ -1103,8 +1101,6 @@ struct SimplifiedOperatorGlobalCache final {
               1, 1, 1, 1, 1, 0,
               NumberOperationParameters(kHint, VectorSlotPair())) {}
   };
-  SpeculativeToNumberOperator<NumberOperationHint::kSignedSmall>
-      kSpeculativeToNumberSignedSmallOperator;
   SpeculativeToNumberOperator<NumberOperationHint::kSigned32>
       kSpeculativeToNumberSigned32Operator;
   SpeculativeToNumberOperator<NumberOperationHint::kNumber>
@@ -1124,7 +1120,6 @@ SimplifiedOperatorBuilder::SimplifiedOperatorBuilder(Zone* zone)
 PURE_OP_LIST(GET_FROM_CACHE)
 EFFECT_DEPENDENT_OP_LIST(GET_FROM_CACHE)
 CHECKED_OP_LIST(GET_FROM_CACHE)
-GET_FROM_CACHE(ArrayBufferWasNeutered)
 GET_FROM_CACHE(ArgumentsFrame)
 GET_FROM_CACHE(FindOrderedHashMapEntry)
 GET_FROM_CACHE(FindOrderedHashMapEntryForInt32Key)
@@ -1332,12 +1327,10 @@ const Operator* SimplifiedOperatorBuilder::SpeculativeToNumber(
     NumberOperationHint hint, const VectorSlotPair& feedback) {
   if (!feedback.IsValid()) {
     switch (hint) {
-      case NumberOperationHint::kSignedSmall:
-        return &cache_.kSpeculativeToNumberSignedSmallOperator;
-      case NumberOperationHint::kSignedSmallInputs:
-        break;
       case NumberOperationHint::kSigned32:
         return &cache_.kSpeculativeToNumberSigned32Operator;
+      case NumberOperationHint::kSigned32Inputs:
+        break;
       case NumberOperationHint::kNumber:
         return &cache_.kSpeculativeToNumberNumberOperator;
       case NumberOperationHint::kNumberOrOddball:
@@ -1537,10 +1530,8 @@ const Operator* SimplifiedOperatorBuilder::StringFromSingleCodePoint(
 #define SPECULATIVE_NUMBER_BINOP(Name)                                        \
   const Operator* SimplifiedOperatorBuilder::Name(NumberOperationHint hint) { \
     switch (hint) {                                                           \
-      case NumberOperationHint::kSignedSmall:                                 \
-        return &cache_.k##Name##SignedSmallOperator;                          \
-      case NumberOperationHint::kSignedSmallInputs:                           \
-        return &cache_.k##Name##SignedSmallInputsOperator;                    \
+      case NumberOperationHint::kSigned32Inputs:                              \
+        return &cache_.k##Name##Signed32InputsOperator;                       \
       case NumberOperationHint::kSigned32:                                    \
         return &cache_.k##Name##Signed32Operator;                             \
       case NumberOperationHint::kNumber:                                      \
