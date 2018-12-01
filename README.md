@@ -9,4 +9,4 @@ The daily builds of this repo can be found at
 This repository is not owned by `@nodejs/v8`, but they might be able to
 help with issues.
 
-This project is bound by a [Code of Conduct](https://github.com/nodejs/TSC/blob/master/CODE_OF_CONDUCT.md). 
+This project is bound by a [Code of Conduct](https://github.com/nodejs/TSC/blob/master/CODE_OF_CONDUCT.md).
