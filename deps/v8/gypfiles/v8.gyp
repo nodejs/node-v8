@@ -190,7 +190,7 @@
           # The dependency on v8_base should come from a transitive
           # dependency however the Android toolchain requires libv8_base.a
           # to appear before libv8_snapshot.a so it's listed explicitly.
-          'dependencies': ['v8_base', 'v8_snapshot'],
+          'dependencies': ['v8_base', 'v8_init', 'v8_snapshot'],
         }],
         ['v8_use_snapshot=="true" and v8_use_external_startup_data==1 and want_separate_host_toolset==0', {
           'dependencies': ['v8_base', 'v8_external_snapshot'],
