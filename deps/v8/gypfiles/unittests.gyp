@@ -162,6 +162,7 @@
       '../test/unittests/wasm/decoder-unittest.cc',
       '../test/unittests/wasm/function-body-decoder-unittest.cc',
       '../test/unittests/wasm/wasm-code-manager-unittest.cc',
+      '../test/unittests/wasm/wasm-compiler-unittest.cc',
       '../test/unittests/wasm/leb-helper-unittest.cc',
       '../test/unittests/wasm/loop-assignment-analysis-unittest.cc',
       '../test/unittests/wasm/module-decoder-unittest.cc',
