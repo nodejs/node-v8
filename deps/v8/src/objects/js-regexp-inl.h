@@ -8,6 +8,7 @@
 #include "src/objects/js-regexp.h"
 
 #include "src/objects-inl.h"  // Needed for write barriers
+#include "src/objects/smi.h"
 #include "src/objects/string.h"
 
 // Has to be the last include (doesn't have include guards):
@@ -16,17 +17,19 @@
 namespace v8 {
 namespace internal {
 
-CAST_ACCESSOR(JSRegExp)
+OBJECT_CONSTRUCTORS_IMPL(JSRegExp, JSObject)
+
+CAST_ACCESSOR2(JSRegExp)
 
 ACCESSORS(JSRegExp, data, Object, kDataOffset)
 ACCESSORS(JSRegExp, flags, Object, kFlagsOffset)
 ACCESSORS(JSRegExp, source, Object, kSourceOffset)
 ACCESSORS(JSRegExp, last_index, Object, kLastIndexOffset)
 
-JSRegExp::Type JSRegExp::TypeTag() {
+JSRegExp::Type JSRegExp::TypeTag() const {
   Object* data = this->data();
   if (data->IsUndefined()) return JSRegExp::NOT_COMPILED;
-  Smi* smi = Smi::cast(FixedArray::cast(data)->get(kTagIndex));
+  Smi smi = Smi::cast(FixedArray::cast(data)->get(kTagIndex));
   return static_cast<JSRegExp::Type>(smi->value());
 }
 
@@ -44,14 +47,14 @@ int JSRegExp::CaptureCount() {
 JSRegExp::Flags JSRegExp::GetFlags() {
   DCHECK(this->data()->IsFixedArray());
   Object* data = this->data();
-  Smi* smi = Smi::cast(FixedArray::cast(data)->get(kFlagsIndex));
+  Smi smi = Smi::cast(FixedArray::cast(data)->get(kFlagsIndex));
   return Flags(smi->value());
 }
 
-String* JSRegExp::Pattern() {
+String JSRegExp::Pattern() {
   DCHECK(this->data()->IsFixedArray());
   Object* data = this->data();
-  String* pattern = String::cast(FixedArray::cast(data)->get(kSourceIndex));
+  String pattern = String::cast(FixedArray::cast(data)->get(kSourceIndex));
   return pattern;
 }
 
@@ -63,7 +66,7 @@ Object* JSRegExp::CaptureNameMap() {
   return value;
 }
 
-Object* JSRegExp::DataAt(int index) {
+Object* JSRegExp::DataAt(int index) const {
   DCHECK(TypeTag() != NOT_COMPILED);
   return FixedArray::cast(data())->get(index);
 }
@@ -73,6 +76,17 @@ void JSRegExp::SetDataAt(int index, Object* value) {
   DCHECK_GE(index,
             kDataIndex);  // Only implementation data can be set this way.
   FixedArray::cast(data())->set(index, value);
+}
+
+bool JSRegExp::HasCompiledCode() const {
+  return DataAt(kIrregexpLatin1CodeIndex)->IsCode() ||
+         DataAt(kIrregexpUC16CodeIndex)->IsCode();
+}
+
+void JSRegExp::DiscardCompiledCodeForSerialization() {
+  DCHECK(HasCompiledCode());
+  SetDataAt(kIrregexpLatin1CodeIndex, Smi::FromInt(kUninitializedValue));
+  SetDataAt(kIrregexpUC16CodeIndex, Smi::FromInt(kUninitializedValue));
 }
 
 }  // namespace internal

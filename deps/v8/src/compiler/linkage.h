@@ -15,6 +15,7 @@
 #include "src/reglist.h"
 #include "src/runtime/runtime.h"
 #include "src/signature.h"
+#include "src/turbo-assembler.h"
 #include "src/zone/zone.h"
 
 namespace v8 {
@@ -169,10 +170,12 @@ class V8_EXPORT_PRIVATE CallDescriptor final
  public:
   // Describes the kind of this call, which determines the target.
   enum Kind {
-    kCallCodeObject,   // target is a Code object
-    kCallJSFunction,   // target is a JSFunction object
-    kCallAddress,      // target is a machine pointer
-    kCallWasmFunction  // target is a wasm function
+    kCallCodeObject,         // target is a Code object
+    kCallJSFunction,         // target is a JSFunction object
+    kCallAddress,            // target is a machine pointer
+    kCallWasmFunction,       // target is a wasm function
+    kCallWasmImportWrapper,  // target is a wasm import wrapper
+    kCallBuiltinPointer,     // target is a builtin pointer
   };
 
   enum Flag {
@@ -190,7 +193,8 @@ class V8_EXPORT_PRIVATE CallDescriptor final
     kRetpoline = 1u << 6,
     // Use the kJavaScriptCallCodeStartRegister (fixed) register for the
     // indirect target address when calling.
-    kFixedTargetRegister = 1u << 7
+    kFixedTargetRegister = 1u << 7,
+    kAllowCallThroughSlot = 1u << 8
   };
   typedef base::Flags<Flag> Flags;
 
@@ -226,6 +230,9 @@ class V8_EXPORT_PRIVATE CallDescriptor final
 
   // Returns {true} if this descriptor is a call to a WebAssembly function.
   bool IsWasmFunctionCall() const { return kind_ == kCallWasmFunction; }
+
+  // Returns {true} if this descriptor is a call to a WebAssembly function.
+  bool IsWasmImportWrapper() const { return kind_ == kCallWasmImportWrapper; }
 
   bool RequiresFrameAsIncoming() const {
     return IsCFunctionCall() || IsJSFunctionCall() || IsWasmFunctionCall();
@@ -391,7 +398,7 @@ class V8_EXPORT_PRIVATE Linkage : public NON_EXPORTED_BASE(ZoneObject) {
       Zone* zone, const CallInterfaceDescriptor& descriptor,
       int stack_parameter_count, CallDescriptor::Flags flags,
       Operator::Properties properties = Operator::kNoProperties,
-      StubCallMode stub_mode = StubCallMode::kCallOnHeapBuiltin);
+      StubCallMode stub_mode = StubCallMode::kCallCodeObject);
 
   static CallDescriptor* GetBytecodeDispatchCallDescriptor(
       Zone* zone, const CallInterfaceDescriptor& descriptor,

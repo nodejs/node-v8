@@ -52,12 +52,10 @@ void HeapProfiler::DefineWrapperClass(
   wrapper_callbacks_[class_id] = callback;
 }
 
-
 v8::RetainedObjectInfo* HeapProfiler::ExecuteWrapperClassCallback(
-    uint16_t class_id, Object** wrapper) {
+    uint16_t class_id, Handle<Object> wrapper) {
   if (wrapper_callbacks_.size() <= class_id) return nullptr;
-  return wrapper_callbacks_[class_id](
-      class_id, Utils::ToLocal(Handle<Object>(wrapper)));
+  return wrapper_callbacks_[class_id](class_id, Utils::ToLocal(wrapper));
 }
 
 void HeapProfiler::SetGetRetainerInfosCallback(
@@ -185,7 +183,7 @@ SnapshotObjectId HeapProfiler::GetSnapshotObjectId(Handle<Object> obj) {
 }
 
 void HeapProfiler::ObjectMoveEvent(Address from, Address to, int size) {
-  base::LockGuard<base::Mutex> guard(&profiler_mutex_);
+  base::MutexGuard guard(&profiler_mutex_);
   bool known_object = ids_->MoveObject(from, to, size);
   if (!known_object && allocation_tracker_) {
     allocation_tracker_->address_to_trace()->MoveObject(from, to, size);

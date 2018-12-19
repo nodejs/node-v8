@@ -55,11 +55,10 @@ bool CpuFeatures::SupportsWasmSimd128() { return IsSupported(SSE4_1); }
 void RelocInfo::apply(intptr_t delta) {
   DCHECK_EQ(kApplyMask, (RelocInfo::ModeMask(RelocInfo::CODE_TARGET) |
                          RelocInfo::ModeMask(RelocInfo::INTERNAL_REFERENCE) |
-                         RelocInfo::ModeMask(RelocInfo::JS_TO_WASM_CALL) |
                          RelocInfo::ModeMask(RelocInfo::OFF_HEAP_TARGET) |
                          RelocInfo::ModeMask(RelocInfo::RUNTIME_ENTRY)));
   if (IsRuntimeEntry(rmode_) || IsCodeTarget(rmode_) ||
-      IsJsToWasmCall(rmode_) || IsOffHeapTarget(rmode_)) {
+      IsOffHeapTarget(rmode_)) {
     int32_t* p = reinterpret_cast<int32_t*>(pc_);
     *p -= delta;  // Relocate entry.
   } else if (IsInternalReference(rmode_)) {
@@ -76,9 +75,7 @@ Address RelocInfo::target_address() {
 }
 
 Address RelocInfo::target_address_address() {
-  DCHECK(IsCodeTarget(rmode_) || IsRuntimeEntry(rmode_) || IsWasmCall(rmode_) ||
-         IsWasmStubCall(rmode_) || IsEmbeddedObject(rmode_) ||
-         IsExternalReference(rmode_) || IsOffHeapTarget(rmode_));
+  DCHECK(HasTargetAddressAddress());
   return pc_;
 }
 
@@ -278,7 +275,7 @@ Address Assembler::target_address_from_return_address(Address pc) {
 }
 
 void Assembler::deserialization_set_special_target_at(
-    Address instruction_payload, Code* code, Address target) {
+    Address instruction_payload, Code code, Address target) {
   set_target_address_at(instruction_payload,
                         code ? code->constant_pool() : kNullAddress, target);
 }
@@ -323,10 +320,6 @@ void Assembler::deserialization_set_target_internal_reference_at(
 
 
 void Operand::set_sib(ScaleFactor scale, Register index, Register base) {
-#ifdef DEBUG
-  AddUsedRegister(index);
-  AddUsedRegister(base);
-#endif
   DCHECK_EQ(len_, 1);
   DCHECK_EQ(scale & -4, 0);
   // Use SIB with no index register only for base esp.

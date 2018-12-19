@@ -92,7 +92,7 @@ class BreakLocation {
 
   debug::BreakLocationType type() const;
 
-  JSGeneratorObject* GetGeneratorObjectForSuspendedFrame(
+  JSGeneratorObject GetGeneratorObjectForSuspendedFrame(
       JavaScriptFrame* frame) const;
 
  private:
@@ -170,7 +170,7 @@ class BreakIterator {
 // weak handles to avoid a debug info object to keep a function alive.
 class DebugInfoListNode {
  public:
-  DebugInfoListNode(Isolate* isolate, DebugInfo* debug_info);
+  DebugInfoListNode(Isolate* isolate, DebugInfo debug_info);
   ~DebugInfoListNode();
 
   DebugInfoListNode* next() { return next_; }
@@ -179,7 +179,7 @@ class DebugInfoListNode {
 
  private:
   // Global (weak) handle to the debug info object.
-  DebugInfo** debug_info_;
+  Address* debug_info_;
 
   // Next pointer for linked list.
   DebugInfoListNode* next_;
@@ -367,6 +367,9 @@ class Debug {
 
   Address restart_fp_address() {
     return reinterpret_cast<Address>(&thread_local_.restart_fp_);
+  }
+  bool will_restart() const {
+    return thread_local_.restart_fp_ != kNullAddress;
   }
 
   StepAction last_step_action() { return thread_local_.last_step_action_; }

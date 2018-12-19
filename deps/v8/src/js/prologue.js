@@ -38,55 +38,52 @@ function ImportNow(name) {
 }
 
 
-function InstallConstants(object, constants) {
-  %CheckIsBootstrapping();
-  %OptimizeObjectForAddingMultipleProperties(object, constants.length >> 1);
-  var attributes = DONT_ENUM | DONT_DELETE | READ_ONLY;
-  for (var i = 0; i < constants.length; i += 2) {
-    var name = constants[i];
-    var k = constants[i + 1];
-    %AddNamedProperty(object, name, k, attributes);
-  }
-  %ToFastProperties(object);
-}
-
-
-// Prevents changes to the prototype of a built-in function.
-// The "prototype" property of the function object is made non-configurable,
-// and the prototype object is made non-extensible. The latter prevents
-// changing the __proto__ property.
-function SetUpLockedPrototype(
-    constructor, fields, methods) {
-  %CheckIsBootstrapping();
-  var prototype = constructor.prototype;
-  // Install functions first, because this function is used to initialize
-  // PropertyDescriptor itself.
-  var property_count = (methods.length >> 1) + (fields ? fields.length : 0);
-  if (property_count >= 4) {
-    %OptimizeObjectForAddingMultipleProperties(prototype, property_count);
-  }
-  if (fields) {
-    for (var i = 0; i < fields.length; i++) {
-      %AddNamedProperty(prototype, fields[i],
-                        UNDEFINED, DONT_ENUM | DONT_DELETE);
-    }
-  }
-  for (var i = 0; i < methods.length; i += 2) {
-    var key = methods[i];
-    var f = methods[i + 1];
-    %AddNamedProperty(prototype, key, f, DONT_ENUM | DONT_DELETE | READ_ONLY);
-    %SetNativeFlag(f);
-  }
-  %InternalSetPrototype(prototype, null);
-  %ToFastProperties(prototype);
-}
-
+var GlobalArray = global.Array;
 
 // -----------------------------------------------------------------------
 // To be called by bootstrapper
 
 function PostNatives(utils) {
   %CheckIsBootstrapping();
+
+  // -------------------------------------------------------------------
+  // Array
+
+  var iteratorSymbol = ImportNow("iterator_symbol");
+  var unscopablesSymbol = ImportNow("unscopables_symbol");
+
+  // Set up unscopable properties on the Array.prototype object.
+  var unscopables = {
+    __proto__: null,
+    copyWithin: true,
+    entries: true,
+    fill: true,
+    find: true,
+    findIndex: true,
+    includes: true,
+    keys: true,
+  };
+
+  %ToFastProperties(unscopables);
+
+  %AddNamedProperty(GlobalArray.prototype, unscopablesSymbol, unscopables,
+                    DONT_ENUM | READ_ONLY);
+
+  // Array prototype functions that return iterators. They are exposed to the
+  // public API via Template::SetIntrinsicDataProperty().
+  var ArrayEntries = GlobalArray.prototype.entries;
+  var ArrayForEach = GlobalArray.prototype.forEach;
+  var ArrayKeys = GlobalArray.prototype.keys;
+  var ArrayValues = GlobalArray.prototype[iteratorSymbol];
+
+  %InstallToContext([
+    "array_entries_iterator", ArrayEntries,
+    "array_for_each_iterator", ArrayForEach,
+    "array_keys_iterator", ArrayKeys,
+    "array_values_iterator", ArrayValues,
+  ]);
+
+  // -------------------------------------------------------------------
 
   for ( ; !IS_UNDEFINED(imports); imports = imports.next) {
     imports(exports_container);
@@ -106,8 +103,6 @@ function PostNatives(utils) {
 utils.Import = Import;
 utils.ImportNow = ImportNow;
 utils.Export = Export;
-utils.InstallConstants = InstallConstants;
-utils.SetUpLockedPrototype = SetUpLockedPrototype;
 utils.PostNatives = PostNatives;
 
 %ToFastProperties(utils);
