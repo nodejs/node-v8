@@ -11,6 +11,7 @@ and gn files. The latter inclusion is overapproximated.
 TODO(machenbach): If two source files with the same name exist, but only one
 is referenced from a gyp/gn file, we won't necessarily detect it.
 """
+from __future__ import print_function
 
 import itertools
 import re
@@ -174,13 +175,13 @@ def missing_gn_files():
 
 
 def main():
-  print "----------- Files not in gyp: ------------"
+  print("----------- Files not in gyp: ------------")
   for i in missing_gyp_files():
-    print i
+    print(i)
 
-  print "\n----------- Files not in gn: -------------"
+  print("\n----------- Files not in gn: -------------")
   for i in missing_gn_files():
-    print i
+    print(i)
   return 0
 
 if '__main__' == __name__:

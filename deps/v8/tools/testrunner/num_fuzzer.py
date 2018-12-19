@@ -5,6 +5,7 @@
 # found in the LICENSE file.
 
 
+from __future__ import print_function
 import random
 import sys
 
@@ -102,8 +103,8 @@ class NumFuzzer(base_runner.BaseTestRunner):
 
     if options.combine_tests:
       if options.combine_min > options.combine_max:
-        print ('min_group_size (%d) cannot be larger than max_group_size (%d)' %
-               options.min_group_size, options.max_group_size)
+        print(('min_group_size (%d) cannot be larger than max_group_size (%d)' %
+               options.min_group_size, options.max_group_size))
         raise base_runner.TestRunnerError()
 
     if options.variants != 'default':
@@ -179,7 +180,7 @@ class NumFuzzer(base_runner.BaseTestRunner):
     for indicator in indicators:
       indicator.finished()
 
-    print '>>> %d tests ran' % results.total
+    print('>>> %d tests ran' % results.total)
     if results.failed:
       return utils.EXIT_CODE_FAILURES
 

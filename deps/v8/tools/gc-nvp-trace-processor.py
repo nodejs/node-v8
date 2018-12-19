@@ -38,6 +38,7 @@
 
 
 from __future__ import with_statement
+from __future__ import print_function
 import sys, types, subprocess, math
 import gc_nvp_common
 
@@ -177,7 +178,7 @@ def plot_all(plots, trace, prefix):
     outfilename = "%s_%d.png" % (prefix, len(charts))
     charts.append(outfilename)
     script = generate_script_and_datafile(plot, trace, '~datafile', outfilename)
-    print 'Plotting %s...' % outfilename
+    print('Plotting %s...' % outfilename)
     gnuplot(script)
 
   return charts
@@ -350,10 +351,10 @@ def process_trace(filename):
       out.write('<img src="%s">' % chart)
       out.write('</body></html>')
 
-  print "%s generated." % (filename + '.html')
+  print("%s generated." % (filename + '.html'))
 
 if len(sys.argv) != 2:
-  print "Usage: %s <GC-trace-filename>" % sys.argv[0]
+  print("Usage: %s <GC-trace-filename>" % sys.argv[0])
   sys.exit(1)
 
 process_trace(sys.argv[1])

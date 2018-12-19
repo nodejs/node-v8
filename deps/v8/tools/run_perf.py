@@ -98,6 +98,7 @@ Path pieces are concatenated. D8 is always run with the suite's path as cwd.
 
 The test flags are passed to the js test file after '--'.
 """
+from __future__ import print_function
 
 from collections import OrderedDict
 import json
@@ -1092,12 +1093,12 @@ def Main(args):
     if options.json_test_results:
       results.WriteToFile(options.json_test_results)
     else:  # pragma: no cover
-      print results
+      print(results)
 
   if options.json_test_results_secondary:
     results_secondary.WriteToFile(options.json_test_results_secondary)
   else:  # pragma: no cover
-    print results_secondary
+    print(results_secondary)
 
   if results.errors or have_failed_tests[0]:
     return 1

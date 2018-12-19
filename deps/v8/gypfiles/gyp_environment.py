@@ -7,6 +7,7 @@ Sets up various automatic gyp environment variables. These are used by
 gyp_v8 and landmines.py which run at different stages of runhooks. To
 make sure settings are consistent between them, all setup should happen here.
 """
+from __future__ import print_function
 
 import os
 import sys
@@ -37,9 +38,9 @@ def apply_gyp_environment(file_path=None):
     val = file_data.get(var)
     if val:
       if var in os.environ:
-        print 'INFO: Environment value for "%s" overrides value in %s.' % (
+        print('INFO: Environment value for "%s" overrides value in %s.' % (
             var, os.path.abspath(file_path)
-        )
+        ))
       else:
         os.environ[var] = val
 

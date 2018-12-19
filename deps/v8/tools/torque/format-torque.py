@@ -5,6 +5,7 @@
 
 """This program either generates the parser files for Torque, generating
 the source and header files directly in V8's src directory."""
+from __future__ import print_function
 
 import subprocess
 import sys
@@ -96,28 +97,28 @@ def process(filename, only_lint, use_stdout):
   output = postprocess(output)
   rc = p.returncode
   if (rc <> 0):
-    print "error code " + str(rc) + " running clang-format. Exiting..."
+    print("error code " + str(rc) + " running clang-format. Exiting...")
     sys.exit(rc);
 
   if only_lint:
     if (output != original_input):
-      print >>sys.stderr, filename + ' requires formatting'
+      print(filename + ' requires formatting', file=sys.stderr)
   elif use_stdout:
-    print output
+    print(output)
   else:
     output_file = open(filename, 'w')
     output_file.write(output);
     output_file.close()
 
 def print_usage():
-  print 'format-torque -i file1[, file2[, ...]]'
-  print '    format and overwrite input files'
-  print 'format-torque -l file1[, file2[, ...]]'
-  print '    merely indicate which files need formatting'
+  print('format-torque -i file1[, file2[, ...]]')
+  print('    format and overwrite input files')
+  print('format-torque -l file1[, file2[, ...]]')
+  print('    merely indicate which files need formatting')
 
 def Main():
   if len(sys.argv) < 3:
-    print "error: at least 2 arguments required"
+    print("error: at least 2 arguments required")
     print_usage();
     sys.exit(-1)
 
@@ -129,7 +130,7 @@ def Main():
   elif sys.argv[1] == '-l':
     lint = True
   else:
-    print "error: -i or -l must be specified as the first argument"
+    print("error: -i or -l must be specified as the first argument")
     print_usage();
     sys.exit(-1);
 
