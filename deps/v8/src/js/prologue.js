@@ -22,63 +22,10 @@ function Export(f) {
 
 // Import from other scripts. The actual importing happens in PostNatives so
 // that we can import from scripts executed later. However, that means that
-// the import is not available until the very end. If the import needs to be
-// available immediately, use ImportNow.
+// the import is not available until the very end.
 function Import(f) {
   f.next = imports;
   imports = f;
-}
-
-
-// Import immediately from exports of previous scripts. We need this for
-// functions called during bootstrapping. Hooking up imports in PostNatives
-// would be too late.
-function ImportNow(name) {
-  return exports_container[name];
-}
-
-
-function InstallConstants(object, constants) {
-  %CheckIsBootstrapping();
-  %OptimizeObjectForAddingMultipleProperties(object, constants.length >> 1);
-  var attributes = DONT_ENUM | DONT_DELETE | READ_ONLY;
-  for (var i = 0; i < constants.length; i += 2) {
-    var name = constants[i];
-    var k = constants[i + 1];
-    %AddNamedProperty(object, name, k, attributes);
-  }
-  %ToFastProperties(object);
-}
-
-
-// Prevents changes to the prototype of a built-in function.
-// The "prototype" property of the function object is made non-configurable,
-// and the prototype object is made non-extensible. The latter prevents
-// changing the __proto__ property.
-function SetUpLockedPrototype(
-    constructor, fields, methods) {
-  %CheckIsBootstrapping();
-  var prototype = constructor.prototype;
-  // Install functions first, because this function is used to initialize
-  // PropertyDescriptor itself.
-  var property_count = (methods.length >> 1) + (fields ? fields.length : 0);
-  if (property_count >= 4) {
-    %OptimizeObjectForAddingMultipleProperties(prototype, property_count);
-  }
-  if (fields) {
-    for (var i = 0; i < fields.length; i++) {
-      %AddNamedProperty(prototype, fields[i],
-                        UNDEFINED, DONT_ENUM | DONT_DELETE);
-    }
-  }
-  for (var i = 0; i < methods.length; i += 2) {
-    var key = methods[i];
-    var f = methods[i + 1];
-    %AddNamedProperty(prototype, key, f, DONT_ENUM | DONT_DELETE | READ_ONLY);
-    %SetNativeFlag(f);
-  }
-  %InternalSetPrototype(prototype, null);
-  %ToFastProperties(prototype);
 }
 
 
@@ -95,7 +42,6 @@ function PostNatives(utils) {
   exports_container = UNDEFINED;
   utils.Export = UNDEFINED;
   utils.Import = UNDEFINED;
-  utils.ImportNow = UNDEFINED;
   utils.PostNatives = UNDEFINED;
 }
 
@@ -104,10 +50,7 @@ function PostNatives(utils) {
 %OptimizeObjectForAddingMultipleProperties(utils, 14);
 
 utils.Import = Import;
-utils.ImportNow = ImportNow;
 utils.Export = Export;
-utils.InstallConstants = InstallConstants;
-utils.SetUpLockedPrototype = SetUpLockedPrototype;
 utils.PostNatives = PostNatives;
 
 %ToFastProperties(utils);

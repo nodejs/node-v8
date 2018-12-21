@@ -11,6 +11,8 @@
 #include "src/heap/heap.h"
 #include "src/objects-inl.h"
 #include "src/objects/arguments.h"
+#include "src/objects/cell.h"
+#include "src/objects/heap-number.h"
 #include "src/objects/js-collection.h"
 #include "src/objects/js-generator.h"
 #include "src/objects/module.h"
@@ -60,7 +62,7 @@ FieldAccess AccessBuilder::ForHeapNumberValue() {
 FieldAccess AccessBuilder::ForBigIntBitfield() {
   FieldAccess access = {
       kTaggedBase,        BigInt::kBitfieldOffset, MaybeHandle<Name>(),
-      MaybeHandle<Map>(), TypeCache::Get().kInt32, MachineType::IntPtr(),
+      MaybeHandle<Map>(), TypeCache::Get().kInt32, MachineType::Uint32(),
       kNoWriteBarrier};
   return access;
 }
@@ -283,6 +285,16 @@ FieldAccess AccessBuilder::ForJSGeneratorObjectResumeMode() {
 }
 
 // static
+FieldAccess AccessBuilder::ForJSAsyncFunctionObjectPromise() {
+  FieldAccess access = {
+      kTaggedBase,         JSAsyncFunctionObject::kPromiseOffset,
+      Handle<Name>(),      MaybeHandle<Map>(),
+      Type::OtherObject(), MachineType::TaggedPointer(),
+      kFullWriteBarrier};
+  return access;
+}
+
+// static
 FieldAccess AccessBuilder::ForJSAsyncGeneratorObjectQueue() {
   FieldAccess access = {
       kTaggedBase,         JSAsyncGeneratorObject::kQueueOffset,
@@ -402,7 +414,7 @@ FieldAccess AccessBuilder::ForJSDateValue() {
 // static
 FieldAccess AccessBuilder::ForJSDateField(JSDate::FieldIndex index) {
   FieldAccess access = {
-      kTaggedBase,         JSDate::kValueOffset + index * kPointerSize,
+      kTaggedBase,         JSDate::kValueOffset + index * kTaggedSize,
       MaybeHandle<Name>(), MaybeHandle<Map>(),
       Type::Number(),      MachineType::AnyTagged(),
       kFullWriteBarrier};
@@ -845,7 +857,7 @@ FieldAccess AccessBuilder::ForCellValue() {
 
 // static
 FieldAccess AccessBuilder::ForContextSlot(size_t index) {
-  int offset = Context::kHeaderSize + static_cast<int>(index) * kPointerSize;
+  int offset = Context::OffsetOfElementAt(static_cast<int>(index));
   DCHECK_EQ(offset,
             Context::SlotOffset(static_cast<int>(index)) + kHeapObjectTag);
   FieldAccess access = {kTaggedBase,      offset,
@@ -1026,11 +1038,13 @@ FieldAccess AccessBuilder::ForHashTableBaseCapacity() {
 }
 
 // static
-FieldAccess AccessBuilder::ForOrderedHashTableBaseNextTable() {
+FieldAccess AccessBuilder::ForOrderedHashMapOrSetNextTable() {
   // TODO(turbofan): This will be redundant with the HashTableBase
   // methods above once the hash table unification is done.
+  STATIC_ASSERT(OrderedHashMap::NextTableOffset() ==
+                OrderedHashSet::NextTableOffset());
   FieldAccess const access = {
-      kTaggedBase,         OrderedHashTableBase::kNextTableOffset,
+      kTaggedBase,         OrderedHashMap::NextTableOffset(),
       MaybeHandle<Name>(), MaybeHandle<Map>(),
       Type::Any(),         MachineType::AnyTagged(),
       kFullWriteBarrier};
@@ -1038,11 +1052,13 @@ FieldAccess AccessBuilder::ForOrderedHashTableBaseNextTable() {
 }
 
 // static
-FieldAccess AccessBuilder::ForOrderedHashTableBaseNumberOfBuckets() {
+FieldAccess AccessBuilder::ForOrderedHashMapOrSetNumberOfBuckets() {
   // TODO(turbofan): This will be redundant with the HashTableBase
   // methods above once the hash table unification is done.
+  STATIC_ASSERT(OrderedHashMap::NumberOfBucketsOffset() ==
+                OrderedHashSet::NumberOfBucketsOffset());
   FieldAccess const access = {kTaggedBase,
-                              OrderedHashTableBase::kNumberOfBucketsOffset,
+                              OrderedHashMap::NumberOfBucketsOffset(),
                               MaybeHandle<Name>(),
                               MaybeHandle<Map>(),
                               TypeCache::Get().kFixedArrayLengthType,
@@ -1052,26 +1068,29 @@ FieldAccess AccessBuilder::ForOrderedHashTableBaseNumberOfBuckets() {
 }
 
 // static
-FieldAccess AccessBuilder::ForOrderedHashTableBaseNumberOfDeletedElements() {
+FieldAccess AccessBuilder::ForOrderedHashMapOrSetNumberOfDeletedElements() {
   // TODO(turbofan): This will be redundant with the HashTableBase
   // methods above once the hash table unification is done.
-  FieldAccess const access = {
-      kTaggedBase,
-      OrderedHashTableBase::kNumberOfDeletedElementsOffset,
-      MaybeHandle<Name>(),
-      MaybeHandle<Map>(),
-      TypeCache::Get().kFixedArrayLengthType,
-      MachineType::TaggedSigned(),
-      kNoWriteBarrier};
+  STATIC_ASSERT(OrderedHashMap::NumberOfDeletedElementsOffset() ==
+                OrderedHashSet::NumberOfDeletedElementsOffset());
+  FieldAccess const access = {kTaggedBase,
+                              OrderedHashMap::NumberOfDeletedElementsOffset(),
+                              MaybeHandle<Name>(),
+                              MaybeHandle<Map>(),
+                              TypeCache::Get().kFixedArrayLengthType,
+                              MachineType::TaggedSigned(),
+                              kNoWriteBarrier};
   return access;
 }
 
 // static
-FieldAccess AccessBuilder::ForOrderedHashTableBaseNumberOfElements() {
+FieldAccess AccessBuilder::ForOrderedHashMapOrSetNumberOfElements() {
   // TODO(turbofan): This will be redundant with the HashTableBase
   // methods above once the hash table unification is done.
+  STATIC_ASSERT(OrderedHashMap::NumberOfElementsOffset() ==
+                OrderedHashSet::NumberOfElementsOffset());
   FieldAccess const access = {kTaggedBase,
-                              OrderedHashTableBase::kNumberOfElementsOffset,
+                              OrderedHashMap::NumberOfElementsOffset(),
                               MaybeHandle<Name>(),
                               MaybeHandle<Map>(),
                               TypeCache::Get().kFixedArrayLengthType,
@@ -1083,8 +1102,8 @@ FieldAccess AccessBuilder::ForOrderedHashTableBaseNumberOfElements() {
 // static
 ElementAccess AccessBuilder::ForOrderedHashMapEntryValue() {
   ElementAccess const access = {kTaggedBase,
-                                OrderedHashMap::kHashTableStartOffset +
-                                    OrderedHashMap::kValueOffset * kPointerSize,
+                                OrderedHashMap::HashTableStartOffset() +
+                                    OrderedHashMap::kValueOffset * kTaggedSize,
                                 Type::Any(), MachineType::AnyTagged(),
                                 kFullWriteBarrier};
   return access;

@@ -5,8 +5,8 @@
 #ifndef V8_OBJECTS_LITERAL_OBJECTS_H_
 #define V8_OBJECTS_LITERAL_OBJECTS_H_
 
-#include "src/objects.h"
 #include "src/objects/fixed-array.h"
+#include "src/objects/struct.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -42,33 +42,36 @@ class ObjectBoilerplateDescription : public FixedArray {
   static const int kLiteralTypeOffset = 0;
   static const int kDescriptionStartIndex = 1;
 
-  DECL_CAST(ObjectBoilerplateDescription)
+  DECL_CAST2(ObjectBoilerplateDescription)
   DECL_VERIFIER(ObjectBoilerplateDescription)
   DECL_PRINTER(ObjectBoilerplateDescription)
 
  private:
   bool has_number_of_properties() const;
+
+  OBJECT_CONSTRUCTORS(ObjectBoilerplateDescription, FixedArray)
 };
 
 class ArrayBoilerplateDescription : public Struct {
  public:
   // store constant_elements of a fixed array
-  DECL_ACCESSORS(constant_elements, FixedArrayBase)
+  DECL_ACCESSORS2(constant_elements, FixedArrayBase)
 
   inline ElementsKind elements_kind() const;
   inline void set_elements_kind(ElementsKind kind);
 
   inline bool is_empty() const;
 
-  DECL_CAST(ArrayBoilerplateDescription)
+  DECL_CAST2(ArrayBoilerplateDescription)
   // Dispatched behavior.
   DECL_PRINTER(ArrayBoilerplateDescription)
   DECL_VERIFIER(ArrayBoilerplateDescription)
   void BriefPrintDetails(std::ostream& os);
 
 #define ARRAY_BOILERPLATE_DESCRIPTION_FIELDS(V) \
-  V(kFlagsOffset, kPointerSize)                 \
-  V(kConstantElementsOffset, kPointerSize)      \
+  V(kFlagsOffset, kTaggedSize)                  \
+  V(kConstantElementsOffset, kTaggedSize)       \
+  /* Total size. */                             \
   V(kSize, 0)
 
   DEFINE_FIELD_OFFSET_CONSTANTS(HeapObject::kHeaderSize,
@@ -77,7 +80,7 @@ class ArrayBoilerplateDescription : public Struct {
 
  private:
   DECL_INT_ACCESSORS(flags)
-  DISALLOW_IMPLICIT_CONSTRUCTORS(ArrayBoilerplateDescription);
+  OBJECT_CONSTRUCTORS(ArrayBoilerplateDescription, Struct);
 };
 
 class ClassBoilerplate : public FixedArray {
@@ -112,16 +115,16 @@ class ClassBoilerplate : public FixedArray {
   static const int kMinimumClassPropertiesCount = 6;
   static const int kMinimumPrototypePropertiesCount = 1;
 
-  DECL_CAST(ClassBoilerplate)
+  DECL_CAST2(ClassBoilerplate)
 
   DECL_BOOLEAN_ACCESSORS(install_class_name_accessor)
   DECL_INT_ACCESSORS(arguments_count)
   DECL_ACCESSORS(static_properties_template, Object)
   DECL_ACCESSORS(static_elements_template, Object)
-  DECL_ACCESSORS(static_computed_properties, FixedArray)
+  DECL_ACCESSORS2(static_computed_properties, FixedArray)
   DECL_ACCESSORS(instance_properties_template, Object)
   DECL_ACCESSORS(instance_elements_template, Object)
-  DECL_ACCESSORS(instance_computed_properties, FixedArray)
+  DECL_ACCESSORS2(instance_computed_properties, FixedArray)
 
   static void AddToPropertiesTemplate(Isolate* isolate,
                                       Handle<NameDictionary> dictionary,
@@ -151,6 +154,8 @@ class ClassBoilerplate : public FixedArray {
 
  private:
   DECL_INT_ACCESSORS(flags)
+
+  OBJECT_CONSTRUCTORS(ClassBoilerplate, FixedArray)
 };
 
 }  // namespace internal

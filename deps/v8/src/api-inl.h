@@ -6,7 +6,9 @@
 #define V8_API_INL_H_
 
 #include "src/api.h"
+#include "src/handles-inl.h"
 #include "src/objects-inl.h"
+#include "src/objects/foreign-inl.h"
 #include "src/objects/stack-frame-info.h"
 
 namespace v8 {
@@ -115,7 +117,8 @@ MAKE_TO_LOCAL(ScriptOrModuleToLocal, Script, ScriptOrModule)
     DCHECK(that == nullptr ||                                                  \
            (*reinterpret_cast<v8::internal::Object* const*>(that))->Is##To()); \
     return v8::internal::Handle<v8::internal::To>(                             \
-        reinterpret_cast<v8::internal::To**>(const_cast<v8::From*>(that)));    \
+        reinterpret_cast<v8::internal::Address*>(                              \
+            const_cast<v8::From*>(that)));                                     \
   }
 
 OPEN_HANDLE_LIST(MAKE_OPEN_HANDLE)
@@ -125,12 +128,20 @@ OPEN_HANDLE_LIST(MAKE_OPEN_HANDLE)
 
 namespace internal {
 
-Handle<Context> HandleScopeImplementer::MicrotaskContext() {
-  if (microtask_context_) return Handle<Context>(microtask_context_, isolate_);
+Handle<Context> HandleScopeImplementer::LastEnteredContext() {
+  DCHECK_EQ(entered_contexts_.size(), is_microtask_context_.size());
+
+  for (size_t i = 0; i < entered_contexts_.size(); ++i) {
+    size_t j = entered_contexts_.size() - i - 1;
+    if (!is_microtask_context_.at(j)) {
+      return Handle<Context>(entered_contexts_.at(j), isolate_);
+    }
+  }
+
   return Handle<Context>::null();
 }
 
-Handle<Context> HandleScopeImplementer::LastEnteredContext() {
+Handle<Context> HandleScopeImplementer::LastEnteredOrMicrotaskContext() {
   if (entered_contexts_.empty()) return Handle<Context>::null();
   return Handle<Context>(entered_contexts_.back(), isolate_);
 }

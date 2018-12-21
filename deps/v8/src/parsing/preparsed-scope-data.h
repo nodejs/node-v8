@@ -77,13 +77,13 @@ class PreParsedScopeDataBuilder : public ZoneObject {
   // ProducedPreParsedScopeData, and so do all lazy functions inside it.
   class DataGatheringScope {
    public:
-    DataGatheringScope(DeclarationScope* function_scope, PreParser* preparser);
+    explicit DataGatheringScope(PreParser* preparser)
+        : preparser_(preparser), builder_(nullptr) {}
+
+    void Start(DeclarationScope* function_scope);
     ~DataGatheringScope();
 
-    void MarkFunctionAsSkippable(int end_position, int num_inner_functions);
-
    private:
-    DeclarationScope* function_scope_;
     PreParser* preparser_;
     PreParsedScopeDataBuilder* builder_;
 
@@ -99,7 +99,6 @@ class PreParsedScopeDataBuilder : public ZoneObject {
   // skipping the inner functions of that function.
   void Bailout() {
     bailed_out_ = true;
-
     // We don't need to call Bailout on existing / future children: the only way
     // to try to retrieve their data is through calling Serialize on the parent,
     // and if the parent is bailed out, it won't call Serialize on its children.
@@ -109,12 +108,8 @@ class PreParsedScopeDataBuilder : public ZoneObject {
 
 #ifdef DEBUG
   bool ThisOrParentBailedOut() const {
-    if (bailed_out_) {
-      return true;
-    }
-    if (parent_ == nullptr) {
-      return false;
-    }
+    if (bailed_out_) return true;
+    if (parent_ == nullptr) return false;
     return parent_->ThisOrParentBailedOut();
   }
 #endif  // DEBUG
@@ -123,17 +118,16 @@ class PreParsedScopeDataBuilder : public ZoneObject {
 
   static bool ScopeNeedsData(Scope* scope);
   static bool ScopeIsSkippableFunctionScope(Scope* scope);
+  void AddSkippableFunction(int start_position, int end_position,
+                            int num_parameters, int num_inner_functions,
+                            LanguageMode language_mode,
+                            bool uses_super_property);
 
  private:
   friend class BuilderProducedPreParsedScopeData;
 
   virtual MaybeHandle<PreParsedScopeData> Serialize(Isolate* isolate);
   virtual ZonePreParsedScopeData* Serialize(Zone* zone);
-
-  void AddSkippableFunction(int start_position, int end_position,
-                            int num_parameters, int num_inner_functions,
-                            LanguageMode language_mode,
-                            bool uses_super_property);
 
   void SaveDataForScope(Scope* scope);
   void SaveDataForVariable(Variable* var);

@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {sortUnique, anyToString} from "./util.js"
+import { sortUnique, anyToString } from "../src/util"
 
 function sourcePositionLe(a, b) {
   if (a.inliningId == b.inliningId) {
@@ -94,6 +94,7 @@ export class SourceResolver {
   blockIdToInstructionRange: Array<[number, number]>;
   instructionToPCOffset: Array<number>;
   pcOffsetToInstructions: Map<number, Array<number>>;
+  pcOffsets: Array<number>;
 
 
   constructor() {
@@ -123,6 +124,7 @@ export class SourceResolver {
     this.instructionToPCOffset = [];
     // Maps PC offsets to instructions.
     this.pcOffsetToInstructions = new Map();
+    this.pcOffsets = [];
   }
 
   setSources(sources, mainBackup) {
@@ -302,6 +304,7 @@ export class SourceResolver {
   recordOrigins(phase) {
     if (phase.type != "graph") return;
     for (const node of phase.data.nodes) {
+      phase.highestNodeId = Math.max(phase.highestNodeId, node.id)
       if (node.origin != undefined &&
         node.origin.bytecodePosition != undefined) {
         const position = { bytecodePosition: node.origin.bytecodePosition };
@@ -328,13 +331,13 @@ export class SourceResolver {
     }
   }
 
-  getInstruction(nodeId):[number, number] {
+  getInstruction(nodeId): [number, number] {
     const X = this.nodeIdToInstructionRange[nodeId];
     if (X === undefined) return [-1, -1];
     return X;
   }
 
-  getInstructionRangeForBlock(blockId):[number, number] {
+  getInstructionRangeForBlock(blockId): [number, number] {
     const X = this.blockIdToInstructionRange[blockId];
     if (X === undefined) return [-1, -1];
     return X;
@@ -348,18 +351,48 @@ export class SourceResolver {
       }
       this.pcOffsetToInstructions.get(offset).push(instruction);
     }
-    console.log(this.pcOffsetToInstructions);
+    this.pcOffsets = Array.from(this.pcOffsetToInstructions.keys()).sort((a, b) => b - a);
   }
 
   hasPCOffsets() {
     return this.pcOffsetToInstructions.size > 0;
   }
 
+  getKeyPcOffset(offset): number {
+    if (this.pcOffsets.length === 0) return -1;
+    for (const key of this.pcOffsets) {
+      if (key <= offset) {
+        return key;
+      }
+    }
+  }
+
+  instructionRangeToKeyPcOffsets([start, end]) {
+    if (start == end) return [this.instructionToPCOffset[start]];
+    return this.instructionToPCOffset.slice(start, end);
+  }
+
+  instructionsToKeyPcOffsets(instructionIds) {
+    const keyPcOffsets = [];
+    for (const instructionId of instructionIds) {
+      keyPcOffsets.push(this.instructionToPCOffset[instructionId]);
+    }
+    return keyPcOffsets;
+  }
+
+  nodesToKeyPcOffsets(nodes) {
+    let offsets = [];
+    for (const node of nodes) {
+      const range = this.nodeIdToInstructionRange[node];
+      if (!range) continue;
+      offsets = offsets.concat(this.instructionRangeToKeyPcOffsets(range))
+    }
+    return offsets;
+  }
 
   nodesForPCOffset(offset): [Array<String>, Array<String>] {
-    const keys = Array.from(this.pcOffsetToInstructions.keys()).sort((a, b) => b - a);
-    if (keys.length === 0) return [[],[]];
-    for (const key of keys) {
+    if (this.pcOffsets.length === 0) return [[], []];
+    for (const key of this.pcOffsets) {
       if (key <= offset) {
         const instrs = this.pcOffsetToInstructions.get(key);
         const nodes = [];
@@ -379,11 +412,12 @@ export class SourceResolver {
         return [nodes, blocks];
       }
     }
-    return [[],[]];
+    return [[], []];
   }
 
   parsePhases(phases) {
     for (const [phaseId, phase] of Object.entries<Phase>(phases)) {
+      phase.highestNodeId = 0;
       if (phase.type == 'disassembly') {
         this.disassemblyPhase = phase;
       } else if (phase.type == 'schedule') {

@@ -2,9 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {View} from "./view.js"
-import {anyToString, ViewElements, isIterable} from "./util.js"
-import {MySelection} from "./selection.js"
+import { View } from "../src/view"
+import { anyToString, ViewElements, isIterable } from "../src/util"
+import { MySelection } from "../src/selection"
+import { SourceResolver } from "./source-resolver";
+import { SelectionBroker } from "./selection-broker";
 
 export abstract class TextView extends View {
   selectionHandler: NodeSelectionHandler;
@@ -18,6 +20,8 @@ export abstract class TextView extends View {
   blockIdtoNodeIds: Map<string, Array<string>>;
   nodeIdToBlockId: Array<string>;
   patterns: any;
+  sourceResolver: SourceResolver;
+  broker: SelectionBroker;
 
   constructor(id, broker, patterns) {
     super(id);
@@ -30,6 +34,8 @@ export abstract class TextView extends View {
     view.nodeIdToBlockId = [];
     view.selection = new MySelection(anyToString);
     view.blockSelection = new MySelection(anyToString);
+    view.broker = broker;
+    view.sourceResolver = broker.sourceResolver;
     const selectionHandler = {
       clear: function () {
         view.selection.clear();
@@ -129,6 +135,22 @@ export abstract class TextView extends View {
         element.classList.toggle("selected", isSelected);
       }
     }
+    const elementsToSelect = view.divNode.querySelectorAll(`[data-pc-offset]`)
+    for (const el of elementsToSelect) {
+      el.classList.toggle("selected", false);
+    }
+    let keyPcOffsets = view.sourceResolver.nodesToKeyPcOffsets(view.selection.selectedKeys());
+    if (view.offsetSelection) {
+      for (const key of view.offsetSelection.selectedKeys()) {
+        keyPcOffsets.push(Number(key))
+      }
+    }
+    for (const keyPcOffset of keyPcOffsets) {
+      const elementsToSelect = view.divNode.querySelectorAll(`[data-pc-offset='${keyPcOffset}']`)
+      for (const el of elementsToSelect) {
+        el.classList.toggle("selected", true);
+      }
+    }
     for (const key of this.nodeIdToHtmlElementsMap.keys()) {
       for (const element of this.nodeIdToHtmlElementsMap.get(key)) {
         element.classList.toggle("selected", false);
@@ -190,12 +212,8 @@ export abstract class TextView extends View {
       this.addNodeIdToBlockId(fragment.nodeId, fragment.blockId);
     }
 
-    if (typeof style.linkHandler == 'function') {
-      const handler = style.linkHandler(text, fragment)
-      if (handler !== undefined) {
-        fragment.classList.add('linkable-text');
-        fragment.onmouseup = handler;
-      }
+    if (typeof style.associateData == 'function') {
+      style.associateData(text, fragment);
     }
 
     if (style.css != undefined) {

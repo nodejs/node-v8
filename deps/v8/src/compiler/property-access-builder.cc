@@ -11,6 +11,7 @@
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/simplified-operator.h"
 #include "src/lookup.h"
+#include "src/objects/heap-number.h"
 
 #include "src/field-index-inl.h"
 #include "src/isolate-inl.h"
@@ -137,8 +138,7 @@ void PropertyAccessBuilder::BuildCheckMaps(
     if (receiver_map->is_stable()) {
       for (Handle<Map> map : receiver_maps) {
         if (map.is_identical_to(receiver_map)) {
-          dependencies()->DependOnStableMap(
-              MapRef(js_heap_broker(), receiver_map));
+          dependencies()->DependOnStableMap(MapRef(broker(), receiver_map));
           return;
         }
       }
@@ -207,7 +207,7 @@ Node* PropertyAccessBuilder::TryBuildLoadConstantDataField(
           // the field.
           DCHECK(access_info.IsDataConstantField());
           DCHECK(!it.is_dictionary_holder());
-          MapRef map(js_heap_broker(),
+          MapRef map(broker(),
                      handle(it.GetHolder<HeapObject>()->map(), isolate()));
           map.SerializeOwnDescriptors();  // TODO(neis): Remove later.
           dependencies()->DependOnFieldType(map, it.GetFieldDescriptorIndex());
@@ -270,7 +270,7 @@ Node* PropertyAccessBuilder::BuildLoadDataField(
     Handle<Map> field_map;
     if (access_info.field_map().ToHandle(&field_map)) {
       if (field_map->is_stable()) {
-        dependencies()->DependOnStableMap(MapRef(js_heap_broker(), field_map));
+        dependencies()->DependOnStableMap(MapRef(broker(), field_map));
         field_access.map = field_map;
       }
     }

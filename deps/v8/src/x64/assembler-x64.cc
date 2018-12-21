@@ -18,7 +18,6 @@
 #include "src/assembler-inl.h"
 #include "src/base/bits.h"
 #include "src/base/cpu.h"
-#include "src/code-stubs.h"
 #include "src/deoptimizer.h"
 #include "src/macro-assembler.h"
 #include "src/string-constants.h"
@@ -127,20 +126,6 @@ void CpuFeatures::PrintFeatures() {
 
 // -----------------------------------------------------------------------------
 // Implementation of RelocInfo
-
-void RelocInfo::set_js_to_wasm_address(Address address,
-                                       ICacheFlushMode icache_flush_mode) {
-  DCHECK_EQ(rmode_, JS_TO_WASM_CALL);
-  Memory<Address>(pc_) = address;
-  if (icache_flush_mode != SKIP_ICACHE_FLUSH) {
-    Assembler::FlushICache(pc_, sizeof(Address));
-  }
-}
-
-Address RelocInfo::js_to_wasm_address() const {
-  DCHECK_EQ(rmode_, JS_TO_WASM_CALL);
-  return Memory<Address>(pc_);
-}
 
 uint32_t RelocInfo::wasm_call_tag() const {
   DCHECK(rmode_ == WASM_CALL || rmode_ == WASM_STUB_CALL);
@@ -349,11 +334,6 @@ void Assembler::AllocateAndInstallRequestedHeapObjects(Isolate* isolate) {
         Memory<Handle<Object>>(pc) = object;
         break;
       }
-      case HeapObjectRequest::kCodeStub: {
-        request.code_stub()->set_isolate(isolate);
-        UpdateCodeTarget(Memory<int32_t>(pc), request.code_stub()->GetCode());
-        break;
-      }
       case HeapObjectRequest::kStringConstant: {
         const StringConstantBase* str = request.string();
         CHECK_NOT_NULL(str);
@@ -470,6 +450,8 @@ void Assembler::GetCode(Isolate* isolate, CodeDesc* desc) {
   PatchConstPool();
   DCHECK(constpool_.IsEmpty());
 
+  int code_comments_size = WriteCodeComments();
+
   // At this point overflow() may be true, but the gap ensures
   // that we are still not overlapping instructions and relocation info.
   DCHECK(pc_ <= reloc_info_writer.pos());  // No overlap.
@@ -487,6 +469,7 @@ void Assembler::GetCode(Isolate* isolate, CodeDesc* desc) {
   desc->constant_pool_size = 0;
   desc->unwinding_info_size = 0;
   desc->unwinding_info = nullptr;
+  desc->code_comments_size = code_comments_size;
 
   // Collection stage
   auto jump_opt = jump_optimization_info();
@@ -1123,16 +1106,6 @@ void Assembler::call(Address entry, RelocInfo::Mode rmode) {
   // 1110 1000 #32-bit disp.
   emit(0xE8);
   emit_runtime_entry(entry, rmode);
-}
-
-void Assembler::call(CodeStub* stub) {
-  EnsureSpace ensure_space(this);
-  // 1110 1000 #32-bit disp.
-  emit(0xE8);
-  RequestHeapObject(HeapObjectRequest(stub));
-  RecordRelocInfo(RelocInfo::CODE_TARGET);
-  int code_target_index = AddCodeTarget(Handle<Code>());
-  emitl(code_target_index);
 }
 
 void Assembler::call(Handle<Code> target, RelocInfo::Mode rmode) {
@@ -5003,7 +4976,7 @@ void Assembler::dq(Label* label) {
 
 void Assembler::RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data) {
   if (!ShouldRecordRelocInfo(rmode)) return;
-  RelocInfo rinfo(reinterpret_cast<Address>(pc_), rmode, data, nullptr);
+  RelocInfo rinfo(reinterpret_cast<Address>(pc_), rmode, data, Code());
   reloc_info_writer.Write(&rinfo);
 }
 

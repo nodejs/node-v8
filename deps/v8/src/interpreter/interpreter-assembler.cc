@@ -13,7 +13,6 @@
 #include "src/interpreter/bytecodes.h"
 #include "src/interpreter/interpreter.h"
 #include "src/machine-type.h"
-#include "src/macro-assembler.h"
 #include "src/objects-inl.h"
 #include "src/zone/zone.h"
 
@@ -674,6 +673,11 @@ TNode<FeedbackVector> InterpreterAssembler::LoadFeedbackVector() {
   return CodeStubAssembler::LoadFeedbackVector(function);
 }
 
+Node* InterpreterAssembler::LoadFeedbackVectorUnchecked() {
+  TNode<JSFunction> function = CAST(LoadRegister(Register::function_closure()));
+  return CodeStubAssembler::LoadFeedbackVectorUnchecked(function);
+}
+
 void InterpreterAssembler::CallPrologue() {
   if (!Bytecodes::MakesCallAlongCriticalPath(bytecode_)) {
     // Bytecodes that make a call along the critical path save the bytecode
@@ -803,7 +807,7 @@ void InterpreterAssembler::CollectCallableFeedback(Node* target, Node* context,
       // MegamorphicSentinel is an immortal immovable object so
       // write-barrier is not needed.
       Comment("transition to megamorphic");
-      DCHECK(Heap::RootIsImmortalImmovable(RootIndex::kmegamorphic_symbol));
+      DCHECK(RootsTable::IsImmortalImmovable(RootIndex::kmegamorphic_symbol));
       StoreFeedbackVectorSlot(
           feedback_vector, slot_id,
           HeapConstant(FeedbackVector::MegamorphicSentinel(isolate())),
@@ -818,13 +822,22 @@ void InterpreterAssembler::CollectCallableFeedback(Node* target, Node* context,
 }
 
 void InterpreterAssembler::CollectCallFeedback(Node* target, Node* context,
-                                               Node* feedback_vector,
+                                               Node* maybe_feedback_vector,
                                                Node* slot_id) {
+  Label feedback_done(this);
+  // If feedback_vector is not valid, then nothing to do.
+  GotoIf(IsUndefined(maybe_feedback_vector), &feedback_done);
+
+  CSA_SLOW_ASSERT(this, IsFeedbackVector(maybe_feedback_vector));
+
   // Increment the call count.
-  IncrementCallCount(feedback_vector, slot_id);
+  IncrementCallCount(maybe_feedback_vector, slot_id);
 
   // Collect the callable {target} feedback.
-  CollectCallableFeedback(target, context, feedback_vector, slot_id);
+  CollectCallableFeedback(target, context, maybe_feedback_vector, slot_id);
+  Goto(&feedback_done);
+
+  BIND(&feedback_done);
 }
 
 void InterpreterAssembler::CallJSAndDispatch(
@@ -898,10 +911,10 @@ template V8_EXPORT_PRIVATE void InterpreterAssembler::CallJSAndDispatch(
 
 void InterpreterAssembler::CallJSWithSpreadAndDispatch(
     Node* function, Node* context, const RegListNodePair& args, Node* slot_id,
-    Node* feedback_vector) {
+    Node* maybe_feedback_vector) {
   DCHECK(Bytecodes::MakesCallAlongCriticalPath(bytecode_));
   DCHECK_EQ(Bytecodes::GetReceiverMode(bytecode_), ConvertReceiverMode::kAny);
-  CollectCallFeedback(function, context, feedback_vector, slot_id);
+  CollectCallFeedback(function, context, maybe_feedback_vector, slot_id);
   Comment("call using CallWithSpread builtin");
   Callable callable = CodeFactory::InterpreterPushArgsThenCall(
       isolate(), ConvertReceiverMode::kAny,
@@ -926,6 +939,7 @@ Node* InterpreterAssembler::Construct(Node* target, Node* context,
   VARIABLE(var_site, MachineRepresentation::kTagged);
   Label extra_checks(this, Label::kDeferred), return_result(this, &var_result),
       construct(this), construct_array(this, &var_site);
+  GotoIf(IsUndefined(feedback_vector), &construct);
 
   // Increment the call count.
   IncrementCallCount(feedback_vector, slot_id);
@@ -1054,7 +1068,7 @@ Node* InterpreterAssembler::Construct(Node* target, Node* context,
       // MegamorphicSentinel is an immortal immovable object so
       // write-barrier is not needed.
       Comment("transition to megamorphic");
-      DCHECK(Heap::RootIsImmortalImmovable(RootIndex::kmegamorphic_symbol));
+      DCHECK(RootsTable::IsImmortalImmovable(RootIndex::kmegamorphic_symbol));
       StoreFeedbackVectorSlot(
           feedback_vector, slot_id,
           HeapConstant(FeedbackVector::MegamorphicSentinel(isolate())),
@@ -1106,6 +1120,7 @@ Node* InterpreterAssembler::ConstructWithSpread(Node* target, Node* context,
   // constructor _and_ spread the last argument at the same time.
   DCHECK(Bytecodes::MakesCallAlongCriticalPath(bytecode_));
   Label extra_checks(this, Label::kDeferred), construct(this);
+  GotoIf(IsUndefined(feedback_vector), &construct);
 
   // Increment the call count.
   IncrementCallCount(feedback_vector, slot_id);
@@ -1195,7 +1210,7 @@ Node* InterpreterAssembler::ConstructWithSpread(Node* target, Node* context,
       // MegamorphicSentinel is an immortal immovable object so
       // write-barrier is not needed.
       Comment("transition to megamorphic");
-      DCHECK(Heap::RootIsImmortalImmovable(RootIndex::kmegamorphic_symbol));
+      DCHECK(RootsTable::IsImmortalImmovable(RootIndex::kmegamorphic_symbol));
       StoreFeedbackVectorSlot(
           feedback_vector, slot_id,
           HeapConstant(FeedbackVector::MegamorphicSentinel(isolate())),
@@ -1235,8 +1250,9 @@ Node* InterpreterAssembler::CallRuntimeN(Node* function_id, Node* context,
       Load(MachineType::Pointer(), function,
            IntPtrConstant(offsetof(Runtime::Function, entry)));
 
-  return CallStubR(callable.descriptor(), result_size, code_target, context,
-                   args.reg_count(), args.base_reg_location(), function_entry);
+  return CallStubR(StubCallMode::kCallCodeObject, callable.descriptor(),
+                   result_size, code_target, context, args.reg_count(),
+                   args.base_reg_location(), function_entry);
 }
 
 void InterpreterAssembler::UpdateInterruptBudget(Node* weight, bool backward) {
@@ -1771,22 +1787,12 @@ void InterpreterAssembler::ToNumberOrNumeric(Object::Conversion mode) {
 
   // Record the type feedback collected for {object}.
   Node* slot_index = BytecodeOperandIdx(0);
-  Node* feedback_vector = LoadFeedbackVector();
-  UpdateFeedback(var_type_feedback.value(), feedback_vector, slot_index);
+  Node* maybe_feedback_vector = LoadFeedbackVectorUnchecked();
+
+  UpdateFeedback(var_type_feedback.value(), maybe_feedback_vector, slot_index);
 
   SetAccumulator(var_result.value());
   Dispatch();
-}
-
-void InterpreterAssembler::DeserializeLazyAndDispatch() {
-  Node* context = GetContext();
-  Node* bytecode_offset = BytecodeOffset();
-  Node* bytecode = LoadBytecode(bytecode_offset);
-
-  Node* target_handler =
-      CallRuntime(Runtime::kInterpreterDeserializeLazy, context,
-                  SmiTag(bytecode), SmiConstant(operand_scale()));
-  DispatchToBytecodeHandler(target_handler, bytecode_offset, bytecode);
 }
 
 }  // namespace interpreter

@@ -11,6 +11,7 @@
 #include "src/api-inl.h"
 #include "src/ast/modules.h"
 #include "src/objects-inl.h"
+#include "src/objects/cell-inl.h"
 #include "src/objects/hash-table-inl.h"
 #include "src/objects/js-generator-inl.h"
 #include "src/objects/module-inl.h"
@@ -139,7 +140,7 @@ void Module::CreateExport(Isolate* isolate, Handle<Module> module,
   module->set_exports(*exports);
 }
 
-Cell* Module::GetCell(int cell_index) {
+Cell Module::GetCell(int cell_index) {
   DisallowHeapAllocation no_gc;
   Object* cell;
   switch (ModuleDescriptor::GetCellIndexKind(cell_index)) {
@@ -265,7 +266,7 @@ Object* Module::GetException() {
   return exception();
 }
 
-SharedFunctionInfo* Module::GetSharedFunctionInfo() const {
+SharedFunctionInfo Module::GetSharedFunctionInfo() const {
   DisallowHeapAllocation no_alloc;
   DCHECK_NE(status(), Module::kEvaluating);
   DCHECK_NE(status(), Module::kEvaluated);
@@ -745,14 +746,10 @@ MaybeHandle<Object> Module::Evaluate(Isolate* isolate, Handle<Module> module,
   ASSIGN_RETURN_ON_EXCEPTION(
       isolate, result, Execution::Call(isolate, resume, generator, 0, nullptr),
       Object);
-  DCHECK(static_cast<JSIteratorResult*>(JSObject::cast(*result))
-             ->done()
-             ->BooleanValue(isolate));
+  DCHECK(JSIteratorResult::cast(*result)->done()->BooleanValue(isolate));
 
   CHECK(MaybeTransitionComponent(isolate, module, stack, kEvaluated));
-  return handle(
-      static_cast<JSIteratorResult*>(JSObject::cast(*result))->value(),
-      isolate);
+  return handle(JSIteratorResult::cast(*result)->value(), isolate);
 }
 
 namespace {
