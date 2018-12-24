@@ -152,7 +152,6 @@
               'v8_target_cpu=<(v8_target_arch)',
               'v8_use_snapshot=<(v8_use_snapshot)',
               'v8_enable_embedded_builtins=<(v8_enable_embedded_builtins)',
-              'v8_enable_jitless_mode=<(v8_enable_jitless_mode)',
               'v8_enable_verify_csa=<(v8_enable_verify_csa)',
               'v8_enable_lite_mode=<(v8_enable_lite_mode)',
               'v8_enable_pointer_compression=<(v8_enable_pointer_compression)',
