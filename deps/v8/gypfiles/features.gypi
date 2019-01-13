@@ -76,6 +76,9 @@
     # tools/gen-postmortem-metadata.py for details.
     'v8_postmortem_support%': 'false',
 
+    # Use Siphash as added protection against hash flooding attacks.
+    'v8_use_siphash%': 'false',
+
     # Interpreted regexp engine exists as platform-independent alternative
     # based where the regular expression is compiled to a bytecode.
     'v8_interpreted_regexp%': 0,
@@ -183,6 +186,9 @@
       }],
       ['v8_use_snapshot=="true" and v8_use_external_startup_data==1', {
         'defines': ['V8_USE_EXTERNAL_STARTUP_DATA',],
+      }],
+      ['v8_use_siphash=="true"', {
+        'defines': ['V8_USE_SIPHASH',],
       }],
       ['dcheck_always_on!=0', {
         'defines': ['DEBUG',],
