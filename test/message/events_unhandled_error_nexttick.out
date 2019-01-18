@@ -13,7 +13,7 @@ Error
     at executeUserCode (internal/bootstrap/node.js:*:*)
     at startMainThreadExecution (internal/bootstrap/node.js:*:*)
 Emitted 'error' event at:
-    at process.nextTick (*events_unhandled_error_nexttick.js:*:*)
+    at *events_unhandled_error_nexttick.js:*:*
     at processTicksAndRejections (internal/process/next_tick.js:*:*)
     at process.runNextTicks [as _tickCallback] (internal/process/next_tick.js:*:*)
     at Function.Module.runMain (internal/modules/cjs/loader.js:*:*)
