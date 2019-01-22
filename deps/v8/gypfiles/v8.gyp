@@ -34,6 +34,7 @@
       "../src/builtins/object-fromentries.tq",
       "../src/builtins/iterator.tq",
       "../src/builtins/typed-array.tq",
+      "../src/builtins/typed-array-createtypedarray.tq",
       "../third_party/v8/builtins/array-sort.tq",
     ],
     'torque_namespaces': [
@@ -1747,7 +1748,6 @@
             '../src/ia32/assembler-ia32-inl.h',
             '../src/ia32/assembler-ia32.cc',
             '../src/ia32/assembler-ia32.h',
-            '../src/ia32/codegen-ia32.h',
             '../src/ia32/constants-ia32.h',
             '../src/ia32/cpu-ia32.cc',
             '../src/ia32/deoptimizer-ia32.cc',
