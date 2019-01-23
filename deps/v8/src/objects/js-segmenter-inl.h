@@ -18,6 +18,8 @@
 namespace v8 {
 namespace internal {
 
+OBJECT_CONSTRUCTORS_IMPL(JSSegmenter, JSObject)
+
 // Base segmenter accessors.
 ACCESSORS(JSSegmenter, locale, String, kLocaleOffset)
 ACCESSORS(JSSegmenter, icu_break_iterator, Managed<icu::BreakIterator>,
