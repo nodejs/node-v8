@@ -53,7 +53,7 @@ The externally maintained libraries used by Node.js are:
 
 - Acorn, located at deps/acorn, is licensed as follows:
   """
-    Copyright (C) 2012-2018 by various contributors (see AUTHORS)
+    Copyright (C) 2012-2019 by various contributors (see AUTHORS)
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to deal
@@ -76,7 +76,7 @@ The externally maintained libraries used by Node.js are:
 
 - c-ares, located at deps/cares, is licensed as follows:
   """
-    Copyright (c) 2007 - 2018, Daniel Stenberg with many contributors, see AUTHORS
+    Copyright (c) 2007 - 2019, Daniel Stenberg with many contributors, see AUTHORS
     file.
 
     Copyright 1998 by the Massachusetts Institute of Technology.
@@ -118,7 +118,7 @@ The externally maintained libraries used by Node.js are:
   """
     COPYRIGHT AND PERMISSION NOTICE (ICU 58 and later)
 
-    Copyright © 1991-2018 Unicode, Inc. All rights reserved.
+    Copyright © 1991-2019 Unicode, Inc. All rights reserved.
     Distributed under the Terms of Use in http://www.unicode.org/copyright.html.
 
     Permission is hereby granted, free of charge, to any person obtaining
@@ -610,7 +610,7 @@ The externally maintained libraries used by Node.js are:
   """
     This software is licensed under the MIT License.
 
-    Copyright Fedor Indutny, 2018.
+    Copyright Fedor Indutny, 2019.
 
     Permission is hereby granted, free of charge, to any person obtaining a
     copy of this software and associated documentation files (the
@@ -634,7 +634,7 @@ The externally maintained libraries used by Node.js are:
 
 - OpenSSL, located at deps/openssl, is licensed as follows:
   """
-    Copyright (c) 1998-2018 The OpenSSL Project.  All rights reserved.
+    Copyright (c) 1998-2019 The OpenSSL Project.  All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
     modification, are permitted provided that the following conditions
@@ -1328,7 +1328,7 @@ The externally maintained libraries used by Node.js are:
 
 - large_pages, located at src/large_pages, is licensed as follows:
   """
-     Copyright (C) 2018 Intel Corporation
+     Copyright (C) 2019 Intel Corporation
 
      Permission is hereby granted, free of charge, to any person obtaining a copy
      of this software and associated documentation files (the "Software"),
