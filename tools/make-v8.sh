@@ -26,7 +26,7 @@ if [[ "$ARCH" == "s390x" ]]; then
   ln -s $CC_PATH "$BUILD_TOOLS/gcc"
   g++ --version
   export PKG_CONFIG_PATH=$BUILD_TOOLS/pkg-config
-  gn gen -v out.gn/$BUILD_ARCH_TYPE --args='is_component_build=false is_debug=false use_goma=false goma_dir="None" use_custom_libcxx=false v8_target_cpu="s390x" target_cpu="s390x"'
+  gn gen -v out.gn/$BUILD_ARCH_TYPE --args='is_component_build=false is_debug=false use_goma=false goma_dir="None" use_custom_libcxx=false v8_target_cpu="s390x" target_cpu="s390x" v8_enable_backtrace=true'
   ninja -v -C out.gn/$BUILD_ARCH_TYPE d8 cctest inspector-test
 elif [[ "$ARCH" == "ppc64le" ]]; then
   if [[ X"$CXX" != X ]]; then
@@ -35,7 +35,7 @@ elif [[ "$ARCH" == "ppc64le" ]]; then
   fi
   g++ --version
   export PKG_CONFIG_PATH=$BUILD_TOOLS/pkg-config-files
-  gn gen out.gn/$BUILD_ARCH_TYPE --args='is_component_build=false is_debug=false use_goma=false goma_dir="None" use_custom_libcxx=false v8_target_cpu="ppc64" target_cpu="ppc64"'
+  gn gen out.gn/$BUILD_ARCH_TYPE --args='is_component_build=false is_debug=false use_goma=false goma_dir="None" use_custom_libcxx=false v8_target_cpu="ppc64" target_cpu="ppc64" v8_enable_backtrace=true'
   ninja -C out.gn/$BUILD_ARCH_TYPE d8 cctest inspector-test
 else
   PATH=~/_depot_tools:$PATH tools/dev/v8gen.py $BUILD_ARCH_TYPE --no-goma $V8_BUILD_OPTIONS
