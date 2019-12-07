@@ -53,6 +53,7 @@
       "<(V8_ROOT)/src/builtins/object.tq",
       "<(V8_ROOT)/src/builtins/promise-abstract-operations.tq",
       "<(V8_ROOT)/src/builtins/promise-constructor.tq",
+      "<(V8_ROOT)/src/builtins/promise-then.tq",
       "<(V8_ROOT)/src/builtins/proxy-constructor.tq",
       "<(V8_ROOT)/src/builtins/proxy-delete-property.tq",
       "<(V8_ROOT)/src/builtins/proxy-get-property.tq",
