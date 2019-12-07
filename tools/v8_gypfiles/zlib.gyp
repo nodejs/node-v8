@@ -68,6 +68,9 @@
           ],
         }],
       ],
+      'include_dirs': [
+        '<(ZLIB_ROOT)',
+      ],
       'direct_dependent_settings': {
         'include_dirs': [
           '<(ZLIB_ROOT)',
