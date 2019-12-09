@@ -42,6 +42,9 @@
         '<(ZLIB_ROOT)/zutil.h',
       ],
       'conditions': [
+        ['want_separate_host_toolset', {
+          'toolsets': ['host', 'target'],
+        }],
         # TODO: correctly implement the conditions
         ['1 == 0', {
           'dependencies': [
@@ -88,6 +91,11 @@
           '<(ZLIB_ROOT)/simd_stub.c',
         ],
       },
+      'conditions': [
+        ['want_separate_host_toolset', {
+          'toolsets': ['host', 'target'],
+        }],
+      ],
     },  # zlib_x86_simd
   ],
 }
