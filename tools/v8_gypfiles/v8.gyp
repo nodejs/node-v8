@@ -53,6 +53,8 @@
       "<(V8_ROOT)/src/builtins/object.tq",
       "<(V8_ROOT)/src/builtins/promise-abstract-operations.tq",
       "<(V8_ROOT)/src/builtins/promise-constructor.tq",
+      "<(V8_ROOT)/src/builtins/promise-reaction-job.tq",
+      "<(V8_ROOT)/src/builtins/promise-resolve.tq",
       "<(V8_ROOT)/src/builtins/promise-then.tq",
       "<(V8_ROOT)/src/builtins/promise-jobs.tq",
       "<(V8_ROOT)/src/builtins/proxy-constructor.tq",
@@ -208,6 +210,7 @@
             '<@(torque_files)',
           ],
           'outputs': [
+            '<(torque_output_root)/torque-generated/bit-fields-tq.h',
             '<(torque_output_root)/torque-generated/builtin-definitions-tq.h',
             '<(torque_output_root)/torque-generated/interface-descriptors-tq.inc',
             '<(torque_output_root)/torque-generated/field-offsets-tq.h',
