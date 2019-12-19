@@ -53,6 +53,7 @@
       "<(V8_ROOT)/src/builtins/object.tq",
       "<(V8_ROOT)/src/builtins/promise-abstract-operations.tq",
       "<(V8_ROOT)/src/builtins/promise-constructor.tq",
+      "<(V8_ROOT)/src/builtins/promise-finally.tq",
       "<(V8_ROOT)/src/builtins/promise-reaction-job.tq",
       "<(V8_ROOT)/src/builtins/promise-resolve.tq",
       "<(V8_ROOT)/src/builtins/promise-then.tq",
