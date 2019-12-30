@@ -54,6 +54,7 @@
       "<(V8_ROOT)/src/builtins/promise-abstract-operations.tq",
       "<(V8_ROOT)/src/builtins/promise-constructor.tq",
       "<(V8_ROOT)/src/builtins/promise-finally.tq",
+      "<(V8_ROOT)/src/builtins/promise-race.tq",
       "<(V8_ROOT)/src/builtins/promise-reaction-job.tq",
       "<(V8_ROOT)/src/builtins/promise-resolve.tq",
       "<(V8_ROOT)/src/builtins/promise-then.tq",
@@ -150,6 +151,7 @@
       "<(V8_ROOT)/src/objects/property-cell.tq",
       "<(V8_ROOT)/src/objects/prototype-info.tq",
       "<(V8_ROOT)/src/objects/regexp-match-info.tq",
+      "<(V8_ROOT)/src/objects/scope-info.tq",
       "<(V8_ROOT)/src/objects/script.tq",
       "<(V8_ROOT)/src/objects/shared-function-info.tq",
       "<(V8_ROOT)/src/objects/source-text-module.tq",
@@ -217,6 +219,7 @@
             '<(torque_output_root)/torque-generated/field-offsets-tq.h',
             '<(torque_output_root)/torque-generated/class-verifiers-tq.cc',
             '<(torque_output_root)/torque-generated/class-verifiers-tq.h',
+            '<(torque_output_root)/torque-generated/enum-verifiers-tq.cc',
             '<(torque_output_root)/torque-generated/objects-printer-tq.cc',
             '<(torque_output_root)/torque-generated/class-definitions-tq.cc',
             '<(torque_output_root)/torque-generated/class-definitions-tq-inl.h',
@@ -273,9 +276,11 @@
       ],
       'direct_dependent_settings': {
         'sources': [
+          '<(torque_output_root)/torque-generated/csa-types-tq.h',
+          '<(torque_output_root)/torque-generated/enum-verifiers-tq.cc',
           '<(torque_output_root)/torque-generated/exported-macros-assembler-tq.cc',
           '<(torque_output_root)/torque-generated/exported-macros-assembler-tq.h',
-          '<(torque_output_root)/torque-generated/csa-types-tq.h',
+          '<(V8_ROOT)/src/torque/runtime-support.h'
           '<@(torque_outputs)',
         ],
       }
