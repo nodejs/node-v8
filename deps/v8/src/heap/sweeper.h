@@ -105,11 +105,10 @@ class Sweeper {
 
   Page* GetSweptPageSafe(PagedSpace* space);
 
-  void EnsurePageIsIterable(Page* page);
-
   void AddPageForIterability(Page* page);
   void StartIterabilityTasks();
   void EnsureIterabilityCompleted();
+  void MergeOldToNewRememberedSetsForSweptPages();
 
  private:
   class IncrementalSweeperTask;
@@ -147,8 +146,6 @@ class Sweeper {
   Page* GetSweepingPageSafe(AllocationSpace space);
 
   void PrepareToBeSweptPage(AllocationSpace space, Page* page);
-
-  void SweepOrWaitUntilSweepingCompleted(Page* page);
 
   void MakeIterable(Page* page);
 

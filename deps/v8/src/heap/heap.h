@@ -45,6 +45,10 @@ class HeapTester;
 class TestMemoryAllocatorScope;
 }  // namespace heap
 
+namespace third_party_heap {
+class Heap;
+}
+
 class IncrementalMarking;
 class BackingStore;
 class JSArrayBuffer;
@@ -96,10 +100,6 @@ enum class InvalidateRecordedSlots { kYes, kNo };
 enum class ClearFreedMemoryMode { kClearFreedMemory, kDontClearFreedMemory };
 
 enum ExternalBackingStoreType { kArrayBuffer, kExternalString, kNumTypes };
-
-enum class FixedArrayVisitationMode { kRegular, kIncremental };
-
-enum class TraceRetainingPathMode { kEnabled, kDisabled };
 
 enum class RetainingPathOption { kDefault, kTrackEphemeronPath };
 
@@ -226,6 +226,18 @@ class Heap {
     MARK_COMPACT,
     MINOR_MARK_COMPACT,
     TEAR_DOWN
+  };
+
+  // Emits GC events for DevTools timeline.
+  class DevToolsTraceEventScope {
+   public:
+    DevToolsTraceEventScope(Heap* heap, const char* event_name,
+                            const char* event_type);
+    ~DevToolsTraceEventScope();
+
+   private:
+    Heap* heap_;
+    const char* event_name_;
   };
 
   using PretenuringFeedbackMap =
@@ -680,7 +692,7 @@ class Heap {
   OldSpace* old_space() { return old_space_; }
   CodeSpace* code_space() { return code_space_; }
   MapSpace* map_space() { return map_space_; }
-  LargeObjectSpace* lo_space() { return lo_space_; }
+  OldLargeObjectSpace* lo_space() { return lo_space_; }
   CodeLargeObjectSpace* code_lo_space() { return code_lo_space_; }
   NewLargeObjectSpace* new_lo_space() { return new_lo_space_; }
   ReadOnlySpace* read_only_space() { return read_only_space_; }
@@ -1006,7 +1018,7 @@ class Heap {
 
   // Slow methods that can be used for verification as they can also be used
   // with off-heap Addresses.
-  bool InSpaceSlow(Address addr, AllocationSpace space);
+  V8_EXPORT_PRIVATE bool InSpaceSlow(Address addr, AllocationSpace space);
 
   static inline Heap* FromWritableHeapObject(HeapObject obj);
 
@@ -1368,6 +1380,8 @@ class Heap {
 
   // Calculates the nof entries for the full sized number to string cache.
   inline int MaxNumberToStringCacheSize() const;
+
+  static Isolate* GetIsolateFromWritableObject(HeapObject object);
 
  private:
   using ExternalStringTableUpdaterCallback = String (*)(Heap* heap,
@@ -1874,7 +1888,7 @@ class Heap {
   OldSpace* old_space_ = nullptr;
   CodeSpace* code_space_ = nullptr;
   MapSpace* map_space_ = nullptr;
-  LargeObjectSpace* lo_space_ = nullptr;
+  OldLargeObjectSpace* lo_space_ = nullptr;
   CodeLargeObjectSpace* code_lo_space_ = nullptr;
   NewLargeObjectSpace* new_lo_space_ = nullptr;
   ReadOnlySpace* read_only_space_ = nullptr;
@@ -1975,7 +1989,7 @@ class Heap {
   unsigned int maximum_size_scavenges_ = 0;
 
   // Total time spent in GC.
-  double total_gc_time_ms_;
+  double total_gc_time_ms_ = 0.0;
 
   // Last time an idle notification happened.
   double last_idle_notification_time_ = 0.0;
@@ -2084,6 +2098,8 @@ class Heap {
 
   std::vector<HeapObjectAllocationTracker*> allocation_trackers_;
 
+  std::unique_ptr<third_party_heap::Heap> tp_heap_;
+
   // Classes in "heap" can be friends.
   friend class AlwaysAllocateScope;
   friend class ArrayBufferCollector;
@@ -2094,10 +2110,9 @@ class Heap {
   friend class IdleScavengeObserver;
   friend class IncrementalMarking;
   friend class IncrementalMarkingJob;
-  friend class LargeObjectSpace;
-  template <FixedArrayVisitationMode fixed_array_mode,
-            TraceRetainingPathMode retaining_path_mode, typename MarkingState>
-  friend class MarkingVisitor;
+  friend class OldLargeObjectSpace;
+  template <typename ConcreteVisitor, typename MarkingState>
+  friend class MarkingVisitorBase;
   friend class MarkCompactCollector;
   friend class MarkCompactCollectorBase;
   friend class MinorMarkCompactCollector;
@@ -2198,6 +2213,7 @@ class CodePageCollectionMemoryModificationScope {
 class CodePageMemoryModificationScope {
  public:
   explicit inline CodePageMemoryModificationScope(MemoryChunk* chunk);
+  explicit inline CodePageMemoryModificationScope(Code object);
   inline ~CodePageMemoryModificationScope();
 
  private:

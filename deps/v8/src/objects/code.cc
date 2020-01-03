@@ -154,63 +154,6 @@ Address Code::OffHeapInstructionEnd() const {
          d.InstructionSizeOfBuiltin(builtin_index());
 }
 
-namespace {
-template <typename Code>
-void SetStackFrameCacheCommon(Isolate* isolate, Handle<Code> code,
-                              Handle<SimpleNumberDictionary> cache) {
-  Handle<Object> maybe_table(code->source_position_table(), isolate);
-  if (maybe_table->IsException(isolate) || maybe_table->IsUndefined()) return;
-  if (maybe_table->IsSourcePositionTableWithFrameCache()) {
-    Handle<SourcePositionTableWithFrameCache>::cast(maybe_table)
-        ->set_stack_frame_cache(*cache);
-    return;
-  }
-  DCHECK(maybe_table->IsByteArray());
-  Handle<ByteArray> table(Handle<ByteArray>::cast(maybe_table));
-  Handle<SourcePositionTableWithFrameCache> table_with_cache =
-      isolate->factory()->NewSourcePositionTableWithFrameCache(table, cache);
-  code->set_source_position_table(*table_with_cache);
-}
-}  // namespace
-
-// static
-void AbstractCode::SetStackFrameCache(Handle<AbstractCode> abstract_code,
-                                      Handle<SimpleNumberDictionary> cache) {
-  if (abstract_code->IsCode()) {
-    SetStackFrameCacheCommon(
-        abstract_code->GetIsolate(),
-        handle(abstract_code->GetCode(), abstract_code->GetIsolate()), cache);
-  } else {
-    SetStackFrameCacheCommon(
-        abstract_code->GetIsolate(),
-        handle(abstract_code->GetBytecodeArray(), abstract_code->GetIsolate()),
-        cache);
-  }
-}
-
-namespace {
-template <typename Code>
-void DropStackFrameCacheCommon(Code code) {
-  i::Object maybe_table = code.source_position_table();
-  if (maybe_table.IsUndefined() || maybe_table.IsByteArray() ||
-      maybe_table.IsException()) {
-    return;
-  }
-  DCHECK(maybe_table.IsSourcePositionTableWithFrameCache());
-  code.set_source_position_table(
-      i::SourcePositionTableWithFrameCache::cast(maybe_table)
-          .source_position_table());
-}
-}  // namespace
-
-void AbstractCode::DropStackFrameCache() {
-  if (IsCode()) {
-    DropStackFrameCacheCommon(GetCode());
-  } else {
-    DropStackFrameCacheCommon(GetBytecodeArray());
-  }
-}
-
 int AbstractCode::SourcePosition(int offset) {
   Object maybe_table = source_position_table();
   if (maybe_table.IsException()) return kNoSourcePosition;
@@ -657,8 +600,6 @@ inline void DisassembleCodeRange(Isolate* isolate, std::ostream& os, Code code,
                                  Address begin, size_t size,
                                  Address current_pc) {
   Address end = begin + size;
-  // TODO(mstarzinger): Refactor CodeReference to avoid the
-  // unhandlified->handlified transition.
   AllowHandleAllocation allow_handles;
   DisallowHeapAllocation no_gc;
   HandleScope handle_scope(isolate);
@@ -869,6 +810,14 @@ void BytecodeArray::Disassemble(std::ostream& os) {
   if (handler_table().length() > 0) {
     HandlerTable table(*this);
     table.HandlerTableRangePrint(os);
+  }
+#endif
+
+  os << "Source Position Table (size = "
+     << SourcePositionTableIfCollected().length() << ")\n";
+#ifdef OBJECT_PRINT
+  if (SourcePositionTableIfCollected().length() > 0) {
+    os << Brief(SourcePositionTableIfCollected()) << std::endl;
   }
 #endif
 }

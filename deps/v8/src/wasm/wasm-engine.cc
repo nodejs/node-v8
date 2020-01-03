@@ -13,6 +13,7 @@
 #include "src/objects/heap-number.h"
 #include "src/objects/js-promise.h"
 #include "src/objects/objects-inl.h"
+#include "src/strings/string-hasher-inl.h"
 #include "src/utils/ostreams.h"
 #include "src/wasm/function-compiler.h"
 #include "src/wasm/module-compiler.h"
@@ -242,8 +243,8 @@ MaybeHandle<AsmWasmData> WasmEngine::SyncCompileTranslatedAsmJs(
                             ? kAsmJsSloppyOrigin
                             : kAsmJsStrictOrigin;
   ModuleResult result =
-      DecodeWasmModule(kAsmjsWasmFeatures, bytes.start(), bytes.end(), false,
-                       origin, isolate->counters(), allocator());
+      DecodeWasmModule(WasmFeatures::ForAsmjs(), bytes.start(), bytes.end(),
+                       false, origin, isolate->counters(), allocator());
   if (result.failed()) {
     // This happens once in a while when we have missed some limit check
     // in the asm parser. Output an error message to help diagnose, but crash.
@@ -255,7 +256,7 @@ MaybeHandle<AsmWasmData> WasmEngine::SyncCompileTranslatedAsmJs(
   // in {CompileToNativeModule}.
   Handle<FixedArray> export_wrappers;
   std::shared_ptr<NativeModule> native_module =
-      CompileToNativeModule(isolate, kAsmjsWasmFeatures, thrower,
+      CompileToNativeModule(isolate, WasmFeatures::ForAsmjs(), thrower,
                             std::move(result).value(), bytes, &export_wrappers);
   if (!native_module) return {};
 
@@ -302,13 +303,9 @@ MaybeHandle<WasmModuleObject> WasmEngine::SyncCompile(
                             std::move(result).value(), bytes, &export_wrappers);
   if (!native_module) return {};
 
-  Handle<Script> script =
-      CreateWasmScript(isolate, bytes, native_module->module()->source_map_url);
-
-  // Create the module object.
-  // TODO(clemensb): For the same module (same bytes / same hash), we should
-  // only have one WasmModuleObject. Otherwise, we might only set
-  // breakpoints on a (potentially empty) subset of the instances.
+  Handle<Script> script = CreateWasmScript(
+      isolate, bytes, VectorOf(native_module->module()->source_map_url),
+      native_module->module()->name);
 
   // Create the compiled module object and populate with compiled functions
   // and information needed at instantiation time. This object needs to be
@@ -426,7 +423,7 @@ std::shared_ptr<StreamingDecoder> WasmEngine::StartStreamingCompilation(
 void WasmEngine::CompileFunction(Isolate* isolate, NativeModule* native_module,
                                  uint32_t function_index, ExecutionTier tier) {
   // Note we assume that "one-off" compilations can discard detected features.
-  WasmFeatures detected = kNoWasmFeatures;
+  WasmFeatures detected = WasmFeatures::None();
   WasmCompilationUnit::CompileWasmFunction(
       isolate, native_module, &detected,
       &native_module->module()->functions[function_index], tier);
@@ -442,7 +439,8 @@ Handle<WasmModuleObject> WasmEngine::ImportNativeModule(
   NativeModule* native_module = shared_native_module.get();
   ModuleWireBytes wire_bytes(native_module->wire_bytes());
   Handle<Script> script = CreateWasmScript(
-      isolate, wire_bytes, native_module->module()->source_map_url);
+      isolate, wire_bytes, VectorOf(native_module->module()->source_map_url),
+      native_module->module()->name);
   Handle<FixedArray> export_wrappers;
   CompileJsToWasmWrappers(isolate, native_module->module(), &export_wrappers);
   Handle<WasmModuleObject> module_object = WasmModuleObject::New(
@@ -621,9 +619,10 @@ void WasmEngine::RemoveIsolate(Isolate* isolate) {
   }
 }
 
-void WasmEngine::LogCode(WasmCode* code) {
+void WasmEngine::LogCode(Vector<WasmCode*> code_vec) {
+  if (code_vec.empty()) return;
   base::MutexGuard guard(&mutex_);
-  NativeModule* native_module = code->native_module();
+  NativeModule* native_module = code_vec[0]->native_module();
   DCHECK_EQ(1, native_modules_.count(native_module));
   for (Isolate* isolate : native_modules_[native_module]->isolates) {
     DCHECK_EQ(1, isolates_.count(isolate));
@@ -638,8 +637,12 @@ void WasmEngine::LogCode(WasmCode* code) {
     if (info->code_to_log.empty()) {
       isolate->stack_guard()->RequestLogWasmCode();
     }
-    info->code_to_log.push_back(code);
-    code->IncRef();
+    info->code_to_log.insert(info->code_to_log.end(), code_vec.begin(),
+                             code_vec.end());
+    for (WasmCode* code : code_vec) {
+      DCHECK_EQ(native_module, code->native_module());
+      code->IncRef();
+    }
   }
 }
 
@@ -671,18 +674,11 @@ void WasmEngine::LogOutstandingCodesForIsolate(Isolate* isolate) {
 
 std::shared_ptr<NativeModule> WasmEngine::NewNativeModule(
     Isolate* isolate, const WasmFeatures& enabled,
-    std::shared_ptr<const WasmModule> module) {
-  size_t code_size_estimate =
-      wasm::WasmCodeManager::EstimateNativeModuleCodeSize(module.get());
-  return NewNativeModule(isolate, enabled, code_size_estimate,
-                         !wasm::NativeModule::kNeedsFarJumpsBetweenCodeSpaces ||
-                             FLAG_wasm_far_jump_table,
-                         std::move(module));
-}
-
-std::shared_ptr<NativeModule> WasmEngine::NewNativeModule(
-    Isolate* isolate, const WasmFeatures& enabled, size_t code_size_estimate,
-    bool can_request_more, std::shared_ptr<const WasmModule> module) {
+    std::shared_ptr<const WasmModule> module, size_t code_size_estimate) {
+  // TODO(clemensb): Remove --wasm-far-jump-table and {can_request_more}.
+  bool can_request_more =
+      !wasm::NativeModule::kNeedsFarJumpsBetweenCodeSpaces ||
+      FLAG_wasm_far_jump_table;
   std::shared_ptr<NativeModule> native_module =
       code_manager_.NewNativeModule(this, isolate, enabled, code_size_estimate,
                                     can_request_more, std::move(module));
@@ -693,6 +689,49 @@ std::shared_ptr<NativeModule> WasmEngine::NewNativeModule(
   pair.first->second.get()->isolates.insert(isolate);
   isolates_[isolate]->native_modules.insert(native_module.get());
   return native_module;
+}
+
+std::shared_ptr<NativeModule> WasmEngine::MaybeGetNativeModule(
+    ModuleOrigin origin, Vector<const uint8_t> wire_bytes) {
+  if (origin != kWasmOrigin) return nullptr;
+  base::MutexGuard lock(&mutex_);
+  while (true) {
+    auto it = native_module_cache_.find(wire_bytes);
+    if (it == native_module_cache_.end()) {
+      // Insert a {nullopt} entry to let other threads know that this
+      // {NativeModule} is already being created on another thread.
+      native_module_cache_.emplace(wire_bytes, base::nullopt);
+      return nullptr;
+    }
+    auto maybe_native_module = it->second;
+    if (maybe_native_module.has_value()) {
+      auto weak_ptr = maybe_native_module.value();
+      if (auto shared_native_module = weak_ptr.lock()) {
+        return shared_native_module;
+      }
+    }
+    cache_cv_.Wait(&mutex_);
+  }
+}
+
+void WasmEngine::UpdateNativeModuleCache(
+    std::shared_ptr<NativeModule> native_module, bool error) {
+  DCHECK_NOT_NULL(native_module);
+  if (native_module->module()->origin != kWasmOrigin) return;
+  Vector<const uint8_t> wire_bytes = native_module->wire_bytes();
+  base::MutexGuard lock(&mutex_);
+  auto it = native_module_cache_.find(wire_bytes);
+  DCHECK_NE(it, native_module_cache_.end());
+  DCHECK(!it->second.has_value());
+  // The lifetime of the temporary entry's bytes is unknown. Use the new native
+  // module's owned copy of the bytes for the key instead.
+  native_module_cache_.erase(it);
+  if (!error) {
+    native_module_cache_.emplace(
+        wire_bytes,
+        base::Optional<std::weak_ptr<NativeModule>>(std::move(native_module)));
+  }
+  cache_cv_.NotifyAll();
 }
 
 void WasmEngine::FreeNativeModule(NativeModule* native_module) {
@@ -734,6 +773,17 @@ void WasmEngine::FreeNativeModule(NativeModule* native_module) {
     }
     TRACE_CODE_GC("Native module %p died, reducing dead code objects to %zu.\n",
                   native_module, current_gc_info_->dead_code.size());
+  }
+  auto cache_it = native_module_cache_.find(native_module->wire_bytes());
+  // Not all native modules are stored in the cache currently. In particular
+  // asynchronous compilation and asmjs compilation results are not. So make
+  // sure that we only delete existing and expired entries.
+  // Do not erase {nullopt} values either, as they indicate that the
+  // {NativeModule} is currently being created in another thread.
+  if (cache_it != native_module_cache_.end() && cache_it->second.has_value() &&
+      cache_it->second.value().expired()) {
+    native_module_cache_.erase(cache_it);
+    cache_cv_.NotifyAll();
   }
   native_modules_.erase(it);
 }
@@ -959,20 +1009,24 @@ DEFINE_LAZY_LEAKY_OBJECT_GETTER(std::shared_ptr<WasmEngine>,
 
 // static
 void WasmEngine::InitializeOncePerProcess() {
-  if (!FLAG_wasm_shared_engine) return;
   *GetSharedWasmEngine() = std::make_shared<WasmEngine>();
 }
 
 // static
 void WasmEngine::GlobalTearDown() {
-  if (!FLAG_wasm_shared_engine) return;
   GetSharedWasmEngine()->reset();
 }
 
 // static
 std::shared_ptr<WasmEngine> WasmEngine::GetWasmEngine() {
-  if (FLAG_wasm_shared_engine) return *GetSharedWasmEngine();
-  return std::make_shared<WasmEngine>();
+  return *GetSharedWasmEngine();
+}
+
+size_t WasmEngine::WireBytesHasher::operator()(
+    const Vector<const uint8_t>& bytes) const {
+  return StringHasher::HashSequentialString(
+      reinterpret_cast<const char*>(bytes.begin()), bytes.length(),
+      kZeroHashSeed);
 }
 
 // {max_mem_pages} is declared in wasm-limits.h.

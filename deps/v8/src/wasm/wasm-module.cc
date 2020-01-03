@@ -31,15 +31,16 @@ namespace wasm {
 // static
 const uint32_t WasmElemSegment::kNullIndex;
 
-WireBytesRef WasmModule::LookupFunctionName(const ModuleWireBytes& wire_bytes,
-                                            uint32_t function_index) const {
-  if (!function_names) {
-    function_names.reset(new std::unordered_map<uint32_t, WireBytesRef>());
+WireBytesRef DecodedFunctionNames::Lookup(const ModuleWireBytes& wire_bytes,
+                                          uint32_t function_index) const {
+  base::MutexGuard lock(&mutex_);
+  if (!function_names_) {
+    function_names_.reset(new std::unordered_map<uint32_t, WireBytesRef>());
     DecodeFunctionNames(wire_bytes.start(), wire_bytes.end(),
-                        function_names.get());
+                        function_names_.get());
   }
-  auto it = function_names->find(function_index);
-  if (it == function_names->end()) return WireBytesRef();
+  auto it = function_names_->find(function_index);
+  if (it == function_names_->end()) return WireBytesRef();
   return it->second;
 }
 
@@ -68,13 +69,13 @@ int GetWasmFunctionOffset(const WasmModule* module, uint32_t func_index) {
 }
 
 // static
-int GetContainingWasmFunction(const WasmModule* module, uint32_t byte_offset) {
+int GetNearestWasmFunction(const WasmModule* module, uint32_t byte_offset) {
   const std::vector<WasmFunction>& functions = module->functions;
 
   // Binary search for a function containing the given position.
   int left = 0;                                    // inclusive
   int right = static_cast<int>(functions.size());  // exclusive
-  if (right == 0) return false;
+  if (right == 0) return -1;
   while (right - left > 1) {
     int mid = left + (right - left) / 2;
     if (functions[mid].code.offset() <= byte_offset) {
@@ -83,14 +84,23 @@ int GetContainingWasmFunction(const WasmModule* module, uint32_t byte_offset) {
       right = mid;
     }
   }
-  // If the found function does not contains the given position, return -1.
-  const WasmFunction& func = functions[left];
-  if (byte_offset < func.code.offset() ||
-      byte_offset >= func.code.end_offset()) {
-    return -1;
-  }
 
   return left;
+}
+
+// static
+int GetContainingWasmFunction(const WasmModule* module, uint32_t byte_offset) {
+  int func_index = GetNearestWasmFunction(module, byte_offset);
+
+  if (func_index >= 0) {
+    // If the found function does not contain the given position, return -1.
+    const WasmFunction& func = module->functions[func_index];
+    if (byte_offset < func.code.offset() ||
+        byte_offset >= func.code.end_offset()) {
+      return -1;
+    }
+  }
+  return func_index;
 }
 
 // static
@@ -110,12 +120,13 @@ v8::debug::WasmDisassembly DisassembleWasmFunction(
   return {disassembly_os.str(), std::move(offset_table)};
 }
 
-void WasmModule::AddFunctionNameForTesting(int function_index,
-                                           WireBytesRef name) {
-  if (!function_names) {
-    function_names.reset(new std::unordered_map<uint32_t, WireBytesRef>());
+void DecodedFunctionNames::AddForTesting(int function_index,
+                                         WireBytesRef name) {
+  base::MutexGuard lock(&mutex_);
+  if (!function_names_) {
+    function_names_.reset(new std::unordered_map<uint32_t, WireBytesRef>());
   }
-  function_names->insert(std::make_pair(function_index, name));
+  function_names_->insert(std::make_pair(function_index, name));
 }
 
 // Get a string stored in the module bytes representing a name.
@@ -129,7 +140,8 @@ WasmName ModuleWireBytes::GetNameOrNull(WireBytesRef ref) const {
 // Get a string stored in the module bytes representing a function name.
 WasmName ModuleWireBytes::GetNameOrNull(const WasmFunction* function,
                                         const WasmModule* module) const {
-  return GetNameOrNull(module->LookupFunctionName(*this, function->func_index));
+  return GetNameOrNull(
+      module->function_names.Lookup(*this, function->func_index));
 }
 
 std::ostream& operator<<(std::ostream& os, const WasmFunctionName& name) {
@@ -286,7 +298,8 @@ Handle<JSObject> GetTypeForTable(Isolate* isolate, ValueType type,
     // and then use that constant everywhere.
     element = factory->InternalizeUtf8String("anyfunc");
   } else {
-    DCHECK(WasmFeaturesFromFlags().anyref && type == ValueType::kWasmAnyRef);
+    DCHECK(WasmFeatures::FromFlags().has_anyref() &&
+           type == ValueType::kWasmAnyRef);
     element = factory->InternalizeUtf8String("anyref");
   }
 
@@ -308,7 +321,7 @@ Handle<JSObject> GetTypeForTable(Isolate* isolate, ValueType type,
 
 Handle<JSArray> GetImports(Isolate* isolate,
                            Handle<WasmModuleObject> module_object) {
-  auto enabled_features = i::wasm::WasmFeaturesFromIsolate(isolate);
+  auto enabled_features = i::wasm::WasmFeatures::FromIsolate(isolate);
   Factory* factory = isolate->factory();
 
   Handle<String> module_string = factory->InternalizeUtf8String("module");
@@ -343,14 +356,14 @@ Handle<JSArray> GetImports(Isolate* isolate,
     Handle<JSObject> type_value;
     switch (import.kind) {
       case kExternalFunction:
-        if (enabled_features.type_reflection) {
+        if (enabled_features.has_type_reflection()) {
           auto& func = module->functions[import.index];
           type_value = GetTypeForFunction(isolate, func.sig);
         }
         import_kind = function_string;
         break;
       case kExternalTable:
-        if (enabled_features.type_reflection) {
+        if (enabled_features.has_type_reflection()) {
           auto& table = module->tables[import.index];
           base::Optional<uint32_t> maximum_size;
           if (table.has_maximum_size) maximum_size.emplace(table.maximum_size);
@@ -360,7 +373,7 @@ Handle<JSArray> GetImports(Isolate* isolate,
         import_kind = table_string;
         break;
       case kExternalMemory:
-        if (enabled_features.type_reflection) {
+        if (enabled_features.has_type_reflection()) {
           DCHECK_EQ(0, import.index);  // Only one memory supported.
           base::Optional<uint32_t> maximum_size;
           if (module->has_maximum_pages) {
@@ -372,7 +385,7 @@ Handle<JSArray> GetImports(Isolate* isolate,
         import_kind = memory_string;
         break;
       case kExternalGlobal:
-        if (enabled_features.type_reflection) {
+        if (enabled_features.has_type_reflection()) {
           auto& global = module->globals[import.index];
           type_value =
               GetTypeForGlobal(isolate, global.mutability, global.type);
@@ -411,7 +424,7 @@ Handle<JSArray> GetImports(Isolate* isolate,
 
 Handle<JSArray> GetExports(Isolate* isolate,
                            Handle<WasmModuleObject> module_object) {
-  auto enabled_features = i::wasm::WasmFeaturesFromIsolate(isolate);
+  auto enabled_features = i::wasm::WasmFeatures::FromIsolate(isolate);
   Factory* factory = isolate->factory();
 
   Handle<String> name_string = factory->InternalizeUtf8String("name");
@@ -443,14 +456,14 @@ Handle<JSArray> GetExports(Isolate* isolate,
     Handle<JSObject> type_value;
     switch (exp.kind) {
       case kExternalFunction:
-        if (enabled_features.type_reflection) {
+        if (enabled_features.has_type_reflection()) {
           auto& func = module->functions[exp.index];
           type_value = GetTypeForFunction(isolate, func.sig);
         }
         export_kind = function_string;
         break;
       case kExternalTable:
-        if (enabled_features.type_reflection) {
+        if (enabled_features.has_type_reflection()) {
           auto& table = module->tables[exp.index];
           base::Optional<uint32_t> maximum_size;
           if (table.has_maximum_size) maximum_size.emplace(table.maximum_size);
@@ -460,7 +473,7 @@ Handle<JSArray> GetExports(Isolate* isolate,
         export_kind = table_string;
         break;
       case kExternalMemory:
-        if (enabled_features.type_reflection) {
+        if (enabled_features.has_type_reflection()) {
           DCHECK_EQ(0, exp.index);  // Only one memory supported.
           base::Optional<uint32_t> maximum_size;
           if (module->has_maximum_pages) {
@@ -472,7 +485,7 @@ Handle<JSArray> GetExports(Isolate* isolate,
         export_kind = memory_string;
         break;
       case kExternalGlobal:
-        if (enabled_features.type_reflection) {
+        if (enabled_features.has_type_reflection()) {
           auto& global = module->globals[exp.index];
           type_value =
               GetTypeForGlobal(isolate, global.mutability, global.type);
@@ -595,6 +608,26 @@ size_t EstimateStoredSize(const WasmModule* module) {
          VectorSize(module->export_table) + VectorSize(module->exceptions) +
          VectorSize(module->elem_segments);
 }
+
+size_t PrintSignature(Vector<char> buffer, wasm::FunctionSig* sig) {
+  if (buffer.empty()) return 0;
+  size_t old_size = buffer.size();
+  auto append_char = [&buffer](char c) {
+    if (buffer.size() == 1) return;  // Keep last character for '\0'.
+    buffer[0] = c;
+    buffer += 1;
+  };
+  for (wasm::ValueType t : sig->parameters()) {
+    append_char(wasm::ValueTypes::ShortNameOf(t));
+  }
+  append_char(':');
+  for (wasm::ValueType t : sig->returns()) {
+    append_char(wasm::ValueTypes::ShortNameOf(t));
+  }
+  buffer[0] = '\0';
+  return old_size - buffer.size();
+}
+
 }  // namespace wasm
 }  // namespace internal
 }  // namespace v8

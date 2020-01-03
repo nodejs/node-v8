@@ -35,12 +35,39 @@ class Isolate;
 
 namespace wasm {
 
+class DebugInfo;
 class NativeModule;
 class WasmCodeManager;
 struct WasmCompilationResult;
 class WasmEngine;
 class WasmImportWrapperCache;
 struct WasmModule;
+
+// Convenience macro listing all wasm runtime stubs. Note that the first few
+// elements of the list coincide with {compiler::TrapId}, order matters.
+#define WASM_RUNTIME_STUB_LIST(V, VTRAP) \
+  FOREACH_WASM_TRAPREASON(VTRAP)         \
+  V(WasmCompileLazy)                     \
+  V(WasmAtomicNotify)                    \
+  V(WasmI32AtomicWait)                   \
+  V(WasmI64AtomicWait)                   \
+  V(WasmMemoryGrow)                      \
+  V(WasmTableGet)                        \
+  V(WasmTableSet)                        \
+  V(WasmStackGuard)                      \
+  V(WasmStackOverflow)                   \
+  V(WasmThrow)                           \
+  V(WasmRethrow)                         \
+  V(WasmTraceMemory)                     \
+  V(AllocateHeapNumber)                  \
+  V(ArgumentsAdaptorTrampoline)          \
+  V(BigIntToI32Pair)                     \
+  V(BigIntToI64)                         \
+  V(DoubleToI)                           \
+  V(I32PairToBigInt)                     \
+  V(I64ToBigInt)                         \
+  V(RecordWrite)                         \
+  V(ToNumber)
 
 // Sorted, disjoint and non-overlapping memory regions. A region is of the
 // form [start, end). So there's no [start, end), [end, other_end),
@@ -535,6 +562,9 @@ class V8_EXPORT_PRIVATE NativeModule final {
   // Retrieve the number of separately reserved code spaces for this module.
   size_t GetNumberOfCodeSpacesForTesting() const;
 
+  // Get or create the debug info for this NativeModule.
+  DebugInfo* GetDebugInfo();
+
  private:
   friend class WasmCode;
   friend class WasmCodeAllocator;
@@ -660,6 +690,12 @@ class V8_EXPORT_PRIVATE NativeModule final {
   // Data (especially jump table) per code space.
   std::vector<CodeSpaceData> code_space_data_;
 
+  // Debug information for this module. You only need to hold the allocation
+  // mutex while getting the {DebugInfo} pointer, or initializing this field.
+  // Further accesses to the {DebugInfo} do not need to be protected by the
+  // mutex.
+  std::unique_ptr<DebugInfo> debug_info_;
+
   // End of fields protected by {allocation_mutex_}.
   //////////////////////////////////////////////////////////////////////////////
 
@@ -692,8 +728,21 @@ class V8_EXPORT_PRIVATE WasmCodeManager final {
     return total_committed_code_space_.load();
   }
 
-  static size_t EstimateNativeModuleCodeSize(const WasmModule* module);
-  static size_t EstimateNativeModuleNonCodeSize(const WasmModule* module);
+  // Estimate the needed code space for a Liftoff function based on the size of
+  // the function body (wasm byte code).
+  static size_t EstimateLiftoffCodeSize(int body_size);
+  // Estimate the needed code space from a completely decoded module.
+  static size_t EstimateNativeModuleCodeSize(const WasmModule* module,
+                                             bool include_liftoff);
+  // Estimate the needed code space from the number of functions and total code
+  // section length.
+  static size_t EstimateNativeModuleCodeSize(int num_functions,
+                                             int num_imported_functions,
+                                             int code_section_length,
+                                             bool include_liftoff);
+  // Estimate the size of meta data needed for the NativeModule, excluding
+  // generated code. This data still be stored on the C++ heap.
+  static size_t EstimateNativeModuleMetaDataSize(const WasmModule* module);
 
  private:
   friend class WasmCodeAllocator;

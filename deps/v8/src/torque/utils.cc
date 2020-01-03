@@ -7,8 +7,10 @@
 #include <iostream>
 #include <string>
 
+#include "src/base/bits.h"
 #include "src/base/logging.h"
 #include "src/torque/ast.h"
+#include "src/torque/declarable.h"
 #include "src/torque/utils.h"
 
 namespace v8 {
@@ -130,10 +132,32 @@ MessageBuilder::MessageBuilder(const std::string& message,
     position = CurrentSourcePosition::Get();
   }
   message_ = TorqueMessage{message, position, kind};
+  if (CurrentScope::HasScope()) {
+    // Traverse the parent scopes to find one that was created to represent a
+    // specialization of something generic. If we find one, then log it and
+    // continue walking the scope tree of the code that requested that
+    // specialization. This allows us to collect the stack of locations that
+    // caused a specialization.
+    Scope* scope = CurrentScope::Get();
+    while (scope) {
+      SpecializationRequester requester = scope->GetSpecializationRequester();
+      if (!requester.IsNone()) {
+        extra_messages_.push_back(
+            {"Note: in specialization " + requester.name + " requested here",
+             requester.position, kind});
+        scope = requester.scope;
+      } else {
+        scope = scope->ParentScope();
+      }
+    }
+  }
 }
 
 void MessageBuilder::Report() const {
   TorqueMessages::Get().push_back(message_);
+  for (const auto& message : extra_messages_) {
+    TorqueMessages::Get().push_back(message);
+  }
 }
 
 [[noreturn]] void MessageBuilder::Throw() const {
@@ -332,6 +356,18 @@ IncludeObjectMacrosScope::IncludeObjectMacrosScope(std::ostream& os) : os_(os) {
 }
 IncludeObjectMacrosScope::~IncludeObjectMacrosScope() {
   os_ << "\n#include \"src/objects/object-macros-undef.h\"\n";
+}
+
+size_t ResidueClass::AlignmentLog2() const {
+  if (value_ == 0) return modulus_log_2_;
+  return base::bits::CountTrailingZeros(value_);
+}
+
+const size_t ResidueClass::kMaxModulusLog2;
+
+std::ostream& operator<<(std::ostream& os, const ResidueClass& a) {
+  if (a.SingleValue().has_value()) return os << *a.SingleValue();
+  return os << "[" << a.value_ << " mod 2^" << a.modulus_log_2_ << "]";
 }
 
 }  // namespace torque

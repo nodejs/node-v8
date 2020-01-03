@@ -7,6 +7,7 @@
 
 #include <memory>
 
+#include "src/base/bit-field.h"
 #include "src/objects/fixed-array.h"
 #include "src/objects/objects.h"
 #include "src/objects/struct.h"
@@ -177,6 +178,10 @@ class BreakPointInfo : public Tuple2 {
   // Check if break point info has this break point.
   static bool HasBreakPoint(Isolate* isolate, Handle<BreakPointInfo> info,
                             Handle<BreakPoint> break_point);
+  // Check if break point info has break point with this id.
+  static MaybeHandle<BreakPoint> GetBreakPointById(Isolate* isolate,
+                                                   Handle<BreakPointInfo> info,
+                                                   int breakpoint_id);
   // Get the number of break points for this code offset.
   int GetBreakPointCount(Isolate* isolate);
 

@@ -6,8 +6,11 @@
 #define V8_WASM_WASM_ENGINE_H_
 
 #include <memory>
+#include <unordered_map>
 #include <unordered_set>
 
+#include "src/base/platform/condition-variable.h"
+#include "src/base/platform/mutex.h"
 #include "src/tasks/cancelable-task.h"
 #include "src/wasm/wasm-code-manager.h"
 #include "src/wasm/wasm-tier.h"
@@ -29,7 +32,7 @@ namespace wasm {
 class AsyncCompileJob;
 class ErrorThrower;
 struct ModuleWireBytes;
-struct WasmFeatures;
+class WasmFeatures;
 
 class V8_EXPORT_PRIVATE CompilationResultResolver {
  public:
@@ -158,10 +161,10 @@ class V8_EXPORT_PRIVATE WasmEngine {
                                std::forward<Args>(args)...);
   }
 
-  // Trigger code logging for this WasmCode in all Isolates which have access to
-  // the NativeModule containing this code. This method can be called from
-  // background threads.
-  void LogCode(WasmCode*);
+  // Trigger code logging for the given code objects in all Isolates which have
+  // access to the NativeModule containing this code. This method can be called
+  // from background threads.
+  void LogCode(Vector<WasmCode*>);
 
   // Enable code logging for the given Isolate. Initially, code logging is
   // enabled if {WasmCode::ShouldBeLogged(Isolate*)} returns true during
@@ -175,16 +178,28 @@ class V8_EXPORT_PRIVATE WasmEngine {
   // Create a new NativeModule. The caller is responsible for its
   // lifetime. The native module will be given some memory for code,
   // which will be page size aligned. The size of the initial memory
-  // is determined with a heuristic based on the total size of wasm
-  // code. The native module may later request more memory.
-  // TODO(titzer): isolate is only required here for CompilationState.
+  // is determined by {code_size_estimate}. The native module may later request
+  // more memory.
+  // TODO(wasm): isolate is only required here for CompilationState.
   std::shared_ptr<NativeModule> NewNativeModule(
       Isolate* isolate, const WasmFeatures& enabled_features,
-      std::shared_ptr<const WasmModule> module);
-  std::shared_ptr<NativeModule> NewNativeModule(
-      Isolate* isolate, const WasmFeatures& enabled_features,
-      size_t code_size_estimate, bool can_request_more,
-      std::shared_ptr<const WasmModule> module);
+      std::shared_ptr<const WasmModule> module, size_t code_size_estimate);
+
+  // Try getting a cached {NativeModule}. The {wire_bytes}' underlying array
+  // should be valid at least until the next call to {UpdateNativeModuleCache}.
+  // Return nullptr if no {NativeModule} exists for these bytes. In this case,
+  // an empty entry is added to let other threads know that a {NativeModule} for
+  // these bytes is currently being created. The caller should eventually call
+  // {UpdateNativeModuleCache} to update the entry and wake up other threads.
+  std::shared_ptr<NativeModule> MaybeGetNativeModule(
+      ModuleOrigin origin, Vector<const uint8_t> wire_bytes);
+
+  // Update the temporary entry inserted by {MaybeGetNativeModule}.
+  // If {error} is true, the entry is erased. Otherwise the entry is updated to
+  // match the {native_module} argument. Wake up threads waiting for this native
+  // module.
+  void UpdateNativeModuleCache(std::shared_ptr<NativeModule> native_module,
+                               bool error);
 
   void FreeNativeModule(NativeModule*);
 
@@ -215,8 +230,9 @@ class V8_EXPORT_PRIVATE WasmEngine {
   static void InitializeOncePerProcess();
   static void GlobalTearDown();
 
-  // Constructs a WasmEngine instance. Depending on whether we are sharing
-  // engines this might be a pointer to a new instance or to a shared one.
+  // Returns a reference to the WasmEngine shared by the entire process. Try to
+  // use {Isolate::wasm_engine} instead if it is available, which encapsulates
+  // engine lifetime decisions during Isolate bootstrapping.
   static std::shared_ptr<WasmEngine> GetWasmEngine();
 
  private:
@@ -277,6 +293,36 @@ class V8_EXPORT_PRIVATE WasmEngine {
   // If an engine-wide GC is currently running, this pointer stores information
   // about that.
   std::unique_ptr<CurrentGCInfo> current_gc_info_;
+
+  struct WireBytesHasher {
+    size_t operator()(const Vector<const uint8_t>& bytes) const;
+  };
+
+  // Native modules cached by their wire bytes.
+  //
+  // Each key points to the corresponding native module's wire bytes, so they
+  // should always be valid as long as the native module is alive.  When
+  // the native module dies, {FreeNativeModule} deletes the entry from the
+  // map, so that we do not leave any dangling key pointing to an expired
+  // weak_ptr. This also serves as a way to regularly clean up the map, which
+  // would otherwise accumulate expired entries.
+  //
+  // A {nullopt} is used to indicate that a native module is currently being
+  // created and will soon be inserted in the cache, provided that no errors
+  // occurred.
+  // By contrast, an expired {weak_ptr} indicates that the native module died
+  // and will soon be cleaned up from the cache.
+  // TODO(thibaudm): This distinction should not be necessary when all native
+  // modules are cached.
+  std::unordered_map<Vector<const uint8_t>,
+                     base::Optional<std::weak_ptr<NativeModule>>,
+                     WireBytesHasher>
+      native_module_cache_;
+
+  // This condition variable is used to synchronize threads compiling the same
+  // module. Only one thread will create the {NativeModule}. The other threads
+  // will wait on this variable until the first thread wakes them up.
+  base::ConditionVariable cache_cv_;
 
   // End of fields protected by {mutex_}.
   //////////////////////////////////////////////////////////////////////////////

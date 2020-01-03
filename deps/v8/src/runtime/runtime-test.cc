@@ -13,6 +13,7 @@
 #include "src/codegen/compiler.h"
 #include "src/codegen/pending-optimization-table.h"
 #include "src/compiler-dispatcher/optimizing-compile-dispatcher.h"
+#include "src/debug/debug-evaluate.h"
 #include "src/deoptimizer/deoptimizer.h"
 #include "src/execution/arguments-inl.h"
 #include "src/execution/frames-inl.h"
@@ -27,7 +28,6 @@
 #include "src/objects/js-array-inl.h"
 #include "src/objects/js-regexp-inl.h"
 #include "src/objects/smi.h"
-#include "src/snapshot/natives.h"
 #include "src/trap-handler/trap-handler.h"
 #include "src/utils/ostreams.h"
 #include "src/wasm/memory-tracing.h"
@@ -207,6 +207,20 @@ RUNTIME_FUNCTION(Runtime_RunningInSimulator) {
 #else
   return ReadOnlyRoots(isolate).false_value();
 #endif
+}
+
+RUNTIME_FUNCTION(Runtime_RuntimeEvaluateREPL) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(1, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(String, source, 0);
+  Handle<Object> result;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, result,
+      DebugEvaluate::Global(isolate, source,
+                            debug::EvaluateGlobalMode::kDefault,
+                            REPLMode::kYes));
+
+  return *result;
 }
 
 RUNTIME_FUNCTION(Runtime_ICsAreEnabled) {
@@ -685,9 +699,15 @@ int FixedArrayLenFromSize(int size) {
 }
 
 void FillUpOneNewSpacePage(Isolate* isolate, Heap* heap) {
+  PauseAllocationObserversScope pause_observers(heap);
   NewSpace* space = heap->new_space();
-  int space_remaining = static_cast<int>(*space->allocation_limit_address() -
-                                         *space->allocation_top_address());
+  // We cannot rely on `space->limit()` to point to the end of the current page
+  // in the case where inline allocations are disabled, it actually points to
+  // the current allocation pointer.
+  DCHECK_IMPLIES(space->heap()->inline_allocation_disabled(),
+                 space->limit() == space->top());
+  int space_remaining =
+      static_cast<int>(space->to_space().page_high() - space->top());
   while (space_remaining > 0) {
     int length = FixedArrayLenFromSize(space_remaining);
     if (length > 0) {
@@ -710,7 +730,6 @@ RUNTIME_FUNCTION(Runtime_SimulateNewspaceFull) {
   HandleScope scope(isolate);
   Heap* heap = isolate->heap();
   NewSpace* space = heap->new_space();
-  PauseAllocationObserversScope pause_observers(heap);
   AlwaysAllocateScope always_allocate(heap);
   do {
     FillUpOneNewSpacePage(isolate, heap);
@@ -732,7 +751,7 @@ RUNTIME_FUNCTION(Runtime_DebugPrint) {
     Object object = maybe_object.GetHeapObjectOrSmi();
     bool weak = maybe_object.IsWeak();
 
-#ifdef DEBUG
+#ifdef OBJECT_PRINT
     if (object.IsString() && !isolate->context().is_null()) {
       DCHECK(!weak);
       // If we have a string, assume it's a code "marker"
@@ -1231,7 +1250,7 @@ RUNTIME_FUNCTION(Runtime_CloneWasmModule) {
   CONVERT_ARG_HANDLE_CHECKED(WasmModuleObject, module_object, 0);
 
   Handle<WasmModuleObject> new_module_object =
-      wasm::WasmEngine::GetWasmEngine()->ImportNativeModule(
+      isolate->wasm_engine()->ImportNativeModule(
           isolate, module_object->shared_native_module());
 
   return *new_module_object;
@@ -1252,6 +1271,18 @@ RUNTIME_FUNCTION(Runtime_HeapObjectVerify) {
   }
 #endif
   return isolate->heap()->ToBoolean(true);
+}
+
+RUNTIME_FUNCTION(Runtime_ArrayBufferMaxByteLength) {
+  HandleScope shs(isolate);
+  DCHECK_EQ(0, args.length());
+  return *isolate->factory()->NewNumber(JSArrayBuffer::kMaxByteLength);
+}
+
+RUNTIME_FUNCTION(Runtime_TypedArrayMaxLength) {
+  HandleScope shs(isolate);
+  DCHECK_EQ(0, args.length());
+  return *isolate->factory()->NewNumber(JSTypedArray::kMaxLength);
 }
 
 RUNTIME_FUNCTION(Runtime_WasmGetNumberOfInstances) {
@@ -1382,9 +1413,15 @@ RUNTIME_FUNCTION(Runtime_FreezeWasmLazyCompilation) {
 
 RUNTIME_FUNCTION(Runtime_TurbofanStaticAssert) {
   SealHandleScope shs(isolate);
-  // Always lowered to StaticAssert node in Turbofan, so we should never get
-  // here in compiled code.
+  // Always lowered to StaticAssert node in Turbofan, so we never get here in
+  // compiled code.
   return ReadOnlyRoots(isolate).undefined_value();
+}
+
+RUNTIME_FUNCTION(Runtime_IsBeingInterpreted) {
+  SealHandleScope shs(isolate);
+  // Always lowered to false in Turbofan, so we never get here in compiled code.
+  return ReadOnlyRoots(isolate).true_value();
 }
 
 RUNTIME_FUNCTION(Runtime_EnableCodeLoggingForTesting) {
@@ -1392,28 +1429,32 @@ RUNTIME_FUNCTION(Runtime_EnableCodeLoggingForTesting) {
   // {true} on {is_listening_to_code_events()}. Feel free to add assertions to
   // any method to further test the code logging callbacks.
   class NoopListener final : public CodeEventListener {
-    void CodeCreateEvent(LogEventsAndTags tag, AbstractCode code,
-                         const char* comment) final {}
-    void CodeCreateEvent(LogEventsAndTags tag, AbstractCode code,
-                         Name name) final {}
-    void CodeCreateEvent(LogEventsAndTags tag, AbstractCode code,
-                         SharedFunctionInfo shared, Name source) final {}
-    void CodeCreateEvent(LogEventsAndTags tag, AbstractCode code,
-                         SharedFunctionInfo shared, Name source, int line,
-                         int column) final {}
+    void CodeCreateEvent(LogEventsAndTags tag, Handle<AbstractCode> code,
+                         const char* name) final {}
+    void CodeCreateEvent(LogEventsAndTags tag, Handle<AbstractCode> code,
+                         Handle<Name> name) final {}
+    void CodeCreateEvent(LogEventsAndTags tag, Handle<AbstractCode> code,
+                         Handle<SharedFunctionInfo> shared,
+                         Handle<Name> script_name) final {}
+    void CodeCreateEvent(LogEventsAndTags tag, Handle<AbstractCode> code,
+                         Handle<SharedFunctionInfo> shared,
+                         Handle<Name> script_name, int line, int column) final {
+    }
     void CodeCreateEvent(LogEventsAndTags tag, const wasm::WasmCode* code,
                          wasm::WasmName name) final {}
-    void CallbackEvent(Name name, Address entry_point) final {}
-    void GetterCallbackEvent(Name name, Address entry_point) final {}
-    void SetterCallbackEvent(Name name, Address entry_point) final {}
-    void RegExpCodeCreateEvent(AbstractCode code, String source) final {}
+
+    void CallbackEvent(Handle<Name> name, Address entry_point) final {}
+    void GetterCallbackEvent(Handle<Name> name, Address entry_point) final {}
+    void SetterCallbackEvent(Handle<Name> name, Address entry_point) final {}
+    void RegExpCodeCreateEvent(Handle<AbstractCode> code,
+                               Handle<String> source) final {}
     void CodeMoveEvent(AbstractCode from, AbstractCode to) final {}
     void SharedFunctionInfoMoveEvent(Address from, Address to) final {}
     void NativeContextMoveEvent(Address from, Address to) final {}
     void CodeMovingGCEvent() final {}
-    void CodeDisableOptEvent(AbstractCode code,
-                             SharedFunctionInfo shared) final {}
-    void CodeDeoptEvent(Code code, DeoptimizeKind kind, Address pc,
+    void CodeDisableOptEvent(Handle<AbstractCode> code,
+                             Handle<SharedFunctionInfo> shared) final {}
+    void CodeDeoptEvent(Handle<Code> code, DeoptimizeKind kind, Address pc,
                         int fp_to_sp_delta) final {}
 
     bool is_listening_to_code_events() final { return true; }
@@ -1422,6 +1463,23 @@ RUNTIME_FUNCTION(Runtime_EnableCodeLoggingForTesting) {
   isolate->wasm_engine()->EnableCodeLogging(isolate);
   isolate->code_event_dispatcher()->AddListener(noop_listener.get());
   return ReadOnlyRoots(isolate).undefined_value();
+}
+
+RUNTIME_FUNCTION(Runtime_NewRegExpWithBacktrackLimit) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(3, args.length());
+
+  CONVERT_ARG_HANDLE_CHECKED(String, pattern, 0);
+  CONVERT_ARG_HANDLE_CHECKED(String, flags_string, 1);
+  CONVERT_UINT32_ARG_CHECKED(backtrack_limit, 2);
+
+  bool success = false;
+  JSRegExp::Flags flags =
+      JSRegExp::FlagsFromString(isolate, flags_string, &success);
+  CHECK(success);
+
+  RETURN_RESULT_OR_FAILURE(
+      isolate, JSRegExp::New(isolate, pattern, flags, backtrack_limit));
 }
 
 }  // namespace internal

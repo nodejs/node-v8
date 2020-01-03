@@ -5,6 +5,7 @@
 #ifndef V8_OBJECTS_JS_ARRAY_BUFFER_H_
 #define V8_OBJECTS_JS_ARRAY_BUFFER_H_
 
+#include "src/base/bit-field.h"
 #include "src/objects/backing-store.h"
 #include "src/objects/js-objects.h"
 
@@ -30,7 +31,10 @@ class JSArrayBuffer : public JSObject {
   DECL_PRIMITIVE_ACCESSORS(byte_length, size_t)
 
   // [backing_store]: backing memory for this array
-  DECL_ACCESSORS(backing_store, void*)
+  DECL_PRIMITIVE_ACCESSORS(backing_store, void*)
+
+  // [extension]: extension object used for GC
+  DECL_PRIMITIVE_ACCESSORS(extension, void*)
 
   // For non-wasm, allocation_length and allocation_base are byte_length and
   // backing_store, respectively.
@@ -109,6 +113,8 @@ class JSArrayBuffer : public JSObject {
   /* Raw data fields. */                                                    \
   V(kByteLengthOffset, kUIntptrSize)                                        \
   V(kBackingStoreOffset, kSystemPointerSize)                                \
+  V(kExtensionOffset,                                                       \
+    (V8_ARRAY_BUFFER_EXTENSION_BOOL ? kSystemPointerSize : 0))              \
   V(kBitFieldOffset, kInt32Size)                                            \
   /* Pads header size to be a multiple of kTaggedSize. */                   \
   V(kOptionalPaddingOffset, OBJECT_POINTER_PADDING(kOptionalPaddingOffset)) \
@@ -204,7 +210,7 @@ class JSTypedArray : public JSArrayBufferView {
   // as Tagged_t value and an |external_pointer| value.
   // For full-pointer mode the compensation value is zero.
   static inline Address ExternalPointerCompensationForOnHeapArray(
-      Isolate* isolate);
+      const Isolate* isolate);
 
   // Subtracts external pointer compensation from the external pointer value.
   inline void RemoveExternalPointerCompensationForSerialization();

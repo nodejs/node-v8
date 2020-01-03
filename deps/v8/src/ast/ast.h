@@ -97,7 +97,6 @@ namespace internal {
   V(NativeFunctionLiteral)      \
   V(OptionalChain)              \
   V(Property)                   \
-  V(ResolvedProperty)           \
   V(Spread)                     \
   V(StoreInArrayLiteral)        \
   V(SuperCallReference)         \
@@ -170,7 +169,7 @@ class AstNode: public ZoneObject {
   void* operator new(size_t size);
 
   int position_;
-  using NodeTypeField = BitField<NodeType, 0, 6>;
+  using NodeTypeField = base::BitField<NodeType, 0, 6>;
 
  protected:
   uint32_t bit_field_;
@@ -259,7 +258,7 @@ class Expression : public AstNode {
 
   bool IsPattern() {
     STATIC_ASSERT(kObjectLiteral + 1 == kArrayLiteral);
-    return IsInRange(node_type(), kObjectLiteral, kArrayLiteral);
+    return base::IsInRange(node_type(), kObjectLiteral, kArrayLiteral);
   }
 
   bool is_parenthesized() const {
@@ -914,8 +913,17 @@ class TryCatchStatement final : public TryStatement {
   // (When the catch block doesn't rethrow but is guaranteed to perform an
   // ordinary throw, not clearing the old message is safe but not very
   // useful.)
+  //
+  // For scripts in repl mode there is exactly one catch block with
+  // UNCAUGHT_ASYNC_AWAIT prediction. This catch block needs to preserve
+  // the exception so it can be re-used later by the inspector.
   inline bool ShouldClearPendingException(
       HandlerTable::CatchPrediction outer_catch_prediction) const {
+    if (catch_prediction_ == HandlerTable::UNCAUGHT_ASYNC_AWAIT) {
+      DCHECK_EQ(outer_catch_prediction, HandlerTable::UNCAUGHT);
+      return false;
+    }
+
     return catch_prediction_ != HandlerTable::UNCAUGHT ||
            outer_catch_prediction != HandlerTable::UNCAUGHT;
   }
@@ -1692,26 +1700,6 @@ class Property final : public Expression {
   Expression* key_;
 };
 
-// ResolvedProperty pairs a receiver field with a value field. It allows Call
-// to support arbitrary receivers while still taking advantage of TypeFeedback.
-class ResolvedProperty final : public Expression {
- public:
-  VariableProxy* object() const { return object_; }
-  VariableProxy* property() const { return property_; }
-
-  void set_object(VariableProxy* e) { object_ = e; }
-  void set_property(VariableProxy* e) { property_ = e; }
-
- private:
-  friend class AstNodeFactory;
-
-  ResolvedProperty(VariableProxy* obj, VariableProxy* property, int pos)
-      : Expression(pos, kResolvedProperty), object_(obj), property_(property) {}
-
-  VariableProxy* object_;
-  VariableProxy* property_;
-};
-
 class Call final : public Expression {
  public:
   Expression* expression() const { return expression_; }
@@ -1738,12 +1726,13 @@ class Call final : public Expression {
     WITH_CALL,
     NAMED_PROPERTY_CALL,
     KEYED_PROPERTY_CALL,
+    NAMED_OPTIONAL_CHAIN_PROPERTY_CALL,
+    KEYED_OPTIONAL_CHAIN_PROPERTY_CALL,
     NAMED_SUPER_PROPERTY_CALL,
     KEYED_SUPER_PROPERTY_CALL,
     PRIVATE_CALL,
     SUPER_CALL,
-    RESOLVED_PROPERTY_CALL,
-    OTHER_CALL
+    OTHER_CALL,
   };
 
   enum PossiblyEval {
@@ -2950,6 +2939,14 @@ class AstNodeFactory final {
                                          HandlerTable::ASYNC_AWAIT, pos);
   }
 
+  TryCatchStatement* NewTryCatchStatementForReplAsyncAwait(Block* try_block,
+                                                           Scope* scope,
+                                                           Block* catch_block,
+                                                           int pos) {
+    return new (zone_) TryCatchStatement(
+        try_block, scope, catch_block, HandlerTable::UNCAUGHT_ASYNC_AWAIT, pos);
+  }
+
   TryFinallyStatement* NewTryFinallyStatement(Block* try_block,
                                               Block* finally_block, int pos) {
     return new (zone_) TryFinallyStatement(try_block, finally_block, pos);
@@ -3089,12 +3086,6 @@ class AstNodeFactory final {
   Property* NewProperty(Expression* obj, Expression* key, int pos,
                         bool optional_chain = false) {
     return new (zone_) Property(obj, key, pos, optional_chain);
-  }
-
-  ResolvedProperty* NewResolvedProperty(VariableProxy* obj,
-                                        VariableProxy* property,
-                                        int pos = kNoSourcePosition) {
-    return new (zone_) ResolvedProperty(obj, property, pos);
   }
 
   Call* NewCall(Expression* expression,

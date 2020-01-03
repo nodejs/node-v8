@@ -40,7 +40,7 @@ struct InvokeParams {
       Isolate* isolate, Handle<Object> callable, Handle<Object> receiver,
       int argc, Handle<Object>* argv,
       Execution::MessageHandling message_handling,
-      MaybeHandle<Object>* exception_out);
+      MaybeHandle<Object>* exception_out, bool reschedule_terminate);
 
   static InvokeParams SetUpForRunMicrotasks(Isolate* isolate,
                                             MicrotaskQueue* microtask_queue,
@@ -59,6 +59,7 @@ struct InvokeParams {
 
   bool is_construct;
   Execution::Target execution_target;
+  bool reschedule_terminate;
 };
 
 // static
@@ -77,6 +78,7 @@ InvokeParams InvokeParams::SetUpForNew(Isolate* isolate,
   params.exception_out = nullptr;
   params.is_construct = true;
   params.execution_target = Execution::Target::kCallable;
+  params.reschedule_terminate = true;
   return params;
 }
 
@@ -96,6 +98,7 @@ InvokeParams InvokeParams::SetUpForCall(Isolate* isolate,
   params.exception_out = nullptr;
   params.is_construct = false;
   params.execution_target = Execution::Target::kCallable;
+  params.reschedule_terminate = true;
   return params;
 }
 
@@ -103,7 +106,7 @@ InvokeParams InvokeParams::SetUpForCall(Isolate* isolate,
 InvokeParams InvokeParams::SetUpForTryCall(
     Isolate* isolate, Handle<Object> callable, Handle<Object> receiver,
     int argc, Handle<Object>* argv, Execution::MessageHandling message_handling,
-    MaybeHandle<Object>* exception_out) {
+    MaybeHandle<Object>* exception_out, bool reschedule_terminate) {
   InvokeParams params;
   params.target = callable;
   params.receiver = NormalizeReceiver(isolate, receiver);
@@ -115,6 +118,7 @@ InvokeParams InvokeParams::SetUpForTryCall(
   params.exception_out = exception_out;
   params.is_construct = false;
   params.execution_target = Execution::Target::kCallable;
+  params.reschedule_terminate = reschedule_terminate;
   return params;
 }
 
@@ -134,6 +138,7 @@ InvokeParams InvokeParams::SetUpForRunMicrotasks(
   params.exception_out = exception_out;
   params.is_construct = false;
   params.execution_target = Execution::Target::kRunMicrotasks;
+  params.reschedule_terminate = true;
   return params;
 }
 
@@ -336,15 +341,17 @@ MaybeHandle<Object> InvokeWithTryCatch(Isolate* isolate,
           DCHECK(isolate->external_caught_exception());
           *params.exception_out = v8::Utils::OpenHandle(*catcher.Exception());
         }
-      }
-      if (params.message_handling == Execution::MessageHandling::kReport) {
-        isolate->OptionalRescheduleException(true);
+        if (params.message_handling == Execution::MessageHandling::kReport) {
+          isolate->OptionalRescheduleException(true);
+        }
       }
     }
   }
 
-  // Re-request terminate execution interrupt to trigger later.
-  if (is_termination) isolate->stack_guard()->RequestTerminateExecution();
+  if (is_termination && params.reschedule_terminate) {
+    // Reschedule terminate execution exception.
+    isolate->OptionalRescheduleException(false);
+  }
 
   return maybe_result;
 }
@@ -384,16 +391,14 @@ MaybeHandle<Object> Execution::New(Isolate* isolate, Handle<Object> constructor,
 }
 
 // static
-MaybeHandle<Object> Execution::TryCall(Isolate* isolate,
-                                       Handle<Object> callable,
-                                       Handle<Object> receiver, int argc,
-                                       Handle<Object> argv[],
-                                       MessageHandling message_handling,
-                                       MaybeHandle<Object>* exception_out) {
+MaybeHandle<Object> Execution::TryCall(
+    Isolate* isolate, Handle<Object> callable, Handle<Object> receiver,
+    int argc, Handle<Object> argv[], MessageHandling message_handling,
+    MaybeHandle<Object>* exception_out, bool reschedule_terminate) {
   return InvokeWithTryCatch(
-      isolate,
-      InvokeParams::SetUpForTryCall(isolate, callable, receiver, argc, argv,
-                                    message_handling, exception_out));
+      isolate, InvokeParams::SetUpForTryCall(
+                   isolate, callable, receiver, argc, argv, message_handling,
+                   exception_out, reschedule_terminate));
 }
 
 // static

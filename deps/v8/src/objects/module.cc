@@ -67,7 +67,12 @@ void Module::RecordError(Isolate* isolate, Handle<Object> error) {
   PrintStatusTransition(Module::kErrored);
 #endif  // DEBUG
   set_status(Module::kErrored);
-  set_exception(*error);
+  if (isolate->is_catchable_by_javascript(*error)) {
+    set_exception(*error);
+  } else {
+    // v8::TryCatch uses `null` for termination exceptions.
+    set_exception(*isolate->factory()->null_value());
+  }
 }
 
 void Module::ResetGraph(Isolate* isolate, Handle<Module> module) {
@@ -303,7 +308,7 @@ Handle<JSModuleNamespace> Module::GetModuleNamespace(Isolate* isolate,
   Handle<ObjectHashTable> exports(module->exports(), isolate);
   ZoneVector<Handle<String>> names(&zone);
   names.reserve(exports->NumberOfElements());
-  for (int i = 0, n = exports->Capacity(); i < n; ++i) {
+  for (InternalIndex i : exports->IterateEntries()) {
     Object key;
     if (!exports->ToKey(roots, i, &key)) continue;
     names.push_back(handle(String::cast(key), isolate));

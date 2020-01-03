@@ -42,13 +42,17 @@ class LiftoffAssembler : public TurboAssembler {
    public:
     enum Location : uint8_t { kStack, kRegister, kIntConst };
 
-    explicit VarState(ValueType type) : loc_(kStack), type_(type) {}
-    explicit VarState(ValueType type, LiftoffRegister r)
-        : loc_(kRegister), type_(type), reg_(r) {
+    explicit VarState(ValueType type, uint32_t offset)
+        : loc_(kStack), type_(type), spill_offset_(offset) {}
+    explicit VarState(ValueType type, LiftoffRegister r, uint32_t offset)
+        : loc_(kRegister), type_(type), reg_(r), spill_offset_(offset) {
       DCHECK_EQ(r.reg_class(), reg_class_for(type));
     }
-    explicit VarState(ValueType type, int32_t i32_const)
-        : loc_(kIntConst), type_(type), i32_const_(i32_const) {
+    explicit VarState(ValueType type, int32_t i32_const, uint32_t offset)
+        : loc_(kIntConst),
+          type_(type),
+          i32_const_(i32_const),
+          spill_offset_(offset) {
       DCHECK(type_ == kWasmI32 || type_ == kWasmI64);
     }
 
@@ -87,6 +91,8 @@ class LiftoffAssembler : public TurboAssembler {
                                : WasmValue(int64_t{i32_const_});
     }
 
+    uint32_t offset() const { return spill_offset_; }
+
     Register gp_reg() const { return reg().gp(); }
     DoubleRegister fp_reg() const { return reg().fp(); }
     LiftoffRegister reg() const {
@@ -96,6 +102,18 @@ class LiftoffAssembler : public TurboAssembler {
     RegClass reg_class() const { return reg().reg_class(); }
 
     void MakeStack() { loc_ = kStack; }
+
+    // Copy src to this, except for offset, since src and this could have been
+    // from different stack states.
+    void Copy(VarState src) {
+      loc_ = src.loc();
+      type_ = src.type();
+      if (loc_ == kRegister) {
+        reg_ = src.reg();
+      } else if (loc_ == kIntConst) {
+        i32_const_ = src.i32_const();
+      }
+    }
 
    private:
     Location loc_;
@@ -107,6 +125,7 @@ class LiftoffAssembler : public TurboAssembler {
       LiftoffRegister reg_;  // used if loc_ == kRegister
       int32_t i32_const_;    // used if loc_ == kIntConst
     };
+    uint32_t spill_offset_;
   };
 
   ASSERT_TRIVIALLY_COPYABLE(VarState);
@@ -127,6 +146,10 @@ class LiftoffAssembler : public TurboAssembler {
         LiftoffRegList available_regs =
             kGpCacheRegList.MaskOut(used_registers).MaskOut(pinned);
         return available_regs.GetNumRegsSet() >= 2;
+      } else if (kNeedS128RegPair && rc == kFpRegPair) {
+        LiftoffRegList available_regs =
+            kFpCacheRegList.MaskOut(used_registers).MaskOut(pinned);
+        return available_regs.HasAdjacentFpRegsSet();
       }
       DCHECK(rc == kGpReg || rc == kFpReg);
       LiftoffRegList candidates = GetCacheRegList(rc);
@@ -146,6 +169,13 @@ class LiftoffAssembler : public TurboAssembler {
         Register low = pinned.set(unused_register(kGpReg, pinned)).gp();
         Register high = unused_register(kGpReg, pinned).gp();
         return LiftoffRegister::ForPair(low, high);
+      } else if (kNeedS128RegPair && rc == kFpRegPair) {
+        LiftoffRegList available_regs =
+            kFpCacheRegList.MaskOut(used_registers).MaskOut(pinned);
+        DoubleRegister low =
+            available_regs.GetAdjacentFpRegsSet().GetFirstRegSet().fp();
+        DCHECK(is_free(LiftoffRegister::ForFpPair(low)));
+        return LiftoffRegister::ForFpPair(low);
       }
       DCHECK(rc == kGpReg || rc == kFpReg);
       LiftoffRegList candidates = GetCacheRegList(rc);
@@ -252,10 +282,31 @@ class LiftoffAssembler : public TurboAssembler {
 
   LiftoffRegister PopToRegister(LiftoffRegList pinned = {});
 
+  uint32_t NextSpillOffset(ValueType type) {
+    return TopSpillOffset() + SlotSizeForType(type);
+  }
+
+  uint32_t TopSpillOffset() {
+    if (cache_state_.stack_state.empty()) {
+      return 0;
+    }
+    return cache_state_.stack_state.back().offset();
+  }
+
   void PushRegister(ValueType type, LiftoffRegister reg) {
     DCHECK_EQ(reg_class_for(type), reg.reg_class());
     cache_state_.inc_used(reg);
-    cache_state_.stack_state.emplace_back(type, reg);
+    cache_state_.stack_state.emplace_back(type, reg, NextSpillOffset(type));
+  }
+
+  void PushConstant(ValueType type, int32_t i32_const) {
+    DCHECK(type == kWasmI32 || type == kWasmI64);
+    cache_state_.stack_state.emplace_back(type, i32_const,
+                                          NextSpillOffset(type));
+  }
+
+  void PushStack(ValueType type) {
+    cache_state_.stack_state.emplace_back(type, NextSpillOffset(type));
   }
 
   void SpillRegister(LiftoffRegister);
@@ -283,6 +334,14 @@ class LiftoffAssembler : public TurboAssembler {
       Register low = pinned.set(GetUnusedRegister(candidates, pinned)).gp();
       Register high = GetUnusedRegister(candidates, pinned).gp();
       return LiftoffRegister::ForPair(low, high);
+    } else if (kNeedS128RegPair && rc == kFpRegPair) {
+      // kFpRegPair specific logic here because we need adjacent registers, not
+      // just any two registers (like kGpRegPair).
+      if (cache_state_.has_unused_register(rc, pinned)) {
+        return cache_state_.unused_register(rc, pinned);
+      }
+      DoubleRegister low_fp = SpillAdjacentFpRegisters(pinned).fp();
+      return LiftoffRegister::ForFpPair(low_fp);
     }
     DCHECK(rc == kGpReg || rc == kFpReg);
     LiftoffRegList candidates = GetCacheRegList(rc);
@@ -301,14 +360,14 @@ class LiftoffAssembler : public TurboAssembler {
   void MergeFullStackWith(const CacheState& target, const CacheState& source);
   void MergeStackWith(const CacheState& target, uint32_t arity);
 
-  void Spill(uint32_t index);
+  void Spill(VarState* slot);
   void SpillLocals();
   void SpillAllRegisters();
 
   // Call this method whenever spilling something, such that the number of used
   // spill slot can be tracked and the stack frame will be allocated big enough.
-  void RecordUsedSpillSlot(uint32_t index) {
-    if (index >= num_used_spill_slots_) num_used_spill_slots_ = index + 1;
+  void RecordUsedSpillOffset(uint32_t offset) {
+    if (offset >= num_used_spill_bytes_) num_used_spill_bytes_ = offset;
   }
 
   // Load parameters into the right registers / stack slots for the call.
@@ -352,9 +411,10 @@ class LiftoffAssembler : public TurboAssembler {
   // which can later be patched (via {PatchPrepareStackFrame)} when the size of
   // the frame is known.
   inline int PrepareStackFrame();
-  inline void PatchPrepareStackFrame(int offset, uint32_t stack_slots);
+  inline void PatchPrepareStackFrame(int offset, uint32_t spill_size);
   inline void FinishCode();
   inline void AbortCompilation();
+  inline static uint32_t SlotSizeForType(ValueType type);
 
   inline void LoadConstant(LiftoffRegister, WasmValue,
                            RelocInfo::Mode rmode = RelocInfo::NONE);
@@ -375,18 +435,19 @@ class LiftoffAssembler : public TurboAssembler {
                     bool is_store_mem = false);
   inline void LoadCallerFrameSlot(LiftoffRegister, uint32_t caller_slot_idx,
                                   ValueType);
-  inline void MoveStackValue(uint32_t dst_index, uint32_t src_index, ValueType);
+  inline void MoveStackValue(uint32_t dst_offset, uint32_t src_offset,
+                             ValueType);
 
   inline void Move(Register dst, Register src, ValueType);
   inline void Move(DoubleRegister dst, DoubleRegister src, ValueType);
 
-  inline void Spill(uint32_t index, LiftoffRegister, ValueType);
-  inline void Spill(uint32_t index, WasmValue);
-  inline void Fill(LiftoffRegister, uint32_t index, ValueType);
+  inline void Spill(uint32_t offset, LiftoffRegister, ValueType);
+  inline void Spill(uint32_t offset, WasmValue);
+  inline void Fill(LiftoffRegister, uint32_t offset, ValueType);
   // Only used on 32-bit systems: Fill a register from a "half stack slot", i.e.
   // 4 bytes on the stack holding half of a 64-bit value.
-  inline void FillI64Half(Register, uint32_t index, RegPairHalf);
-  inline void FillStackSlotsWithZero(uint32_t index, uint32_t count);
+  inline void FillI64Half(Register, uint32_t offset, RegPairHalf);
+  inline void FillStackSlotsWithZero(uint32_t start, uint32_t size);
 
   // i32 binops.
   inline void emit_i32_add(Register dst, Register lhs, Register rhs);
@@ -408,17 +469,16 @@ class LiftoffAssembler : public TurboAssembler {
   inline void emit_i32_or(Register dst, Register lhs, int32_t imm);
   inline void emit_i32_xor(Register dst, Register lhs, Register rhs);
   inline void emit_i32_xor(Register dst, Register lhs, int32_t imm);
-  inline void emit_i32_shl(Register dst, Register src, Register amount,
-                           LiftoffRegList pinned = {});
-  inline void emit_i32_sar(Register dst, Register src, Register amount,
-                           LiftoffRegList pinned = {});
-  inline void emit_i32_shr(Register dst, Register src, Register amount,
-                           LiftoffRegList pinned = {});
-  inline void emit_i32_shr(Register dst, Register src, int amount);
+  inline void emit_i32_shl(Register dst, Register src, Register amount);
+  inline void emit_i32_shl(Register dst, Register src, int32_t amount);
+  inline void emit_i32_sar(Register dst, Register src, Register amount);
+  inline void emit_i32_sar(Register dst, Register src, int32_t amount);
+  inline void emit_i32_shr(Register dst, Register src, Register amount);
+  inline void emit_i32_shr(Register dst, Register src, int32_t amount);
 
   // i32 unops.
-  inline bool emit_i32_clz(Register dst, Register src);
-  inline bool emit_i32_ctz(Register dst, Register src);
+  inline void emit_i32_clz(Register dst, Register src);
+  inline void emit_i32_ctz(Register dst, Register src);
   inline bool emit_i32_popcnt(Register dst, Register src);
 
   // i64 binops.
@@ -452,13 +512,22 @@ class LiftoffAssembler : public TurboAssembler {
   inline void emit_i64_xor(LiftoffRegister dst, LiftoffRegister lhs,
                            int32_t imm);
   inline void emit_i64_shl(LiftoffRegister dst, LiftoffRegister src,
-                           Register amount, LiftoffRegList pinned = {});
+                           Register amount);
+  inline void emit_i64_shl(LiftoffRegister dst, LiftoffRegister src,
+                           int32_t amount);
   inline void emit_i64_sar(LiftoffRegister dst, LiftoffRegister src,
-                           Register amount, LiftoffRegList pinned = {});
+                           Register amount);
+  inline void emit_i64_sar(LiftoffRegister dst, LiftoffRegister src,
+                           int32_t amount);
   inline void emit_i64_shr(LiftoffRegister dst, LiftoffRegister src,
-                           Register amount, LiftoffRegList pinned = {});
+                           Register amount);
   inline void emit_i64_shr(LiftoffRegister dst, LiftoffRegister src,
-                           int amount);
+                           int32_t amount);
+
+  // i64 unops.
+  inline void emit_i64_clz(LiftoffRegister dst, LiftoffRegister src);
+  inline void emit_i64_ctz(LiftoffRegister dst, LiftoffRegister src);
+  inline bool emit_i64_popcnt(LiftoffRegister dst, LiftoffRegister src);
 
   inline void emit_i32_to_intptr(Register dst, Register src);
 
@@ -617,8 +686,11 @@ class LiftoffAssembler : public TurboAssembler {
   void set_num_locals(uint32_t num_locals);
 
   uint32_t GetTotalFrameSlotCount() const {
-    return num_locals_ + num_used_spill_slots_;
+    // TODO(zhin): Temporary for migration from index to offset.
+    return ((num_used_spill_bytes_ + kStackSlotSize - 1) / kStackSlotSize);
   }
+
+  uint32_t GetTotalFrameSlotSize() const { return num_used_spill_bytes_; }
 
   ValueType local_type(uint32_t index) {
     DCHECK_GT(num_locals_, index);
@@ -658,12 +730,14 @@ class LiftoffAssembler : public TurboAssembler {
   static_assert(sizeof(ValueType) == 1,
                 "Reconsider this inlining if ValueType gets bigger");
   CacheState cache_state_;
-  uint32_t num_used_spill_slots_ = 0;
+  uint32_t num_used_spill_bytes_ = 0;
   LiftoffBailoutReason bailout_reason_ = kSuccess;
   const char* bailout_detail_ = nullptr;
 
   LiftoffRegister SpillOneRegister(LiftoffRegList candidates,
                                    LiftoffRegList pinned);
+  // Spill one or two fp registers to get a pair of adjacent fp registers.
+  LiftoffRegister SpillAdjacentFpRegisters(LiftoffRegList pinned);
 };
 
 std::ostream& operator<<(std::ostream& os, LiftoffAssembler::VarState);
@@ -776,9 +850,9 @@ class LiftoffStackSlots {
  public:
   explicit LiftoffStackSlots(LiftoffAssembler* wasm_asm) : asm_(wasm_asm) {}
 
-  void Add(const LiftoffAssembler::VarState& src, uint32_t src_index,
+  void Add(const LiftoffAssembler::VarState& src, uint32_t src_offset,
            RegPairHalf half) {
-    slots_.emplace_back(src, src_index, half);
+    slots_.emplace_back(src, src_offset, half);
   }
   void Add(const LiftoffAssembler::VarState& src) { slots_.emplace_back(src); }
 
@@ -788,14 +862,14 @@ class LiftoffStackSlots {
   struct Slot {
     // Allow move construction.
     Slot(Slot&&) V8_NOEXCEPT = default;
-    Slot(const LiftoffAssembler::VarState& src, uint32_t src_index,
+    Slot(const LiftoffAssembler::VarState& src, uint32_t src_offset,
          RegPairHalf half)
-        : src_(src), src_index_(src_index), half_(half) {}
+        : src_(src), src_offset_(src_offset), half_(half) {}
     explicit Slot(const LiftoffAssembler::VarState& src)
         : src_(src), half_(kLowWord) {}
 
     const LiftoffAssembler::VarState src_;
-    uint32_t src_index_ = 0;
+    uint32_t src_offset_ = 0;
     RegPairHalf half_;
   };
 

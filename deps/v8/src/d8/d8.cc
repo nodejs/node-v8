@@ -31,6 +31,7 @@
 #include "src/d8/d8-platforms.h"
 #include "src/d8/d8.h"
 #include "src/debug/debug-interface.h"
+#include "src/deoptimizer/deoptimizer.h"
 #include "src/diagnostics/basic-block-profiler.h"
 #include "src/execution/vm-state-inl.h"
 #include "src/init/v8.h"
@@ -43,7 +44,6 @@
 #include "src/parsing/parsing.h"
 #include "src/parsing/scanner-character-streams.h"
 #include "src/sanitizer/msan.h"
-#include "src/snapshot/natives.h"
 #include "src/trap-handler/trap-handler.h"
 #include "src/utils/ostreams.h"
 #include "src/utils/utils.h"
@@ -56,6 +56,10 @@
 #ifdef V8_INTL_SUPPORT
 #include "unicode/locid.h"
 #endif  // V8_INTL_SUPPORT
+
+#ifdef V8_OS_LINUX
+#include <sys/mman.h>  // For MultiMappedAllocator.
+#endif
 
 #if !defined(_WIN32) && !defined(_WIN64)
 #include <unistd.h>  // NOLINT
@@ -129,19 +133,12 @@ class ShellArrayBufferAllocator : public ArrayBufferAllocatorBase {
 
  private:
   static constexpr size_t kVMThreshold = 65536;
-  static constexpr size_t kTwoGB = 2u * 1024u * 1024u * 1024u;
 
   void* AllocateVM(size_t length) {
     DCHECK_LE(kVMThreshold, length);
-    // TODO(titzer): allocations should fail if >= 2gb because array buffers
-    // store their lengths as a SMI internally.
-    if (length >= kTwoGB) return nullptr;
-
     v8::PageAllocator* page_allocator = i::GetPlatformPageAllocator();
     size_t page_size = page_allocator->AllocatePageSize();
     size_t allocated = RoundUp(length, page_size);
-    // Rounding up could go over the limit.
-    if (allocated >= kTwoGB) return nullptr;
     return i::AllocatePages(page_allocator, nullptr, allocated, page_size,
                             PageAllocator::kReadWrite);
   }
@@ -208,6 +205,66 @@ class MockArrayBufferAllocatiorWithLimit : public MockArrayBufferAllocator {
  private:
   std::atomic<size_t> space_left_;
 };
+
+#ifdef V8_OS_LINUX
+
+// This is a mock allocator variant that provides a huge virtual allocation
+// backed by a small real allocation that is repeatedly mapped. If you create an
+// array on memory allocated by this allocator, you will observe that elements
+// will alias each other as if their indices were modulo-divided by the real
+// allocation length.
+// The purpose is to allow stability-testing of huge (typed) arrays without
+// actually consuming huge amounts of physical memory.
+// This is currently only available on Linux because it relies on {mremap}.
+class MultiMappedAllocator : public ArrayBufferAllocatorBase {
+ protected:
+  void* Allocate(size_t length) override {
+    // We use mmap, which initializes pages to zero anyway.
+    return AllocateUninitialized(length);
+  }
+
+  void* AllocateUninitialized(size_t length) override {
+    size_t rounded_length = RoundUp(length, kChunkSize);
+    int prot = PROT_READ | PROT_WRITE;
+    // We have to specify MAP_SHARED to make {mremap} below do what we want.
+    // We specify MAP_HUGETLB to reduce TLB load (fewer, bigger mappings).
+    int flags = MAP_SHARED | MAP_ANONYMOUS | MAP_HUGETLB;
+    void* real_alloc = mmap(nullptr, kChunkSize, prot, flags, -1, 0);
+    void* virtual_alloc =
+        mmap(nullptr, rounded_length, prot, flags | MAP_NORESERVE, -1, 0);
+    i::Address virtual_base = reinterpret_cast<i::Address>(virtual_alloc);
+    i::Address virtual_end = virtual_base + rounded_length;
+    for (i::Address to_map = virtual_base; to_map < virtual_end;
+         to_map += kChunkSize) {
+      // Specifying 0 as the "old size" causes the existing map entry to not
+      // get deleted, which is important so that we can remap it again in the
+      // next iteration of this loop.
+      void* result =
+          mremap(real_alloc, 0, kChunkSize, MREMAP_MAYMOVE | MREMAP_FIXED,
+                 reinterpret_cast<void*>(to_map));
+      DCHECK_NE(-1, reinterpret_cast<intptr_t>(result));
+      USE(result);
+    }
+    regions_[virtual_alloc] = real_alloc;
+    return virtual_alloc;
+  }
+
+  void Free(void* data, size_t length) override {
+    void* real_alloc = regions_[data];
+    munmap(real_alloc, kChunkSize);
+    size_t rounded_length = RoundUp(length, kChunkSize);
+    munmap(data, rounded_length);
+    regions_.erase(data);
+  }
+
+ private:
+  // Aiming for a "Huge Page" (2M on Linux x64) to go easy on the TLB.
+  static constexpr size_t kChunkSize = 2 * 1024 * 1024;
+
+  std::unordered_map<void*, void*> regions_;
+};
+
+#endif  // V8_OS_LINUX
 
 v8::Platform* g_default_platform;
 std::unique_ptr<v8::Platform> g_platform;
@@ -1367,7 +1424,7 @@ void WriteToFile(FILE* file, const v8::FunctionCallbackInfo<v8::Value>& args) {
     Local<String> str_obj;
 
     if (arg->IsSymbol()) {
-      arg = Local<Symbol>::Cast(arg)->Name();
+      arg = Local<Symbol>::Cast(arg)->Description();
     }
     if (!arg->ToString(args.GetIsolate()->GetCurrentContext())
              .ToLocal(&str_obj)) {
@@ -1681,9 +1738,9 @@ void Shell::ReportException(Isolate* isolate, v8::TryCatch* try_catch) {
     printf("%s\n", exception_string);
   } else if (message->GetScriptOrigin().Options().IsWasm()) {
     // Print wasm-function[(function index)]:(offset): (message).
-    int function_index = message->GetLineNumber(context).FromJust() - 1;
+    int function_index = message->GetWasmFunctionIndex();
     int offset = message->GetStartColumn(context).FromJust();
-    printf("wasm-function[%d]:%d: %s\n", function_index, offset,
+    printf("wasm-function[%d]:0x%x: %s\n", function_index, offset,
            exception_string);
   } else {
     // Print (filename):(line number): (message).
@@ -2082,7 +2139,7 @@ Local<Context> Shell::CreateEvaluationContext(Isolate* isolate) {
   EscapableHandleScope handle_scope(isolate);
   Local<Context> context = Context::New(isolate, nullptr, global_template);
   DCHECK(!context.IsEmpty());
-  if (i::FLAG_perf_prof_annotate_wasm) {
+  if (i::FLAG_perf_prof_annotate_wasm || i::FLAG_vtune_prof_annotate_wasm) {
     isolate->SetWasmLoadSourceMapCallback(ReadFile);
   }
   InitializeModuleEmbedderData(context);
@@ -2318,23 +2375,6 @@ static char* ReadChars(const char* name, int* size_out) {
   return chars;
 }
 
-struct DataAndPersistent {
-  uint8_t* data;
-  int byte_length;
-  Global<ArrayBuffer> handle;
-};
-
-static void ReadBufferWeakCallback(
-    const v8::WeakCallbackInfo<DataAndPersistent>& data) {
-  int byte_length = data.GetParameter()->byte_length;
-  data.GetIsolate()->AdjustAmountOfExternalAllocatedMemory(
-      -static_cast<intptr_t>(byte_length));
-
-  delete[] data.GetParameter()->data;
-  data.GetParameter()->handle.Reset();
-  delete data.GetParameter();
-}
-
 void Shell::ReadBuffer(const v8::FunctionCallbackInfo<v8::Value>& args) {
   static_assert(sizeof(char) == sizeof(uint8_t),
                 "char and uint8_t should both have 1 byte");
@@ -2346,19 +2386,20 @@ void Shell::ReadBuffer(const v8::FunctionCallbackInfo<v8::Value>& args) {
     return;
   }
 
-  DataAndPersistent* data = new DataAndPersistent;
-  data->data = reinterpret_cast<uint8_t*>(ReadChars(*filename, &length));
-  if (data->data == nullptr) {
-    delete data;
+  uint8_t* data = reinterpret_cast<uint8_t*>(ReadChars(*filename, &length));
+  if (data == nullptr) {
     Throw(isolate, "Error reading file");
     return;
   }
-  data->byte_length = length;
-  Local<v8::ArrayBuffer> buffer = ArrayBuffer::New(isolate, data->data, length);
-  data->handle.Reset(isolate, buffer);
-  data->handle.SetWeak(data, ReadBufferWeakCallback,
-                       v8::WeakCallbackType::kParameter);
-  isolate->AdjustAmountOfExternalAllocatedMemory(length);
+  std::unique_ptr<v8::BackingStore> backing_store =
+      ArrayBuffer::NewBackingStore(
+          data, length,
+          [](void* data, size_t length, void*) {
+            delete[] reinterpret_cast<uint8_t*>(data);
+          },
+          nullptr);
+  Local<v8::ArrayBuffer> buffer =
+      ArrayBuffer::New(isolate, std::move(backing_store));
 
   args.GetReturnValue().Set(buffer);
 }
@@ -2941,9 +2982,6 @@ bool Shell::SetOptions(int argc, char* argv[]) {
                strcmp(argv[i], "--no-stress-opt") == 0) {
       options.stress_opt = false;
       argv[i] = nullptr;
-    } else if (strcmp(argv[i], "--stress-deopt") == 0) {
-      options.stress_deopt = true;
-      argv[i] = nullptr;
     } else if (strcmp(argv[i], "--stress-background-compile") == 0) {
       options.stress_background_compile = true;
       argv[i] = nullptr;
@@ -2955,7 +2993,6 @@ bool Shell::SetOptions(int argc, char* argv[]) {
                strcmp(argv[i], "--no-always-opt") == 0) {
       // No support for stressing if we can't use --always-opt.
       options.stress_opt = false;
-      options.stress_deopt = false;
     } else if (strcmp(argv[i], "--logfile-per-isolate") == 0) {
       logfile_per_isolate = true;
       argv[i] = nullptr;
@@ -3072,6 +3109,9 @@ bool Shell::SetOptions(int argc, char* argv[]) {
   options.mock_arraybuffer_allocator = i::FLAG_mock_arraybuffer_allocator;
   options.mock_arraybuffer_allocator_limit =
       i::FLAG_mock_arraybuffer_allocator_limit;
+#if V8_OS_LINUX
+  options.multi_mapped_mock_allocator = i::FLAG_multi_mapped_mock_allocator;
+#endif
 
   // Set up isolated source groups.
   options.isolate_sources = new SourceGroup[options.num_isolates];
@@ -3395,9 +3435,6 @@ class Serializer : public ValueSerializer::Delegate {
       }
 
       auto backing_store = array_buffer->GetBackingStore();
-      if (!array_buffer->IsExternal()) {
-        array_buffer->Externalize(backing_store);
-      }
       data_->backing_stores_.push_back(std::move(backing_store));
       array_buffer->Detach();
     }
@@ -3466,6 +3503,52 @@ class Deserializer : public ValueDeserializer::Delegate {
   std::unique_ptr<SerializationData> data_;
 
   DISALLOW_COPY_AND_ASSIGN(Deserializer);
+};
+
+class D8Testing {
+ public:
+  /**
+   * Get the number of runs of a given test that is required to get the full
+   * stress coverage.
+   */
+  static int GetStressRuns() {
+    if (internal::FLAG_stress_runs != 0) return internal::FLAG_stress_runs;
+#ifdef DEBUG
+    // In debug mode the code runs much slower so stressing will only make two
+    // runs.
+    return 2;
+#else
+    return 5;
+#endif
+  }
+
+  /**
+   * Indicate the number of the run which is about to start. The value of run
+   * should be between 0 and one less than the result from GetStressRuns()
+   */
+  static void PrepareStressRun(int run) {
+    static const char* kLazyOptimizations =
+        "--prepare-always-opt "
+        "--max-inlined-bytecode-size=999999 "
+        "--max-inlined-bytecode-size-cumulative=999999 "
+        "--noalways-opt";
+    static const char* kForcedOptimizations = "--always-opt";
+
+    if (run == GetStressRuns() - 1) {
+      V8::SetFlagsFromString(kForcedOptimizations);
+    } else {
+      V8::SetFlagsFromString(kLazyOptimizations);
+    }
+  }
+
+  /**
+   * Force deoptimization of all functions.
+   */
+  static void DeoptimizeAll(Isolate* isolate) {
+    i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
+    i::HandleScope scope(i_isolate);
+    i::Deoptimizer::DeoptimizeAll(i_isolate);
+  }
 };
 
 std::unique_ptr<SerializationData> Shell::SerializeValue(
@@ -3602,12 +3685,19 @@ int Shell::Main(int argc, char* argv[]) {
       memory_limit >= options.mock_arraybuffer_allocator_limit
           ? memory_limit
           : std::numeric_limits<size_t>::max());
+#if V8_OS_LINUX
+  MultiMappedAllocator multi_mapped_mock_allocator;
+#endif  // V8_OS_LINUX
   if (options.mock_arraybuffer_allocator) {
     if (memory_limit) {
       Shell::array_buffer_allocator = &mock_arraybuffer_allocator_with_limit;
     } else {
       Shell::array_buffer_allocator = &mock_arraybuffer_allocator;
     }
+#if V8_OS_LINUX
+  } else if (options.multi_mapped_mock_allocator) {
+    Shell::array_buffer_allocator = &multi_mapped_mock_allocator;
+#endif  // V8_OS_LINUX
   } else {
     Shell::array_buffer_allocator = &shell_array_buffer_allocator;
   }
@@ -3664,19 +3754,17 @@ int Shell::Main(int argc, char* argv[]) {
       tracing_controller->StartTracing(trace_config);
     }
 
-    if (options.stress_opt || options.stress_deopt) {
-      Testing::SetStressRunType(options.stress_opt ? Testing::kStressTypeOpt
-                                                   : Testing::kStressTypeDeopt);
-      options.stress_runs = Testing::GetStressRuns();
+    if (options.stress_opt) {
+      options.stress_runs = D8Testing::GetStressRuns();
       for (int i = 0; i < options.stress_runs && result == 0; i++) {
         printf("============ Stress %d/%d ============\n", i + 1,
                options.stress_runs);
-        Testing::PrepareStressRun(i);
+        D8Testing::PrepareStressRun(i);
         bool last_run = i == options.stress_runs - 1;
         result = RunMain(isolate, argc, argv, last_run);
       }
       printf("======== Full Deoptimization =======\n");
-      Testing::DeoptimizeAll(isolate);
+      D8Testing::DeoptimizeAll(isolate);
     } else if (i::FLAG_stress_runs > 0) {
       options.stress_runs = i::FLAG_stress_runs;
       for (int i = 0; i < options.stress_runs && result == 0; i++) {

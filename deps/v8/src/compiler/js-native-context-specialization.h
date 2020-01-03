@@ -44,11 +44,7 @@ class V8_EXPORT_PRIVATE JSNativeContextSpecialization final
     : public AdvancedReducer {
  public:
   // Flags that control the mode of operation.
-  enum Flag {
-    kNoFlags = 0u,
-    kAccessorInliningEnabled = 1u << 0,
-    kBailoutOnUninitialized = 1u << 1
-  };
+  enum Flag { kNoFlags = 0u, kBailoutOnUninitialized = 1u << 0 };
   using Flags = base::Flags<Flag>;
 
   JSNativeContextSpecialization(Editor* editor, JSGraph* jsgraph,
@@ -79,7 +75,6 @@ class V8_EXPORT_PRIVATE JSNativeContextSpecialization final
   Reduction ReduceJSOrdinaryHasInstance(Node* node);
   Reduction ReduceJSPromiseResolve(Node* node);
   Reduction ReduceJSResolvePromise(Node* node);
-  Reduction ReduceJSLoadContext(Node* node);
   Reduction ReduceJSLoadGlobal(Node* node);
   Reduction ReduceJSStoreGlobal(Node* node);
   Reduction ReduceJSLoadNamed(Node* node);
@@ -202,12 +197,6 @@ class V8_EXPORT_PRIVATE JSNativeContextSpecialization final
   // the previously recorded {name} feedback.
   Node* BuildCheckEqualsName(NameRef const& name, Node* value, Node* effect,
                              Node* control);
-
-  // Attach a pair of success and exception paths on a given control path.
-  // The exception is joined to the Merge+Phi+EffectPhi nodes while the success
-  // path is returned.
-  Node* AppendExceptionHandling(Node* effect, Node* control, Node* merge,
-                                Node* phi, Node* effect_phi);
 
   // Checks if we can turn the hole into undefined when loading an element
   // from an object with one of the {receiver_maps}; sets up appropriate

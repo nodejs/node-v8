@@ -114,8 +114,6 @@ namespace internal {
   V(_, FUNCTION_TEMPLATE_INFO_TYPE, FunctionTemplateInfo,                      \
     function_template_info)                                                    \
   V(_, OBJECT_TEMPLATE_INFO_TYPE, ObjectTemplateInfo, object_template_info)    \
-  V(_, TUPLE2_TYPE, Tuple2, tuple2)                                            \
-  V(_, TUPLE3_TYPE, Tuple3, tuple3)                                            \
   V(_, ACCESS_CHECK_INFO_TYPE, AccessCheckInfo, access_check_info)             \
   V(_, ACCESSOR_INFO_TYPE, AccessorInfo, accessor_info)                        \
   V(_, ACCESSOR_PAIR_TYPE, AccessorPair, accessor_pair)                        \
@@ -138,14 +136,14 @@ namespace internal {
   V(_, PROMISE_REACTION_TYPE, PromiseReaction, promise_reaction)               \
   V(_, PROTOTYPE_INFO_TYPE, PrototypeInfo, prototype_info)                     \
   V(_, SCRIPT_TYPE, Script, script)                                            \
-  V(_, SOURCE_POSITION_TABLE_WITH_FRAME_CACHE_TYPE,                            \
-    SourcePositionTableWithFrameCache, source_position_table_with_frame_cache) \
   V(_, SOURCE_TEXT_MODULE_INFO_ENTRY_TYPE, SourceTextModuleInfoEntry,          \
     module_info_entry)                                                         \
   V(_, STACK_FRAME_INFO_TYPE, StackFrameInfo, stack_frame_info)                \
   V(_, STACK_TRACE_FRAME_TYPE, StackTraceFrame, stack_trace_frame)             \
   V(_, TEMPLATE_OBJECT_DESCRIPTION_TYPE, TemplateObjectDescription,            \
     template_object_description)                                               \
+  V(_, TUPLE2_TYPE, Tuple2, tuple2)                                            \
+  V(_, TUPLE3_TYPE, Tuple3, tuple3)                                            \
   V(_, WASM_CAPI_FUNCTION_DATA_TYPE, WasmCapiFunctionData,                     \
     wasm_capi_function_data)                                                   \
   V(_, WASM_DEBUG_INFO_TYPE, WasmDebugInfo, wasm_debug_info)                   \
