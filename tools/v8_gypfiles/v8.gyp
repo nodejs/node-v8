@@ -705,7 +705,7 @@
         'generate_bytecode_builtins_list',
         'run_torque',
         'v8_maybe_icu',
-        'zlib.gyp:zlib'
+        'v8_zlib',
       ],
       'includes': ['inspector.gypi'],
       'direct_dependent_settings': {
@@ -1599,5 +1599,16 @@
         'sources': ['<(SHARED_INTERMEDIATE_DIR)/debug-support.cc', ],
       },
     },  # postmortem-metadata
+
+    {
+      'target_name': 'v8_zlib',
+      'type': 'static_library',
+      'direct_dependent_settings': {
+        'include_dirs': [ '<(V8_ROOT)/third_party/zlib' ],
+      },
+      'defines': [ 'ZLIB_IMPLEMENTATION' ],
+      'include_dirs': [ '<(V8_ROOT)/third_party/zlib' ],
+      'sources': [ '<(V8_ROOT)/third_party/zlib/adler32.c' ],
+    },  # v8_zlib
   ],
 }
