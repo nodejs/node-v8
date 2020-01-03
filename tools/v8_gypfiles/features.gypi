@@ -296,7 +296,7 @@
         'defines': ['V8_CONCURRENT_MARKING',],
       }],
       ['v8_enable_array_buffer_extension==1', {
-        'defines': ['V8_ARRAY_BUFFER-EXTENSION',],
+        'defines': ['V8_ARRAY_BUFFER_EXTENSION',],
       }],
       ['v8_enable_lazy_source_positions==1', {
         'defines': ['V8_ENABLE_LAZY_SOURCE_POSITIONS',],
