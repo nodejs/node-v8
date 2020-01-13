@@ -19,6 +19,7 @@
       "<(V8_ROOT)/src/builtins/array-find.tq",
       "<(V8_ROOT)/src/builtins/array-findindex.tq",
       "<(V8_ROOT)/src/builtins/array-foreach.tq",
+      "<(V8_ROOT)/src/builtins/array-from.tq",
       "<(V8_ROOT)/src/builtins/array-isarray.tq",
       "<(V8_ROOT)/src/builtins/array-join.tq",
       "<(V8_ROOT)/src/builtins/array-lastindexof.tq",
