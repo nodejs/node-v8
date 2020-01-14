@@ -147,9 +147,10 @@ Handle<Code> BuildSetupFunction(Isolate* isolate,
     }
     params.push_back(element);
   }
-  __ Return(tester.raw_assembler_for_testing()->AddNode(
-      tester.raw_assembler_for_testing()->common()->Call(call_descriptor),
-      static_cast<int>(params.size()), params.data()));
+  __ Return(
+      __ UncheckedCast<Object>(tester.raw_assembler_for_testing()->AddNode(
+          tester.raw_assembler_for_testing()->common()->Call(call_descriptor),
+          static_cast<int>(params.size()), params.data())));
   return tester.GenerateCodeCloseAndEscape();
 }
 
@@ -214,11 +215,11 @@ Handle<Code> BuildTeardownFunction(Isolate* isolate,
         param =
             tester.raw_assembler_for_testing()->ChangeFloat32ToFloat64(param);
         V8_FALLTHROUGH;
-      case MachineRepresentation::kFloat64:
+      case MachineRepresentation::kFloat64: {
         __ StoreObjectFieldNoWriteBarrier(
-            __ LoadFixedArrayElement(result_array, i), HeapNumber::kValueOffset,
-            param, MachineRepresentation::kFloat64);
-        break;
+            __ Cast(__ LoadFixedArrayElement(result_array, i)),
+            HeapNumber::kValueOffset, __ UncheckedCast<Float64T>(param));
+      } break;
       case MachineRepresentation::kSimd128: {
         TNode<FixedArray> vector =
             __ Cast(__ LoadFixedArrayElement(result_array, i));

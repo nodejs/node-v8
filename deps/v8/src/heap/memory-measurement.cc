@@ -8,6 +8,7 @@
 #include "src/execution/isolate.h"
 #include "src/heap/factory-inl.h"
 #include "src/heap/factory.h"
+#include "src/heap/marking-worklist.h"
 #include "src/objects/js-promise.h"
 
 namespace v8 {
@@ -74,6 +75,48 @@ Handle<JSPromise> MemoryMeasurement::EnqueueRequest(
   Handle<JSObject> result = result_builder.Build();
   JSPromise::Resolve(promise, result).ToHandleChecked();
   return promise;
+}
+
+bool NativeContextInferrer::InferForJSFunction(JSFunction function,
+                                               Address* native_context) {
+  if (function.has_context()) {
+    *native_context = function.context().native_context().ptr();
+    return true;
+  }
+  return false;
+}
+
+bool NativeContextInferrer::InferForJSObject(Isolate* isolate, Map map,
+                                             JSObject object,
+                                             Address* native_context) {
+  if (map.instance_type() == JS_GLOBAL_OBJECT_TYPE) {
+    Object maybe_context =
+        JSGlobalObject::cast(object).native_context_unchecked(isolate);
+    if (maybe_context.IsNativeContext()) {
+      *native_context = maybe_context.ptr();
+      return true;
+    }
+  }
+  if (*native_context == MarkingWorklists::kSharedContext) {
+    // This lookup is expensive, so perform it only if the object is currently
+    // attributed to the shared context.
+    // The maximum number of steps to perform when looking for the context.
+    const int kMaxSteps = 3;
+    Object maybe_constructor = map.TryGetConstructor(isolate, kMaxSteps);
+    if (maybe_constructor.IsJSFunction()) {
+      return InferForJSFunction(JSFunction::cast(maybe_constructor),
+                                native_context);
+    }
+  }
+  return false;
+}
+
+void NativeContextStats::Clear() { size_by_context_.clear(); }
+
+void NativeContextStats::Merge(const NativeContextStats& other) {
+  for (const auto& it : other.size_by_context_) {
+    size_by_context_[it.first] += it.second;
+  }
 }
 
 }  // namespace internal

@@ -3,10 +3,8 @@
 // found in the LICENSE file.
 
 // Used for encoding f32 and double constants to bits.
-let f32_view = new Float32Array(1);
-let f32_bytes_view = new Uint8Array(f32_view.buffer);
-let f64_view = new Float64Array(1);
-let f64_bytes_view = new Uint8Array(f64_view.buffer);
+let byte_view = new Uint8Array(8);
+let data_view = new DataView(byte_view.buffer);
 
 // The bytes function receives one of
 //  - several arguments, each of which is either a number or a string of length
@@ -468,6 +466,8 @@ let kExprI64AtomicCompareExchange32U = 0x4e;
 let kExprS128LoadMem = 0x00;
 let kExprS128StoreMem = 0x01;
 let kExprI32x4Splat = 0x0c;
+let kExprI32x4Eq = 0x2c;
+let kExprS1x4AllTrue = 0x75;
 let kExprF32x4Min = 0x9e;
 
 // Compilation hint constants.
@@ -629,6 +629,7 @@ class WasmFunctionBuilder {
     this.body = [];
     this.locals = [];
     this.local_names = [];
+    this.body_offset = undefined;  // Not valid until module is serialized.
   }
 
   numLocalNames() {
@@ -799,8 +800,9 @@ class WasmModuleBuilder {
   }
 
   addTable(type, initial_size, max_size = undefined) {
-    if (type != kWasmAnyRef && type != kWasmAnyFunc) {
-      throw new Error('Tables must be of type kWasmAnyRef or kWasmAnyFunc');
+    if (type != kWasmAnyRef && type != kWasmAnyFunc && type != kWasmExnRef) {
+      throw new Error(
+          'Tables must be of type kWasmAnyRef, kWasmAnyFunc, or kWasmExnRef');
     }
     let table = new WasmTableBuilder(this, type, initial_size, max_size);
     table.index = this.tables.length + this.num_imported_tables;
@@ -1074,13 +1076,13 @@ class WasmModuleBuilder {
               break;
             case kWasmF32:
               section.emit_u8(kExprF32Const);
-              f32_view[0] = global.init;
-              section.emit_bytes(f32_bytes_view);
+              data_view.setFloat32(0, global.init, true);
+              section.emit_bytes(byte_view.subarray(0, 4));
               break;
             case kWasmF64:
               section.emit_u8(kExprF64Const);
-              f64_view[0] = global.init;
-              section.emit_bytes(f64_bytes_view);
+              data_view.setFloat64(0, global.init, true);
+              section.emit_bytes(byte_view);
               break;
             case kWasmAnyFunc:
             case kWasmAnyRef:
@@ -1240,6 +1242,7 @@ class WasmModuleBuilder {
     if (wasm.functions.length > 0) {
       // emit function bodies
       if (debug) print("emitting code @ " + binary.length);
+      let section_length = 0;
       binary.emit_section(kCodeSectionCode, section => {
         section.emit_u32v(wasm.functions.length);
         let header = new Binary;
@@ -1282,9 +1285,15 @@ class WasmModuleBuilder {
 
           section.emit_u32v(header.length + func.body.length);
           section.emit_bytes(header.trunc_buffer());
+          // Set to section offset for now, will update.
+          func.body_offset = section.length;
           section.emit_bytes(func.body);
         }
+        section_length = section.length;
       });
+      for (let func of wasm.functions) {
+        func.body_offset += binary.length - section_length;
+      }
     }
 
     // Add data segments.
@@ -1412,18 +1421,18 @@ function wasmI32Const(val) {
 }
 
 function wasmF32Const(f) {
-  f32_view[0] = f;
+  // Write in little-endian order at offset 0.
+  data_view.setFloat32(0, f, true);
   return [
-    kExprF32Const, f32_bytes_view[0], f32_bytes_view[1], f32_bytes_view[2],
-    f32_bytes_view[3]
+    kExprF32Const, byte_view[0], byte_view[1], byte_view[2], byte_view[3]
   ];
 }
 
 function wasmF64Const(f) {
-  f64_view[0] = f;
+  // Write in little-endian order at offset 0.
+  data_view.setFloat64(0, f, true);
   return [
-    kExprF64Const, f64_bytes_view[0], f64_bytes_view[1], f64_bytes_view[2],
-    f64_bytes_view[3], f64_bytes_view[4], f64_bytes_view[5], f64_bytes_view[6],
-    f64_bytes_view[7]
+    kExprF64Const, byte_view[0], byte_view[1], byte_view[2],
+    byte_view[3], byte_view[4], byte_view[5], byte_view[6], byte_view[7]
   ];
 }

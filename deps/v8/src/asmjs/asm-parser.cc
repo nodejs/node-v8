@@ -240,7 +240,7 @@ void AsmJsParser::AddGlobalImport(Vector<const char> name, AsmType* type,
                                   ValueType vtype, bool mutable_variable,
                                   VarInfo* info) {
   // Allocate a separate variable for the import.
-  // TODO(mstarzinger): Consider using the imported global directly instead of
+  // TODO(asmjs): Consider using the imported global directly instead of
   // allocating a separate global variable for immutable (i.e. const) imports.
   DeclareGlobal(info, mutable_variable, type, vtype);
 
@@ -1514,17 +1514,19 @@ AsmType* AsmJsParser::AssignmentExpression() {
       if (!value->IsA(ret)) {
         FAILn("Illegal type stored to heap view");
       }
+      ret = value;
       if (heap_type->IsA(AsmType::Float32Array()) &&
           value->IsA(AsmType::DoubleQ())) {
         // Assignment to a float32 heap can be used to convert doubles.
         current_function_builder_->Emit(kExprF32ConvertF64);
+        ret = AsmType::FloatQ();
       }
       if (heap_type->IsA(AsmType::Float64Array()) &&
           value->IsA(AsmType::FloatQ())) {
         // Assignment to a float64 heap can be used to convert floats.
         current_function_builder_->Emit(kExprF64ConvertF32);
+        ret = AsmType::DoubleQ();
       }
-      ret = value;
 #define V(array_type, wasmload, wasmstore, type)                         \
   if (heap_type->IsA(AsmType::array_type())) {                           \
     current_function_builder_->Emit(kExpr##type##AsmjsStore##wasmstore); \
@@ -2430,7 +2432,7 @@ void AsmJsParser::ValidateHeapAccess() {
   uint32_t offset;
   if (CheckForUnsigned(&offset)) {
     // TODO(bradnelson): Check more things.
-    // TODO(mstarzinger): Clarify and explain where this limit is coming from,
+    // TODO(asmjs): Clarify and explain where this limit is coming from,
     // as it is not mandated by the spec directly.
     if (offset > 0x7FFFFFFF ||
         static_cast<uint64_t>(offset) * static_cast<uint64_t>(size) >

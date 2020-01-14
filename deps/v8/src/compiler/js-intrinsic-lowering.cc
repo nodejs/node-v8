@@ -22,17 +22,24 @@ namespace internal {
 namespace compiler {
 
 JSIntrinsicLowering::JSIntrinsicLowering(Editor* editor, JSGraph* jsgraph,
-                                         JSHeapBroker* broker)
-    : AdvancedReducer(editor), jsgraph_(jsgraph), broker_(broker) {}
+                                         JSHeapBroker* broker, Flags flags)
+    : AdvancedReducer(editor),
+      jsgraph_(jsgraph),
+      broker_(broker),
+      flags_(flags) {}
 
 Reduction JSIntrinsicLowering::Reduce(Node* node) {
-  DisallowHeapAccessIf no_heap_access(FLAG_concurrent_inlining);
+  DisallowHeapAccessIf no_heap_access(flags_ & kConcurrentInlining);
 
   if (node->opcode() != IrOpcode::kJSCallRuntime) return NoChange();
   const Runtime::Function* const f =
       Runtime::FunctionForId(CallRuntimeParametersOf(node->op()).id());
-  if (f->function_id == Runtime::kTurbofanStaticAssert)
+  if (f->function_id == Runtime::kTurbofanStaticAssert) {
     return ReduceTurbofanStaticAssert(node);
+  }
+  if (f->function_id == Runtime::kIsBeingInterpreted) {
+    return ReduceIsBeingInterpreted(node);
+  }
   if (f->intrinsic_type != Runtime::IntrinsicType::INLINE) return NoChange();
   switch (f->function_id) {
     case Runtime::kInlineCopyDataProperties:
@@ -282,6 +289,11 @@ Reduction JSIntrinsicLowering::ReduceTurbofanStaticAssert(Node* node) {
     ReplaceWithValue(node, node, assert, nullptr);
   }
   return Changed(jsgraph_->UndefinedConstant());
+}
+
+Reduction JSIntrinsicLowering::ReduceIsBeingInterpreted(Node* node) {
+  RelaxEffectsAndControls(node);
+  return Changed(jsgraph_->FalseConstant());
 }
 
 Reduction JSIntrinsicLowering::Change(Node* node, const Operator* op) {

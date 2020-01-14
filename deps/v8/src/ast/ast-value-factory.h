@@ -52,6 +52,7 @@ class AstRawString final : public ZoneObject {
                          : literal_bytes_.length() / 2;
   }
   bool AsArrayIndex(uint32_t* index) const;
+  bool IsIntegerIndex() const;
   V8_EXPORT_PRIVATE bool IsOneByteEqualTo(const char* data) const;
   uint16_t FirstCharacter() const;
 
@@ -209,9 +210,8 @@ class AstBigInt {
   F(dot_default, ".default")                    \
   F(dot_for, ".for")                            \
   F(dot_generator_object, ".generator_object")  \
-  F(dot_iterator, ".iterator")                  \
-  F(dot_promise, ".promise")                    \
   F(dot_result, ".result")                      \
+  F(dot_repl_result, ".repl_result")            \
   F(dot_switch_tag, ".switch_tag")              \
   F(dot_catch, ".catch")                        \
   F(empty, "")                                  \

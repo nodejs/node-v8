@@ -181,10 +181,22 @@ enum ModuleOrigin : uint8_t {
 
 struct ModuleWireBytes;
 
+class V8_EXPORT_PRIVATE DecodedFunctionNames {
+ public:
+  WireBytesRef Lookup(const ModuleWireBytes& wire_bytes,
+                      uint32_t function_index) const;
+  void AddForTesting(int function_index, WireBytesRef name);
+
+ private:
+  // {function_names_} is populated lazily after decoding, and therefore needs a
+  // mutex to protect concurrent modifications from multiple {WasmModuleObject}.
+  mutable base::Mutex mutex_;
+  mutable std::unique_ptr<std::unordered_map<uint32_t, WireBytesRef>>
+      function_names_;
+};
+
 // Static representation of a module.
 struct V8_EXPORT_PRIVATE WasmModule {
-  MOVE_ONLY_NO_DEFAULT_CONSTRUCTOR(WasmModule);
-
   std::unique_ptr<Zone> signature_zone;
   uint32_t initial_pages = 0;      // initial size of the memory in 64k pages
   uint32_t maximum_pages = 0;      // maximum size of the memory in 64k pages
@@ -219,15 +231,12 @@ struct V8_EXPORT_PRIVATE WasmModule {
   SignatureMap signature_map;  // canonicalizing map for signature indexes.
 
   ModuleOrigin origin = kWasmOrigin;  // origin of the module
-  mutable std::unique_ptr<std::unordered_map<uint32_t, WireBytesRef>>
-      function_names;
+  DecodedFunctionNames function_names;
   std::string source_map_url;
 
   explicit WasmModule(std::unique_ptr<Zone> signature_zone = nullptr);
 
-  WireBytesRef LookupFunctionName(const ModuleWireBytes& wire_bytes,
-                                  uint32_t function_index) const;
-  void AddFunctionNameForTesting(int function_index, WireBytesRef name);
+  DISALLOW_COPY_AND_ASSIGN(WasmModule);
 };
 
 inline bool is_asmjs_module(const WasmModule* module) {
@@ -250,9 +259,14 @@ int GetExportWrapperIndex(const WasmModule* module, const FunctionSig* sig,
 int GetWasmFunctionOffset(const WasmModule* module, uint32_t func_index);
 
 // Returns the function containing the given byte offset.
-// Returns -1 if the byte offset is not contained in any function of this
-// module.
+// Returns -1 if the byte offset is not contained in any
+// function of this module.
 int GetContainingWasmFunction(const WasmModule* module, uint32_t byte_offset);
+
+// Returns the function containing the given byte offset.
+// Will return preceding function if the byte offset is not
+// contained within a function.
+int GetNearestWasmFunction(const WasmModule* module, uint32_t byte_offset);
 
 // Compute the disassembly of a wasm function.
 // Returns the disassembly string and a list of <byte_offset, line, column>
@@ -370,6 +384,11 @@ class TruncatedUserString {
   const int length_;
   char buffer_[kMaxLen];
 };
+
+// Print the signature into the given {buffer}. If {buffer} is non-empty, it
+// will be null-terminated, even if the signature is cut off. Returns the number
+// of characters written, excluding the terminating null-byte.
+size_t PrintSignature(Vector<char> buffer, wasm::FunctionSig*);
 
 }  // namespace wasm
 }  // namespace internal

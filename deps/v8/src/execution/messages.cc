@@ -320,6 +320,8 @@ Handle<Object> StackFrameBase::GetWasmModuleName() {
   return isolate_->factory()->undefined_value();
 }
 
+int StackFrameBase::GetWasmFunctionIndex() { return StackFrameBase::kNone; }
+
 Handle<Object> StackFrameBase::GetWasmInstance() {
   return isolate_->factory()->undefined_value();
 }
@@ -389,8 +391,8 @@ namespace {
 bool CheckMethodName(Isolate* isolate, Handle<JSReceiver> receiver,
                      Handle<Name> name, Handle<JSFunction> fun,
                      LookupIterator::Configuration config) {
-  LookupIterator iter =
-      LookupIterator::PropertyOrElement(isolate, receiver, name, config);
+  LookupIterator::Key key(isolate, name);
+  LookupIterator iter(isolate, receiver, key, config);
   if (iter.state() == LookupIterator::DATA) {
     return iter.GetDataValue().is_identical_to(fun);
   } else if (iter.state() == LookupIterator::ACCESSOR) {
@@ -687,7 +689,7 @@ void FrameArrayIterator::Advance() { frame_ix_++; }
 StackFrameBase* FrameArrayIterator::Frame() {
   DCHECK(HasFrame());
   const int flags = array_->Flags(frame_ix_).value();
-  int flag_mask = FrameArray::kIsWasmFrame |
+  int flag_mask = FrameArray::kIsWasmCompiledFrame |
                   FrameArray::kIsWasmInterpretedFrame |
                   FrameArray::kIsAsmJsWasmFrame;
   switch (flags & flag_mask) {
@@ -695,7 +697,7 @@ StackFrameBase* FrameArrayIterator::Frame() {
       // JavaScript Frame.
       js_frame_.FromFrameArray(isolate_, array_, frame_ix_);
       return &js_frame_;
-    case FrameArray::kIsWasmFrame:
+    case FrameArray::kIsWasmCompiledFrame:
     case FrameArray::kIsWasmInterpretedFrame:
       // Wasm Frame:
       wasm_frame_.FromFrameArray(isolate_, array_, frame_ix_);
@@ -1226,7 +1228,7 @@ Handle<String> RenderCallSite(Isolate* isolate, Handle<Object> object,
                               MessageLocation* location,
                               CallPrinter::ErrorHint* hint) {
   if (ComputeLocation(isolate, location)) {
-    ParseInfo info(isolate, location->shared());
+    ParseInfo info(isolate, *location->shared());
     if (parsing::ParseAny(&info, location->shared(), isolate)) {
       info.ast_value_factory()->Internalize(isolate);
       CallPrinter printer(isolate, location->shared()->IsUserJavaScript());
@@ -1327,7 +1329,7 @@ Object ErrorUtils::ThrowLoadFromNullOrUndefined(Isolate* isolate,
   if (ComputeLocation(isolate, &location)) {
     location_computed = true;
 
-    ParseInfo info(isolate, location.shared());
+    ParseInfo info(isolate, *location.shared());
     if (parsing::ParseAny(&info, location.shared(), isolate)) {
       info.ast_value_factory()->Internalize(isolate);
       CallPrinter printer(isolate, location.shared()->IsUserJavaScript());
