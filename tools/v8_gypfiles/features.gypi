@@ -147,7 +147,7 @@
     'v8_enable_concurrent_marking%': 1,
 
     # Sets -dV8_ARRAY_BUFFER_EXTENSION
-    'v8_enable_array_buffer_extension%': 1,
+    'v8_enable_array_buffer_extension%': 0,
 
     # Enables various testing features.
     'v8_enable_test_features%': 0,
