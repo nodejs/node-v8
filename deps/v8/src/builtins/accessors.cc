@@ -85,7 +85,7 @@ Accessors::ReplaceAccessorWithDataProperty(Handle<Object> receiver,
                                            Handle<JSObject> holder,
                                            Handle<Name> name,
                                            Handle<Object> value) {
-  LookupIterator it(receiver, name, holder,
+  LookupIterator it(holder->GetIsolate(), receiver, name, holder,
                     LookupIterator::OWN_SKIP_INTERCEPTOR);
   // Skip any access checks we might hit. This accessor should never hit in a
   // situation where the caller does not have access.
@@ -851,9 +851,16 @@ void Accessors::RegExpResultIndicesGetter(
   HandleScope scope(isolate);
   Handle<JSRegExpResult> regexp_result(
       Handle<JSRegExpResult>::cast(Utils::OpenHandle(*info.Holder())));
-  Handle<Object> indices(
+  MaybeHandle<JSArray> maybe_indices(
       JSRegExpResult::GetAndCacheIndices(isolate, regexp_result));
-  info.GetReturnValue().Set(Utils::ToLocal(indices));
+  Handle<JSArray> indices;
+  if (!maybe_indices.ToHandle(&indices)) {
+    isolate->OptionalRescheduleException(false);
+    Handle<Object> result = isolate->factory()->undefined_value();
+    info.GetReturnValue().Set(Utils::ToLocal(result));
+  } else {
+    info.GetReturnValue().Set(Utils::ToLocal(indices));
+  }
 }
 
 Handle<AccessorInfo> Accessors::MakeRegExpResultIndicesInfo(Isolate* isolate) {

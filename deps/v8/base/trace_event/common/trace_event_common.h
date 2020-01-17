@@ -1079,7 +1079,6 @@
 #define TRACE_EVENT_PHASE_CLOCK_SYNC ('c')
 #define TRACE_EVENT_PHASE_ENTER_CONTEXT ('(')
 #define TRACE_EVENT_PHASE_LEAVE_CONTEXT (')')
-#define TRACE_EVENT_PHASE_LINK_IDS ('=')
 
 // Flags for changing the behavior of TRACE_EVENT_API_ADD_TRACE_EVENT.
 #define TRACE_EVENT_FLAG_NONE (static_cast<unsigned int>(0))

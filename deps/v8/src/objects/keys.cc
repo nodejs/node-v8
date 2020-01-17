@@ -112,7 +112,7 @@ ExceptionStatus KeyAccumulator::AddKey(Handle<Object> key,
     // The keys_ Set is converted directly to a FixedArray in GetKeys which can
     // be left-trimmer. Hence the previous Set should not keep a pointer to the
     // new one.
-    keys_->set(OrderedHashSet::NextTableIndex(), Smi::kZero);
+    keys_->set(OrderedHashSet::NextTableIndex(), Smi::zero());
     keys_ = new_set;
   }
   return ExceptionStatus::kSuccess;
@@ -528,9 +528,8 @@ V8_WARN_UNUSED_RESULT ExceptionStatus FilterForEnumerableProperties(
   DCHECK(result->IsJSArray() || result->HasSloppyArgumentsElements());
   ElementsAccessor* accessor = result->GetElementsAccessor();
 
-  uint32_t length = accessor->GetCapacity(*result, result->elements());
-  for (uint32_t i = 0; i < length; i++) {
-    InternalIndex entry(i);
+  size_t length = accessor->GetCapacity(*result, result->elements());
+  for (InternalIndex entry : InternalIndex::Range(length)) {
     if (!accessor->HasEntry(*result, entry)) continue;
 
     // args are invalid after args.Call(), create a new one in every iteration.
@@ -983,7 +982,7 @@ Maybe<bool> KeyAccumulator::CollectOwnJSProxyKeys(Handle<JSReceiver> receiver,
                                        target_keys->get(i));
       nonconfigurable_keys_length++;
       // The key was moved, null it out in the original list.
-      target_keys->set(i, Smi::kZero);
+      target_keys->set(i, Smi::zero());
     } else {
       // 16c. Else,
       // 16c i. Append key as an element of targetConfigurableKeys.

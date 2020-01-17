@@ -371,22 +371,11 @@ class DeleteNodesCallback {
 ProfileTree::ProfileTree(Isolate* isolate)
     : next_node_id_(1),
       root_(new ProfileNode(this, CodeEntry::root_entry(), nullptr)),
-      isolate_(isolate),
-      next_function_id_(1) {}
+      isolate_(isolate) {}
 
 ProfileTree::~ProfileTree() {
   DeleteNodesCallback cb;
   TraverseDepthFirst(&cb);
-}
-
-
-unsigned ProfileTree::GetFunctionId(const ProfileNode* node) {
-  CodeEntry* code_entry = node->entry();
-  auto map_entry = function_ids_.find(code_entry);
-  if (map_entry == function_ids_.end()) {
-    return function_ids_[code_entry] = next_function_id_++;
-  }
-  return function_ids_[code_entry];
 }
 
 ProfileNode* ProfileTree::AddPathFromEnd(const std::vector<CodeEntry*>& path,
@@ -508,8 +497,7 @@ CpuProfile::CpuProfile(CpuProfiler* profiler, const char* title,
       streaming_next_sample_(0),
       id_(++last_id_) {
   auto value = TracedValue::Create();
-  value->SetDouble("startTime",
-                   (start_time_ - base::TimeTicks()).InMicroseconds());
+  value->SetDouble("startTime", start_time_.since_origin().InMicroseconds());
   TRACE_EVENT_SAMPLE_WITH_ID1(TRACE_DISABLED_BY_DEFAULT("v8.cpu_profiler"),
                               "Profile", id_, "data", std::move(value));
 
@@ -650,7 +638,7 @@ void CpuProfile::FinishProfile() {
   context_filter_ = nullptr;
   StreamPendingTraceEvents();
   auto value = TracedValue::Create();
-  value->SetDouble("endTime", (end_time_ - base::TimeTicks()).InMicroseconds());
+  value->SetDouble("endTime", end_time_.since_origin().InMicroseconds());
   TRACE_EVENT_SAMPLE_WITH_ID1(TRACE_DISABLED_BY_DEFAULT("v8.cpu_profiler"),
                               "ProfileChunk", id_, "data", std::move(value));
 }

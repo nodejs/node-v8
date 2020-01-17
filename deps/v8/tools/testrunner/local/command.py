@@ -41,7 +41,7 @@ class AbortException(Exception):
 
 class BaseCommand(object):
   def __init__(self, shell, args=None, cmd_prefix=None, timeout=60, env=None,
-               verbose=False, resources_func=None):
+               verbose=False, resources_func=None, handle_sigterm=False):
     """Initialize the command.
 
     Args:
@@ -52,6 +52,9 @@ class BaseCommand(object):
       env: Environment dict for execution.
       verbose: Print additional output.
       resources_func: Callable, returning all test files needed by this command.
+      handle_sigterm: Flag indicating if SIGTERM will be used to terminate the
+          underlying process. Should not be used from the main thread, e.g. when
+          using a command to list tests.
     """
     assert(timeout > 0)
 
@@ -61,6 +64,7 @@ class BaseCommand(object):
     self.timeout = timeout
     self.env = env or {}
     self.verbose = verbose
+    self.handle_sigterm = handle_sigterm
 
   def execute(self):
     if self.verbose:
@@ -72,7 +76,9 @@ class BaseCommand(object):
     abort_occured = [False]
     def handler(signum, frame):
       self._abort(process, abort_occured)
-    signal.signal(signal.SIGTERM, handler)
+
+    if self.handle_sigterm:
+      signal.signal(signal.SIGTERM, handler)
 
     # Variable to communicate with the timer.
     timeout_occured = [False]
@@ -134,6 +140,8 @@ class BaseCommand(object):
       self._kill_process(process)
     except OSError as e:
       print(e)
+      started_as = self.to_string(relative=True)
+      print("Unruly process started as:\n  %s\n" % started_as)
       sys.stdout.flush()
       pass
 
@@ -182,6 +190,22 @@ class PosixCommand(BaseCommand):
     process.kill()
 
 
+def taskkill_windows(process, verbose=False, force=True):
+  force_flag = ' /F' if force else ''
+  tk = subprocess.Popen(
+      'taskkill /T%s /PID %d' % (force_flag, process.pid),
+      stdout=subprocess.PIPE,
+      stderr=subprocess.PIPE,
+  )
+  stdout, stderr = tk.communicate()
+  if verbose:
+    print('Taskkill results for %d' % process.pid)
+    print(stdout)
+    print(stderr)
+    print('Return code: %d' % tk.returncode)
+    sys.stdout.flush()
+
+
 class WindowsCommand(BaseCommand):
   def _start_process(self, **kwargs):
     # Try to change the error mode to avoid dialogs on fatal errors. Don't
@@ -211,18 +235,7 @@ class WindowsCommand(BaseCommand):
     return subprocess.list2cmdline(self._to_args_list())
 
   def _kill_process(self, process):
-    tk = subprocess.Popen(
-        'taskkill /T /F /PID %d' % process.pid,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    stdout, stderr = tk.communicate()
-    if self.verbose:
-      print('Taskkill results for %d' % process.pid)
-      print(stdout)
-      print(stderr)
-      print('Return code: %d' % tk.returncode)
-      sys.stdout.flush()
+    taskkill_windows(process, self.verbose)
 
 
 class AndroidCommand(BaseCommand):

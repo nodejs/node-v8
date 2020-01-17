@@ -24,6 +24,7 @@
 #include "src/objects/allocation-site.h"
 #include "src/objects/fixed-array.h"
 #include "src/objects/heap-object.h"
+#include "src/objects/js-array-buffer.h"
 #include "src/objects/objects.h"
 #include "src/objects/smi.h"
 #include "src/objects/string-table.h"
@@ -44,6 +45,10 @@ namespace heap {
 class HeapTester;
 class TestMemoryAllocatorScope;
 }  // namespace heap
+
+namespace third_party_heap {
+class Heap;
+}
 
 class IncrementalMarking;
 class BackingStore;
@@ -96,10 +101,6 @@ enum class InvalidateRecordedSlots { kYes, kNo };
 enum class ClearFreedMemoryMode { kClearFreedMemory, kDontClearFreedMemory };
 
 enum ExternalBackingStoreType { kArrayBuffer, kExternalString, kNumTypes };
-
-enum class FixedArrayVisitationMode { kRegular, kIncremental };
-
-enum class TraceRetainingPathMode { kEnabled, kDisabled };
 
 enum class RetainingPathOption { kDefault, kTrackEphemeronPath };
 
@@ -228,6 +229,18 @@ class Heap {
     TEAR_DOWN
   };
 
+  // Emits GC events for DevTools timeline.
+  class DevToolsTraceEventScope {
+   public:
+    DevToolsTraceEventScope(Heap* heap, const char* event_name,
+                            const char* event_type);
+    ~DevToolsTraceEventScope();
+
+   private:
+    Heap* heap_;
+    const char* event_name_;
+  };
+
   using PretenuringFeedbackMap =
       std::unordered_map<AllocationSite, size_t, Object::Hasher>;
 
@@ -305,7 +318,7 @@ class Heap {
   // writable and reserved to contain unwind information.
   static size_t GetCodeRangeReservedAreaSize();
 
-  void FatalProcessOutOfMemory(const char* location);
+  [[noreturn]] void FatalProcessOutOfMemory(const char* location);
 
   // Checks whether the space is valid.
   static bool IsValidAllocationSpace(AllocationSpace space);
@@ -373,6 +386,10 @@ class Heap {
                                               TSlot end);
 
   V8_EXPORT_PRIVATE static void WriteBarrierForCodeSlow(Code host);
+
+  V8_EXPORT_PRIVATE static void MarkingBarrierForArrayBufferExtensionSlow(
+      HeapObject object, ArrayBufferExtension* extension);
+
   V8_EXPORT_PRIVATE static void GenerationalBarrierSlow(HeapObject object,
                                                         Address slot,
                                                         HeapObject value);
@@ -388,6 +405,10 @@ class Heap {
   V8_EXPORT_PRIVATE static void MarkingBarrierForCodeSlow(Code host,
                                                           RelocInfo* rinfo,
                                                           HeapObject value);
+
+  static void MarkingBarrierForArrayBufferExtension(
+      JSArrayBuffer object, ArrayBufferExtension* extension);
+
   V8_EXPORT_PRIVATE static void MarkingBarrierForDescriptorArraySlow(
       Heap* heap, HeapObject host, HeapObject descriptor_array,
       int number_of_own_descriptors);
@@ -400,6 +421,9 @@ class Heap {
   void NotifyBootstrapComplete();
 
   void NotifyOldGenerationExpansion();
+
+  // Notifies the heap that an off-thread space has been merged into it.
+  void NotifyOffThreadSpaceMerged();
 
   inline Address* NewSpaceAllocationTopAddress();
   inline Address* NewSpaceAllocationLimitAddress();
@@ -563,12 +587,28 @@ class Heap {
   V8_EXPORT_PRIVATE void AutomaticallyRestoreInitialHeapLimit(
       double threshold_percent);
 
+  ArrayBufferExtension* array_buffer_extensions() {
+    return array_buffer_extensions_;
+  }
+
+  void set_array_buffer_extensions(ArrayBufferExtension* head) {
+    array_buffer_extensions_ = head;
+  }
+
+  void AppendArrayBufferExtension(ArrayBufferExtension* extension) {
+    extension->set_next(array_buffer_extensions_);
+    array_buffer_extensions_ = extension;
+  }
+
+  void ReleaseAllArrayBufferExtensions();
+
   V8_EXPORT_PRIVATE double MonotonicallyIncreasingTimeInMs();
 
   void RecordStats(HeapStats* stats, bool take_snapshot = false);
 
   Handle<JSPromise> MeasureMemory(Handle<NativeContext> context,
                                   v8::MeasureMemoryMode mode);
+  std::vector<Address> FindNativeContexts();
 
   // Check new space expansion criteria and expand semispaces if it was hit.
   void CheckNewSpaceExpansionCriteria();
@@ -680,7 +720,7 @@ class Heap {
   OldSpace* old_space() { return old_space_; }
   CodeSpace* code_space() { return code_space_; }
   MapSpace* map_space() { return map_space_; }
-  LargeObjectSpace* lo_space() { return lo_space_; }
+  OldLargeObjectSpace* lo_space() { return lo_space_; }
   CodeLargeObjectSpace* code_lo_space() { return code_lo_space_; }
   NewLargeObjectSpace* new_lo_space() { return new_lo_space_; }
   ReadOnlySpace* read_only_space() { return read_only_space_; }
@@ -888,7 +928,8 @@ class Heap {
 
   void FinalizeIncrementalMarkingIfComplete(GarbageCollectionReason gc_reason);
   // Synchronously finalizes incremental marking.
-  void FinalizeIncrementalMarkingAtomically(GarbageCollectionReason gc_reason);
+  V8_EXPORT_PRIVATE void FinalizeIncrementalMarkingAtomically(
+      GarbageCollectionReason gc_reason);
 
   void RegisterDeserializedObjectsForBlackAllocation(
       Reservation* reservations, const std::vector<HeapObject>& large_objects,
@@ -1006,7 +1047,7 @@ class Heap {
 
   // Slow methods that can be used for verification as they can also be used
   // with off-heap Addresses.
-  bool InSpaceSlow(Address addr, AllocationSpace space);
+  V8_EXPORT_PRIVATE bool InSpaceSlow(Address addr, AllocationSpace space);
 
   static inline Heap* FromWritableHeapObject(HeapObject obj);
 
@@ -1368,6 +1409,8 @@ class Heap {
 
   // Calculates the nof entries for the full sized number to string cache.
   inline int MaxNumberToStringCacheSize() const;
+
+  static Isolate* GetIsolateFromWritableObject(HeapObject object);
 
  private:
   using ExternalStringTableUpdaterCallback = String (*)(Heap* heap,
@@ -1874,12 +1917,15 @@ class Heap {
   OldSpace* old_space_ = nullptr;
   CodeSpace* code_space_ = nullptr;
   MapSpace* map_space_ = nullptr;
-  LargeObjectSpace* lo_space_ = nullptr;
+  OldLargeObjectSpace* lo_space_ = nullptr;
   CodeLargeObjectSpace* code_lo_space_ = nullptr;
   NewLargeObjectSpace* new_lo_space_ = nullptr;
   ReadOnlySpace* read_only_space_ = nullptr;
   // Map from the space id to the space.
   Space* space_[LAST_SPACE + 1];
+
+  // List for tracking ArrayBufferExtensions
+  ArrayBufferExtension* array_buffer_extensions_ = nullptr;
 
   // Determines whether code space is write-protected. This is essentially a
   // race-free copy of the {FLAG_write_protect_code_memory} flag.
@@ -1975,7 +2021,7 @@ class Heap {
   unsigned int maximum_size_scavenges_ = 0;
 
   // Total time spent in GC.
-  double total_gc_time_ms_;
+  double total_gc_time_ms_ = 0.0;
 
   // Last time an idle notification happened.
   double last_idle_notification_time_ = 0.0;
@@ -2084,6 +2130,8 @@ class Heap {
 
   std::vector<HeapObjectAllocationTracker*> allocation_trackers_;
 
+  std::unique_ptr<third_party_heap::Heap> tp_heap_;
+
   // Classes in "heap" can be friends.
   friend class AlwaysAllocateScope;
   friend class ArrayBufferCollector;
@@ -2094,10 +2142,9 @@ class Heap {
   friend class IdleScavengeObserver;
   friend class IncrementalMarking;
   friend class IncrementalMarkingJob;
-  friend class LargeObjectSpace;
-  template <FixedArrayVisitationMode fixed_array_mode,
-            TraceRetainingPathMode retaining_path_mode, typename MarkingState>
-  friend class MarkingVisitor;
+  friend class OldLargeObjectSpace;
+  template <typename ConcreteVisitor, typename MarkingState>
+  friend class MarkingVisitorBase;
   friend class MarkCompactCollector;
   friend class MarkCompactCollectorBase;
   friend class MinorMarkCompactCollector;
@@ -2198,6 +2245,7 @@ class CodePageCollectionMemoryModificationScope {
 class CodePageMemoryModificationScope {
  public:
   explicit inline CodePageMemoryModificationScope(MemoryChunk* chunk);
+  explicit inline CodePageMemoryModificationScope(Code object);
   inline ~CodePageMemoryModificationScope();
 
  private:

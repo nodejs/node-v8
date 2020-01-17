@@ -320,6 +320,8 @@ Handle<Object> StackFrameBase::GetWasmModuleName() {
   return isolate_->factory()->undefined_value();
 }
 
+int StackFrameBase::GetWasmFunctionIndex() { return StackFrameBase::kNone; }
+
 Handle<Object> StackFrameBase::GetWasmInstance() {
   return isolate_->factory()->undefined_value();
 }
@@ -389,8 +391,8 @@ namespace {
 bool CheckMethodName(Isolate* isolate, Handle<JSReceiver> receiver,
                      Handle<Name> name, Handle<JSFunction> fun,
                      LookupIterator::Configuration config) {
-  LookupIterator iter =
-      LookupIterator::PropertyOrElement(isolate, receiver, name, config);
+  LookupIterator::Key key(isolate, name);
+  LookupIterator iter(isolate, receiver, key, config);
   if (iter.state() == LookupIterator::DATA) {
     return iter.GetDataValue().is_identical_to(fun);
   } else if (iter.state() == LookupIterator::ACCESSOR) {
@@ -687,7 +689,7 @@ void FrameArrayIterator::Advance() { frame_ix_++; }
 StackFrameBase* FrameArrayIterator::Frame() {
   DCHECK(HasFrame());
   const int flags = array_->Flags(frame_ix_).value();
-  int flag_mask = FrameArray::kIsWasmFrame |
+  int flag_mask = FrameArray::kIsWasmCompiledFrame |
                   FrameArray::kIsWasmInterpretedFrame |
                   FrameArray::kIsAsmJsWasmFrame;
   switch (flags & flag_mask) {
@@ -695,7 +697,7 @@ StackFrameBase* FrameArrayIterator::Frame() {
       // JavaScript Frame.
       js_frame_.FromFrameArray(isolate_, array_, frame_ix_);
       return &js_frame_;
-    case FrameArray::kIsWasmFrame:
+    case FrameArray::kIsWasmCompiledFrame:
     case FrameArray::kIsWasmInterpretedFrame:
       // Wasm Frame:
       wasm_frame_.FromFrameArray(isolate_, array_, frame_ix_);
@@ -991,7 +993,7 @@ MaybeHandle<String> MessageFormatter::Format(Isolate* isolate,
   return builder.Finish();
 }
 
-MaybeHandle<Object> ErrorUtils::Construct(
+MaybeHandle<JSObject> ErrorUtils::Construct(
     Isolate* isolate, Handle<JSFunction> target, Handle<Object> new_target,
     Handle<Object> message, FrameSkipMode mode, Handle<Object> caller,
     StackTraceCollection stack_trace_collection) {
@@ -1008,7 +1010,7 @@ MaybeHandle<Object> ErrorUtils::Construct(
   ASSIGN_RETURN_ON_EXCEPTION(
       isolate, err,
       JSObject::New(target, new_target_recv, Handle<AllocationSite>::null()),
-      Object);
+      JSObject);
 
   // 3. If message is not undefined, then
   //  a. Let msg be ? ToString(message).
@@ -1020,23 +1022,23 @@ MaybeHandle<Object> ErrorUtils::Construct(
   if (!message->IsUndefined(isolate)) {
     Handle<String> msg_string;
     ASSIGN_RETURN_ON_EXCEPTION(isolate, msg_string,
-                               Object::ToString(isolate, message), Object);
+                               Object::ToString(isolate, message), JSObject);
     RETURN_ON_EXCEPTION(
         isolate,
         JSObject::SetOwnPropertyIgnoreAttributes(
             err, isolate->factory()->message_string(), msg_string, DONT_ENUM),
-        Object);
+        JSObject);
   }
 
   switch (stack_trace_collection) {
     case StackTraceCollection::kDetailed:
       RETURN_ON_EXCEPTION(
-          isolate, isolate->CaptureAndSetDetailedStackTrace(err), Object);
+          isolate, isolate->CaptureAndSetDetailedStackTrace(err), JSObject);
       V8_FALLTHROUGH;
     case StackTraceCollection::kSimple:
       RETURN_ON_EXCEPTION(
           isolate, isolate->CaptureAndSetSimpleStackTrace(err, mode, caller),
-          Object);
+          JSObject);
       break;
     case StackTraceCollection::kNone:
       break;
@@ -1145,7 +1147,7 @@ Handle<String> DoFormatMessage(Isolate* isolate, MessageTemplate index,
 }  // namespace
 
 // static
-MaybeHandle<Object> ErrorUtils::MakeGenericError(
+Handle<JSObject> ErrorUtils::MakeGenericError(
     Isolate* isolate, Handle<JSFunction> constructor, MessageTemplate index,
     Handle<Object> arg0, Handle<Object> arg1, Handle<Object> arg2,
     FrameSkipMode mode) {
@@ -1168,8 +1170,11 @@ MaybeHandle<Object> ErrorUtils::MakeGenericError(
   DCHECK(mode != SKIP_UNTIL_SEEN);
 
   Handle<Object> no_caller;
+  // The call below can't fail because constructor is a builtin.
+  DCHECK(constructor->shared().HasBuiltinId());
   return ErrorUtils::Construct(isolate, constructor, constructor, msg, mode,
-                               no_caller, StackTraceCollection::kDetailed);
+                               no_caller, StackTraceCollection::kDetailed)
+      .ToHandleChecked();
 }
 
 namespace {
@@ -1226,9 +1231,9 @@ Handle<String> RenderCallSite(Isolate* isolate, Handle<Object> object,
                               MessageLocation* location,
                               CallPrinter::ErrorHint* hint) {
   if (ComputeLocation(isolate, location)) {
-    ParseInfo info(isolate, location->shared());
+    ParseInfo info(isolate, *location->shared());
     if (parsing::ParseAny(&info, location->shared(), isolate)) {
-      info.ast_value_factory()->Internalize(isolate);
+      info.ast_value_factory()->Internalize(isolate->factory());
       CallPrinter printer(isolate, location->shared()->IsUserJavaScript());
       Handle<String> str = printer.Print(info.literal(), location->start_pos());
       *hint = printer.GetErrorHint();
@@ -1327,9 +1332,9 @@ Object ErrorUtils::ThrowLoadFromNullOrUndefined(Isolate* isolate,
   if (ComputeLocation(isolate, &location)) {
     location_computed = true;
 
-    ParseInfo info(isolate, location.shared());
+    ParseInfo info(isolate, *location.shared());
     if (parsing::ParseAny(&info, location.shared(), isolate)) {
-      info.ast_value_factory()->Internalize(isolate);
+      info.ast_value_factory()->Internalize(isolate->factory());
       CallPrinter printer(isolate, location.shared()->IsUserJavaScript());
       Handle<String> str = printer.Print(info.literal(), location.start_pos());
 
@@ -1346,7 +1351,8 @@ Object ErrorUtils::ThrowLoadFromNullOrUndefined(Isolate* isolate,
           maybe_property_name = destructuring_prop->key()
                                     ->AsLiteral()
                                     ->AsRawPropertyName()
-                                    ->string();
+                                    ->string()
+                                    .get<Factory>();
           // Change the message location to point at the property name.
           pos = destructuring_prop->key()->position();
         }

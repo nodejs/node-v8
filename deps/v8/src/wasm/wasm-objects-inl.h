@@ -110,6 +110,7 @@ bool WasmModuleObject::is_asm_js() {
 
 // WasmTableObject
 ACCESSORS(WasmTableObject, entries, FixedArray, kEntriesOffset)
+SMI_ACCESSORS(WasmTableObject, current_length, kCurrentLengthOffset)
 ACCESSORS(WasmTableObject, maximum_length, Object, kMaximumLengthOffset)
 ACCESSORS(WasmTableObject, dispatch_tables, FixedArray, kDispatchTablesOffset)
 SMI_ACCESSORS(WasmTableObject, raw_type, kRawTypeOffset)
@@ -183,10 +184,19 @@ void WasmGlobalObject::SetAnyRef(Handle<Object> value) {
   tagged_buffer().set(offset(), *value);
 }
 
+bool WasmGlobalObject::SetNullRef(Handle<Object> value) {
+  DCHECK_EQ(type(), wasm::kWasmNullRef);
+  if (!value->IsNull()) {
+    return false;
+  }
+  tagged_buffer().set(offset(), *value);
+  return true;
+}
+
 bool WasmGlobalObject::SetFuncRef(Isolate* isolate, Handle<Object> value) {
   DCHECK_EQ(type(), wasm::kWasmFuncRef);
   if (!value->IsNull(isolate) &&
-      !WasmExportedFunction::IsWasmExportedFunction(*value) &&
+      !WasmExternalFunction::IsWasmExternalFunction(*value) &&
       !WasmCapiFunction::IsWasmCapiFunction(*value)) {
     return false;
   }
@@ -222,8 +232,6 @@ PRIMITIVE_ACCESSORS(WasmInstanceObject, data_segment_starts, Address*,
                     kDataSegmentStartsOffset)
 PRIMITIVE_ACCESSORS(WasmInstanceObject, data_segment_sizes, uint32_t*,
                     kDataSegmentSizesOffset)
-PRIMITIVE_ACCESSORS(WasmInstanceObject, dropped_data_segments, byte*,
-                    kDroppedDataSegmentsOffset)
 PRIMITIVE_ACCESSORS(WasmInstanceObject, dropped_elem_segments, byte*,
                     kDroppedElemSegmentsOffset)
 
@@ -380,7 +388,6 @@ ACCESSORS(WasmDebugInfo, wasm_instance, WasmInstanceObject, kInstanceOffset)
 ACCESSORS(WasmDebugInfo, interpreter_handle, Object, kInterpreterHandleOffset)
 ACCESSORS(WasmDebugInfo, interpreter_reference_stack, Cell,
           kInterpreterReferenceStackOffset)
-OPTIONAL_ACCESSORS(WasmDebugInfo, locals_names, FixedArray, kLocalsNamesOffset)
 OPTIONAL_ACCESSORS(WasmDebugInfo, c_wasm_entries, FixedArray,
                    kCWasmEntriesOffset)
 OPTIONAL_ACCESSORS(WasmDebugInfo, c_wasm_entry_map, Managed<wasm::SignatureMap>,
@@ -390,8 +397,6 @@ OPTIONAL_ACCESSORS(WasmDebugInfo, c_wasm_entry_map, Managed<wasm::SignatureMap>,
 #undef READ_PRIMITIVE_FIELD
 #undef WRITE_PRIMITIVE_FIELD
 #undef PRIMITIVE_ACCESSORS
-
-uint32_t WasmTableObject::current_length() { return entries().length(); }
 
 wasm::ValueType WasmTableObject::type() {
   return static_cast<wasm::ValueType>(raw_type());

@@ -72,7 +72,7 @@ struct CompilationEnv {
                                : 0),
         max_memory_size((module && module->has_maximum_pages
                              ? module->maximum_pages
-                             : kV8MaxWasmMemoryPages) *
+                             : max_mem_pages()) *
                         uint64_t{kWasmPageSize}),
         enabled_features(enabled_features),
         lower_simd(lower_simd) {}
@@ -92,11 +92,7 @@ class WireBytesStorage {
 enum class CompilationEvent : uint8_t {
   kFinishedBaselineCompilation,
   kFinishedTopTierCompilation,
-  kFailedCompilation,
-
-  // Marker:
-  // After an event >= kFirstFinalEvent, no further events are generated.
-  kFirstFinalEvent = kFinishedTopTierCompilation
+  kFailedCompilation
 };
 
 // The implementation of {CompilationState} lives in module-compiler.cc.

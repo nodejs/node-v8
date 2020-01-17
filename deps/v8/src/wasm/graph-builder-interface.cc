@@ -392,6 +392,14 @@ class WasmGraphBuildingInterface {
               imm.offset, imm.alignment, decoder->position());
   }
 
+  void LoadTransform(FullDecoder* decoder, LoadType type,
+                     LoadTransformationKind transform,
+                     const MemoryAccessImmediate<validate>& imm,
+                     const Value& index, Value* result) {
+    result->node = BUILD(LoadTransform, type.mem_type(), transform, index.node,
+                         imm.offset, imm.alignment, decoder->position());
+  }
+
   void StoreMem(FullDecoder* decoder, StoreType type,
                 const MemoryAccessImmediate<validate>& imm, const Value& index,
                 const Value& value) {
@@ -693,6 +701,7 @@ class WasmGraphBuildingInterface {
         return builder_->S128Zero();
       case kWasmAnyRef:
       case kWasmFuncRef:
+      case kWasmNullRef:
       case kWasmExnRef:
         return builder_->RefNull();
       default:
