@@ -281,7 +281,7 @@
           '<(torque_output_root)/torque-generated/enum-verifiers-tq.cc',
           '<(torque_output_root)/torque-generated/exported-macros-assembler-tq.cc',
           '<(torque_output_root)/torque-generated/exported-macros-assembler-tq.h',
-          '<(V8_ROOT)/src/torque/runtime-support.h'
+          '<(V8_ROOT)/src/torque/runtime-support.h',
           '<@(torque_outputs)',
         ],
       }
