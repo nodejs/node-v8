@@ -57,6 +57,7 @@
       "<(V8_ROOT)/src/builtins/promise-all-element-closure.tq",
       "<(V8_ROOT)/src/builtins/promise-constructor.tq",
       "<(V8_ROOT)/src/builtins/promise-finally.tq",
+      "<(V8_ROOT)/src/builtins/promise-misc.tq",
       "<(V8_ROOT)/src/builtins/promise-race.tq",
       "<(V8_ROOT)/src/builtins/promise-reaction-job.tq",
       "<(V8_ROOT)/src/builtins/promise-resolve.tq",
