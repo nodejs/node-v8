@@ -1867,6 +1867,24 @@ Returns `true` if the value is a built-in [`WeakSet`][] instance.
 util.types.isWeakSet(new WeakSet());  // Returns true
 ```
 
+### `util.types.isWebAssemblyCompiledModule(value)`
+<!-- YAML
+added: v10.0.0
+deprecated: REPLACEME
+-->
+
+> Stability: 0 - Deprecated: Use `value instanceof WebAssembly.Module` instead.
+
+* `value` {any}
+* Returns: {boolean}
+
+Returns `true` if the value is a built-in [`WebAssembly.Module`][] instance.
+
+```js
+const module = new WebAssembly.Module(wasmBuffer);
+util.types.isWebAssemblyCompiledModule(module);  // Returns true
+```
+
 ## Deprecated APIs
 
 The following APIs are deprecated and should no longer be used. Existing
@@ -2316,24 +2334,6 @@ timestamp.
 const util = require('util');
 
 util.log('Timestamped message.');
-```
-
-### `util.types.isWebAssemblyCompiledModule(value)`
-<!-- YAML
-added: v10.0.0
-deprecated: v14.0.0
--->
-
-> Stability: 0 - Deprecated: Use `value instanceof WebAssembly.Module` instead.
-
-* `value` {any}
-* Returns: {boolean}
-
-Returns `true` if the value is a built-in [`WebAssembly.Module`][] instance.
-
-```js
-const module = new WebAssembly.Module(wasmBuffer);
-util.types.isWebAssemblyCompiledModule(module);  // Returns true
 ```
 
 [`'uncaughtException'`]: process.html#process_event_uncaughtexception
