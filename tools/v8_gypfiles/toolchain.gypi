@@ -298,6 +298,11 @@
         'defines': [
           'V8_TARGET_ARCH_ARM64',
         ],
+        'conditions': [
+          ['v8_control_flow_integrity==1', {
+            'cflags': [ '-mbranch-protection=pac-ret' ],
+          }],
+        ],
       }],
       ['v8_target_arch=="s390x"', {
         'defines': [
