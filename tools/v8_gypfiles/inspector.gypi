@@ -10,8 +10,6 @@
       '<(inspector_protocol_path)/lib/base_string_adapter_h.template',
       '<(inspector_protocol_path)/lib/DispatcherBase_cpp.template',
       '<(inspector_protocol_path)/lib/DispatcherBase_h.template',
-      '<(inspector_protocol_path)/lib/ErrorSupport_cpp.template',
-      '<(inspector_protocol_path)/lib/ErrorSupport_h.template',
       '<(inspector_protocol_path)/lib/Forward_h.template',
       '<(inspector_protocol_path)/lib/FrontendChannel_h.template',
       '<(inspector_protocol_path)/lib/Object_cpp.template',

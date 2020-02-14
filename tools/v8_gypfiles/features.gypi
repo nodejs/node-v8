@@ -196,6 +196,13 @@
     # Use switch-based dispatch if this is false.
     'v8_enable_regexp_interpreter_threaded_dispatch%': 1,
 
+    # Disable all snapshot compression.
+    'v8_enable_snapshot_compression%': 1,
+
+    # Enable control-flow integrity features, such as pointer authentication
+    # for ARM64.
+    'v8_control_flow_integrity%': 0,
+
     # Variables from v8.gni
 
     # Enable ECMAScript Internationalization API. Enabling this feature will
@@ -324,6 +331,12 @@
       }],
       ['v8_enable_regexp_interpreter_threaded_dispatch==1', {
         'defines': ['V8_ENABLE_REGEXP_INTERPRETER_THREADED_DISPATCH',],
+      }],
+      ['v8_enable_snapshot_compression==1', {
+        'defines': ['V8_SNAPSHOT_COMPRESSION',],
+      }],
+      ['v8_control_flow_integrity==1', {
+        'defines': ['V8_ENABLE_CONTROL_FLOW_INTEGRITY',],
       }],
     ],  # conditions
     'defines': [
