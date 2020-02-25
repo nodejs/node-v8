@@ -607,7 +607,7 @@ using ArchRegExpMacroAssembler = RegExpMacroAssemblerARM;
 using ArchRegExpMacroAssembler = RegExpMacroAssemblerARM64;
 #elif V8_TARGET_ARCH_S390
 using ArchRegExpMacroAssembler = RegExpMacroAssemblerS390;
-#elif V8_TARGET_ARCH_PPC
+#elif V8_TARGET_ARCH_PPC || V8_TARGET_ARCH_PPC64
 using ArchRegExpMacroAssembler = RegExpMacroAssemblerPPC;
 #elif V8_TARGET_ARCH_MIPS
 using ArchRegExpMacroAssembler = RegExpMacroAssemblerMIPS;
@@ -643,7 +643,8 @@ static Handle<JSRegExp> CreateJSRegExp(Handle<String> source, Handle<Code> code,
       Handle<JSRegExp>::cast(factory->NewJSObject(constructor));
 
   factory->SetRegExpIrregexpData(regexp, JSRegExp::IRREGEXP, source,
-                                 JSRegExp::kNone, 0);
+                                 JSRegExp::kNone, 0,
+                                 JSRegExp::kNoBacktrackLimit);
   regexp->SetDataAt(is_unicode ? JSRegExp::kIrregexpUC16CodeIndex
                                : JSRegExp::kIrregexpLatin1CodeIndex,
                     *code);
@@ -1284,8 +1285,8 @@ TEST(MacroAssembler) {
       Vector<const uc16>(str1, 6)).ToHandleChecked();
 
   CHECK(IrregexpInterpreter::MatchInternal(isolate, *array, *f1_16, captures, 5,
-                                           0,
-                                           RegExp::CallOrigin::kFromRuntime));
+                                           0, RegExp::CallOrigin::kFromRuntime,
+                                           JSRegExp::kNoBacktrackLimit));
   CHECK_EQ(0, captures[0]);
   CHECK_EQ(3, captures[1]);
   CHECK_EQ(1, captures[2]);
@@ -1296,9 +1297,9 @@ TEST(MacroAssembler) {
   Handle<String> f2_16 = factory->NewStringFromTwoByte(
       Vector<const uc16>(str2, 6)).ToHandleChecked();
 
-  CHECK(!IrregexpInterpreter::MatchInternal(isolate, *array, *f2_16, captures,
-                                            5, 0,
-                                            RegExp::CallOrigin::kFromRuntime));
+  CHECK(!IrregexpInterpreter::MatchInternal(
+      isolate, *array, *f2_16, captures, 5, 0, RegExp::CallOrigin::kFromRuntime,
+      JSRegExp::kNoBacktrackLimit));
   CHECK_EQ(42, captures[0]);
 }
 

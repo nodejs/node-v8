@@ -40,8 +40,30 @@ void* JSArrayBuffer::backing_store() const {
   return reinterpret_cast<void*>(ReadField<Address>(kBackingStoreOffset));
 }
 
-void JSArrayBuffer::set_backing_store(void* value, WriteBarrierMode mode) {
+void JSArrayBuffer::set_backing_store(void* value) {
   WriteField<Address>(kBackingStoreOffset, reinterpret_cast<Address>(value));
+}
+
+ArrayBufferExtension* JSArrayBuffer::extension() const {
+  if (V8_ARRAY_BUFFER_EXTENSION_BOOL) {
+    return base::AsAtomicPointer::Acquire_Load(extension_location());
+  } else {
+    return nullptr;
+  }
+}
+
+ArrayBufferExtension** JSArrayBuffer::extension_location() const {
+  Address location = field_address(kExtensionOffset);
+  return reinterpret_cast<ArrayBufferExtension**>(location);
+}
+
+void JSArrayBuffer::set_extension(ArrayBufferExtension* value) {
+  if (V8_ARRAY_BUFFER_EXTENSION_BOOL) {
+    base::AsAtomicPointer::Release_Store(extension_location(), value);
+    MarkingBarrierForArrayBufferExtension(*this, value);
+  } else {
+    CHECK_EQ(value, nullptr);
+  }
 }
 
 size_t JSArrayBuffer::allocation_length() const {
@@ -86,6 +108,14 @@ BIT_FIELD_ACCESSORS(JSArrayBuffer, bit_field, is_asmjs_memory,
 BIT_FIELD_ACCESSORS(JSArrayBuffer, bit_field, is_shared,
                     JSArrayBuffer::IsSharedBit)
 
+size_t JSArrayBuffer::PerIsolateAccountingLength() {
+  // TODO(titzer): SharedArrayBuffers and shared WasmMemorys cause problems with
+  // accounting for per-isolate external memory. In particular, sharing the same
+  // array buffer or memory multiple times, which happens in stress tests, can
+  // cause overcounting, leading to GC thrashing. Fix with global accounting?
+  return is_shared() ? 0 : byte_length();
+}
+
 size_t JSArrayBufferView::byte_offset() const {
   return ReadField<size_t>(kByteOffsetOffset);
 }
@@ -123,7 +153,7 @@ void JSTypedArray::set_external_pointer(Address value) {
 }
 
 Address JSTypedArray::ExternalPointerCompensationForOnHeapArray(
-    Isolate* isolate) {
+    const Isolate* isolate) {
 #ifdef V8_COMPRESS_POINTERS
   return GetIsolateRoot(isolate);
 #else
@@ -133,7 +163,7 @@ Address JSTypedArray::ExternalPointerCompensationForOnHeapArray(
 
 void JSTypedArray::RemoveExternalPointerCompensationForSerialization() {
   DCHECK(is_on_heap());
-  Isolate* isolate = GetIsolateForPtrCompr(*this);
+  const Isolate* isolate = GetIsolateForPtrCompr(*this);
   set_external_pointer(external_pointer() -
                        ExternalPointerCompensationForOnHeapArray(isolate));
 }
@@ -150,7 +180,7 @@ void* JSTypedArray::DataPtr() {
 }
 
 void JSTypedArray::SetOffHeapDataPtr(void* base, Address offset) {
-  set_base_pointer(Smi::kZero, SKIP_WRITE_BARRIER);
+  set_base_pointer(Smi::zero(), SKIP_WRITE_BARRIER);
   Address address = reinterpret_cast<Address>(base) + offset;
   set_external_pointer(address);
   DCHECK_EQ(address, reinterpret_cast<Address>(DataPtr()));
@@ -158,7 +188,7 @@ void JSTypedArray::SetOffHeapDataPtr(void* base, Address offset) {
 
 void JSTypedArray::SetOnHeapDataPtr(HeapObject base, Address offset) {
   set_base_pointer(base);
-  Isolate* isolate = GetIsolateForPtrCompr(*this);
+  const Isolate* isolate = GetIsolateForPtrCompr(*this);
   set_external_pointer(offset +
                        ExternalPointerCompensationForOnHeapArray(isolate));
   DCHECK_EQ(base.ptr() + offset, reinterpret_cast<Address>(DataPtr()));

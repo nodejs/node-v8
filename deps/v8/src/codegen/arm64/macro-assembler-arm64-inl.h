@@ -12,7 +12,6 @@
 #include "src/base/bits.h"
 #include "src/codegen/arm64/assembler-arm64-inl.h"
 #include "src/codegen/arm64/assembler-arm64.h"
-#include "src/codegen/arm64/instrument-arm64.h"
 #include "src/codegen/macro-assembler.h"
 
 namespace v8 {
@@ -310,9 +309,21 @@ void MacroAssembler::Bfxil(const Register& rd, const Register& rn, unsigned lsb,
   bfxil(rd, rn, lsb, width);
 }
 
-void TurboAssembler::Bind(Label* label) {
+void TurboAssembler::Bind(Label* label, BranchTargetIdentifier id) {
   DCHECK(allow_macro_instructions());
-  bind(label);
+  if (id == BranchTargetIdentifier::kNone) {
+    bind(label);
+  } else {
+    // Emit this inside an InstructionAccurateScope to ensure there are no extra
+    // instructions between the bind and the target identifier instruction.
+    InstructionAccurateScope scope(this, 1);
+    bind(label);
+    if (id == BranchTargetIdentifier::kPaciasp) {
+      paciasp();
+    } else {
+      bti(id);
+    }
+  }
 }
 
 void TurboAssembler::Bl(Label* label) {
@@ -390,7 +401,7 @@ void TurboAssembler::CmovX(const Register& rd, const Register& rn,
   DCHECK(!rd.IsSP());
   DCHECK(rd.Is64Bits() && rn.Is64Bits());
   DCHECK((cond != al) && (cond != nv));
-  if (!rd.is(rn)) {
+  if (rd != rn) {
     csel(rd, rn, rd, cond);
   }
 }
@@ -596,7 +607,7 @@ void TurboAssembler::Fmov(VRegister fd, VRegister fn) {
   // registers. fmov(s0, s0) is not a no-op because it clears the top word of
   // d0. Technically, fmov(d0, d0) is not a no-op either because it clears the
   // top of q0, but VRegister does not currently support Q registers.
-  if (!fd.Is(fn) || !fd.Is64Bits()) {
+  if (fd != fn || !fd.Is64Bits()) {
     fmov(fd, fn);
   }
 }
@@ -771,7 +782,7 @@ void TurboAssembler::Mrs(const Register& rt, SystemRegister sysreg) {
   mrs(rt, sysreg);
 }
 
-void MacroAssembler::Msr(SystemRegister sysreg, const Register& rt) {
+void TurboAssembler::Msr(SystemRegister sysreg, const Register& rt) {
   DCHECK(allow_macro_instructions());
   msr(sysreg, rt);
 }
@@ -1064,6 +1075,166 @@ void MacroAssembler::JumpIfNotSmi(Register value, Label* not_smi_label) {
 
 void TurboAssembler::jmp(Label* L) { B(L); }
 
+template <TurboAssembler::StoreLRMode lr_mode>
+void TurboAssembler::Push(const CPURegister& src0, const CPURegister& src1,
+                          const CPURegister& src2, const CPURegister& src3) {
+  DCHECK(AreSameSizeAndType(src0, src1, src2, src3));
+  DCHECK_IMPLIES((lr_mode == kSignLR), ((src0 == lr) || (src1 == lr) ||
+                                        (src2 == lr) || (src3 == lr)));
+  DCHECK_IMPLIES((lr_mode == kDontStoreLR), ((src0 != lr) && (src1 != lr) &&
+                                             (src2 != lr) && (src3 != lr)));
+
+#ifdef V8_ENABLE_CONTROL_FLOW_INTEGRITY
+  if (lr_mode == kSignLR) {
+    Paciasp();
+  }
+#endif
+
+  int count = 1 + src1.is_valid() + src2.is_valid() + src3.is_valid();
+  int size = src0.SizeInBytes();
+  DCHECK_EQ(0, (size * count) % 16);
+
+  PushHelper(count, size, src0, src1, src2, src3);
+}
+
+template <TurboAssembler::StoreLRMode lr_mode>
+void TurboAssembler::Push(const Register& src0, const VRegister& src1) {
+  DCHECK_IMPLIES((lr_mode == kSignLR), ((src0 == lr) || (src1 == lr)));
+  DCHECK_IMPLIES((lr_mode == kDontStoreLR), ((src0 != lr) && (src1 != lr)));
+#ifdef V8_ENABLE_CONTROL_FLOW_INTEGRITY
+  if (lr_mode == kSignLR) {
+    Paciasp();
+  }
+#endif
+
+  int size = src0.SizeInBytes() + src1.SizeInBytes();
+  DCHECK_EQ(0, size % 16);
+
+  // Reserve room for src0 and push src1.
+  str(src1, MemOperand(sp, -size, PreIndex));
+  // Fill the gap with src0.
+  str(src0, MemOperand(sp, src1.SizeInBytes()));
+}
+
+template <TurboAssembler::LoadLRMode lr_mode>
+void TurboAssembler::Pop(const CPURegister& dst0, const CPURegister& dst1,
+                         const CPURegister& dst2, const CPURegister& dst3) {
+  // It is not valid to pop into the same register more than once in one
+  // instruction, not even into the zero register.
+  DCHECK(!AreAliased(dst0, dst1, dst2, dst3));
+  DCHECK(AreSameSizeAndType(dst0, dst1, dst2, dst3));
+  DCHECK(dst0.is_valid());
+
+  int count = 1 + dst1.is_valid() + dst2.is_valid() + dst3.is_valid();
+  int size = dst0.SizeInBytes();
+  DCHECK_EQ(0, (size * count) % 16);
+
+  PopHelper(count, size, dst0, dst1, dst2, dst3);
+
+  DCHECK_IMPLIES((lr_mode == kAuthLR), ((dst0 == lr) || (dst1 == lr) ||
+                                        (dst2 == lr) || (dst3 == lr)));
+  DCHECK_IMPLIES((lr_mode == kDontLoadLR), ((dst0 != lr) && (dst1 != lr)) &&
+                                               (dst2 != lr) && (dst3 != lr));
+
+#ifdef V8_ENABLE_CONTROL_FLOW_INTEGRITY
+  if (lr_mode == kAuthLR) {
+    Autiasp();
+  }
+#endif
+}
+
+template <TurboAssembler::StoreLRMode lr_mode>
+void TurboAssembler::Poke(const CPURegister& src, const Operand& offset) {
+  DCHECK_IMPLIES((lr_mode == kSignLR), (src == lr));
+  DCHECK_IMPLIES((lr_mode == kDontStoreLR), (src != lr));
+#ifdef V8_ENABLE_CONTROL_FLOW_INTEGRITY
+  if (lr_mode == kSignLR) {
+    Paciasp();
+  }
+#endif
+
+  if (offset.IsImmediate()) {
+    DCHECK_GE(offset.ImmediateValue(), 0);
+  } else if (emit_debug_code()) {
+    Cmp(xzr, offset);
+    Check(le, AbortReason::kStackAccessBelowStackPointer);
+  }
+
+  Str(src, MemOperand(sp, offset));
+}
+
+template <TurboAssembler::LoadLRMode lr_mode>
+void TurboAssembler::Peek(const CPURegister& dst, const Operand& offset) {
+  if (offset.IsImmediate()) {
+    DCHECK_GE(offset.ImmediateValue(), 0);
+  } else if (emit_debug_code()) {
+    Cmp(xzr, offset);
+    Check(le, AbortReason::kStackAccessBelowStackPointer);
+  }
+
+  Ldr(dst, MemOperand(sp, offset));
+
+  DCHECK_IMPLIES((lr_mode == kAuthLR), (dst == lr));
+  DCHECK_IMPLIES((lr_mode == kDontLoadLR), (dst != lr));
+#ifdef V8_ENABLE_CONTROL_FLOW_INTEGRITY
+  if (lr_mode == kAuthLR) {
+    Autiasp();
+  }
+#endif
+}
+
+template <TurboAssembler::StoreLRMode lr_mode>
+void TurboAssembler::PushCPURegList(CPURegList registers) {
+  DCHECK_IMPLIES((lr_mode == kDontStoreLR), !registers.IncludesAliasOf(lr));
+#ifdef V8_ENABLE_CONTROL_FLOW_INTEGRITY
+  if (lr_mode == kSignLR && registers.IncludesAliasOf(lr)) {
+    Paciasp();
+  }
+#endif
+
+  int size = registers.RegisterSizeInBytes();
+  DCHECK_EQ(0, (size * registers.Count()) % 16);
+
+  // Push up to four registers at a time.
+  while (!registers.IsEmpty()) {
+    int count_before = registers.Count();
+    const CPURegister& src0 = registers.PopHighestIndex();
+    const CPURegister& src1 = registers.PopHighestIndex();
+    const CPURegister& src2 = registers.PopHighestIndex();
+    const CPURegister& src3 = registers.PopHighestIndex();
+    int count = count_before - registers.Count();
+    PushHelper(count, size, src0, src1, src2, src3);
+  }
+}
+
+template <TurboAssembler::LoadLRMode lr_mode>
+void TurboAssembler::PopCPURegList(CPURegList registers) {
+  int size = registers.RegisterSizeInBytes();
+  DCHECK_EQ(0, (size * registers.Count()) % 16);
+
+#ifdef V8_ENABLE_CONTROL_FLOW_INTEGRITY
+  bool contains_lr = registers.IncludesAliasOf(lr);
+  DCHECK_IMPLIES((lr_mode == kDontLoadLR), !contains_lr);
+#endif
+
+  // Pop up to four registers at a time.
+  while (!registers.IsEmpty()) {
+    int count_before = registers.Count();
+    const CPURegister& dst0 = registers.PopLowestIndex();
+    const CPURegister& dst1 = registers.PopLowestIndex();
+    const CPURegister& dst2 = registers.PopLowestIndex();
+    const CPURegister& dst3 = registers.PopLowestIndex();
+    int count = count_before - registers.Count();
+    PopHelper(count, size, dst0, dst1, dst2, dst3);
+  }
+
+#ifdef V8_ENABLE_CONTROL_FLOW_INTEGRITY
+  if (lr_mode == kAuthLR && contains_lr) {
+    Autiasp();
+  }
+#endif
+}
+
 void TurboAssembler::Push(Handle<HeapObject> handle) {
   UseScratchRegisterScope temps(this);
   Register tmp = temps.AcquireX();
@@ -1250,27 +1421,6 @@ void MacroAssembler::InlineData(uint64_t data) {
   DCHECK(is_uint16(data));
   InstructionAccurateScope scope(this, 1);
   movz(xzr, data);
-}
-
-void MacroAssembler::EnableInstrumentation() {
-  InstructionAccurateScope scope(this, 1);
-  movn(xzr, InstrumentStateEnable);
-}
-
-void MacroAssembler::DisableInstrumentation() {
-  InstructionAccurateScope scope(this, 1);
-  movn(xzr, InstrumentStateDisable);
-}
-
-void MacroAssembler::AnnotateInstrumentation(const char* marker_name) {
-  DCHECK_EQ(strlen(marker_name), 2);
-
-  // We allow only printable characters in the marker names. Unprintable
-  // characters are reserved for controlling features of the instrumentation.
-  DCHECK(isprint(marker_name[0]) && isprint(marker_name[1]));
-
-  InstructionAccurateScope scope(this, 1);
-  movn(xzr, (marker_name[1] << 8) | marker_name[0]);
 }
 
 }  // namespace internal

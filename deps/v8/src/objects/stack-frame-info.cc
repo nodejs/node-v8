@@ -58,6 +58,11 @@ int StackTraceFrame::GetFunctionOffset(Handle<StackTraceFrame> frame) {
 }
 
 // static
+int StackTraceFrame::GetWasmFunctionIndex(Handle<StackTraceFrame> frame) {
+  return GetFrameInfo(frame)->wasm_function_index();
+}
+
+// static
 Handle<Object> StackTraceFrame::GetFileName(Handle<StackTraceFrame> frame) {
   auto name = GetFrameInfo(frame)->script_name();
   return handle(name, frame->GetIsolate());
@@ -363,6 +368,16 @@ void SerializeAsmJsWasmStackFrame(Isolate* isolate,
   return;
 }
 
+bool IsAnonymousWasmScript(Isolate* isolate, Handle<StackTraceFrame> frame,
+                           Handle<Object> url) {
+  DCHECK(url->IsString());
+  Handle<String> anonymous_prefix =
+      isolate->factory()->InternalizeString(StaticCharVector("wasm://wasm/"));
+  return (StackTraceFrame::IsWasm(frame) &&
+          StringIndexOf(isolate, Handle<String>::cast(url), anonymous_prefix) >=
+              0);
+}
+
 void SerializeWasmStackFrame(Isolate* isolate, Handle<StackTraceFrame> frame,
                              IncrementalStringBuilder* builder) {
   Handle<Object> module_name = StackTraceFrame::GetWasmModuleName(frame);
@@ -381,8 +396,15 @@ void SerializeWasmStackFrame(Isolate* isolate, Handle<StackTraceFrame> frame,
     builder->AppendCString(" (");
   }
 
-  const int wasm_func_index = StackTraceFrame::GetLineNumber(frame);
+  Handle<Object> url = StackTraceFrame::GetScriptNameOrSourceUrl(frame);
+  if (IsNonEmptyString(url) && !IsAnonymousWasmScript(isolate, frame, url)) {
+    builder->AppendString(Handle<String>::cast(url));
+  } else {
+    builder->AppendCString("<anonymous>");
+  }
+  builder->AppendCString(":");
 
+  const int wasm_func_index = StackTraceFrame::GetWasmFunctionIndex(frame);
   builder->AppendCString("wasm-function[");
   builder->AppendInt(wasm_func_index);
   builder->AppendCString("]:");

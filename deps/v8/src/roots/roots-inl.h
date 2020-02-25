@@ -8,6 +8,7 @@
 #include "src/roots/roots.h"
 
 #include "src/execution/isolate.h"
+#include "src/execution/off-thread-isolate.h"
 #include "src/handles/handles.h"
 #include "src/heap/read-only-heap.h"
 #include "src/objects/api-callbacks.h"
@@ -64,6 +65,9 @@ ReadOnlyRoots::ReadOnlyRoots(Heap* heap)
 ReadOnlyRoots::ReadOnlyRoots(Isolate* isolate)
     : read_only_roots_(reinterpret_cast<Address*>(
           isolate->roots_table().read_only_roots_begin().address())) {}
+
+ReadOnlyRoots::ReadOnlyRoots(OffThreadIsolate* isolate)
+    : ReadOnlyRoots(isolate->factory()->read_only_roots()) {}
 
 ReadOnlyRoots::ReadOnlyRoots(Address* ro_roots) : read_only_roots_(ro_roots) {}
 

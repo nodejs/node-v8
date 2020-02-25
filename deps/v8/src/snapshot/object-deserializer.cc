@@ -33,7 +33,6 @@ ObjectDeserializer::DeserializeSharedFunctionInfo(
 
 MaybeHandle<HeapObject> ObjectDeserializer::Deserialize(Isolate* isolate) {
   Initialize(isolate);
-
   if (!allocator()->ReserveSpace()) return MaybeHandle<HeapObject>();
 
   DCHECK(deserializing_user_code());
@@ -82,13 +81,22 @@ void ObjectDeserializer::CommitPostProcessedObjects() {
   Factory* factory = isolate()->factory();
   for (Handle<Script> script : new_scripts()) {
     // Assign a new script id to avoid collision.
-    script->set_id(isolate()->heap()->NextScriptId());
+    script->set_id(isolate()->GetNextScriptId());
     LogScriptEvents(*script);
     // Add script to list.
     Handle<WeakArrayList> list = factory->script_list();
     list = WeakArrayList::AddToEnd(isolate(), list,
                                    MaybeObjectHandle::Weak(script));
     heap->SetRootScriptList(*list);
+  }
+
+  for (Handle<JSArrayBuffer> buffer : new_off_heap_array_buffers()) {
+    // Serializer writes backing store ref in |backing_store| field.
+    size_t store_index = reinterpret_cast<size_t>(buffer->backing_store());
+    auto bs = backing_store(store_index);
+    SharedFlag shared =
+        bs && bs->is_shared() ? SharedFlag::kShared : SharedFlag::kNotShared;
+    buffer->Setup(shared, bs);
   }
 }
 
@@ -102,7 +110,7 @@ void ObjectDeserializer::LinkAllocationSites() {
     // TODO(mvstanton): consider treating the heap()->allocation_sites_list()
     // as a (weak) root. If this root is relocated correctly, this becomes
     // unnecessary.
-    if (heap->allocation_sites_list() == Smi::kZero) {
+    if (heap->allocation_sites_list() == Smi::zero()) {
       site.set_weak_next(ReadOnlyRoots(heap).undefined_value());
     } else {
       site.set_weak_next(heap->allocation_sites_list());

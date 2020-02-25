@@ -14,6 +14,7 @@
 #include "src/codegen/register-configuration.h"
 #include "src/diagnostics/disasm.h"
 #include "src/execution/frames-inl.h"
+#include "src/execution/pointer-authentication.h"
 #include "src/execution/v8threads.h"
 #include "src/handles/global-handles.h"
 #include "src/heap/heap-inl.h"
@@ -252,7 +253,10 @@ class ActivationsFinder : public ThreadVisitor {
           int trampoline_pc = safepoint.trampoline_pc();
           DCHECK_IMPLIES(code == topmost_, safe_to_deopt_);
           // Replace the current pc on the stack with the trampoline.
-          it.frame()->set_pc(code.raw_instruction_start() + trampoline_pc);
+          // TODO(v8:10026): avoid replacing a signed pointer.
+          Address* pc_addr = it.frame()->pc_address();
+          Address new_pc = code.raw_instruction_start() + trampoline_pc;
+          PointerAuthentication::ReplacePC(pc_addr, new_pc, kSystemPointerSize);
         }
       }
     }
@@ -519,8 +523,9 @@ Deoptimizer::Deoptimizer(Isolate* isolate, JSFunction function,
   }
   if (compiled_code_.kind() == Code::OPTIMIZED_FUNCTION) {
     compiled_code_.set_deopt_already_counted(true);
-    PROFILE(isolate_,
-            CodeDeoptEvent(compiled_code_, kind, from_, fp_to_sp_delta_));
+    HandleScope scope(isolate_);
+    PROFILE(isolate_, CodeDeoptEvent(handle(compiled_code_, isolate_), kind,
+                                     from_, fp_to_sp_delta_));
   }
   unsigned size = ComputeInputFrameSize();
   const int parameter_count =
@@ -689,6 +694,13 @@ void Deoptimizer::DoComputeOutputFrames() {
     caller_fp_ = Memory<intptr_t>(fp_address);
     caller_pc_ =
         Memory<intptr_t>(fp_address + CommonFrameConstants::kCallerPCOffset);
+    // Sign caller_pc_ with caller_frame_top_ to be consistent with everything
+    // else here.
+    uint64_t sp = stack_fp_ + StandardFrameConstants::kCallerSPOffset;
+    // TODO(v8:10026): avoid replacing a signed pointer.
+    PointerAuthentication::ReplaceContext(
+        reinterpret_cast<Address*>(&caller_pc_), sp, caller_frame_top_);
+
     input_frame_context_ = Memory<intptr_t>(
         fp_address + CommonFrameConstants::kContextOrFrameTypeOffset);
 
@@ -697,6 +709,10 @@ void Deoptimizer::DoComputeOutputFrames() {
           fp_address + CommonFrameConstants::kConstantPoolOffset);
     }
   }
+
+  StackGuard* const stack_guard = isolate()->stack_guard();
+  CHECK_GT(static_cast<uintptr_t>(caller_frame_top_),
+           stack_guard->real_jslimit());
 
   if (trace_scope_ != nullptr) {
     timer.Start();
@@ -755,6 +771,7 @@ void Deoptimizer::DoComputeOutputFrames() {
 
   // Translate each output frame.
   int frame_index = 0;  // output_frame_index
+  size_t total_output_frame_size = 0;
   for (size_t i = 0; i < count; ++i, ++frame_index) {
     // Read the ast node id, function, and frame height for this output frame.
     TranslatedFrame* translated_frame = &(translated_state_.frames()[i]);
@@ -790,6 +807,7 @@ void Deoptimizer::DoComputeOutputFrames() {
         FATAL("invalid frame");
         break;
     }
+    total_output_frame_size += output_[frame_index]->GetFrameSize();
   }
 
   FrameDescription* topmost = output_[count - 1];
@@ -809,6 +827,18 @@ void Deoptimizer::DoComputeOutputFrames() {
            bailout_id_, node_id.ToInt(), output_[index]->GetPc(),
            caller_frame_top_, ms);
   }
+
+  // The following invariant is fairly tricky to guarantee, since the size of
+  // an optimized frame and its deoptimized counterparts usually differs. We
+  // thus need to consider the case in which deoptimized frames are larger than
+  // the optimized frame in stack checks in optimized code. We do this by
+  // applying an offset to stack checks (see kArchStackPointerGreaterThan in the
+  // code generator).
+  // Note that we explicitly allow deopts to exceed the limit by a certain
+  // number of slack bytes.
+  CHECK_GT(
+      static_cast<uintptr_t>(caller_frame_top_) - total_output_frame_size,
+      stack_guard->real_jslimit() - kStackLimitSlackForDeoptimizationInBytes);
 }
 
 void Deoptimizer::DoComputeInterpretedFrame(TranslatedFrame* translated_frame,

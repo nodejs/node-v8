@@ -83,12 +83,6 @@ inline MemOperand FieldMemOperand(Register object, int offset);
 // ----------------------------------------------------------------------------
 // MacroAssembler
 
-#if defined(V8_OS_WIN)
-// This offset is originated from PushCalleeSavedRegisters.
-static constexpr int kFramePointerOffsetInPushCalleeSavedRegisters =
-    10 * kSystemPointerSize;
-#endif  // V8_OS_WIN
-
 enum BranchType {
   // Copies of architectural conditions.
   // The associated conditions can be used in place of those, the code will
@@ -566,17 +560,13 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   inline void Isb();
   inline void Csdb();
 
-  // Call a runtime routine. This expects {centry} to contain a fitting CEntry
-  // builtin for the target runtime function and uses an indirect call.
-  void CallRuntimeWithCEntry(Runtime::FunctionId fid, Register centry);
-
   // Removes current frame and its arguments from the stack preserving
   // the arguments and a return address pushed to the stack for the next call.
-  // Both |callee_args_count| and |caller_args_count_reg| do not include
-  // receiver. |callee_args_count| is not modified, |caller_args_count_reg|
-  // is trashed.
-  void PrepareForTailCall(const ParameterCount& callee_args_count,
-                          Register caller_args_count_reg, Register scratch0,
+  // Both |callee_args_count| and |caller_args_count| do not include
+  // receiver. |callee_args_count| is not modified. |caller_args_count| is
+  // trashed.
+  void PrepareForTailCall(Register callee_args_count,
+                          Register caller_args_count, Register scratch0,
                           Register scratch1);
 
   inline void SmiUntag(Register dst, Register src);
@@ -599,8 +589,38 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
 
   inline void Debug(const char* message, uint32_t code, Instr params = BREAK);
 
+  void Trap() override;
+  void DebugBreak() override;
+
   // Print a message to stderr and abort execution.
   void Abort(AbortReason reason);
+
+  // Like printf, but print at run-time from generated code.
+  //
+  // The caller must ensure that arguments for floating-point placeholders
+  // (such as %e, %f or %g) are VRegisters, and that arguments for integer
+  // placeholders are Registers.
+  //
+  // Format placeholders that refer to more than one argument, or to a specific
+  // argument, are not supported. This includes formats like "%1$d" or "%.*d".
+  //
+  // This function automatically preserves caller-saved registers so that
+  // calling code can use Printf at any point without having to worry about
+  // corruption. The preservation mechanism generates a lot of code. If this is
+  // a problem, preserve the important registers manually and then call
+  // PrintfNoPreserve. Callee-saved registers are not used by Printf, and are
+  // implicitly preserved.
+  void Printf(const char* format, CPURegister arg0 = NoCPUReg,
+              CPURegister arg1 = NoCPUReg, CPURegister arg2 = NoCPUReg,
+              CPURegister arg3 = NoCPUReg);
+
+  // Like Printf, but don't preserve any caller-saved registers, not even 'lr'.
+  //
+  // The return code from the system printf call will be returned in x0.
+  void PrintfNoPreserve(const char* format, const CPURegister& arg0 = NoCPUReg,
+                        const CPURegister& arg1 = NoCPUReg,
+                        const CPURegister& arg2 = NoCPUReg,
+                        const CPURegister& arg3 = NoCPUReg);
 
   // Remaining instructions are simple pass-through calls to the assembler.
   inline void Asr(const Register& rd, const Register& rn, unsigned shift);
@@ -611,7 +631,8 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   // Returns false, otherwise.
   bool TryOneInstrMoveImmediate(const Register& dst, int64_t imm);
 
-  inline void Bind(Label* label);
+  inline void Bind(Label* label,
+                   BranchTargetIdentifier id = BranchTargetIdentifier::kNone);
 
   static unsigned CountClearHalfWords(uint64_t imm, unsigned reg_size);
 
@@ -762,20 +783,33 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   // The stack pointer must be aligned to 16 bytes on entry and the total size
   // of the specified registers must also be a multiple of 16 bytes.
   //
-  // Other than the registers passed into Pop, the stack pointer and (possibly)
-  // the system stack pointer, these methods do not modify any other registers.
+  // Other than the registers passed into Pop, the stack pointer, (possibly)
+  // the system stack pointer and (possibly) the link register, these methods
+  // do not modify any other registers.
+  //
+  // Some of the methods take an optional LoadLRMode or StoreLRMode template
+  // argument, which specifies whether we need to sign the link register at the
+  // start of the operation, or authenticate it at the end of the operation,
+  // when control flow integrity measures are enabled.
+  // When the mode is kDontLoadLR or kDontStoreLR, LR must not be passed as an
+  // argument to the operation.
+  enum LoadLRMode { kAuthLR, kDontLoadLR };
+  enum StoreLRMode { kSignLR, kDontStoreLR };
+  template <StoreLRMode lr_mode = kDontStoreLR>
   void Push(const CPURegister& src0, const CPURegister& src1 = NoReg,
             const CPURegister& src2 = NoReg, const CPURegister& src3 = NoReg);
   void Push(const CPURegister& src0, const CPURegister& src1,
             const CPURegister& src2, const CPURegister& src3,
             const CPURegister& src4, const CPURegister& src5 = NoReg,
             const CPURegister& src6 = NoReg, const CPURegister& src7 = NoReg);
+  template <LoadLRMode lr_mode = kDontLoadLR>
   void Pop(const CPURegister& dst0, const CPURegister& dst1 = NoReg,
            const CPURegister& dst2 = NoReg, const CPURegister& dst3 = NoReg);
   void Pop(const CPURegister& dst0, const CPURegister& dst1,
            const CPURegister& dst2, const CPURegister& dst3,
            const CPURegister& dst4, const CPURegister& dst5 = NoReg,
            const CPURegister& dst6 = NoReg, const CPURegister& dst7 = NoReg);
+  template <StoreLRMode lr_mode = kDontStoreLR>
   void Push(const Register& src0, const VRegister& src1);
 
   // This is a convenience method for pushing a single Handle<Object>.
@@ -817,7 +851,15 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   // kSRegSizeInBits are supported.
   //
   // Otherwise, (Push|Pop)(CPU|X|W|D|S)RegList is preferred.
+  //
+  // The methods take an optional LoadLRMode or StoreLRMode template argument.
+  // When control flow integrity measures are enabled and the link register is
+  // included in 'registers', passing kSignLR to PushCPURegList will sign the
+  // link register before pushing the list, and passing kAuthLR to
+  // PopCPURegList will authenticate it after popping the list.
+  template <StoreLRMode lr_mode = kDontStoreLR>
   void PushCPURegList(CPURegList registers);
+  template <LoadLRMode lr_mode = kDontLoadLR>
   void PopCPURegList(CPURegList registers);
 
   // Calculate how much stack space (in bytes) are required to store caller
@@ -939,7 +981,8 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   // the JS bitwise operations. See ECMA-262 9.5: ToInt32.
   // Exits with 'result' holding the answer.
   void TruncateDoubleToI(Isolate* isolate, Zone* zone, Register result,
-                         DoubleRegister double_input, StubCallMode stub_mode);
+                         DoubleRegister double_input, StubCallMode stub_mode,
+                         LinkRegisterStatus lr_status);
 
   inline void Mul(const Register& rd, const Register& rn, const Register& rm);
 
@@ -1021,10 +1064,18 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
 
   // Poke 'src' onto the stack. The offset is in bytes. The stack pointer must
   // be 16 byte aligned.
+  // When the optional template argument is kSignLR and control flow integrity
+  // measures are enabled, we sign the link register before poking it onto the
+  // stack. 'src' must be lr in this case.
+  template <StoreLRMode lr_mode = kDontStoreLR>
   void Poke(const CPURegister& src, const Operand& offset);
 
   // Peek at a value on the stack, and put it in 'dst'. The offset is in bytes.
   // The stack pointer must be aligned to 16 bytes.
+  // When the optional template argument is kAuthLR and control flow integrity
+  // measures are enabled, we authenticate the link register after peeking the
+  // value. 'dst' must be lr in this case.
+  template <LoadLRMode lr_mode = kDontLoadLR>
   void Peek(const CPURegister& dst, const Operand& offset);
 
   // Poke 'src1' and 'src2' onto the stack. The values written will be adjacent
@@ -1200,6 +1251,7 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
                                Label* done);
 
   inline void Mrs(const Register& rt, SystemRegister sysreg);
+  inline void Msr(SystemRegister sysreg, const Register& rt);
 
   // Generates function prologue code.
   void Prologue();
@@ -1268,15 +1320,18 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
 
   void DecompressTaggedSigned(const Register& destination,
                               const MemOperand& field_operand);
-  void DecompressTaggedSigned(const Register& destination,
-                              const Register& source);
   void DecompressTaggedPointer(const Register& destination,
                                const MemOperand& field_operand);
   void DecompressTaggedPointer(const Register& destination,
                                const Register& source);
   void DecompressAnyTagged(const Register& destination,
                            const MemOperand& field_operand);
-  void DecompressAnyTagged(const Register& destination, const Register& source);
+
+  // Restore FP and LR from the values stored in the current frame. This will
+  // authenticate the LR when pointer authentication is enabled.
+  void RestoreFPAndLR();
+
+  void StoreReturnAddressInWasmExitFrame(Label* return_location);
 
  protected:
   // The actual Push and Pop implementations. These don't generate any code
@@ -1436,7 +1491,6 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   inline void Ldnp(const CPURegister& rt, const CPURegister& rt2,
                    const MemOperand& src);
   inline void Movk(const Register& rd, uint64_t imm, int shift = -1);
-  inline void Msr(SystemRegister sysreg, const Register& rt);
   inline void Nop() { nop(); }
   void Mvni(const VRegister& vd, const int imm8, Shift shift = LSL,
             const int shift_amount = 0) {
@@ -1607,21 +1661,27 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
     tbx(vd, vn, vn2, vn3, vn4, vm);
   }
 
+  // For the 'lr_mode' template argument of the following methods, see
+  // PushCPURegList/PopCPURegList.
+  template <StoreLRMode lr_mode = kDontStoreLR>
   inline void PushSizeRegList(
       RegList registers, unsigned reg_size,
       CPURegister::RegisterType type = CPURegister::kRegister) {
-    PushCPURegList(CPURegList(type, reg_size, registers));
+    PushCPURegList<lr_mode>(CPURegList(type, reg_size, registers));
   }
+  template <LoadLRMode lr_mode = kDontLoadLR>
   inline void PopSizeRegList(
       RegList registers, unsigned reg_size,
       CPURegister::RegisterType type = CPURegister::kRegister) {
-    PopCPURegList(CPURegList(type, reg_size, registers));
+    PopCPURegList<lr_mode>(CPURegList(type, reg_size, registers));
   }
+  template <StoreLRMode lr_mode = kDontStoreLR>
   inline void PushXRegList(RegList regs) {
-    PushSizeRegList(regs, kXRegSizeInBits);
+    PushSizeRegList<lr_mode>(regs, kXRegSizeInBits);
   }
+  template <LoadLRMode lr_mode = kDontLoadLR>
   inline void PopXRegList(RegList regs) {
-    PopSizeRegList(regs, kXRegSizeInBits);
+    PopSizeRegList<lr_mode>(regs, kXRegSizeInBits);
   }
   inline void PushWRegList(RegList regs) {
     PushSizeRegList(regs, kWRegSizeInBits);
@@ -1656,24 +1716,15 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   // side effects.
   inline void InlineData(uint64_t data);
 
-  // Insert an instrumentation enable marker into the instruction stream.
-  inline void EnableInstrumentation();
-
-  // Insert an instrumentation disable marker into the instruction stream.
-  inline void DisableInstrumentation();
-
-  // Insert an instrumentation event marker into the instruction stream. These
-  // will be picked up by the instrumentation system to annotate an instruction
-  // profile. The argument marker_name must be a printable two character string;
-  // it will be encoded in the event marker.
-  inline void AnnotateInstrumentation(const char* marker_name);
-
   // Preserve the callee-saved registers (as defined by AAPCS64).
   //
   // Higher-numbered registers are pushed before lower-numbered registers, and
   // thus get higher addresses.
   // Floating-point registers are pushed before general-purpose registers, and
   // thus get higher addresses.
+  //
+  // When control flow integrity measures are enabled, this method signs the
+  // link register before pushing it.
   //
   // Note that registers are not checked for invalid values. Use this method
   // only if you know that the GC won't try to examine the values on the stack.
@@ -1685,6 +1736,9 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   // thus come from higher addresses.
   // Floating-point registers are popped after general-purpose registers, and
   // thus come from higher addresses.
+  //
+  // When control flow integrity measures are enabled, this method
+  // authenticates the link register after popping it.
   void PopCalleeSavedRegisters();
 
   // Helpers ------------------------------------------------------------------
@@ -1766,23 +1820,24 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   // 'actual' must use an immediate or x0.
   // 'expected' must use an immediate or x2.
   // 'call_kind' must be x5.
-  void InvokePrologue(const ParameterCount& expected,
-                      const ParameterCount& actual, Label* done,
-                      InvokeFlag flag, bool* definitely_mismatches);
+  void InvokePrologue(Register expected_parameter_count,
+                      Register actual_parameter_count, Label* done,
+                      InvokeFlag flag);
 
   // On function call, call into the debugger.
   void CallDebugOnFunctionCall(Register fun, Register new_target,
-                               const ParameterCount& expected,
-                               const ParameterCount& actual);
+                               Register expected_parameter_count,
+                               Register actual_parameter_count);
   void InvokeFunctionCode(Register function, Register new_target,
-                          const ParameterCount& expected,
-                          const ParameterCount& actual, InvokeFlag flag);
+                          Register expected_parameter_count,
+                          Register actual_parameter_count, InvokeFlag flag);
   // Invoke the JavaScript function in the given register.
   // Changes the current context to the context in the function before invoking.
-  void InvokeFunction(Register function, Register new_target,
-                      const ParameterCount& actual, InvokeFlag flag);
-  void InvokeFunction(Register function, const ParameterCount& expected,
-                      const ParameterCount& actual, InvokeFlag flag);
+  void InvokeFunctionWithNewTarget(Register function, Register new_target,
+                                   Register actual_parameter_count,
+                                   InvokeFlag flag);
+  void InvokeFunction(Register function, Register expected_parameter_count,
+                      Register actual_parameter_count, InvokeFlag flag);
 
   // ---- Code generation helpers ----
 
@@ -1878,6 +1933,8 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   void LeaveExitFrame(bool save_doubles, const Register& scratch,
                       const Register& scratch2);
 
+  void LoadMap(Register dst, Register object);
+
   // Load the global proxy from the current context.
   void LoadGlobalProxy(Register dst);
 
@@ -1923,33 +1980,6 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
       AbortReason reason = AbortReason::kRegisterDidNotMatchExpectedRoot);
 
   void LoadNativeContextSlot(int index, Register dst);
-
-  // Like printf, but print at run-time from generated code.
-  //
-  // The caller must ensure that arguments for floating-point placeholders
-  // (such as %e, %f or %g) are VRegisters, and that arguments for integer
-  // placeholders are Registers.
-  //
-  // Format placeholders that refer to more than one argument, or to a specific
-  // argument, are not supported. This includes formats like "%1$d" or "%.*d".
-  //
-  // This function automatically preserves caller-saved registers so that
-  // calling code can use Printf at any point without having to worry about
-  // corruption. The preservation mechanism generates a lot of code. If this is
-  // a problem, preserve the important registers manually and then call
-  // PrintfNoPreserve. Callee-saved registers are not used by Printf, and are
-  // implicitly preserved.
-  void Printf(const char* format, CPURegister arg0 = NoCPUReg,
-              CPURegister arg1 = NoCPUReg, CPURegister arg2 = NoCPUReg,
-              CPURegister arg3 = NoCPUReg);
-
-  // Like Printf, but don't preserve any caller-saved registers, not even 'lr'.
-  //
-  // The return code from the system printf call will be returned in x0.
-  void PrintfNoPreserve(const char* format, const CPURegister& arg0 = NoCPUReg,
-                        const CPURegister& arg1 = NoCPUReg,
-                        const CPURegister& arg2 = NoCPUReg,
-                        const CPURegister& arg3 = NoCPUReg);
 
   // Far branches resolving.
   //
@@ -2063,7 +2093,7 @@ class UseScratchRegisterScope {
     CPURegList list(reg1, reg2);
     Include(list);
   }
-  void Exclude(const Register& reg1, const Register& reg2) {
+  void Exclude(const Register& reg1, const Register& reg2 = NoReg) {
     CPURegList list(reg1, reg2);
     Exclude(list);
   }
@@ -2080,9 +2110,6 @@ class UseScratchRegisterScope {
   RegList old_available_;    // kRegister
   RegList old_availablefp_;  // kVRegister
 };
-
-MemOperand ContextMemOperand(Register context, int index = 0);
-MemOperand NativeContextMemOperand();
 
 }  // namespace internal
 }  // namespace v8

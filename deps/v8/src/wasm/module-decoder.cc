@@ -291,14 +291,15 @@ class ModuleDecoderImpl : public Decoder {
     size_t hash = base::hash_range(module_bytes.begin(), module_bytes.end());
     EmbeddedVector<char, 32> buf;
     SNPrintF(buf, "%016zx.%s.wasm", hash, ok() ? "ok" : "failed");
-    std::string name(buf.begin());
-    if (FILE* wasm_file = base::OS::FOpen((path + name).c_str(), "wb")) {
-      if (fwrite(module_bytes.begin(), module_bytes.length(), 1, wasm_file) !=
-          1) {
-        OFStream os(stderr);
-        os << "Error while dumping wasm file" << std::endl;
-      }
-      fclose(wasm_file);
+    path += buf.begin();
+    size_t rv = 0;
+    if (FILE* file = base::OS::FOpen(path.c_str(), "wb")) {
+      rv = fwrite(module_bytes.begin(), module_bytes.length(), 1, file);
+      fclose(file);
+    }
+    if (rv != 1) {
+      OFStream os(stderr);
+      os << "Error while dumping wasm file to " << path << std::endl;
     }
   }
 
@@ -366,6 +367,7 @@ class ModuleDecoderImpl : public Decoder {
 
   void DecodeSection(SectionCode section_code, Vector<const uint8_t> bytes,
                      uint32_t offset, bool verify_functions = true) {
+    VerifyFunctionDeclarations(section_code);
     if (failed()) return;
     Reset(bytes, offset);
     TRACE("Section: %s\n", SectionName(section_code));
@@ -467,7 +469,7 @@ class ModuleDecoderImpl : public Decoder {
         consume_bytes(static_cast<uint32_t>(end_ - start_), ".debug_info");
         break;
       case kCompilationHintsSectionCode:
-        if (enabled_features_.compilation_hints) {
+        if (enabled_features_.has_compilation_hints()) {
           DecodeCompilationHintsSection();
         } else {
           // Ignore this section when feature was disabled. It is an optional
@@ -476,14 +478,14 @@ class ModuleDecoderImpl : public Decoder {
         }
         break;
       case kDataCountSectionCode:
-        if (enabled_features_.bulk_memory) {
+        if (enabled_features_.has_bulk_memory()) {
           DecodeDataCountSection();
         } else {
           errorf(pc(), "unexpected section <%s>", SectionName(section_code));
         }
         break;
       case kExceptionSectionCode:
-        if (enabled_features_.eh) {
+        if (enabled_features_.has_eh()) {
           DecodeExceptionSection();
         } else {
           errorf(pc(), "unexpected section <%s>", SectionName(section_code));
@@ -547,7 +549,8 @@ class ModuleDecoderImpl : public Decoder {
                                         0,              // sig_index
                                         {0, 0},         // code
                                         true,           // imported
-                                        false});        // exported
+                                        false,          // exported
+                                        false});        // declared
           WasmFunction* function = &module_->functions.back();
           function->sig_index =
               consume_sig_index(module_.get(), &function->sig);
@@ -562,7 +565,7 @@ class ModuleDecoderImpl : public Decoder {
           WasmTable* table = &module_->tables.back();
           table->imported = true;
           ValueType type = consume_reference_type();
-          if (!enabled_features_.anyref) {
+          if (!enabled_features_.has_anyref()) {
             if (type != kWasmFuncRef) {
               error(pc_ - 1, "invalid table type");
               break;
@@ -581,9 +584,9 @@ class ModuleDecoderImpl : public Decoder {
           if (!AddMemory(module_.get())) break;
           uint8_t flags = validate_memory_flags(&module_->has_shared_memory);
           consume_resizable_limits(
-              "memory", "pages", kSpecMaxWasmMemoryPages,
+              "memory", "pages", max_initial_mem_pages(),
               &module_->initial_pages, &module_->has_maximum_pages,
-              kSpecMaxWasmMemoryPages, &module_->maximum_pages, flags);
+              max_maximum_mem_pages(), &module_->maximum_pages, flags);
           break;
         }
         case kExternalGlobal: {
@@ -601,7 +604,7 @@ class ModuleDecoderImpl : public Decoder {
         }
         case kExternalException: {
           // ===== Imported exception ==========================================
-          if (!enabled_features_.eh) {
+          if (!enabled_features_.has_eh()) {
             errorf(pos, "unknown import kind 0x%02x", import->kind);
             break;
           }
@@ -637,7 +640,8 @@ class ModuleDecoderImpl : public Decoder {
                                     0,           // sig_index
                                     {0, 0},      // code
                                     false,       // imported
-                                    false});     // exported
+                                    false,       // exported
+                                    false});     // declared
       WasmFunction* function = &module_->functions.back();
       function->sig_index = consume_sig_index(module_.get(), &function->sig);
       if (!ok()) return;
@@ -648,7 +652,8 @@ class ModuleDecoderImpl : public Decoder {
   void DecodeTableSection() {
     // TODO(ahaas): Set the correct limit to {kV8MaxWasmTables} once the
     // implementation of AnyRef landed.
-    uint32_t max_count = enabled_features_.anyref ? 100000 : kV8MaxWasmTables;
+    uint32_t max_count =
+        enabled_features_.has_anyref() ? 100000 : kV8MaxWasmTables;
     uint32_t table_count = consume_count("table count", max_count);
 
     for (uint32_t i = 0; ok() && i < table_count; i++) {
@@ -671,8 +676,8 @@ class ModuleDecoderImpl : public Decoder {
       if (!AddMemory(module_.get())) break;
       uint8_t flags = validate_memory_flags(&module_->has_shared_memory);
       consume_resizable_limits(
-          "memory", "pages", kSpecMaxWasmMemoryPages, &module_->initial_pages,
-          &module_->has_maximum_pages, kSpecMaxWasmMemoryPages,
+          "memory", "pages", max_initial_mem_pages(), &module_->initial_pages,
+          &module_->has_maximum_pages, max_maximum_mem_pages(),
           &module_->maximum_pages, flags);
     }
   }
@@ -745,7 +750,7 @@ class ModuleDecoderImpl : public Decoder {
           break;
         }
         case kExternalException: {
-          if (!enabled_features_.eh) {
+          if (!enabled_features_.has_eh()) {
             errorf(pos, "invalid export kind 0x%02x", exp->kind);
             break;
           }
@@ -804,21 +809,18 @@ class ModuleDecoderImpl : public Decoder {
     uint32_t element_count =
         consume_count("element count", FLAG_wasm_max_table_size);
 
-    if (element_count > 0 && module_->tables.size() == 0) {
-      error(pc_, "The element section requires a table");
-    }
     for (uint32_t i = 0; ok() && i < element_count; ++i) {
       const byte* pos = pc();
 
-      bool is_active;
+      WasmElemSegment::Status status;
       bool functions_as_elements;
       uint32_t table_index;
       WasmInitExpr offset;
-      consume_element_segment_header(&is_active, &functions_as_elements,
+      consume_element_segment_header(&status, &functions_as_elements,
                                      &table_index, &offset);
       if (failed()) return;
 
-      if (is_active) {
+      if (status == WasmElemSegment::kStatusActive) {
         if (table_index >= module_->tables.size()) {
           errorf(pos, "out of bounds table index %u", table_index);
           break;
@@ -834,10 +836,11 @@ class ModuleDecoderImpl : public Decoder {
 
       uint32_t num_elem =
           consume_count("number of elements", max_table_init_entries());
-      if (is_active) {
+      if (status == WasmElemSegment::kStatusActive) {
         module_->elem_segments.emplace_back(table_index, offset);
       } else {
-        module_->elem_segments.emplace_back();
+        module_->elem_segments.emplace_back(
+            status == WasmElemSegment::kStatusDeclarative);
       }
 
       WasmElemSegment* init = &module_->elem_segments.back();
@@ -966,7 +969,9 @@ class ModuleDecoderImpl : public Decoder {
         // Function and local names will be decoded when needed.
         if (name_type == NameSectionKindCode::kModule) {
           WireBytesRef name = consume_string(&inner, false, "module name");
-          if (inner.ok() && validate_utf8(&inner, name)) module_->name = name;
+          if (inner.ok() && validate_utf8(&inner, name)) {
+            module_->name = name;
+          }
         } else {
           inner.consume_bytes(name_payload_len, "name subsection payload");
         }
@@ -1110,7 +1115,41 @@ class ModuleDecoderImpl : public Decoder {
     return true;
   }
 
+  void VerifyFunctionDeclarations(SectionCode section_code) {
+    // Since we will only know if a function was properly declared after all the
+    // element sections have been parsed, but we need to verify the proper use
+    // within global initialization, we are deferring those checks.
+    if (deferred_funcref_error_offsets_.empty()) {
+      // No verifications to do be done.
+      return;
+    }
+    if (!ok()) {
+      // Previous errors exist.
+      return;
+    }
+    // TODO(ecmziegler): Adjust logic if module order changes (e.g. event
+    // section).
+    if (section_code <= kElementSectionCode &&
+        section_code != kUnknownSectionCode) {
+      // Before the element section and not at end of decoding.
+      return;
+    }
+    for (auto& func_offset : deferred_funcref_error_offsets_) {
+      DCHECK_LT(func_offset.first, module_->functions.size());
+      if (!module_->functions[func_offset.first].declared) {
+        errorf(func_offset.second, "undeclared reference to function #%u",
+               func_offset.first);
+        break;
+      }
+    }
+    deferred_funcref_error_offsets_.clear();
+  }
+
   ModuleResult FinishDecoding(bool verify_functions = true) {
+    // Ensure that function verifications were done even if no section followed
+    // the global section.
+    VerifyFunctionDeclarations(kUnknownSectionCode);
+
     if (ok() && CheckMismatchedCounts()) {
       CalculateGlobalOffsets(module_.get());
     }
@@ -1221,6 +1260,10 @@ class ModuleDecoderImpl : public Decoder {
                     kLastKnownModuleSection,
                 "not enough bits");
   WasmError intermediate_error_;
+  // Map from function index to wire byte offset of first funcref initialization
+  // in global section. Used for deferred checking and proper error reporting if
+  // these were not properly declared in the element section.
+  std::unordered_map<uint32_t, int> deferred_funcref_error_offsets_;
   ModuleOrigin origin_;
 
   bool has_seen_unordered_section(SectionCode section_code) {
@@ -1236,7 +1279,7 @@ class ModuleDecoderImpl : public Decoder {
   }
 
   bool AddTable(WasmModule* module) {
-    if (enabled_features_.anyref) return true;
+    if (enabled_features_.has_anyref()) return true;
     if (module->tables.size() > 0) {
       error("At most one table is supported");
       return false;
@@ -1329,7 +1372,7 @@ class ModuleDecoderImpl : public Decoder {
                                               wasm_decode, function_time);
 
       TimedHistogramScope wasm_decode_function_time_scope(time_counter);
-      WasmFeatures unused_detected_features;
+      WasmFeatures unused_detected_features = WasmFeatures::None();
       result = VerifyWasmCode(allocator, enabled_features_, module,
                               &unused_detected_features, body);
     }
@@ -1424,7 +1467,7 @@ class ModuleDecoderImpl : public Decoder {
     uint8_t flags = consume_u8("resizable limits flags");
     const byte* pos = pc();
     *has_shared_memory = false;
-    if (enabled_features_.threads) {
+    if (enabled_features_.has_threads()) {
       if (flags & 0xFC) {
         errorf(pos - 1, "invalid memory limits flags");
       } else if (flags == 3) {
@@ -1542,7 +1585,7 @@ class ModuleDecoderImpl : public Decoder {
         break;
       }
       case kExprRefNull: {
-        if (enabled_features_.anyref || enabled_features_.eh) {
+        if (enabled_features_.has_anyref() || enabled_features_.has_eh()) {
           expr.kind = WasmInitExpr::kRefNullConst;
           len = 0;
           break;
@@ -1550,12 +1593,14 @@ class ModuleDecoderImpl : public Decoder {
         V8_FALLTHROUGH;
       }
       case kExprRefFunc: {
-        if (enabled_features_.anyref) {
+        if (enabled_features_.has_anyref()) {
           FunctionIndexImmediate<Decoder::kValidate> imm(this, pc() - 1);
           if (module->functions.size() <= imm.index) {
             errorf(pc() - 1, "invalid function index: %u", imm.index);
             break;
           }
+          // Defer check for declaration of function reference.
+          deferred_funcref_error_offsets_.emplace(imm.index, pc_offset());
           expr.kind = WasmInitExpr::kRefFuncConst;
           expr.val.function_index = imm.index;
           len = imm.length;
@@ -1605,16 +1650,19 @@ class ModuleDecoderImpl : public Decoder {
         if (origin_ == kWasmOrigin) {
           switch (t) {
             case kLocalS128:
-              if (enabled_features_.simd) return kWasmS128;
+              if (enabled_features_.has_simd()) return kWasmS128;
               break;
             case kLocalFuncRef:
-              if (enabled_features_.anyref) return kWasmFuncRef;
+              if (enabled_features_.has_anyref()) return kWasmFuncRef;
               break;
             case kLocalAnyRef:
-              if (enabled_features_.anyref) return kWasmAnyRef;
+              if (enabled_features_.has_anyref()) return kWasmAnyRef;
+              break;
+            case kLocalNullRef:
+              if (enabled_features_.has_anyref()) return kWasmNullRef;
               break;
             case kLocalExnRef:
-              if (enabled_features_.eh) return kWasmExnRef;
+              if (enabled_features_.has_eh()) return kWasmExnRef;
               break;
             default:
               break;
@@ -1633,11 +1681,24 @@ class ModuleDecoderImpl : public Decoder {
       case kLocalFuncRef:
         return kWasmFuncRef;
       case kLocalAnyRef:
-        if (!enabled_features_.anyref) {
+        if (!enabled_features_.has_anyref()) {
           error(pc_ - 1,
                 "Invalid type. Set --experimental-wasm-anyref to use 'AnyRef'");
         }
         return kWasmAnyRef;
+      case kLocalNullRef:
+        if (!enabled_features_.has_anyref()) {
+          error(
+              pc_ - 1,
+              "Invalid type. Set --experimental-wasm-anyref to use 'NullRef'");
+        }
+        return kWasmNullRef;
+      case kLocalExnRef:
+        if (!enabled_features_.has_eh()) {
+          error(pc_ - 1,
+                "Invalid type. Set --experimental-wasm-eh to use 'ExnRef'");
+        }
+        return kWasmExnRef;
       default:
         break;
     }
@@ -1658,7 +1719,7 @@ class ModuleDecoderImpl : public Decoder {
     }
     std::vector<ValueType> returns;
     // parse return types
-    const size_t max_return_count = enabled_features_.mv
+    const size_t max_return_count = enabled_features_.has_mv()
                                         ? kV8MaxWasmFunctionMultiReturns
                                         : kV8MaxWasmFunctionReturns;
     uint32_t return_count = consume_count("return count", max_return_count);
@@ -1690,13 +1751,13 @@ class ModuleDecoderImpl : public Decoder {
     return attribute;
   }
 
-  void consume_element_segment_header(bool* is_active,
+  void consume_element_segment_header(WasmElemSegment::Status* status,
                                       bool* functions_as_elements,
                                       uint32_t* table_index,
                                       WasmInitExpr* offset) {
     const byte* pos = pc();
     uint8_t flag;
-    if (enabled_features_.bulk_memory || enabled_features_.anyref) {
+    if (enabled_features_.has_bulk_memory() || enabled_features_.has_anyref()) {
       flag = consume_u8("flag");
     } else {
       uint32_t table_index = consume_u32v("table index");
@@ -1723,29 +1784,49 @@ class ModuleDecoderImpl : public Decoder {
         kIsPassiveMask | kHasTableIndexMask | kFunctionsAsElementsMask;
 
     bool is_passive = flag & kIsPassiveMask;
-    *is_active = !is_passive;
+    if (!is_passive) {
+      *status = WasmElemSegment::kStatusActive;
+      if (module_->tables.size() == 0) {
+        error(pc_, "Active element sections require a table");
+      }
+    } else if ((flag & kHasTableIndexMask)) {  // Special bit combination for
+                                               // declarative segments.
+      *status = WasmElemSegment::kStatusDeclarative;
+    } else {
+      *status = WasmElemSegment::kStatusPassive;
+      if (module_->tables.size() == 0) {
+        error(pc_, "Passive element sections require a table");
+      }
+    }
     *functions_as_elements = flag & kFunctionsAsElementsMask;
-    bool has_table_index = flag & kHasTableIndexMask;
+    bool has_table_index = (flag & kHasTableIndexMask) &&
+                           *status == WasmElemSegment::kStatusActive;
 
-    if (is_passive && !enabled_features_.bulk_memory) {
+    if (*status == WasmElemSegment::kStatusDeclarative &&
+        !enabled_features_.has_anyref()) {
+      error("Declarative element segments require --experimental-wasm-anyref");
+      return;
+    }
+    if (*status == WasmElemSegment::kStatusPassive &&
+        !enabled_features_.has_bulk_memory()) {
       error("Passive element segments require --experimental-wasm-bulk-memory");
       return;
     }
-    if (*functions_as_elements && !enabled_features_.bulk_memory) {
+    if (*functions_as_elements && !enabled_features_.has_bulk_memory()) {
       error(
           "Illegal segment flag. Did you forget "
           "--experimental-wasm-bulk-memory?");
       return;
     }
-    if (flag != 0 && !enabled_features_.bulk_memory &&
-        !enabled_features_.anyref) {
+    if (flag != 0 && !enabled_features_.has_bulk_memory() &&
+        !enabled_features_.has_anyref()) {
       error(
           "Invalid segment flag. Did you forget "
           "--experimental-wasm-bulk-memory or --experimental-wasm-anyref?");
       return;
     }
-    if ((flag & kFullMask) != flag || (!(*is_active) && has_table_index)) {
-      errorf(pos, "illegal flag value %u. Must be 0, 1, 2, 4, 5 or 6", flag);
+    if ((flag & kFullMask) != flag) {
+      errorf(pos, "illegal flag value %u. Must be between 0 and 7", flag);
     }
 
     if (has_table_index) {
@@ -1754,11 +1835,11 @@ class ModuleDecoderImpl : public Decoder {
       *table_index = 0;
     }
 
-    if (*is_active) {
+    if (*status == WasmElemSegment::kStatusActive) {
       *offset = consume_init_expr(module_.get(), kWasmI32);
     }
 
-    if (*is_active && !has_table_index) {
+    if (*status == WasmElemSegment::kStatusActive && !has_table_index) {
       // Active segments without table indices are a special case for backwards
       // compatibility. These cases have an implicit element kind or element
       // type, so we are done already with the segment header.
@@ -1792,13 +1873,14 @@ class ModuleDecoderImpl : public Decoder {
 
     // Some flag values are only valid for specific proposals.
     if (flag == SegmentFlags::kPassive) {
-      if (!enabled_features_.bulk_memory) {
+      if (!enabled_features_.has_bulk_memory()) {
         error(
             "Passive element segments require --experimental-wasm-bulk-memory");
         return;
       }
     } else if (flag == SegmentFlags::kActiveWithIndex) {
-      if (!(enabled_features_.bulk_memory || enabled_features_.anyref)) {
+      if (!(enabled_features_.has_bulk_memory() ||
+            enabled_features_.has_anyref())) {
         error(
             "Element segments with table indices require "
             "--experimental-wasm-bulk-memory or --experimental-wasm-anyref");
@@ -1832,6 +1914,7 @@ class ModuleDecoderImpl : public Decoder {
     uint32_t index =
         consume_func_index(module_.get(), &func, "element function index");
     if (failed()) return index;
+    func->declared = true;
     DCHECK_NE(func, nullptr);
     DCHECK_EQ(index, func->func_index);
     DCHECK_NE(index, WasmElemSegment::kNullIndex);
@@ -2009,29 +2092,26 @@ FunctionResult DecodeWasmFunctionForTesting(
                                       std::make_unique<WasmFunction>());
 }
 
-AsmJsOffsetsResult DecodeAsmJsOffsets(const byte* tables_start,
-                                      const byte* tables_end) {
-  AsmJsOffsets table;
+AsmJsOffsetsResult DecodeAsmJsOffsets(Vector<const uint8_t> encoded_offsets) {
+  std::vector<AsmJsOffsetFunctionEntries> functions;
 
-  Decoder decoder(tables_start, tables_end);
+  Decoder decoder(encoded_offsets);
   uint32_t functions_count = decoder.consume_u32v("functions count");
-  // Reserve space for the entries, taking care of invalid input.
-  if (functions_count < static_cast<uint32_t>(tables_end - tables_start)) {
-    table.reserve(functions_count);
-  }
+  // Sanity check.
+  DCHECK_GE(encoded_offsets.size(), functions_count);
+  functions.reserve(functions_count);
 
-  for (uint32_t i = 0; i < functions_count && decoder.ok(); ++i) {
+  for (uint32_t i = 0; i < functions_count; ++i) {
     uint32_t size = decoder.consume_u32v("table size");
     if (size == 0) {
-      table.emplace_back();
+      functions.emplace_back();
       continue;
     }
-    if (!decoder.checkAvailable(size)) {
-      decoder.error("illegal asm function offset table size");
-    }
+    DCHECK(decoder.checkAvailable(size));
     const byte* table_end = decoder.pc() + size;
     uint32_t locals_size = decoder.consume_u32v("locals size");
     int function_start_position = decoder.consume_u32v("function start pos");
+    int function_end_position = function_start_position;
     int last_byte_offset = locals_size;
     int last_asm_position = function_start_position;
     std::vector<AsmJsOffsetEntry> func_asm_offsets;
@@ -2039,24 +2119,32 @@ AsmJsOffsetsResult DecodeAsmJsOffsets(const byte* tables_start,
     // Add an entry for the stack check, associated with position 0.
     func_asm_offsets.push_back(
         {0, function_start_position, function_start_position});
-    while (decoder.ok() && decoder.pc() < table_end) {
+    while (decoder.pc() < table_end) {
+      DCHECK(decoder.ok());
       last_byte_offset += decoder.consume_u32v("byte offset delta");
       int call_position =
           last_asm_position + decoder.consume_i32v("call position delta");
       int to_number_position =
           call_position + decoder.consume_i32v("to_number position delta");
       last_asm_position = to_number_position;
-      func_asm_offsets.push_back(
-          {last_byte_offset, call_position, to_number_position});
+      if (decoder.pc() == table_end) {
+        // The last entry is the function end marker.
+        DCHECK_EQ(call_position, to_number_position);
+        function_end_position = call_position;
+      } else {
+        func_asm_offsets.push_back(
+            {last_byte_offset, call_position, to_number_position});
+      }
     }
-    if (decoder.pc() != table_end) {
-      decoder.error("broken asm offset table");
-    }
-    table.push_back(std::move(func_asm_offsets));
+    DCHECK_EQ(decoder.pc(), table_end);
+    functions.emplace_back(AsmJsOffsetFunctionEntries{
+        function_start_position, function_end_position,
+        std::move(func_asm_offsets)});
   }
-  if (decoder.more()) decoder.error("unexpected additional bytes");
+  DCHECK(decoder.ok());
+  DCHECK(!decoder.more());
 
-  return decoder.toResult(std::move(table));
+  return decoder.toResult(AsmJsOffsets{std::move(functions)});
 }
 
 std::vector<CustomSectionOffset> DecodeCustomSections(const byte* start,
@@ -2151,14 +2239,11 @@ void DecodeFunctionNames(const byte* module_start, const byte* module_end,
   }
 }
 
-void DecodeLocalNames(const byte* module_start, const byte* module_end,
-                      LocalNames* result) {
-  DCHECK_NOT_NULL(result);
-  DCHECK(result->names.empty());
+LocalNames DecodeLocalNames(Vector<const uint8_t> module_bytes) {
+  Decoder decoder(module_bytes);
+  if (!FindNameSection(&decoder)) return LocalNames{{}};
 
-  Decoder decoder(module_start, module_end);
-  if (!FindNameSection(&decoder)) return;
-
+  std::vector<LocalNamesPerFunction> functions;
   while (decoder.ok() && decoder.more()) {
     uint8_t name_type = decoder.consume_u8("name type");
     if (name_type & 0x80) break;  // no varuint7
@@ -2175,22 +2260,26 @@ void DecodeLocalNames(const byte* module_start, const byte* module_end,
     for (uint32_t i = 0; i < local_names_count; ++i) {
       uint32_t func_index = decoder.consume_u32v("function index");
       if (func_index > kMaxInt) continue;
-      result->names.emplace_back(static_cast<int>(func_index));
-      LocalNamesPerFunction& func_names = result->names.back();
-      result->max_function_index =
-          std::max(result->max_function_index, func_names.function_index);
+      std::vector<LocalName> names;
       uint32_t num_names = decoder.consume_u32v("namings count");
       for (uint32_t k = 0; k < num_names; ++k) {
         uint32_t local_index = decoder.consume_u32v("local index");
-        WireBytesRef name = consume_string(&decoder, true, "local name");
+        WireBytesRef name = consume_string(&decoder, false, "local name");
         if (!decoder.ok()) break;
         if (local_index > kMaxInt) continue;
-        func_names.max_local_index =
-            std::max(func_names.max_local_index, static_cast<int>(local_index));
-        func_names.names.emplace_back(static_cast<int>(local_index), name);
+        // Ignore non-utf8 names.
+        if (!validate_utf8(&decoder, name)) continue;
+        names.emplace_back(static_cast<int>(local_index), name);
       }
+      // Use stable sort to get deterministic names (the first one declared)
+      // even in the presence of duplicates.
+      std::stable_sort(names.begin(), names.end(), LocalName::IndexLess{});
+      functions.emplace_back(static_cast<int>(func_index), std::move(names));
     }
   }
+  std::stable_sort(functions.begin(), functions.end(),
+                   LocalNamesPerFunction::FunctionIndexLess{});
+  return LocalNames{std::move(functions)};
 }
 
 #undef TRACE

@@ -7,6 +7,7 @@
 
 #include "src/ast/ast.h"
 #include "src/base/compiler-specific.h"
+#include "src/base/export-template.h"
 #include "src/common/globals.h"
 #include "src/interpreter/bytecode-array-writer.h"
 #include "src/interpreter/bytecode-flags.h"
@@ -42,11 +43,15 @@ class V8_EXPORT_PRIVATE BytecodeArrayBuilder final {
       SourcePositionTableBuilder::RecordingMode source_position_mode =
           SourcePositionTableBuilder::RECORD_SOURCE_POSITIONS);
 
-  Handle<BytecodeArray> ToBytecodeArray(Isolate* isolate);
-  Handle<ByteArray> ToSourcePositionTable(Isolate* isolate);
+  template <typename Isolate>
+  EXPORT_TEMPLATE_DECLARE(V8_EXPORT_PRIVATE)
+  HandleFor<Isolate, BytecodeArray> ToBytecodeArray(Isolate* isolate);
+  template <typename Isolate>
+  EXPORT_TEMPLATE_DECLARE(V8_EXPORT_PRIVATE)
+  HandleFor<Isolate, ByteArray> ToSourcePositionTable(Isolate* isolate);
 
 #ifdef DEBUG
-  int CheckBytecodeMatches(Handle<BytecodeArray> bytecode);
+  int CheckBytecodeMatches(BytecodeArray bytecode);
 #endif
 
   // Get the number of parameters expected by function.
@@ -498,7 +503,8 @@ class V8_EXPORT_PRIVATE BytecodeArrayBuilder final {
   // Allocates a slot in the constant pool which can later be set.
   size_t AllocateDeferredConstantPoolEntry();
   // Sets the deferred value into an allocated constant pool entry.
-  void SetDeferredConstantPoolEntry(size_t entry, Handle<Object> object);
+  void SetDeferredConstantPoolEntry(size_t entry,
+                                    HandleOrOffThreadHandle<Object> object);
 
   void InitializeReturnPosition(FunctionLiteral* literal);
 
@@ -548,6 +554,8 @@ class V8_EXPORT_PRIVATE BytecodeArrayBuilder final {
   void OutputLdarRaw(Register reg);
   void OutputStarRaw(Register reg);
   void OutputMovRaw(Register src, Register dest);
+
+  void EmitFunctionStartSourcePosition(int position);
 
   // Accessors
   BytecodeRegisterAllocator* register_allocator() {

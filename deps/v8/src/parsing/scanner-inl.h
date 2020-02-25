@@ -8,6 +8,7 @@
 #include "src/parsing/keywords-gen.h"
 #include "src/parsing/scanner.h"
 #include "src/strings/char-predicates-inl.h"
+#include "src/utils/utils.h"
 
 namespace v8 {
 namespace internal {
@@ -505,6 +506,10 @@ V8_INLINE Token::Value Scanner::ScanSingleToken() {
           return ScanTemplateSpan();
 
         case Token::PRIVATE_NAME:
+          if (source_pos() == 0 && Peek() == '!') {
+            token = SkipSingleLineComment();
+            continue;
+          }
           return ScanPrivateName();
 
         case Token::WHITESPACE:

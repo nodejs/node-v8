@@ -13,8 +13,6 @@
 namespace v8 {
 namespace internal {
 
-using compiler::Node;
-
 namespace {
 class AsyncFromSyncBuiltinsAssembler : public AsyncBuiltinsAssembler {
  public:
@@ -86,8 +84,8 @@ void AsyncFromSyncBuiltinsAssembler::ThrowIfNotAsyncFromSyncIterator(
 
     // Let badIteratorError be a new TypeError exception.
     TNode<HeapObject> error =
-        CAST(MakeTypeError(MessageTemplate::kIncompatibleMethodReceiver,
-                           context, StringConstant(method_name), object));
+        MakeTypeError(MessageTemplate::kIncompatibleMethodReceiver, context,
+                      StringConstant(method_name), object);
 
     // Perform ! Call(promiseCapability.[[Reject]], undefined,
     //                « badIteratorError »).
@@ -105,7 +103,7 @@ void AsyncFromSyncBuiltinsAssembler::Generate_AsyncFromSyncIteratorMethod(
     const char* operation_name, Label::Type reject_label_type,
     base::Optional<TNode<Object>> initial_exception_value) {
   const TNode<NativeContext> native_context = LoadNativeContext(context);
-  const TNode<JSPromise> promise = AllocateAndInitJSPromise(context);
+  const TNode<JSPromise> promise = NewJSPromise(context);
 
   TVARIABLE(
       Object, var_exception,
@@ -130,9 +128,11 @@ void AsyncFromSyncBuiltinsAssembler::Generate_AsyncFromSyncIteratorMethod(
     BIND(&if_isnotundefined);
   }
 
-  const TNode<Object> iter_result = CallJS(
-      CodeFactory::Call(isolate()), context, method, sync_iterator, sent_value);
-  GotoIfException(iter_result, &reject_promise, &var_exception);
+  TNode<Object> iter_result;
+  {
+    ScopedExceptionHandler handler(this, &reject_promise, &var_exception);
+    iter_result = Call(context, method, sync_iterator, sent_value);
+  }
 
   TNode<Object> value;
   TNode<Oddball> done;
@@ -144,10 +144,13 @@ void AsyncFromSyncBuiltinsAssembler::Generate_AsyncFromSyncIteratorMethod(
   CSA_ASSERT(this, IsConstructor(promise_fun));
 
   // Let valueWrapper be PromiseResolve(%Promise%, « value »).
-  const TNode<Object> value_wrapper = CallBuiltin(
-      Builtins::kPromiseResolve, native_context, promise_fun, value);
   // IfAbruptRejectPromise(valueWrapper, promiseCapability).
-  GotoIfException(value_wrapper, &reject_promise, &var_exception);
+  TNode<Object> value_wrapper;
+  {
+    ScopedExceptionHandler handler(this, &reject_promise, &var_exception);
+    value_wrapper = CallBuiltin(Builtins::kPromiseResolve, native_context,
+                                promise_fun, value);
+  }
 
   // Let onFulfilled be a new built-in function object as defined in
   // Async Iterator Value Unwrap Functions.
@@ -200,17 +203,17 @@ AsyncFromSyncBuiltinsAssembler::LoadIteratorResult(
 
   BIND(&if_slowpath);
   {
+    ScopedExceptionHandler handler(this, if_exception, var_exception);
+
     // Let nextDone be IteratorComplete(nextResult).
     // IfAbruptRejectPromise(nextDone, promiseCapability).
     const TNode<Object> done =
         GetProperty(context, iter_result, factory()->done_string());
-    GotoIfException(done, if_exception, var_exception);
 
     // Let nextValue be IteratorValue(nextResult).
     // IfAbruptRejectPromise(nextValue, promiseCapability).
     const TNode<Object> value =
         GetProperty(context, iter_result, factory()->value_string());
-    GotoIfException(value, if_exception, var_exception);
 
     var_value = value;
     var_done = done;
@@ -221,8 +224,8 @@ AsyncFromSyncBuiltinsAssembler::LoadIteratorResult(
   {
     // Sync iterator result is not an object --- Produce a TypeError and jump
     // to the `if_exception` path.
-    const TNode<Object> error = CAST(MakeTypeError(
-        MessageTemplate::kIteratorResultNotAnObject, context, iter_result));
+    const TNode<Object> error = MakeTypeError(
+        MessageTemplate::kIteratorResultNotAnObject, context, iter_result);
     *var_exception = error;
     Goto(if_exception);
   }

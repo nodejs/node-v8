@@ -39,12 +39,9 @@ void ConversionBuiltinsAssembler::Generate_NonPrimitiveToPrimitive(
   {
     // Invoke the {exotic_to_prim} method on the {input} with a string
     // representation of the {hint}.
-    Callable callable =
-        CodeFactory::Call(isolate(), ConvertReceiverMode::kNotNullOrUndefined);
     TNode<String> hint_string =
         HeapConstant(factory()->ToPrimitiveHintString(hint));
-    TNode<Object> result =
-        CallJS(callable, context, exotic_to_prim, input, hint_string);
+    TNode<Object> result = Call(context, exotic_to_prim, input, hint_string);
 
     // Verify that the {result} is actually a primitive.
     Label if_resultisprimitive(this),
@@ -248,9 +245,7 @@ void ConversionBuiltinsAssembler::Generate_OrdinaryToPrimitive(
     BIND(&if_methodiscallable);
     {
       // Call the {method} on the {input}.
-      Callable callable = CodeFactory::Call(
-          isolate(), ConvertReceiverMode::kNotNullOrUndefined);
-      TNode<Object> result = CallJS(callable, context, method, input);
+      TNode<Object> result = Call(context, method, input);
       var_result = result;
 
       // Return the {result} if it is a primitive.
@@ -381,20 +376,6 @@ TF_BUILTIN(ToLength, CodeStubAssembler) {
   }
 }
 
-TF_BUILTIN(ToInteger, CodeStubAssembler) {
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
-  TNode<Object> input = CAST(Parameter(Descriptor::kArgument));
-
-  Return(ToInteger(context, input, kNoTruncation));
-}
-
-TF_BUILTIN(ToInteger_TruncateMinusZero, CodeStubAssembler) {
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
-  TNode<Object> input = CAST(Parameter(Descriptor::kArgument));
-
-  Return(ToInteger(context, input, kTruncateMinusZero));
-}
-
 // ES6 section 7.1.13 ToObject (argument)
 TF_BUILTIN(ToObject, CodeStubAssembler) {
   Label if_smi(this, Label::kDeferred), if_jsreceiver(this),
@@ -429,9 +410,10 @@ TF_BUILTIN(ToObject, CodeStubAssembler) {
   TNode<NativeContext> native_context = LoadNativeContext(context);
   TNode<JSFunction> constructor = CAST(LoadContextElement(
       native_context, constructor_function_index_var.value()));
-  TNode<Object> initial_map =
-      LoadObjectField(constructor, JSFunction::kPrototypeOrInitialMapOffset);
-  TNode<HeapObject> js_primitive_wrapper = Allocate(JSPrimitiveWrapper::kSize);
+  TNode<Map> initial_map = LoadObjectField<Map>(
+      constructor, JSFunction::kPrototypeOrInitialMapOffset);
+  TNode<HeapObject> js_primitive_wrapper =
+      Allocate(JSPrimitiveWrapper::kHeaderSize);
   StoreMapNoWriteBarrier(js_primitive_wrapper, initial_map);
   StoreObjectFieldRoot(js_primitive_wrapper,
                        JSPrimitiveWrapper::kPropertiesOrHashOffset,

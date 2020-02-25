@@ -9,6 +9,7 @@
 #include "src/execution/frame-constants.h"
 #include "src/execution/frames.h"
 #include "src/execution/isolate.h"
+#include "src/execution/pointer-authentication.h"
 #include "src/objects/objects-inl.h"
 
 namespace v8 {
@@ -69,6 +70,16 @@ inline StackHandler* StackFrame::top_handler() const {
   return iterator_->handler();
 }
 
+inline Address StackFrame::callee_pc() const {
+  return state_.callee_pc_address ? ReadPC(state_.callee_pc_address)
+                                  : kNullAddress;
+}
+
+inline Address StackFrame::pc() const { return ReadPC(pc_address()); }
+
+inline Address StackFrame::ReadPC(Address* pc_address) {
+  return PointerAuthentication::AuthenticatePC(pc_address, kSystemPointerSize);
+}
 
 inline Address* StackFrame::ResolveReturnAddressLocation(Address* pc_address) {
   if (return_address_location_resolver_ == nullptr) {
@@ -196,7 +207,7 @@ inline bool JavaScriptFrame::has_adapted_arguments() const {
 }
 
 inline Object JavaScriptFrame::function_slot_object() const {
-  const int offset = JavaScriptFrameConstants::kFunctionOffset;
+  const int offset = StandardFrameConstants::kFunctionOffset;
   return Object(base::Memory<Address>(fp() + offset));
 }
 
@@ -307,7 +318,8 @@ JavaScriptFrame* StackTraceFrameIterator::javascript_frame() const {
 inline StackFrame* SafeStackFrameIterator::frame() const {
   DCHECK(!done());
   DCHECK(frame_->is_java_script() || frame_->is_exit() ||
-         frame_->is_builtin_exit() || frame_->is_wasm());
+         frame_->is_builtin_exit() || frame_->is_wasm() ||
+         frame_->is_wasm_to_js());
   return frame_;
 }
 
