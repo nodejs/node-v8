@@ -1621,6 +1621,9 @@
         ['want_separate_host_toolset', {
           'toolsets': ['host', 'target'],
         }],
+        ['OS=="win"', {
+          'defines': ['X86_WINDOWS'],
+        }],
       ],
       'direct_dependent_settings': {
         'include_dirs': [
