@@ -46,8 +46,12 @@ VARIANT_ALIASES = {
   # Shortcut for the two above ('more' first - it has the longer running tests)
   'exhaustive': MORE_VARIANTS + VARIANTS,
   # Additional variants, run on a subset of bots.
-  'extra': ['nooptimization', 'future', 'no_wasm_traps', 'turboprop'],
+  'extra': ['nooptimization', 'future', 'no_wasm_traps', 'turboprop',
+            'instruction_scheduling'],
 }
+
+# Extra flags passed to all tests using the standard test runner.
+EXTRA_DEFAULT_FLAGS = ['--testing-d8-test-runner']
 
 GC_STRESS_FLAGS = ['--gc-interval=500', '--stress-compaction',
                    '--concurrent-recompilation-queue-length=64',
@@ -174,11 +178,6 @@ class StandardTestRunner(base_runner.BaseTestRunner):
     if self.build_config.asan:
       options.extra_flags.append('--invoke-weak-callbacks')
 
-    if self.build_config.no_snap:
-      # Speed up slow nosnap runs. Allocation verification is covered by
-      # running mksnapshot on other builders.
-      options.extra_flags.append('--no-turbo-verify-allocation')
-
     if options.novfp3:
       options.extra_flags.append('--noenable-vfp3')
 
@@ -242,6 +241,9 @@ class StandardTestRunner(base_runner.BaseTestRunner):
       self._temporary_json_output_file = tempfile.NamedTemporaryFile(
           prefix="v8-test-runner-")
       options.json_test_results = self._temporary_json_output_file.name
+
+  def _runner_flags(self):
+    return EXTRA_DEFAULT_FLAGS
 
   def _parse_variants(self, aliases_str):
     # Use developer defaults if no variant was specified.

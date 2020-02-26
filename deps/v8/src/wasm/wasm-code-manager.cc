@@ -24,6 +24,7 @@
 #include "src/wasm/compilation-environment.h"
 #include "src/wasm/function-compiler.h"
 #include "src/wasm/jump-table-assembler.h"
+#include "src/wasm/wasm-debug.h"
 #include "src/wasm/wasm-import-wrapper-cache.h"
 #include "src/wasm/wasm-module-sourcemap.h"
 #include "src/wasm/wasm-module.h"
@@ -178,10 +179,9 @@ void WasmCode::LogCode(Isolate* isolate) const {
   if (IsAnonymous()) return;
 
   ModuleWireBytes wire_bytes(native_module()->wire_bytes());
-  // TODO(herhut): Allow to log code without on-heap round-trip of the name.
   WireBytesRef name_ref =
-      native_module()->module()->LookupFunctionName(wire_bytes, index());
-  WasmName name_vec = wire_bytes.GetNameOrNull(name_ref);
+      native_module()->module()->function_names.Lookup(wire_bytes, index());
+  WasmName name = wire_bytes.GetNameOrNull(name_ref);
 
   const std::string& source_map_url = native_module()->module()->source_map_url;
   auto load_wasm_source_map = isolate->wasm_load_source_map_callback();
@@ -195,28 +195,31 @@ void WasmCode::LogCode(Isolate* isolate) const {
         std::make_unique<WasmModuleSourceMap>(v8_isolate, source_map_str));
   }
 
-  if (!name_vec.empty()) {
-    HandleScope scope(isolate);
-    MaybeHandle<String> maybe_name = isolate->factory()->NewStringFromUtf8(
-        Vector<const char>::cast(name_vec));
-    Handle<String> name;
-    if (!maybe_name.ToHandle(&name)) {
-      name = isolate->factory()->NewStringFromAsciiChecked("<name too long>");
+  std::string name_buffer;
+  if (kind_ == kWasmToJsWrapper) {
+    name_buffer = "wasm-to-js:";
+    size_t prefix_len = name_buffer.size();
+    constexpr size_t kMaxSigLength = 128;
+    name_buffer.resize(prefix_len + kMaxSigLength);
+    FunctionSig* sig = native_module()->module()->functions[index_].sig;
+    size_t sig_length =
+        PrintSignature(VectorOf(&name_buffer[prefix_len], kMaxSigLength), sig);
+    name_buffer.resize(prefix_len + sig_length);
+    // If the import has a name, also append that (separated by "-").
+    if (!name.empty()) {
+      name_buffer += '-';
+      name_buffer.append(name.begin(), name.size());
     }
-    int name_length;
-    auto cname =
-        name->ToCString(AllowNullsFlag::DISALLOW_NULLS,
-                        RobustnessFlag::ROBUST_STRING_TRAVERSAL, &name_length);
-    PROFILE(isolate,
-            CodeCreateEvent(CodeEventListener::FUNCTION_TAG, this,
-                            {cname.get(), static_cast<size_t>(name_length)}));
-  } else {
-    EmbeddedVector<char, 32> generated_name;
-    int length = SNPrintF(generated_name, "wasm-function[%d]", index());
-    generated_name.Truncate(length);
-    PROFILE(isolate, CodeCreateEvent(CodeEventListener::FUNCTION_TAG, this,
-                                     generated_name));
+    name = VectorOf(name_buffer);
+  } else if (name.empty()) {
+    name_buffer.resize(32);
+    name_buffer.resize(
+        SNPrintF(VectorOf(&name_buffer.front(), name_buffer.size()),
+                 "wasm-function[%d]", index()));
+    name = VectorOf(name_buffer);
   }
+  PROFILE(isolate,
+          CodeCreateEvent(CodeEventListener::FUNCTION_TAG, this, name));
 
   if (!source_positions().empty()) {
     LOG_CODE_EVENT(isolate, CodeLinePosInfoRecordEvent(instruction_start(),
@@ -245,13 +248,8 @@ void WasmCode::Validate() const {
         Address target = it.rinfo()->wasm_stub_call_address();
         WasmCode* code = native_module_->Lookup(target);
         CHECK_NOT_NULL(code);
-#ifdef V8_EMBEDDED_BUILTINS
         CHECK_EQ(WasmCode::kJumpTable, code->kind());
         CHECK(code->contains(target));
-#else
-        CHECK_EQ(WasmCode::kRuntimeStub, code->kind());
-        CHECK_EQ(target, code->instruction_start());
-#endif
         break;
       }
       case RelocInfo::INTERNAL_REFERENCE:
@@ -442,13 +440,11 @@ void WasmCodeAllocator::OptionalLock::Lock(WasmCodeAllocator* allocator) {
 
 WasmCodeAllocator::WasmCodeAllocator(WasmCodeManager* code_manager,
                                      VirtualMemory code_space,
-                                     bool can_request_more,
                                      std::shared_ptr<Counters> async_counters)
     : code_manager_(code_manager),
       free_code_space_(code_space.region()),
-      can_request_more_memory_(can_request_more),
       async_counters_(std::move(async_counters)) {
-  owned_code_space_.reserve(can_request_more ? 4 : 1);
+  owned_code_space_.reserve(4);
   owned_code_space_.emplace_back(std::move(code_space));
   async_counters_->wasm_module_num_code_spaces()->AddSample(1);
 }
@@ -504,8 +500,7 @@ base::SmallVector<base::AddressRegion, 1> SplitRangeByReservationsIfNeeded(
 }
 
 int NumWasmFunctionsInFarJumpTable(uint32_t num_declared_functions) {
-  return NativeModule::kNeedsFarJumpsBetweenCodeSpaces &&
-                 FLAG_wasm_far_jump_table
+  return NativeModule::kNeedsFarJumpsBetweenCodeSpaces
              ? static_cast<int>(num_declared_functions)
              : 0;
 }
@@ -573,12 +568,8 @@ Vector<byte> WasmCodeAllocator::AllocateForCodeInRegion(
   base::AddressRegion code_space =
       free_code_space_.AllocateInRegion(size, region);
   if (code_space.is_empty()) {
-    const bool in_specific_region =
-        region.size() < std::numeric_limits<size_t>::max();
-    if (!can_request_more_memory_ || in_specific_region) {
-      auto error = in_specific_region ? "wasm code reservation in region"
-                                      : "wasm code reservation";
-      V8::FatalProcessOutOfMemory(nullptr, error);
+    if (region.size() < std::numeric_limits<size_t>::max()) {
+      V8::FatalProcessOutOfMemory(nullptr, "wasm code reservation in region");
       UNREACHABLE();
     }
 
@@ -651,26 +642,20 @@ bool WasmCodeAllocator::SetExecutable(bool executable) {
         executable ? PageAllocator::kReadExecute : PageAllocator::kReadWrite;
 #if V8_OS_WIN
     // On windows, we need to switch permissions per separate virtual memory
-    // reservation. This is really just a problem when the NativeModule is
-    // growable (meaning can_request_more_memory_). That's 32-bit in production,
-    // or unittests.
+    // reservation.
     // For now, in that case, we commit at reserved memory granularity.
     // Technically, that may be a waste, because we may reserve more than we
     // use. On 32-bit though, the scarce resource is the address space -
     // committed or not.
-    if (can_request_more_memory_) {
-      for (auto& vmem : owned_code_space_) {
-        if (!SetPermissions(page_allocator, vmem.address(), vmem.size(),
-                            permission)) {
-          return false;
-        }
-        TRACE_HEAP("Set %p:%p to executable:%d\n", vmem.address(), vmem.end(),
-                   executable);
+    for (auto& vmem : owned_code_space_) {
+      if (!SetPermissions(page_allocator, vmem.address(), vmem.size(),
+                          permission)) {
+        return false;
       }
-      is_executable_ = executable;
-      return true;
+      TRACE_HEAP("Set %p:%p to executable:%d\n", vmem.address(), vmem.end(),
+                 executable);
     }
-#endif
+#else   // V8_OS_WIN
     size_t commit_page_size = page_allocator->CommitPageSize();
     for (auto& region : allocated_code_space_.regions()) {
       // allocated_code_space_ is fine-grained, so we need to
@@ -683,6 +668,7 @@ bool WasmCodeAllocator::SetExecutable(bool executable) {
       TRACE_HEAP("Set 0x%" PRIxPTR ":0x%" PRIxPTR " to executable:%d\n",
                  region.begin(), region.end(), executable);
     }
+#endif  // V8_OS_WIN
   }
   is_executable_ = executable;
   return true;
@@ -732,12 +718,12 @@ size_t WasmCodeAllocator::GetNumCodeSpaces() const {
 }
 
 NativeModule::NativeModule(WasmEngine* engine, const WasmFeatures& enabled,
-                           bool can_request_more, VirtualMemory code_space,
+                           VirtualMemory code_space,
                            std::shared_ptr<const WasmModule> module,
                            std::shared_ptr<Counters> async_counters,
                            std::shared_ptr<NativeModule>* shared_this)
     : code_allocator_(engine->code_manager(), std::move(code_space),
-                      can_request_more, async_counters),
+                      async_counters),
       enabled_features_(enabled),
       module_(std::move(module)),
       import_wrapper_cache_(std::unique_ptr<WasmImportWrapperCache>(
@@ -798,8 +784,10 @@ void NativeModule::LogWasmCodes(Isolate* isolate) {
 }
 
 CompilationEnv NativeModule::CreateCompilationEnv() const {
-  return {module(), use_trap_handler_, kRuntimeExceptionSupport,
-          enabled_features_};
+  // Protect concurrent accesses to {tier_down_}.
+  base::MutexGuard guard(&allocation_mutex_);
+  return {module(),          use_trap_handler_, kRuntimeExceptionSupport,
+          enabled_features_, kNoLowerSimd,      tier_down_};
 }
 
 WasmCode* NativeModule::AddCodeForTesting(Handle<Code> code) {
@@ -846,10 +834,10 @@ WasmCode* NativeModule::AddCodeForTesting(Handle<Code> code) {
   // Apply the relocation delta by iterating over the RelocInfo.
   intptr_t delta = reinterpret_cast<Address>(dst_code_bytes.begin()) -
                    code->InstructionStart();
-  int mode_mask = RelocInfo::kApplyMask |
-                  RelocInfo::ModeMask(RelocInfo::WASM_STUB_CALL);
+  int mode_mask =
+      RelocInfo::kApplyMask | RelocInfo::ModeMask(RelocInfo::WASM_STUB_CALL);
   auto jump_tables_ref =
-      FindJumpTablesForCode(reinterpret_cast<Address>(dst_code_bytes.begin()));
+      FindJumpTablesForRegion(base::AddressRegionOf(dst_code_bytes));
   Address dst_code_addr = reinterpret_cast<Address>(dst_code_bytes.begin());
   Address constant_pool_start = dst_code_addr + constant_pool_offset;
   RelocIterator orig_it(*code, mode_mask);
@@ -913,13 +901,13 @@ void NativeModule::UseLazyStub(uint32_t func_index) {
     JumpTableAssembler::GenerateLazyCompileTable(
         lazy_compile_table_->instruction_start(), num_slots,
         module_->num_imported_functions,
-        GetNearRuntimeStubEntry(
-            WasmCode::kWasmCompileLazy,
-            FindJumpTablesForCode(lazy_compile_table_->instruction_start())));
+        GetNearRuntimeStubEntry(WasmCode::kWasmCompileLazy,
+                                FindJumpTablesForRegion(base::AddressRegionOf(
+                                    lazy_compile_table_->instructions()))));
   }
 
   // Add jump table entry for jump to the lazy compile stub.
-  uint32_t slot_index = func_index - module_->num_imported_functions;
+  uint32_t slot_index = declared_function_index(module(), func_index);
   DCHECK_NULL(code_table_[slot_index]);
   Address lazy_compile_target =
       lazy_compile_table_->instruction_start() +
@@ -937,7 +925,7 @@ std::unique_ptr<WasmCode> NativeModule::AddCode(
   Vector<byte> code_space =
       code_allocator_.AllocateForCode(this, desc.instr_size);
   auto jump_table_ref =
-      FindJumpTablesForCode(reinterpret_cast<Address>(code_space.begin()));
+      FindJumpTablesForRegion(base::AddressRegionOf(code_space));
   return AddCodeWithCodeSpace(index, desc, stack_slots, tagged_parameter_slots,
                               std::move(protected_instructions),
                               std::move(source_position_table), kind, tier,
@@ -950,7 +938,7 @@ std::unique_ptr<WasmCode> NativeModule::AddCodeWithCodeSpace(
     OwnedVector<ProtectedInstructionData> protected_instructions,
     OwnedVector<const byte> source_position_table, WasmCode::Kind kind,
     ExecutionTier tier, Vector<uint8_t> dst_code_bytes,
-    const JumpTablesRef& jump_tables_ref) {
+    const JumpTablesRef& jump_tables) {
   OwnedVector<byte> reloc_info;
   if (desc.reloc_size > 0) {
     reloc_info = OwnedVector<byte>::New(desc.reloc_size);
@@ -987,13 +975,13 @@ std::unique_ptr<WasmCode> NativeModule::AddCodeWithCodeSpace(
     RelocInfo::Mode mode = it.rinfo()->rmode();
     if (RelocInfo::IsWasmCall(mode)) {
       uint32_t call_tag = it.rinfo()->wasm_call_tag();
-      Address target = GetNearCallTargetForFunction(call_tag, jump_tables_ref);
+      Address target = GetNearCallTargetForFunction(call_tag, jump_tables);
       it.rinfo()->set_wasm_call_address(target, SKIP_ICACHE_FLUSH);
     } else if (RelocInfo::IsWasmStubCall(mode)) {
       uint32_t stub_call_tag = it.rinfo()->wasm_call_tag();
       DCHECK_LT(stub_call_tag, WasmCode::kRuntimeStubCount);
       Address entry = GetNearRuntimeStubEntry(
-          static_cast<WasmCode::RuntimeStubId>(stub_call_tag), jump_tables_ref);
+          static_cast<WasmCode::RuntimeStubId>(stub_call_tag), jump_tables);
       it.rinfo()->set_wasm_stub_call_address(entry, SKIP_ICACHE_FLUSH);
     } else {
       it.rinfo()->apply(delta);
@@ -1049,11 +1037,16 @@ WasmCode* NativeModule::PublishCodeLocked(std::unique_ptr<WasmCode> code) {
                       ExecutionTier::kLiftoff < ExecutionTier::kTurbofan,
                   "Assume an order on execution tiers");
 
-    // Update code table but avoid to fall back to less optimized code. We use
-    // the new code if it was compiled with a higher tier.
-    uint32_t slot_idx = code->index() - module_->num_imported_functions;
+    // Unless tier down to Liftoff: update code table but avoid to fall back to
+    // less optimized code. We use the new code if it was compiled with a higher
+    // tier.
+    uint32_t slot_idx = declared_function_index(module(), code->index());
     WasmCode* prior_code = code_table_[slot_idx];
-    bool update_code_table = !prior_code || prior_code->tier() < code->tier();
+    // TODO(clemensb): Revisit this logic once tier down is fully working.
+    const bool prefer_liftoff = tier_down_ || debug_info_;
+    const bool update_code_table =
+        prefer_liftoff ? !prior_code || code->tier() == ExecutionTier::kLiftoff
+                       : !prior_code || prior_code->tier() < code->tier();
     if (update_code_table) {
       code_table_[slot_idx] = code.get();
       if (prior_code) {
@@ -1121,18 +1114,20 @@ std::vector<WasmCode*> NativeModule::SnapshotCodeTable() const {
 
 WasmCode* NativeModule::GetCode(uint32_t index) const {
   base::MutexGuard guard(&allocation_mutex_);
-  DCHECK_LT(index, num_functions());
-  DCHECK_LE(module_->num_imported_functions, index);
-  WasmCode* code = code_table_[index - module_->num_imported_functions];
+  WasmCode* code = code_table_[declared_function_index(module(), index)];
   if (code) WasmCodeRefScope::AddRef(code);
   return code;
 }
 
 bool NativeModule::HasCode(uint32_t index) const {
   base::MutexGuard guard(&allocation_mutex_);
-  DCHECK_LT(index, num_functions());
-  DCHECK_LE(module_->num_imported_functions, index);
-  return code_table_[index - module_->num_imported_functions] != nullptr;
+  return code_table_[declared_function_index(module(), index)] != nullptr;
+}
+
+bool NativeModule::HasCodeWithTier(uint32_t index, ExecutionTier tier) const {
+  base::MutexGuard guard(&allocation_mutex_);
+  return code_table_[declared_function_index(module(), index)] != nullptr &&
+         code_table_[declared_function_index(module(), index)]->tier() == tier;
 }
 
 void NativeModule::SetWasmSourceMap(
@@ -1214,17 +1209,6 @@ void NativeModule::PatchJumpTableLocked(const CodeSpaceData& code_space_data,
 void NativeModule::AddCodeSpace(
     base::AddressRegion region,
     const WasmCodeAllocator::OptionalLock& allocator_lock) {
-#ifndef V8_EMBEDDED_BUILTINS
-  // The far jump table contains far jumps to the embedded builtins. This
-  // requires a build with embedded builtins enabled.
-  FATAL(
-      "WebAssembly is not supported in no-embed builds. no-embed builds are "
-      "deprecated. See\n"
-      " - https://groups.google.com/d/msg/v8-users/9F53xqBjpkI/9WmKSbcWBAAJ\n"
-      " - https://crbug.com/v8/8519\n"
-      " - https://crbug.com/v8/8531\n");
-#endif  // V8_EMBEDDED_BUILTINS
-
   // Each code space must be at least twice as large as the overhead per code
   // space. Otherwise, we are wasting too much memory.
   DCHECK_GE(region.size(),
@@ -1252,12 +1236,10 @@ void NativeModule::AddCodeSpace(
   WasmCode* jump_table = nullptr;
   WasmCode* far_jump_table = nullptr;
   const uint32_t num_wasm_functions = module_->num_declared_functions;
-  const bool has_functions = num_wasm_functions > 0;
   const bool is_first_code_space = code_space_data_.empty();
-  // TODO(clemensb): Avoid additional jump table if the code space is close
-  // enough to another existing code space.
-  const bool needs_jump_table =
-      has_functions && (kNeedsFarJumpsBetweenCodeSpaces || is_first_code_space);
+  // We always need a far jump table, because it contains the runtime stubs.
+  const bool needs_far_jump_table = !FindJumpTablesForRegion(region).is_valid();
+  const bool needs_jump_table = num_wasm_functions > 0 && needs_far_jump_table;
 
   if (needs_jump_table) {
     jump_table = CreateEmptyJumpTableInRegion(
@@ -1266,29 +1248,31 @@ void NativeModule::AddCodeSpace(
     CHECK(region.contains(jump_table->instruction_start()));
   }
 
-  // Always allocate a far jump table, because it contains the runtime stubs.
-  int num_function_slots = NumWasmFunctionsInFarJumpTable(num_wasm_functions);
-  far_jump_table = CreateEmptyJumpTableInRegion(
-      JumpTableAssembler::SizeForNumberOfFarJumpSlots(
-          WasmCode::kRuntimeStubCount, num_function_slots),
-      region, allocator_lock);
-  CHECK(region.contains(far_jump_table->instruction_start()));
-  EmbeddedData embedded_data = EmbeddedData::FromBlob();
+  if (needs_far_jump_table) {
+    int num_function_slots = NumWasmFunctionsInFarJumpTable(num_wasm_functions);
+    far_jump_table = CreateEmptyJumpTableInRegion(
+        JumpTableAssembler::SizeForNumberOfFarJumpSlots(
+            WasmCode::kRuntimeStubCount,
+            NumWasmFunctionsInFarJumpTable(num_function_slots)),
+        region, allocator_lock);
+    CHECK(region.contains(far_jump_table->instruction_start()));
+    EmbeddedData embedded_data = EmbeddedData::FromBlob();
 #define RUNTIME_STUB(Name) Builtins::k##Name,
 #define RUNTIME_STUB_TRAP(Name) RUNTIME_STUB(ThrowWasm##Name)
-  Builtins::Name stub_names[WasmCode::kRuntimeStubCount] = {
-      WASM_RUNTIME_STUB_LIST(RUNTIME_STUB, RUNTIME_STUB_TRAP)};
+    Builtins::Name stub_names[WasmCode::kRuntimeStubCount] = {
+        WASM_RUNTIME_STUB_LIST(RUNTIME_STUB, RUNTIME_STUB_TRAP)};
 #undef RUNTIME_STUB
 #undef RUNTIME_STUB_TRAP
-  Address builtin_addresses[WasmCode::kRuntimeStubCount];
-  for (int i = 0; i < WasmCode::kRuntimeStubCount; ++i) {
-    Builtins::Name builtin = stub_names[i];
-    CHECK(embedded_data.ContainsBuiltin(builtin));
-    builtin_addresses[i] = embedded_data.InstructionStartOfBuiltin(builtin);
+    Address builtin_addresses[WasmCode::kRuntimeStubCount];
+    for (int i = 0; i < WasmCode::kRuntimeStubCount; ++i) {
+      Builtins::Name builtin = stub_names[i];
+      CHECK(embedded_data.ContainsBuiltin(builtin));
+      builtin_addresses[i] = embedded_data.InstructionStartOfBuiltin(builtin);
+    }
+    JumpTableAssembler::GenerateFarJumpTable(
+        far_jump_table->instruction_start(), builtin_addresses,
+        WasmCode::kRuntimeStubCount, num_function_slots);
   }
-  JumpTableAssembler::GenerateFarJumpTable(
-      far_jump_table->instruction_start(), builtin_addresses,
-      WasmCode::kRuntimeStubCount, num_function_slots);
 
   if (is_first_code_space) main_jump_table_ = jump_table;
 
@@ -1355,8 +1339,7 @@ WasmCode* NativeModule::Lookup(Address pc) const {
 }
 
 uint32_t NativeModule::GetJumpTableOffset(uint32_t func_index) const {
-  uint32_t slot_idx = func_index - module_->num_imported_functions;
-  DCHECK_GT(module_->num_declared_functions, slot_idx);
+  uint32_t slot_idx = declared_function_index(module(), func_index);
   return JumpTableAssembler::JumpSlotIndexToOffset(slot_idx);
 }
 
@@ -1368,32 +1351,48 @@ Address NativeModule::GetCallTargetForFunction(uint32_t func_index) const {
   return main_jump_table_->instruction_start() + slot_offset;
 }
 
-NativeModule::JumpTablesRef NativeModule::FindJumpTablesForCode(
-    Address code_addr) const {
+NativeModule::JumpTablesRef NativeModule::FindJumpTablesForRegion(
+    base::AddressRegion code_region) const {
+  auto jump_table_usable = [code_region](const WasmCode* jump_table) {
+    Address table_start = jump_table->instruction_start();
+    Address table_end = table_start + jump_table->instructions().size();
+    // Compute the maximum distance from anywhere in the code region to anywhere
+    // in the jump table, avoiding any underflow.
+    size_t max_distance = std::max(
+        code_region.end() > table_start ? code_region.end() - table_start : 0,
+        table_end > code_region.begin() ? table_end - code_region.begin() : 0);
+    return max_distance < kMaxWasmCodeSpaceSize;
+  };
   base::MutexGuard guard(&allocation_mutex_);
   for (auto& code_space_data : code_space_data_) {
-    const bool jump_table_reachable =
-        !kNeedsFarJumpsBetweenCodeSpaces ||
-        code_space_data.region.contains(code_addr);
-    if (jump_table_reachable && code_space_data.far_jump_table) {
-      // We might not have a jump table if we have no functions.
-      return {code_space_data.jump_table
-                  ? code_space_data.jump_table->instruction_start()
-                  : kNullAddress,
-              code_space_data.far_jump_table->instruction_start()};
+    DCHECK_IMPLIES(code_space_data.jump_table, code_space_data.far_jump_table);
+    if (!code_space_data.far_jump_table) continue;
+    // Only return these jump tables if they are reachable from the whole
+    // {code_region}.
+    if (kNeedsFarJumpsBetweenCodeSpaces &&
+        (!jump_table_usable(code_space_data.far_jump_table) ||
+         (code_space_data.jump_table &&
+          !jump_table_usable(code_space_data.jump_table)))) {
+      continue;
     }
+    return {code_space_data.jump_table
+                ? code_space_data.jump_table->instruction_start()
+                : kNullAddress,
+            code_space_data.far_jump_table->instruction_start()};
   }
-  FATAL("code_addr is not part of a code space");
+  return {};
 }
 
 Address NativeModule::GetNearCallTargetForFunction(
     uint32_t func_index, const JumpTablesRef& jump_tables) const {
+  DCHECK(jump_tables.is_valid());
   uint32_t slot_offset = GetJumpTableOffset(func_index);
   return jump_tables.jump_table_start + slot_offset;
 }
 
 Address NativeModule::GetNearRuntimeStubEntry(
     WasmCode::RuntimeStubId index, const JumpTablesRef& jump_tables) const {
+  DCHECK(jump_tables.is_valid());
   auto offset = JumpTableAssembler::FarJumpSlotIndexToOffset(index);
   return jump_tables.far_jump_table_start + offset;
 }
@@ -1554,24 +1553,107 @@ VirtualMemory WasmCodeManager::TryAllocate(size_t size, void* hint) {
   return mem;
 }
 
+namespace {
+// The numbers here are rough estimates, used to calculate the size of the
+// initial code reservation and for estimating the amount of external memory
+// reported to the GC.
+// They do not need to be accurate. Choosing them too small will result in
+// separate code spaces being allocated (compile time and runtime overhead),
+// choosing them too large results in over-reservation (virtual address space
+// only).
+// The current numbers have been determined on 2019-11-11 by clemensb@, based
+// on one small and one large module compiled from C++ by Emscripten. If in
+// doubt, they where chosen slightly larger than required, as over-reservation
+// is not a big issue currently.
+// Numbers will change when Liftoff or TurboFan evolve, other toolchains are
+// used to produce the wasm code, or characteristics of wasm modules on the
+// web change. They might require occasional tuning.
+// This patch might help to find reasonable numbers for any future adaptation:
+// https://crrev.com/c/1910945
+#if V8_TARGET_ARCH_X64
+constexpr size_t kTurbofanFunctionOverhead = 20;
+constexpr size_t kTurbofanCodeSizeMultiplier = 3;
+constexpr size_t kLiftoffFunctionOverhead = 60;
+constexpr size_t kLiftoffCodeSizeMultiplier = 4;
+constexpr size_t kImportSize = 350;
+#elif V8_TARGET_ARCH_IA32
+constexpr size_t kTurbofanFunctionOverhead = 20;
+constexpr size_t kTurbofanCodeSizeMultiplier = 4;
+constexpr size_t kLiftoffFunctionOverhead = 60;
+constexpr size_t kLiftoffCodeSizeMultiplier = 5;
+constexpr size_t kImportSize = 480;
+#elif V8_TARGET_ARCH_ARM
+constexpr size_t kTurbofanFunctionOverhead = 40;
+constexpr size_t kTurbofanCodeSizeMultiplier = 4;
+constexpr size_t kLiftoffFunctionOverhead = 108;
+constexpr size_t kLiftoffCodeSizeMultiplier = 7;
+constexpr size_t kImportSize = 750;
+#elif V8_TARGET_ARCH_ARM64
+constexpr size_t kTurbofanFunctionOverhead = 60;
+constexpr size_t kTurbofanCodeSizeMultiplier = 4;
+constexpr size_t kLiftoffFunctionOverhead = 80;
+constexpr size_t kLiftoffCodeSizeMultiplier = 7;
+constexpr size_t kImportSize = 750;
+#else
+// Other platforms should add their own estimates if needed. Numbers below are
+// the minimum of other architectures.
+constexpr size_t kTurbofanFunctionOverhead = 20;
+constexpr size_t kTurbofanCodeSizeMultiplier = 3;
+constexpr size_t kLiftoffFunctionOverhead = 60;
+constexpr size_t kLiftoffCodeSizeMultiplier = 4;
+constexpr size_t kImportSize = 350;
+#endif
+}  // namespace
+
 // static
-size_t WasmCodeManager::EstimateNativeModuleCodeSize(const WasmModule* module) {
-  constexpr size_t kCodeSizeMultiplier = 4;
-  constexpr size_t kCodeOverhead = 32;     // for prologue, stack check, ...
-  constexpr size_t kStaticCodeSize = 512;  // runtime stubs, ...
-  constexpr size_t kImportSize = 64 * kSystemPointerSize;
-
-  size_t estimate = kStaticCodeSize;
-  for (auto& function : module->functions) {
-    estimate += kCodeOverhead + kCodeSizeMultiplier * function.code.length();
-  }
-  estimate += kImportSize * module->num_imported_functions;
-
-  return estimate;
+size_t WasmCodeManager::EstimateLiftoffCodeSize(int body_size) {
+  return kLiftoffFunctionOverhead + kCodeAlignment / 2 +
+         body_size * kLiftoffCodeSizeMultiplier;
 }
 
 // static
-size_t WasmCodeManager::EstimateNativeModuleNonCodeSize(
+size_t WasmCodeManager::EstimateNativeModuleCodeSize(const WasmModule* module,
+                                                     bool include_liftoff) {
+  int num_functions = static_cast<int>(module->num_declared_functions);
+  int num_imported_functions = static_cast<int>(module->num_imported_functions);
+  int code_section_length = 0;
+  if (num_functions > 0) {
+    DCHECK_EQ(module->functions.size(), num_imported_functions + num_functions);
+    auto* first_fn = &module->functions[module->num_imported_functions];
+    auto* last_fn = &module->functions.back();
+    code_section_length =
+        static_cast<int>(last_fn->code.end_offset() - first_fn->code.offset());
+  }
+  return EstimateNativeModuleCodeSize(num_functions, num_imported_functions,
+                                      code_section_length, include_liftoff);
+}
+
+// static
+size_t WasmCodeManager::EstimateNativeModuleCodeSize(int num_functions,
+                                                     int num_imported_functions,
+                                                     int code_section_length,
+                                                     bool include_liftoff) {
+  const size_t overhead_per_function =
+      kTurbofanFunctionOverhead + kCodeAlignment / 2 +
+      (include_liftoff ? kLiftoffFunctionOverhead + kCodeAlignment / 2 : 0);
+  const size_t overhead_per_code_byte =
+      kTurbofanCodeSizeMultiplier +
+      (include_liftoff ? kLiftoffCodeSizeMultiplier : 0);
+  const size_t jump_table_size = RoundUp<kCodeAlignment>(
+      JumpTableAssembler::SizeForNumberOfSlots(num_functions));
+  const size_t far_jump_table_size =
+      RoundUp<kCodeAlignment>(JumpTableAssembler::SizeForNumberOfFarJumpSlots(
+          WasmCode::kRuntimeStubCount,
+          NumWasmFunctionsInFarJumpTable(num_functions)));
+  return jump_table_size                                 // jump table
+         + far_jump_table_size                           // far jump table
+         + overhead_per_function * num_functions         // per function
+         + overhead_per_code_byte * code_section_length  // per code byte
+         + kImportSize * num_imported_functions;         // per import
+}
+
+// static
+size_t WasmCodeManager::EstimateNativeModuleMetaDataSize(
     const WasmModule* module) {
   size_t wasm_module_estimate = EstimateStoredSize(module);
 
@@ -1588,8 +1670,7 @@ size_t WasmCodeManager::EstimateNativeModuleNonCodeSize(
 
 std::shared_ptr<NativeModule> WasmCodeManager::NewNativeModule(
     WasmEngine* engine, Isolate* isolate, const WasmFeatures& enabled,
-    size_t code_size_estimate, bool can_request_more,
-    std::shared_ptr<const WasmModule> module) {
+    size_t code_size_estimate, std::shared_ptr<const WasmModule> module) {
   DCHECK_EQ(this, isolate->wasm_engine()->code_manager());
   if (total_committed_code_space_.load() >
       critical_committed_code_space_.load()) {
@@ -1603,9 +1684,7 @@ std::shared_ptr<NativeModule> WasmCodeManager::NewNativeModule(
 
   // If we cannot add code space later, reserve enough address space up front.
   size_t code_vmem_size =
-      can_request_more ? ReservationSize(code_size_estimate,
-                                         module->num_declared_functions, 0)
-                       : kMaxWasmCodeSpaceSize;
+      ReservationSize(code_size_estimate, module->num_declared_functions, 0);
 
   // The '--wasm-max-code-space-reservation' testing flag can be used to reduce
   // the maximum size of the initial code space reservation (in MB).
@@ -1636,8 +1715,8 @@ std::shared_ptr<NativeModule> WasmCodeManager::NewNativeModule(
   size_t size = code_space.size();
   Address end = code_space.end();
   std::shared_ptr<NativeModule> ret;
-  new NativeModule(engine, enabled, can_request_more, std::move(code_space),
-                   std::move(module), isolate->async_counters(), &ret);
+  new NativeModule(engine, enabled, std::move(code_space), std::move(module),
+                   isolate->async_counters(), &ret);
   // The constructor initialized the shared_ptr.
   DCHECK_NOT_NULL(ret);
   TRACE_HEAP("New NativeModule %p: Mem: %" PRIuPTR ",+%zu\n", ret.get(), start,
@@ -1699,8 +1778,7 @@ std::vector<WasmCode*> NativeModule::AddCompiledCode(
   Vector<byte> code_space =
       code_allocator_.AllocateForCode(this, total_code_space);
   // Lookup the jump tables to use once, then use for all code objects.
-  auto jump_tables_ref =
-      FindJumpTablesForCode(reinterpret_cast<Address>(code_space.begin()));
+  auto jump_tables = FindJumpTablesForRegion(base::AddressRegionOf(code_space));
 
   std::vector<std::unique_ptr<WasmCode>> generated_code;
   generated_code.reserve(results.size());
@@ -1715,7 +1793,7 @@ std::vector<WasmCode*> NativeModule::AddCompiledCode(
         result.func_index, result.code_desc, result.frame_slot_count,
         result.tagged_parameter_slots, std::move(result.protected_instructions),
         std::move(result.source_positions), GetCodeKind(result),
-        result.result_tier, this_code_space, jump_tables_ref));
+        result.result_tier, this_code_space, jump_tables));
   }
   DCHECK_EQ(0, code_space.size());
 
@@ -1737,12 +1815,58 @@ bool NativeModule::IsRedirectedToInterpreter(uint32_t func_index) {
   return has_interpreter_redirection(func_index);
 }
 
+bool NativeModule::SetTieredDown() {
+  // Do not tier down asm.js.
+  if (module()->origin != kWasmOrigin) return false;
+
+  base::MutexGuard lock(&allocation_mutex_);
+  if (tier_down_) return true;
+  tier_down_ = true;
+  return false;
+}
+
+bool NativeModule::IsTieredDown() {
+  base::MutexGuard lock(&allocation_mutex_);
+  return tier_down_;
+}
+
+void NativeModule::TierDown(Isolate* isolate) {
+  // Do not tier down asm.js.
+  if (module()->origin != kWasmOrigin) return;
+
+  // Set the flag. Return if it is already set.
+  if (SetTieredDown()) return;
+
+  // Tier down all functions.
+  isolate->wasm_engine()->RecompileAllFunctions(isolate, this,
+                                                ExecutionTier::kLiftoff);
+}
+
+void NativeModule::TierUp(Isolate* isolate) {
+  // Set the flag.
+  {
+    base::MutexGuard lock(&allocation_mutex_);
+    tier_down_ = false;
+  }
+
+  // Tier up all functions.
+  // TODO(duongn): parallelize this eventually.
+  for (uint32_t index = module_->num_imported_functions;
+       index < num_functions(); index++) {
+    isolate->wasm_engine()->CompileFunction(isolate, this, index,
+                                            ExecutionTier::kTurbofan);
+    DCHECK(!compilation_state()->failed());
+  }
+}
+
 void NativeModule::FreeCode(Vector<WasmCode* const> codes) {
   // Free the code space.
   code_allocator_.FreeCode(codes);
 
-  // Free the {WasmCode} objects. This will also unregister trap handler data.
   base::MutexGuard guard(&allocation_mutex_);
+  // Remove debug side tables for all removed code objects.
+  if (debug_info_) debug_info_->RemoveDebugSideTables(codes);
+  // Free the {WasmCode} objects. This will also unregister trap handler data.
   for (WasmCode* code : codes) {
     DCHECK_EQ(1, owned_code_.count(code->instruction_start()));
     owned_code_.erase(code->instruction_start());
@@ -1751,6 +1875,12 @@ void NativeModule::FreeCode(Vector<WasmCode* const> codes) {
 
 size_t NativeModule::GetNumberOfCodeSpacesForTesting() const {
   return code_allocator_.GetNumCodeSpaces();
+}
+
+DebugInfo* NativeModule::GetDebugInfo() {
+  base::MutexGuard guard(&allocation_mutex_);
+  if (!debug_info_) debug_info_ = std::make_unique<DebugInfo>(this);
+  return debug_info_.get();
 }
 
 void WasmCodeManager::FreeNativeModule(Vector<VirtualMemory> owned_code_space,
@@ -1775,9 +1905,13 @@ void WasmCodeManager::FreeNativeModule(Vector<VirtualMemory> owned_code_space,
   }
 
   DCHECK(IsAligned(committed_size, CommitPageSize()));
-  size_t old_committed = total_committed_code_space_.fetch_sub(committed_size);
-  DCHECK_LE(committed_size, old_committed);
-  USE(old_committed);
+  // TODO(v8:8462): Remove this once perf supports remapping.
+  if (!FLAG_perf_prof) {
+    size_t old_committed =
+        total_committed_code_space_.fetch_sub(committed_size);
+    DCHECK_LE(committed_size, old_committed);
+    USE(old_committed);
+  }
 }
 
 NativeModule* WasmCodeManager::LookupNativeModule(Address pc) const {

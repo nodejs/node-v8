@@ -20,9 +20,8 @@ namespace wasm {
 // other purposes:
 // - the far stub table contains one entry per wasm runtime stub (see
 //   {WasmCode::RuntimeStubId}, which jumps to the corresponding embedded
-//   builtin, plus (if {FLAG_wasm_far_jump_table} is enabled and not the full
-//   address space can be reached via the jump table) one entry per wasm
-//   function.
+//   builtin, plus (if not the full address space can be reached via the jump
+//   table) one entry per wasm function.
 // - the lazy compile table contains one entry per wasm function which jumps to
 //   the common {WasmCompileLazy} builtin and passes the function index that was
 //   invoked.
@@ -202,13 +201,13 @@ class V8_EXPORT_PRIVATE JumpTableAssembler : public MacroAssembler {
   static constexpr int kFarJumpTableSlotSize = 7 * kInstrSize;
   static constexpr int kLazyCompileTableSlotSize = 12 * kInstrSize;
 #elif V8_TARGET_ARCH_MIPS
-  static constexpr int kJumpTableLineSize = 6 * kInstrSize;
-  static constexpr int kJumpTableSlotSize = 4 * kInstrSize;
+  static constexpr int kJumpTableLineSize = 8 * kInstrSize;
+  static constexpr int kJumpTableSlotSize = 8 * kInstrSize;
   static constexpr int kFarJumpTableSlotSize = 4 * kInstrSize;
   static constexpr int kLazyCompileTableSlotSize = 6 * kInstrSize;
 #elif V8_TARGET_ARCH_MIPS64
   static constexpr int kJumpTableLineSize = 8 * kInstrSize;
-  static constexpr int kJumpTableSlotSize = 6 * kInstrSize;
+  static constexpr int kJumpTableSlotSize = 8 * kInstrSize;
   static constexpr int kFarJumpTableSlotSize = 6 * kInstrSize;
   static constexpr int kLazyCompileTableSlotSize = 8 * kInstrSize;
 #else

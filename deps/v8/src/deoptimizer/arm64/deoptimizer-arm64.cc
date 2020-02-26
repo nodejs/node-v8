@@ -9,6 +9,7 @@
 #include "src/codegen/safepoint-table.h"
 #include "src/deoptimizer/deoptimizer.h"
 #include "src/execution/frame-constants.h"
+#include "src/execution/pointer-authentication.h"
 
 namespace v8 {
 namespace internal {
@@ -154,9 +155,8 @@ void Deoptimizer::GenerateDeoptimizationEntries(MacroAssembler* masm,
   __ Ldr(x1, MemOperand(fp, CommonFrameConstants::kContextOrFrameTypeOffset));
 
   // Ensure we can safely load from below fp.
-  DCHECK_GT(kSavedRegistersAreaSize,
-            -JavaScriptFrameConstants::kFunctionOffset);
-  __ Ldr(x0, MemOperand(fp, JavaScriptFrameConstants::kFunctionOffset));
+  DCHECK_GT(kSavedRegistersAreaSize, -StandardFrameConstants::kFunctionOffset);
+  __ Ldr(x0, MemOperand(fp, StandardFrameConstants::kFunctionOffset));
 
   // If x1 is a smi, zero x0.
   __ Tst(x1, kSmiTagMask);
@@ -289,6 +289,9 @@ void Deoptimizer::GenerateDeoptimizationEntries(MacroAssembler* masm,
   __ Ldr(continuation, MemOperand(last_output_frame,
                                   FrameDescription::continuation_offset()));
   __ Ldr(lr, MemOperand(last_output_frame, FrameDescription::pc_offset()));
+#ifdef V8_ENABLE_CONTROL_FLOW_INTEGRITY
+  __ Autiasp();
+#endif
   __ Br(continuation);
 }
 
@@ -298,6 +301,14 @@ Float32 RegisterValues::GetFloatRegister(unsigned n) const {
 }
 
 void FrameDescription::SetCallerPc(unsigned offset, intptr_t value) {
+  // TODO(v8:10026): check that the pointer is still in the list of allowed
+  // builtins.
+  Address new_context =
+      static_cast<Address>(GetTop()) + offset + kPCOnStackSize;
+  uint64_t old_context = GetTop() + GetFrameSize();
+  PointerAuthentication::ReplaceContext(reinterpret_cast<Address*>(&value),
+                                        old_context, new_context);
+
   SetFrameSlot(offset, value);
 }
 
@@ -308,6 +319,12 @@ void FrameDescription::SetCallerFp(unsigned offset, intptr_t value) {
 void FrameDescription::SetCallerConstantPool(unsigned offset, intptr_t value) {
   // No embedded constant pool support.
   UNREACHABLE();
+}
+
+void FrameDescription::SetPc(intptr_t pc) {
+  // TODO(v8:10026): we should only accept a specific list of allowed builtins
+  // here.
+  pc_ = PointerAuthentication::SignPCWithSP(pc, GetTop());
 }
 
 #undef __

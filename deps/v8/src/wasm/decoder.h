@@ -266,6 +266,7 @@ class Decoder {
     return offset - buffer_offset_;
   }
   const byte* end() const { return end_; }
+  void set_end(const byte* end) { end_ = end; }
 
   // Check if the byte at {offset} from the current pc equals {expected}.
   bool lookahead(int offset, byte expected) {
@@ -285,11 +286,6 @@ class Decoder {
   void verrorf(uint32_t offset, const char* format, va_list args) {
     // Only report the first error.
     if (!ok()) return;
-#if DEBUG
-    if (FLAG_wasm_break_on_decoder_error) {
-      base::OS::DebugBreak();
-    }
-#endif
     constexpr int kMaxErrorMsg = 256;
     EmbeddedVector<char, kMaxErrorMsg> buffer;
     int len = VSNPrintF(buffer, format, args);

@@ -292,6 +292,17 @@ class BuiltinContinuationFrameConstants : public TypedFrameConstants {
   static int PaddingSlotCount(int register_count);
 };
 
+class ExitFrameConstants : public TypedFrameConstants {
+ public:
+  static constexpr int kSPOffset = TYPED_FRAME_PUSHED_VALUE_OFFSET(0);
+  static constexpr int kLastExitFrameField = kSPOffset;
+  DEFINE_TYPED_FRAME_SIZES(1);
+
+  // FP-relative displacement of the caller's SP.  It points just
+  // below the saved PC.
+  static constexpr int kCallerSPDisplacement = kCallerSPOffset;
+};
+
 // Behaves like an exit frame but with target and new target args.
 class BuiltinExitFrameConstants : public CommonFrameConstants {
  public:
@@ -365,7 +376,7 @@ inline static int FrameSlotToFPOffset(int slot) {
 #include "src/execution/arm64/frame-constants-arm64.h"  // NOLINT
 #elif V8_TARGET_ARCH_ARM
 #include "src/execution/arm/frame-constants-arm.h"  // NOLINT
-#elif V8_TARGET_ARCH_PPC
+#elif V8_TARGET_ARCH_PPC || V8_TARGET_ARCH_PPC64
 #include "src/execution/ppc/frame-constants-ppc.h"  // NOLINT
 #elif V8_TARGET_ARCH_MIPS
 #include "src/execution/mips/frame-constants-mips.h"  // NOLINT

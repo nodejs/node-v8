@@ -60,11 +60,15 @@ struct CompilationEnv {
 
   const LowerSimd lower_simd;
 
+  // Whether the debugger is active.
+  const bool debug;
+
   constexpr CompilationEnv(const WasmModule* module,
                            UseTrapHandler use_trap_handler,
                            RuntimeExceptionSupport runtime_exception_support,
                            const WasmFeatures& enabled_features,
-                           LowerSimd lower_simd = kNoLowerSimd)
+                           LowerSimd lower_simd = kNoLowerSimd,
+                           bool debug = false)
       : module(module),
         use_trap_handler(use_trap_handler),
         runtime_exception_support(runtime_exception_support),
@@ -72,10 +76,11 @@ struct CompilationEnv {
                                : 0),
         max_memory_size((module && module->has_maximum_pages
                              ? module->maximum_pages
-                             : kV8MaxWasmMemoryPages) *
+                             : max_initial_mem_pages()) *
                         uint64_t{kWasmPageSize}),
         enabled_features(enabled_features),
-        lower_simd(lower_simd) {}
+        lower_simd(lower_simd),
+        debug(debug) {}
 };
 
 // The wire bytes are either owned by the StreamingDecoder, or (after streaming)
@@ -93,10 +98,7 @@ enum class CompilationEvent : uint8_t {
   kFinishedBaselineCompilation,
   kFinishedTopTierCompilation,
   kFailedCompilation,
-
-  // Marker:
-  // After an event >= kFirstFinalEvent, no further events are generated.
-  kFirstFinalEvent = kFinishedTopTierCompilation
+  kFinishedRecompilation
 };
 
 // The implementation of {CompilationState} lives in module-compiler.cc.
@@ -117,10 +119,12 @@ class CompilationState {
       const;
 
   void AddCallback(callback_t);
+  void NotifyTopTierReady(callback_t);
 
   bool failed() const;
   V8_EXPORT_PRIVATE bool baseline_compilation_finished() const;
   V8_EXPORT_PRIVATE bool top_tier_compilation_finished() const;
+  V8_EXPORT_PRIVATE bool recompilation_finished() const;
 
   // Override {operator delete} to avoid implicit instantiation of {operator
   // delete} with {size_t} argument. The {size_t} argument would be incorrect.

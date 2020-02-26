@@ -6,6 +6,7 @@
 
 #include "src/base/logging.h"
 #include "src/common/globals.h"
+#include "src/logging/counters.h"
 #include "src/numbers/conversions-inl.h"
 #include "src/numbers/conversions.h"
 #include "src/parsing/parser-base.h"
@@ -69,14 +70,10 @@ PreParserIdentifier PreParser::GetIdentifier() const {
 
 PreParser::PreParseResult PreParser::PreParseProgram() {
   DCHECK_NULL(scope_);
-  DeclarationScope* scope = NewScriptScope();
+  DeclarationScope* scope = NewScriptScope(REPLMode::kNo);
 #ifdef DEBUG
   scope->set_is_being_lazily_parsed(true);
 #endif
-
-  // Note: We should only skip the hashbang in non-Eval scripts
-  // (currently, Eval is not handled by the PreParser).
-  scanner()->SkipHashBang();
 
   // ModuleDeclarationInstantiation for Source Text Module Records creates a
   // new Module Environment Record whose outer lexical environment record is
@@ -276,11 +273,10 @@ PreParser::Expression PreParser::ParseFunctionLiteral(
   DCHECK_NE(FunctionSyntaxKind::kWrapped, function_syntax_kind);
   // Function ::
   //   '(' FormalParameterList? ')' '{' FunctionBody '}'
-  const RuntimeCallCounterId counters[2] = {
-      RuntimeCallCounterId::kPreParseBackgroundWithVariableResolution,
-      RuntimeCallCounterId::kPreParseWithVariableResolution};
-  RuntimeCallTimerScope runtime_timer(runtime_call_stats_,
-                                      counters[parsing_on_main_thread_]);
+  RuntimeCallTimerScope runtime_timer(
+      runtime_call_stats_,
+      RuntimeCallCounterId::kPreParseWithVariableResolution,
+      RuntimeCallStats::kThreadSpecific);
 
   base::ElapsedTimer timer;
   if (V8_UNLIKELY(FLAG_log_function_events)) timer.Start();

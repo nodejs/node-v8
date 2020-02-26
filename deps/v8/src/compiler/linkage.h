@@ -19,6 +19,8 @@
 #include "src/zone/zone.h"
 
 namespace v8 {
+class CFunctionInfo;
+
 namespace internal {
 
 class CallInterfaceDescriptor;
@@ -157,7 +159,7 @@ class LinkageLocation {
  private:
   enum LocationType { REGISTER, STACK_SLOT };
 
-  using TypeField = BitField<LocationType, 0, 1>;
+  using TypeField = base::BitField<LocationType, 0, 1>;
   using LocationField = TypeField::Next<int32_t, 31>;
 
   static constexpr int32_t ANY_REGISTER = -1;
@@ -210,8 +212,13 @@ class V8_EXPORT_PRIVATE CallDescriptor final
     // Use the kJavaScriptCallCodeStartRegister (fixed) register for the
     // indirect target address when calling.
     kFixedTargetRegister = 1u << 7,
-    kAllowCallThroughSlot = 1u << 8,
-    kCallerSavedRegisters = 1u << 9
+    kCallerSavedRegisters = 1u << 8,
+    // The kCallerSavedFPRegisters only matters (and set) when the more general
+    // flag for kCallerSavedRegisters above is also set.
+    kCallerSavedFPRegisters = 1u << 9,
+    // AIX has a function descriptor by default but it can be disabled for a
+    // certain CFunction call (only used for Kind::kCallAddress).
+    kNoFunctionDescriptor = 1u << 10,
   };
   using Flags = base::Flags<Flag>;
 
@@ -293,6 +300,10 @@ class V8_EXPORT_PRIVATE CallDescriptor final
   bool NeedsCallerSavedRegisters() const {
     return flags() & kCallerSavedRegisters;
   }
+  bool NeedsCallerSavedFPRegisters() const {
+    return flags() & kCallerSavedFPRegisters;
+  }
+  bool NoFunctionDescriptor() const { return flags() & kNoFunctionDescriptor; }
 
   LinkageLocation GetReturnLocation(size_t index) const {
     return location_sig_->GetReturn(index);
@@ -348,22 +359,15 @@ class V8_EXPORT_PRIVATE CallDescriptor final
     return allocatable_registers_ != 0;
   }
 
-  void set_save_fp_mode(SaveFPRegsMode mode) { save_fp_mode_ = mode; }
-
-  SaveFPRegsMode get_save_fp_mode() const { return save_fp_mode_; }
-
-  void set_has_function_descriptor(bool has_function_descriptor) {
-    has_function_descriptor_ = has_function_descriptor;
+  // Stores the signature information for a fast API call - C++ functions
+  // that can be called directly from TurboFan.
+  void SetCFunctionInfo(const CFunctionInfo* c_function_info) {
+    c_function_info_ = c_function_info;
   }
-
-  bool HasFunctionDescriptor() const { return has_function_descriptor_; }
+  const CFunctionInfo* GetCFunctionInfo() const { return c_function_info_; }
 
  private:
   friend class Linkage;
-  SaveFPRegsMode save_fp_mode_ = kSaveFPRegs;
-  // AIX has a function descriptor which we will set to true by default
-  // for all CFunction Calls.
-  bool has_function_descriptor_ = kHasFunctionDescriptor;
 
   const Kind kind_;
   const MachineType target_type_;
@@ -379,6 +383,7 @@ class V8_EXPORT_PRIVATE CallDescriptor final
   const RegList allocatable_registers_;
   const Flags flags_;
   const char* const debug_name_;
+  const CFunctionInfo* c_function_info_ = nullptr;
 
   DISALLOW_COPY_AND_ASSIGN(CallDescriptor);
 };

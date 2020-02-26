@@ -210,13 +210,12 @@ class StackFrame {
     Type type = this->type();
     return type == WASM_COMPILED || type == WASM_INTERPRETER_ENTRY;
   }
+  bool is_wasm_to_js() const { return type() == WASM_TO_JS; }
 
   // Accessors.
   Address sp() const { return state_.sp; }
   Address fp() const { return state_.fp; }
-  Address callee_pc() const {
-    return state_.callee_pc_address ? *state_.callee_pc_address : kNullAddress;
-  }
+  inline Address callee_pc() const;
   Address caller_sp() const { return GetCallerStackPointer(); }
 
   // If this frame is optimized and was dynamically aligned return its old
@@ -224,8 +223,7 @@ class StackFrame {
   // up one word and become unaligned.
   Address UnpaddedFP() const;
 
-  Address pc() const { return *pc_address(); }
-  void set_pc(Address pc) { *pc_address() = pc; }
+  inline Address pc() const;
 
   Address constant_pool() const { return *constant_pool_address(); }
   void set_constant_pool(Address constant_pool) {
@@ -263,6 +261,8 @@ class StackFrame {
   // profiler's stashed return address.
   static void SetReturnAddressLocationResolver(
       ReturnAddressLocationResolver resolver);
+
+  static inline Address ReadPC(Address* pc_address);
 
   // Resolves pc_address through the resolution address function if one is set.
   static inline Address* ResolveReturnAddressLocation(Address* pc_address);
@@ -949,10 +949,12 @@ class WasmCompiledFrame : public StandardFrame {
 
   // Accessors.
   WasmInstanceObject wasm_instance() const;
+  wasm::NativeModule* native_module() const;
   wasm::WasmCode* wasm_code() const;
   uint32_t function_index() const;
   Script script() const override;
   int position() const override;
+  Object context() const override;
   bool at_to_number_conversion() const;
 
   void Summarize(std::vector<FrameSummary>* frames) const override;
@@ -1001,6 +1003,7 @@ class WasmInterpreterEntryFrame final : public StandardFrame {
   Code unchecked_code() const override;
 
   // Accessors.
+  int NumberOfActiveFrames() const;
   WasmDebugInfo debug_info() const;
   WasmInstanceObject wasm_instance() const;
 

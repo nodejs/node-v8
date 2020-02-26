@@ -4,6 +4,7 @@
 
 #include "src/compiler/simplified-operator.h"
 
+#include "include/v8-fast-api-calls.h"
 #include "src/base/lazy-instance.h"
 #include "src/compiler/opcodes.h"
 #include "src/compiler/operator.h"
@@ -218,9 +219,7 @@ CheckFloat64HoleParameters const& CheckFloat64HoleParametersOf(
 
 std::ostream& operator<<(std::ostream& os,
                          CheckFloat64HoleParameters const& params) {
-  os << params.mode();
-  if (params.feedback().IsValid()) os << "; " << params.feedback();
-  return os;
+  return os << params.mode() << ", " << params.feedback();
 }
 
 size_t hash_value(const CheckFloat64HoleParameters& params) {
@@ -259,13 +258,11 @@ std::ostream& operator<<(std::ostream& os, CheckForMinusZeroMode mode) {
 }
 
 std::ostream& operator<<(std::ostream& os, CheckMapsFlags flags) {
-  bool empty = true;
   if (flags & CheckMapsFlag::kTryMigrateInstance) {
-    os << "TryMigrateInstance";
-    empty = false;
+    return os << "TryMigrateInstance";
+  } else {
+    return os << "None";
   }
-  if (empty) os << "None";
-  return os;
 }
 
 bool operator==(CheckMapsParameters const& lhs,
@@ -280,11 +277,7 @@ size_t hash_value(CheckMapsParameters const& p) {
 }
 
 std::ostream& operator<<(std::ostream& os, CheckMapsParameters const& p) {
-  os << p.flags() << p.maps();
-  if (p.feedback().IsValid()) {
-    os << "; " << p.feedback();
-  }
-  return os;
+  return os << p.flags() << ", " << p.maps() << ", " << p.feedback();
 }
 
 CheckMapsParameters const& CheckMapsParametersOf(Operator const* op) {
@@ -338,11 +331,7 @@ inline size_t hash_value(const GrowFastElementsParameters& params) {
 
 std::ostream& operator<<(std::ostream& os,
                          const GrowFastElementsParameters& params) {
-  os << params.mode();
-  if (params.feedback().IsValid()) {
-    os << params.feedback();
-  }
-  return os;
+  return os << params.mode() << ", " << params.feedback();
 }
 
 const GrowFastElementsParameters& GrowFastElementsParametersOf(
@@ -583,7 +572,7 @@ size_t hash_value(NumberOperationParameters const& p) {
 }
 
 std::ostream& operator<<(std::ostream& os, NumberOperationParameters const& p) {
-  return os << p.hint() << " " << p.feedback();
+  return os << p.hint() << ", " << p.feedback();
 }
 
 NumberOperationParameters const& NumberOperationParametersOf(
@@ -640,11 +629,7 @@ const CheckTaggedInputParameters& CheckTaggedInputParametersOf(
 
 std::ostream& operator<<(std::ostream& os,
                          const CheckTaggedInputParameters& params) {
-  os << params.mode();
-  if (params.feedback().IsValid()) {
-    os << "; " << params.feedback();
-  }
-  return os;
+  return os << params.mode() << ", " << params.feedback();
 }
 
 size_t hash_value(const CheckTaggedInputParameters& params) {
@@ -667,11 +652,7 @@ const CheckMinusZeroParameters& CheckMinusZeroParametersOf(const Operator* op) {
 
 std::ostream& operator<<(std::ostream& os,
                          const CheckMinusZeroParameters& params) {
-  os << params.mode();
-  if (params.feedback().IsValid()) {
-    os << "; " << params.feedback();
-  }
-  return os;
+  return os << params.mode() << ", " << params.feedback();
 }
 
 size_t hash_value(const CheckMinusZeroParameters& params) {
@@ -752,7 +733,6 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(PlainPrimitiveToNumber, Operator::kNoProperties, 1, 0)         \
   V(PlainPrimitiveToWord32, Operator::kNoProperties, 1, 0)         \
   V(PlainPrimitiveToFloat64, Operator::kNoProperties, 1, 0)        \
-  V(ChangeCompressedSignedToInt32, Operator::kNoProperties, 1, 0)  \
   V(ChangeTaggedSignedToInt32, Operator::kNoProperties, 1, 0)      \
   V(ChangeTaggedSignedToInt64, Operator::kNoProperties, 1, 0)      \
   V(ChangeTaggedToInt32, Operator::kNoProperties, 1, 0)            \
@@ -760,10 +740,7 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(ChangeTaggedToUint32, Operator::kNoProperties, 1, 0)           \
   V(ChangeTaggedToFloat64, Operator::kNoProperties, 1, 0)          \
   V(ChangeTaggedToTaggedSigned, Operator::kNoProperties, 1, 0)     \
-  V(ChangeCompressedToTaggedSigned, Operator::kNoProperties, 1, 0) \
-  V(ChangeTaggedToCompressedSigned, Operator::kNoProperties, 1, 0) \
   V(ChangeFloat64ToTaggedPointer, Operator::kNoProperties, 1, 0)   \
-  V(ChangeInt31ToCompressedSigned, Operator::kNoProperties, 1, 0)  \
   V(ChangeInt31ToTaggedSigned, Operator::kNoProperties, 1, 0)      \
   V(ChangeInt32ToTagged, Operator::kNoProperties, 1, 0)            \
   V(ChangeInt64ToTagged, Operator::kNoProperties, 1, 0)            \
@@ -814,6 +791,7 @@ bool operator==(CheckMinusZeroParameters const& lhs,
 
 #define EFFECT_DEPENDENT_OP_LIST(V)                       \
   V(BigIntAdd, Operator::kNoProperties, 2, 1)             \
+  V(BigIntSubtract, Operator::kNoProperties, 2, 1)        \
   V(StringCharCodeAt, Operator::kNoProperties, 2, 1)      \
   V(StringCodePointAt, Operator::kNoProperties, 2, 1)     \
   V(StringFromCodePointAt, Operator::kNoProperties, 2, 1) \
@@ -848,17 +826,13 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(CheckSmi, 1, 1)                         \
   V(CheckString, 1, 1)                      \
   V(CheckBigInt, 1, 1)                      \
-  V(CheckedInt32ToCompressedSigned, 1, 1)   \
   V(CheckedInt32ToTaggedSigned, 1, 1)       \
   V(CheckedInt64ToInt32, 1, 1)              \
   V(CheckedInt64ToTaggedSigned, 1, 1)       \
+  V(CheckedTaggedToArrayIndex, 1, 1)        \
   V(CheckedTaggedSignedToInt32, 1, 1)       \
   V(CheckedTaggedToTaggedPointer, 1, 1)     \
   V(CheckedTaggedToTaggedSigned, 1, 1)      \
-  V(CheckedCompressedToTaggedPointer, 1, 1) \
-  V(CheckedCompressedToTaggedSigned, 1, 1)  \
-  V(CheckedTaggedToCompressedPointer, 1, 1) \
-  V(CheckedTaggedToCompressedSigned, 1, 1)  \
   V(CheckedUint32ToInt32, 1, 1)             \
   V(CheckedUint32ToTaggedSigned, 1, 1)      \
   V(CheckedUint64Bounds, 2, 1)              \
@@ -1283,6 +1257,16 @@ const Operator* SimplifiedOperatorBuilder::AssertType(Type type) {
                                       "AssertType", 1, 0, 0, 1, 0, 0, type);
 }
 
+const Operator* SimplifiedOperatorBuilder::FastApiCall(
+    const CFunctionInfo* signature, FeedbackSource const& feedback) {
+  // function, c args
+  int value_input_count = signature->ArgumentCount() + 1;
+  return new (zone()) Operator1<FastApiCallParameters>(
+      IrOpcode::kFastApiCall, Operator::kNoThrow, "FastApiCall",
+      value_input_count, 1, 1, 1, 1, 0,
+      FastApiCallParameters(signature, feedback));
+}
+
 const Operator* SimplifiedOperatorBuilder::CheckIf(
     DeoptimizeReason reason, const FeedbackSource& feedback) {
   if (!feedback.IsValid()) {
@@ -1487,6 +1471,14 @@ const Operator* SimplifiedOperatorBuilder::SpeculativeBigIntAdd(
       "SpeculativeBigIntAdd", 2, 1, 1, 1, 1, 0, hint);
 }
 
+const Operator* SimplifiedOperatorBuilder::SpeculativeBigIntSubtract(
+    BigIntOperationHint hint) {
+  return new (zone()) Operator1<BigIntOperationHint>(
+      IrOpcode::kSpeculativeBigIntSubtract,
+      Operator::kFoldable | Operator::kNoThrow, "SpeculativeBigIntSubtract", 2,
+      1, 1, 1, 1, 0, hint);
+}
+
 const Operator* SimplifiedOperatorBuilder::SpeculativeBigIntNegate(
     BigIntOperationHint hint) {
   return new (zone()) Operator1<BigIntOperationHint>(
@@ -1628,7 +1620,7 @@ size_t hash_value(CheckBoundsParameters const& p) {
 }
 
 std::ostream& operator<<(std::ostream& os, CheckBoundsParameters const& p) {
-  os << p.check_parameters() << ",";
+  os << p.check_parameters() << ", ";
   switch (p.mode()) {
     case CheckBoundsParameters::kDeoptOnOutOfBounds:
       os << "deopt";
@@ -1655,7 +1647,7 @@ size_t hash_value(CheckIfParameters const& p) {
 }
 
 std::ostream& operator<<(std::ostream& os, CheckIfParameters const& p) {
-  return os << p.reason() << p.feedback();
+  return os << p.reason() << ", " << p.feedback();
 }
 
 CheckIfParameters const& CheckIfParametersOf(Operator const* op) {
@@ -1696,6 +1688,25 @@ const Operator* SimplifiedOperatorBuilder::NewArgumentsElements(
 int NewArgumentsElementsMappedCountOf(const Operator* op) {
   DCHECK_EQ(IrOpcode::kNewArgumentsElements, op->opcode());
   return OpParameter<int>(op);
+}
+
+FastApiCallParameters const& FastApiCallParametersOf(const Operator* op) {
+  DCHECK_EQ(IrOpcode::kFastApiCall, op->opcode());
+  return OpParameter<FastApiCallParameters>(op);
+}
+
+std::ostream& operator<<(std::ostream& os, FastApiCallParameters const& p) {
+  return os << p.signature() << ", " << p.feedback();
+}
+
+size_t hash_value(FastApiCallParameters const& p) {
+  return base::hash_combine(p.signature(),
+                            FeedbackSource::Hash()(p.feedback()));
+}
+
+bool operator==(FastApiCallParameters const& lhs,
+                FastApiCallParameters const& rhs) {
+  return lhs.signature() == rhs.signature() && lhs.feedback() == rhs.feedback();
 }
 
 const Operator* SimplifiedOperatorBuilder::Allocate(Type type,

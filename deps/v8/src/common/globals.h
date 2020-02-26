@@ -29,6 +29,10 @@ class RecursiveMutex;
 
 namespace internal {
 
+constexpr int KB = 1024;
+constexpr int MB = KB * 1024;
+constexpr int GB = MB * 1024;
+
 // Determine whether we are running in a simulated environment.
 // Setting USE_SIMULATOR explicitly from the build script will force
 // the use of a simulated environment.
@@ -40,6 +44,9 @@ namespace internal {
 #define USE_SIMULATOR 1
 #endif
 #if (V8_TARGET_ARCH_PPC && !V8_HOST_ARCH_PPC)
+#define USE_SIMULATOR 1
+#endif
+#if (V8_TARGET_ARCH_PPC64 && !V8_HOST_ARCH_PPC64)
 #define USE_SIMULATOR 1
 #endif
 #if (V8_TARGET_ARCH_MIPS && !V8_HOST_ARCH_MIPS)
@@ -55,7 +62,7 @@ namespace internal {
 
 // Determine whether the architecture uses an embedded constant pool
 // (contiguous constant pool embedded in code object).
-#if V8_TARGET_ARCH_PPC
+#if V8_TARGET_ARCH_PPC || V8_TARGET_ARCH_PPC64
 #define V8_EMBEDDED_CONSTANT_POOL true
 #else
 #define V8_EMBEDDED_CONSTANT_POOL false
@@ -75,9 +82,20 @@ namespace internal {
 // Minimum stack size in KB required by compilers.
 constexpr int kStackSpaceRequiredForCompilation = 40;
 
+// In order to emit more efficient stack checks in optimized code,
+// deoptimization may implicitly exceed the V8 stack limit by this many bytes.
+// Stack checks in functions with `difference between optimized and unoptimized
+// stack frame sizes <= slack` can simply emit the simple stack check.
+constexpr int kStackLimitSlackForDeoptimizationInBytes = 256;
+
+// Sanity-check, assuming that we aim for a real OS stack size of at least 1MB.
+STATIC_ASSERT(V8_DEFAULT_STACK_SIZE_KB* KB +
+                  kStackLimitSlackForDeoptimizationInBytes <=
+              MB);
+
 // Determine whether double field unboxing feature is enabled.
 #if V8_TARGET_ARCH_64_BIT && !defined(V8_COMPRESS_POINTERS)
-#define V8_DOUBLE_FIELDS_UNBOXING true
+#define V8_DOUBLE_FIELDS_UNBOXING false
 #else
 #define V8_DOUBLE_FIELDS_UNBOXING false
 #endif
@@ -123,9 +141,6 @@ using byte = uint8_t;
 // -----------------------------------------------------------------------------
 // Constants
 
-constexpr int KB = 1024;
-constexpr int MB = KB * KB;
-constexpr int GB = KB * KB * KB;
 constexpr int kMaxInt = 0x7FFFFFFF;
 constexpr int kMinInt = -kMaxInt - 1;
 constexpr int kMaxInt8 = (1 << 7) - 1;
@@ -179,8 +194,9 @@ constexpr size_t kMaxWasmCodeSpaceSize = kMaxWasmCodeMemory;
 constexpr int kSystemPointerSizeLog2 = 3;
 constexpr intptr_t kIntptrSignBit =
     static_cast<intptr_t>(uintptr_t{0x8000000000000000});
-constexpr bool kRequiresCodeRange = true;
-#if V8_HOST_ARCH_PPC && V8_TARGET_ARCH_PPC && V8_OS_LINUX
+constexpr bool kPlatformRequiresCodeRange = true;
+#if (V8_HOST_ARCH_PPC || V8_HOST_ARCH_PPC64) && \
+    (V8_TARGET_ARCH_PPC || V8_TARGET_ARCH_PPC64) && V8_OS_LINUX
 constexpr size_t kMaximalCodeRangeSize = 512 * MB;
 constexpr size_t kMinExpectedOSPageSize = 64 * KB;  // OS page on PPC Linux
 #elif V8_TARGET_ARCH_ARM64
@@ -200,18 +216,19 @@ constexpr size_t kReservedCodeRangePages = 0;
 #else
 constexpr int kSystemPointerSizeLog2 = 2;
 constexpr intptr_t kIntptrSignBit = 0x80000000;
-#if V8_HOST_ARCH_PPC && V8_TARGET_ARCH_PPC && V8_OS_LINUX
-constexpr bool kRequiresCodeRange = false;
+#if (V8_HOST_ARCH_PPC || V8_HOST_ARCH_PPC64) && \
+    (V8_TARGET_ARCH_PPC || V8_TARGET_ARCH_PPC64) && V8_OS_LINUX
+constexpr bool kPlatformRequiresCodeRange = false;
 constexpr size_t kMaximalCodeRangeSize = 0 * MB;
 constexpr size_t kMinimumCodeRangeSize = 0 * MB;
 constexpr size_t kMinExpectedOSPageSize = 64 * KB;  // OS page on PPC Linux
 #elif V8_TARGET_ARCH_MIPS
-constexpr bool kRequiresCodeRange = false;
+constexpr bool kPlatformRequiresCodeRange = false;
 constexpr size_t kMaximalCodeRangeSize = 2048LL * MB;
 constexpr size_t kMinimumCodeRangeSize = 0 * MB;
 constexpr size_t kMinExpectedOSPageSize = 4 * KB;  // OS page.
 #else
-constexpr bool kRequiresCodeRange = false;
+constexpr bool kPlatformRequiresCodeRange = false;
 constexpr size_t kMaximalCodeRangeSize = 0 * MB;
 constexpr size_t kMinimumCodeRangeSize = 0 * MB;
 constexpr size_t kMinExpectedOSPageSize = 4 * KB;  // OS page.
@@ -283,6 +300,8 @@ constexpr int kMaxRegularHeapObjectSize = (1 << (kPageSizeBits - 1));
 constexpr int kBitsPerByte = 8;
 constexpr int kBitsPerByteLog2 = 3;
 constexpr int kBitsPerSystemPointer = kSystemPointerSize * kBitsPerByte;
+constexpr int kBitsPerSystemPointerLog2 =
+    kSystemPointerSizeLog2 + kBitsPerByteLog2;
 constexpr int kBitsPerInt = kIntSize * kBitsPerByte;
 
 // IEEE 754 single precision floating point number bit layout.
@@ -328,7 +347,7 @@ F FUNCTION_CAST(Address addr) {
 // Determine whether the architecture uses function descriptors
 // which provide a level of indirection between the function pointer
 // and the function entrypoint.
-#if V8_HOST_ARCH_PPC &&                                            \
+#if (V8_HOST_ARCH_PPC || V8_HOST_ARCH_PPC64) &&                    \
     (V8_OS_AIX || (V8_TARGET_ARCH_PPC64 && V8_TARGET_BIG_ENDIAN && \
                    (!defined(_CALL_ELF) || _CALL_ELF == 1)))
 #define USES_FUNCTION_DESCRIPTORS 1
@@ -400,10 +419,13 @@ enum TypeofMode : int { INSIDE_TYPEOF, NOT_INSIDE_TYPEOF };
 // Enums used by CEntry.
 enum SaveFPRegsMode { kDontSaveFPRegs, kSaveFPRegs };
 enum ArgvMode { kArgvOnStack, kArgvInRegister };
-enum FunctionDescriptorMode { kNoFunctionDescriptor, kHasFunctionDescriptor };
 
 // This constant is used as an undefined value when passing source positions.
 constexpr int kNoSourcePosition = -1;
+
+// This constant is used to signal the function entry implicit stack check
+// bytecode offset.
+constexpr int kFunctionEntryBytecodeOffset = -1;
 
 // This constant is used to indicate missing deoptimization information.
 constexpr int kNoDeoptimizationId = -1;
@@ -599,7 +621,6 @@ class JSReceiver;
 class JSArray;
 class JSFunction;
 class JSObject;
-class LargeObjectSpace;
 class MacroAssembler;
 class Map;
 class MapSpace;
@@ -617,6 +638,9 @@ class NewSpace;
 class NewLargeObjectSpace;
 class NumberDictionary;
 class Object;
+template <typename T>
+class OffThreadHandle;
+class OldLargeObjectSpace;
 template <HeapObjectReferenceType kRefType, typename StorageType>
 class TaggedImpl;
 class StrongTaggedValue;
@@ -629,7 +653,6 @@ class FullObjectSlot;
 class FullMaybeObjectSlot;
 class FullHeapObjectSlot;
 class OldSpace;
-class ParameterCount;
 class ReadOnlySpace;
 class RelocInfo;
 class Scope;
@@ -745,7 +768,12 @@ inline std::ostream& operator<<(std::ostream& os, AllocationType kind) {
 }
 
 // TODO(ishell): review and rename kWordAligned to kTaggedAligned.
-enum AllocationAlignment { kWordAligned, kDoubleAligned, kDoubleUnaligned };
+enum AllocationAlignment {
+  kWordAligned,
+  kDoubleAligned,
+  kDoubleUnaligned,
+  kCodeAligned
+};
 
 enum class AccessMode { ATOMIC, NON_ATOMIC };
 
@@ -758,6 +786,17 @@ enum MinimumCapacity {
 
 enum GarbageCollector { SCAVENGER, MARK_COMPACTOR, MINOR_MARK_COMPACTOR };
 
+enum class LocalSpaceKind {
+  kNone,
+  kOffThreadSpace,
+  kCompactionSpaceForScavenge,
+  kCompactionSpaceForMarkCompact,
+  kCompactionSpaceForMinorMarkCompact,
+
+  kFirstCompactionSpace = kCompactionSpaceForScavenge,
+  kLastCompactionSpace = kCompactionSpaceForMinorMarkCompact,
+};
+
 enum Executability { NOT_EXECUTABLE, EXECUTABLE };
 
 enum VisitMode {
@@ -767,6 +806,7 @@ enum VisitMode {
   VISIT_ALL_IN_SCAVENGE,
   VISIT_ALL_IN_SWEEP_NEWSPACE,
   VISIT_ONLY_STRONG,
+  VISIT_ONLY_STRONG_IGNORE_STACK,
   VISIT_FOR_SERIALIZATION,
 };
 
@@ -774,6 +814,12 @@ enum class BytecodeFlushMode {
   kDoNotFlushBytecode,
   kFlushBytecode,
   kStressFlushBytecode,
+};
+
+// Indicates whether a script should be parsed and compiled in REPL mode.
+enum class REPLMode {
+  kYes,
+  kNo,
 };
 
 // Flag indicating whether code is built into the VM (one of the natives files).
@@ -1034,7 +1080,10 @@ constexpr uint64_t kHoleNanInt64 =
     (static_cast<uint64_t>(kHoleNanUpper32) << 32) | kHoleNanLower32;
 
 // ES6 section 20.1.2.6 Number.MAX_SAFE_INTEGER
-constexpr double kMaxSafeInteger = 9007199254740991.0;  // 2^53-1
+constexpr uint64_t kMaxSafeIntegerUint64 = 9007199254740991;  // 2^53-1
+constexpr double kMaxSafeInteger = static_cast<double>(kMaxSafeIntegerUint64);
+
+constexpr double kMaxUInt32Double = double{kMaxUInt32};
 
 // The order of this enum has to be kept in sync with the predicates below.
 enum class VariableMode : uint8_t {
@@ -1182,7 +1231,17 @@ enum VariableLocation : uint8_t {
   // A named slot in a module's export table.
   MODULE,
 
-  kLastVariableLocation = MODULE
+  // An indexed slot in a script context. index() is the variable
+  // index in the context object on the heap, starting at 0.
+  // Important: REPL_GLOBAL variables from different scripts with the
+  //            same name share a single script context slot. Every
+  //            script context will reserve a slot, but only one will be used.
+  // REPL_GLOBAL variables are stored in script contexts, but accessed like
+  // globals, i.e. they always require a lookup at runtime to find the right
+  // script context.
+  REPL_GLOBAL,
+
+  kLastVariableLocation = REPL_GLOBAL
 };
 
 // ES6 specifies declarative environment records with mutable and immutable
@@ -1574,6 +1633,8 @@ constexpr int kFunctionLiteralIdTopLevel = 0;
 constexpr int kSmallOrderedHashSetMinCapacity = 4;
 constexpr int kSmallOrderedHashMapMinCapacity = 4;
 
+static const uint16_t kDontAdaptArgumentsSentinel = static_cast<uint16_t>(-1);
+
 // Opaque data type for identifying stack frames. Used extensively
 // by the debugger.
 // ID_MIN_VALUE and ID_MAX_VALUE are specified to ensure that enumeration type
@@ -1584,6 +1645,13 @@ enum class ExceptionStatus : bool { kException = false, kSuccess = true };
 V8_INLINE bool operator!(ExceptionStatus status) {
   return !static_cast<bool>(status);
 }
+
+enum class TraceRetainingPathMode { kEnabled, kDisabled };
+
+// Used in the ScopeInfo flags fields for the function name variable for named
+// function expressions, and for the receiver. Must be declared here so that it
+// can be used in Torque.
+enum class VariableAllocationInfo { NONE, STACK, CONTEXT, UNUSED };
 
 }  // namespace internal
 }  // namespace v8

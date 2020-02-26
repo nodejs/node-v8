@@ -7,6 +7,7 @@
 
 #include <memory>
 
+#include "src/base/bit-field.h"
 #include "src/objects/fixed-array.h"
 #include "src/objects/objects.h"
 #include "src/objects/struct.h"
@@ -161,12 +162,11 @@ class DebugInfo : public TorqueGeneratedDebugInfo<DebugInfo, Struct> {
 // The BreakPointInfo class holds information for break points set in a
 // function. The DebugInfo object holds a BreakPointInfo object for each code
 // position with one or more break points.
-class BreakPointInfo : public Tuple2 {
+class BreakPointInfo
+    : public TorqueGeneratedBreakPointInfo<BreakPointInfo, Struct> {
  public:
   // The position in the source for the break position.
   DECL_INT_ACCESSORS(source_position)
-  // List of related JavaScript break points.
-  DECL_ACCESSORS(break_points, Object)
 
   // Removes a break point.
   static void ClearBreakPoint(Isolate* isolate, Handle<BreakPointInfo> info,
@@ -177,75 +177,55 @@ class BreakPointInfo : public Tuple2 {
   // Check if break point info has this break point.
   static bool HasBreakPoint(Isolate* isolate, Handle<BreakPointInfo> info,
                             Handle<BreakPoint> break_point);
+  // Check if break point info has break point with this id.
+  static MaybeHandle<BreakPoint> GetBreakPointById(Isolate* isolate,
+                                                   Handle<BreakPointInfo> info,
+                                                   int breakpoint_id);
   // Get the number of break points for this code offset.
   int GetBreakPointCount(Isolate* isolate);
 
   int GetStatementPosition(Handle<DebugInfo> debug_info);
 
-  DECL_CAST(BreakPointInfo)
-
-  static const int kSourcePositionOffset = kValue1Offset;
-  static const int kBreakPointsOffset = kValue2Offset;
-
-  OBJECT_CONSTRUCTORS(BreakPointInfo, Tuple2);
+  TQ_OBJECT_CONSTRUCTORS(BreakPointInfo)
 };
 
 // Holds information related to block code coverage.
-class CoverageInfo : public FixedArray {
+class CoverageInfo
+    : public TorqueGeneratedCoverageInfo<CoverageInfo, HeapObject> {
  public:
-  int SlotCount() const;
-
   int StartSourcePosition(int slot_index) const;
   int EndSourcePosition(int slot_index) const;
   int BlockCount(int slot_index) const;
 
   void InitializeSlot(int slot_index, int start_pos, int end_pos);
-  void IncrementBlockCount(int slot_index);
   void ResetBlockCount(int slot_index);
 
-  static int FixedArrayLengthForSlotCount(int slot_count) {
-    return slot_count * kSlotIndexCount + kFirstSlotIndex;
+  // Computes the size for a CoverageInfo instance of a given length.
+  static int SizeFor(int slot_count) {
+    return OBJECT_POINTER_ALIGN(kHeaderSize + slot_count * Slot::kSize);
   }
-
-  DECL_CAST(CoverageInfo)
 
   // Print debug info.
-  void Print(std::unique_ptr<char[]> function_name);
+  void CoverageInfoPrint(std::ostream& os,
+                         std::unique_ptr<char[]> function_name = nullptr);
 
-  static const int kFirstSlotIndex = 0;
+  class BodyDescriptor;  // GC visitor.
 
-  // Each slot is assigned a group of indices starting at kFirstSlotIndex.
-  // Within this group, semantics are as follows:
-  static const int kSlotStartSourcePositionIndex = 0;
-  static const int kSlotEndSourcePositionIndex = 1;
-  static const int kSlotBlockCountIndex = 2;
-  static const int kSlotPaddingIndex = 3;  // Padding to make the index count 4.
-  static const int kSlotIndexCount = 4;
-
-  static const int kSlotIndexCountLog2 = 2;
-  static const int kSlotIndexCountMask = (kSlotIndexCount - 1);
-  STATIC_ASSERT(1 << kSlotIndexCountLog2 == kSlotIndexCount);
+  // Description of layout within each slot.
+  using Slot = TorqueGeneratedCoverageInfoSlotOffsets;
 
  private:
-  static int FirstIndexForSlot(int slot_index) {
-    return kFirstSlotIndex + slot_index * kSlotIndexCount;
-  }
+  int SlotFieldOffset(int slot_index, int field_offset) const;
 
-  OBJECT_CONSTRUCTORS(CoverageInfo, FixedArray);
+  TQ_OBJECT_CONSTRUCTORS(CoverageInfo)
 };
 
 // Holds breakpoint related information. This object is used by inspector.
-class BreakPoint : public Tuple2 {
+class BreakPoint : public TorqueGeneratedBreakPoint<BreakPoint, Struct> {
  public:
   DECL_INT_ACCESSORS(id)
-  DECL_ACCESSORS(condition, String)
 
-  DECL_CAST(BreakPoint)
-
-  static const int kIdOffset = kValue1Offset;
-  static const int kConditionOffset = kValue2Offset;
-
-  OBJECT_CONSTRUCTORS(BreakPoint, Tuple2);
+  TQ_OBJECT_CONSTRUCTORS(BreakPoint)
 };
 
 }  // namespace internal

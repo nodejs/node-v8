@@ -44,15 +44,20 @@ void StartupDeserializer::DeserializeInto(Isolate* isolate) {
     FlushICache();
   }
 
+  CheckNoArrayBufferBackingStores();
+
   isolate->heap()->set_native_contexts_list(
       ReadOnlyRoots(isolate).undefined_value());
   // The allocation site list is build during root iteration, but if no sites
   // were encountered then it needs to be initialized to undefined.
-  if (isolate->heap()->allocation_sites_list() == Smi::kZero) {
+  if (isolate->heap()->allocation_sites_list() == Smi::zero()) {
     isolate->heap()->set_allocation_sites_list(
         ReadOnlyRoots(isolate).undefined_value());
   }
-
+  isolate->heap()->set_dirty_js_finalization_registries_list(
+      ReadOnlyRoots(isolate).undefined_value());
+  isolate->heap()->set_dirty_js_finalization_registries_list_tail(
+      ReadOnlyRoots(isolate).undefined_value());
 
   isolate->builtins()->MarkInitialized();
 

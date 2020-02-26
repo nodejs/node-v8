@@ -6,8 +6,11 @@
 
 #include <limits>
 
+#include "include/v8-fast-api-calls.h"
 #include "src/base/bits.h"
+#include "src/base/small-vector.h"
 #include "src/codegen/code-factory.h"
+#include "src/codegen/machine-type.h"
 #include "src/codegen/tick-counter.h"
 #include "src/compiler/access-builder.h"
 #include "src/compiler/common-operator.h"
@@ -132,11 +135,6 @@ UseInfo TruncatingUseInfoFromRepresentation(MachineRepresentation rep) {
     case MachineRepresentation::kTaggedPointer:
     case MachineRepresentation::kTagged:
       return UseInfo::AnyTagged();
-    case MachineRepresentation::kCompressedSigned:
-      return UseInfo::CompressedSigned();
-    case MachineRepresentation::kCompressedPointer:
-    case MachineRepresentation::kCompressed:
-      return UseInfo::AnyCompressed();
     case MachineRepresentation::kFloat64:
       return UseInfo::TruncatingFloat64();
     case MachineRepresentation::kFloat32:
@@ -149,6 +147,8 @@ UseInfo TruncatingUseInfoFromRepresentation(MachineRepresentation rep) {
       return UseInfo::Word64();
     case MachineRepresentation::kBit:
       return UseInfo::Bool();
+    case MachineRepresentation::kCompressedPointer:
+    case MachineRepresentation::kCompressed:
     case MachineRepresentation::kSimd128:
     case MachineRepresentation::kNone:
       break;
@@ -1151,10 +1151,6 @@ class RepresentationSelector {
     if (IsAnyTagged(rep)) {
       return MachineType::AnyTagged();
     }
-    // Do not distinguish between various Compressed variations.
-    if (IsAnyCompressed(rep)) {
-      return MachineType::AnyCompressed();
-    }
     if (rep == MachineRepresentation::kWord64) {
       if (type.Is(Type::BigInt())) {
         return MachineType::AnyTagged();
@@ -1261,7 +1257,13 @@ class RepresentationSelector {
   void VisitObjectState(Node* node) {
     if (propagate()) {
       for (int i = 0; i < node->InputCount(); i++) {
-        EnqueueInput(node, i, UseInfo::Any());
+        // TODO(nicohartmann): Remove, once the deoptimizer can rematerialize
+        // truncated BigInts.
+        if (TypeOf(node->InputAt(i)).Is(Type::BigInt())) {
+          EnqueueInput(node, i, UseInfo::AnyTagged());
+        } else {
+          EnqueueInput(node, i, UseInfo::Any());
+        }
       }
     } else if (lower()) {
       Zone* zone = jsgraph_->zone();
@@ -1272,6 +1274,11 @@ class RepresentationSelector {
         Node* input = node->InputAt(i);
         (*types)[i] =
             DeoptMachineTypeOf(GetInfo(input)->representation(), TypeOf(input));
+        // TODO(nicohartmann): Remove, once the deoptimizer can rematerialize
+        // truncated BigInts.
+        if (TypeOf(node->InputAt(i)).Is(Type::BigInt())) {
+          ConvertInput(node, i, UseInfo::AnyTagged());
+        }
       }
       NodeProperties::ChangeOp(node, jsgraph_->common()->TypedObjectState(
                                          ObjectIdOf(node->op()), types));
@@ -1308,10 +1315,9 @@ class RepresentationSelector {
       MachineRepresentation field_representation, Type field_type,
       MachineRepresentation value_representation, Node* value) {
     if (base_taggedness == kTaggedBase &&
-        CanBeTaggedOrCompressedPointer(field_representation)) {
+        CanBeTaggedPointer(field_representation)) {
       Type value_type = NodeProperties::GetType(value);
-      if (value_representation == MachineRepresentation::kTaggedSigned ||
-          value_representation == MachineRepresentation::kCompressedSigned) {
+      if (value_representation == MachineRepresentation::kTaggedSigned) {
         // Write barriers are only for stores of heap objects.
         return kNoWriteBarrier;
       }
@@ -1333,9 +1339,7 @@ class RepresentationSelector {
         }
       }
       if (field_representation == MachineRepresentation::kTaggedPointer ||
-          value_representation == MachineRepresentation::kTaggedPointer ||
-          field_representation == MachineRepresentation::kCompressedPointer ||
-          value_representation == MachineRepresentation::kCompressedPointer) {
+          value_representation == MachineRepresentation::kTaggedPointer) {
         // Write barriers for heap objects are cheaper.
         return kPointerWriteBarrier;
       }
@@ -1564,7 +1568,7 @@ class RepresentationSelector {
       } else if (BothInputsAre(node, Type::Unsigned32OrMinusZeroOrNaN())) {
         VisitBinop(node, lhs_use, rhs_use, MachineRepresentation::kWord32,
                    Type::Unsigned32());
-        if (lower()) DeferReplacement(node, lowering->Uint32Mod(node));
+        if (lower()) ChangeToUint32OverflowOp(node);
       } else {
         VisitBinop(node, lhs_use, rhs_use, MachineRepresentation::kWord32,
                    Type::Signed32());
@@ -1668,15 +1672,18 @@ class RepresentationSelector {
               node, simplified()->CheckedUint32Bounds(p.feedback(), mode));
         }
       } else {
-        VisitBinop(
-            node,
-            UseInfo::CheckedSigned32AsWord32(kIdentifyZeros, p.feedback()),
-            UseInfo::TruncatingWord32(), MachineRepresentation::kWord32);
+        VisitBinop(node, UseInfo::CheckedTaggedAsArrayIndex(p.feedback()),
+                   UseInfo::Word(), MachineType::PointerRepresentation());
         if (lower()) {
-          NodeProperties::ChangeOp(
-              node,
-              simplified()->CheckedUint32Bounds(
-                  p.feedback(), CheckBoundsParameters::kDeoptOnOutOfBounds));
+          if (jsgraph_->machine()->Is64()) {
+            NodeProperties::ChangeOp(
+                node, simplified()->CheckedUint64Bounds(p.feedback()));
+          } else {
+            NodeProperties::ChangeOp(
+                node,
+                simplified()->CheckedUint32Bounds(
+                    p.feedback(), CheckBoundsParameters::kDeoptOnOutOfBounds));
+          }
         }
       }
     } else {
@@ -1688,6 +1695,102 @@ class RepresentationSelector {
         NodeProperties::ChangeOp(
             node, simplified()->CheckedUint64Bounds(p.feedback()));
       }
+    }
+  }
+
+  static MachineType MachineTypeFor(CTypeInfo::Type type) {
+    switch (type) {
+      case CTypeInfo::Type::kVoid:
+        return MachineType::Int32();
+      case CTypeInfo::Type::kBool:
+        return MachineType::Bool();
+      case CTypeInfo::Type::kInt32:
+        return MachineType::Int32();
+      case CTypeInfo::Type::kUint32:
+        return MachineType::Uint32();
+      case CTypeInfo::Type::kInt64:
+        return MachineType::Int64();
+      case CTypeInfo::Type::kUint64:
+        return MachineType::Uint64();
+      case CTypeInfo::Type::kFloat32:
+        return MachineType::Float32();
+      case CTypeInfo::Type::kFloat64:
+        return MachineType::Float64();
+      case CTypeInfo::Type::kUnwrappedApiObject:
+        return MachineType::Pointer();
+    }
+  }
+
+  UseInfo UseInfoForFastApiCallArgument(CTypeInfo::Type type,
+                                        FeedbackSource const& feedback) {
+    switch (type) {
+      case CTypeInfo::Type::kVoid:
+        UNREACHABLE();
+      case CTypeInfo::Type::kBool:
+        return UseInfo::Bool();
+      case CTypeInfo::Type::kInt32:
+      case CTypeInfo::Type::kUint32:
+      case CTypeInfo::Type::kFloat32:
+        return UseInfo::CheckedNumberAsWord32(feedback);
+      case CTypeInfo::Type::kInt64:
+        return UseInfo::CheckedSigned64AsWord64(kIdentifyZeros, feedback);
+      case CTypeInfo::Type::kFloat64:
+        return UseInfo::CheckedNumberAsFloat64(kIdentifyZeros, feedback);
+      // UseInfo::Word64 does not propagate any TypeCheckKind, so it relies
+      // on the implicit assumption that Word64 representation only holds
+      // Numbers, which is already no longer true with BigInts. By now,
+      // BigInts are handled in a very conservative way to make sure they don't
+      // fall into that pit, but future changes may break this here.
+      case CTypeInfo::Type::kUint64:
+        return UseInfo::Word64();
+      case CTypeInfo::Type::kUnwrappedApiObject:
+        return UseInfo::Word();
+    }
+  }
+
+  static constexpr int kInitialArgumentsCount = 10;
+
+  void VisitFastApiCall(Node* node) {
+    FastApiCallParameters const& params = FastApiCallParametersOf(node->op());
+    const CFunctionInfo* c_signature = params.signature();
+    int c_arg_count = c_signature->ArgumentCount();
+    int value_input_count = node->op()->ValueInputCount();
+    // function, ... C args
+    CHECK_EQ(c_arg_count + 1, value_input_count);
+
+    base::SmallVector<UseInfo, kInitialArgumentsCount> arg_use_info(
+        c_arg_count);
+    ProcessInput(node, 0, UseInfo::Word());
+    // Propagate representation information from TypeInfo.
+    for (int i = 0; i < c_arg_count; i++) {
+      arg_use_info[i] = UseInfoForFastApiCallArgument(
+          c_signature->ArgumentInfo()[i].GetType(), params.feedback());
+      ProcessInput(node, i + 1, arg_use_info[i]);
+    }
+
+    MachineType return_type =
+        MachineTypeFor(c_signature->ReturnInfo().GetType());
+    SetOutput(node, return_type.representation());
+
+    if (lower()) {
+      MachineSignature::Builder builder(graph()->zone(), 1, c_arg_count);
+      builder.AddReturn(return_type);
+      for (int i = 0; i < c_arg_count; ++i) {
+        MachineType machine_type =
+            MachineTypeFor(c_signature->ArgumentInfo()[i].GetType());
+        // Here the arg_use_info are indexed starting from 1 because of the
+        // function input, while this loop is only over the actual arguments.
+        DCHECK_EQ(arg_use_info[i].representation(),
+                  machine_type.representation());
+        builder.AddParam(machine_type);
+      }
+
+      CallDescriptor* call_descriptor = Linkage::GetSimplifiedCDescriptor(
+          graph()->zone(), builder.Build(), CallDescriptor::kNoFlags);
+
+      call_descriptor->SetCFunctionInfo(c_signature);
+
+      NodeProperties::ChangeOp(node, common()->Call(call_descriptor));
     }
   }
 
@@ -1823,10 +1926,6 @@ class RepresentationSelector {
             // BooleanNot(x: kRepTagged) => WordEqual(x, #false)
             node->AppendInput(jsgraph_->zone(), jsgraph_->FalseConstant());
             NodeProperties::ChangeOp(node, lowering->machine()->WordEqual());
-          } else if (CanBeCompressedPointer(input_info->representation())) {
-            // BooleanNot(x: kRepCompressed) => Word32Equal(x, #false)
-            node->AppendInput(jsgraph_->zone(), jsgraph_->FalseConstant());
-            NodeProperties::ChangeOp(node, lowering->machine()->Word32Equal());
           } else {
             DCHECK(TypeOf(node->InputAt(0)).IsNone());
             DeferReplacement(node, lowering->jsgraph()->Int32Constant(0));
@@ -2735,6 +2834,25 @@ class RepresentationSelector {
         }
         return;
       }
+      case IrOpcode::kSpeculativeBigIntSubtract: {
+        if (truncation.IsUsedAsWord64()) {
+          VisitBinop(node,
+                     UseInfo::CheckedBigIntTruncatingWord64(FeedbackSource{}),
+                     MachineRepresentation::kWord64);
+          if (lower()) {
+            ChangeToPureOp(node, lowering->machine()->Int64Sub());
+          }
+        } else {
+          VisitBinop(node,
+                     UseInfo::CheckedBigIntAsTaggedPointer(FeedbackSource{}),
+                     MachineRepresentation::kTaggedPointer);
+          if (lower()) {
+            NodeProperties::ChangeOp(node,
+                                     lowering->simplified()->BigIntSubtract());
+          }
+        }
+        return;
+      }
       case IrOpcode::kSpeculativeBigIntNegate: {
         if (truncation.IsUsedAsWord64()) {
           VisitUnop(node,
@@ -2943,9 +3061,9 @@ class RepresentationSelector {
             access.machine_type.representation();
 
         // Convert to Smi if possible, such that we can avoid a write barrier.
-        if (field_representation == MachineType::RepCompressedTagged() &&
+        if (field_representation == MachineRepresentation::kTagged &&
             TypeOf(value_node).Is(Type::SignedSmall())) {
-          field_representation = MachineType::RepCompressedTaggedSigned();
+          field_representation = MachineRepresentation::kTaggedSigned;
         }
         WriteBarrierKind write_barrier_kind = WriteBarrierKindFor(
             access.base_is_tagged, field_representation, access.offset,
@@ -2985,9 +3103,9 @@ class RepresentationSelector {
             access.machine_type.representation();
 
         // Convert to Smi if possible, such that we can avoid a write barrier.
-        if (element_representation == MachineType::RepCompressedTagged() &&
+        if (element_representation == MachineRepresentation::kTagged &&
             TypeOf(value_node).Is(Type::SignedSmall())) {
-          element_representation = MachineType::RepCompressedTaggedSigned();
+          element_representation = MachineRepresentation::kTaggedSigned;
         }
         WriteBarrierKind write_barrier_kind = WriteBarrierKindFor(
             access.base_is_tagged, element_representation, access.type,
@@ -3535,6 +3653,11 @@ class RepresentationSelector {
           VisitBinop(node, UseInfo::AnyTagged(),
                      MachineRepresentation::kTaggedSigned);
         }
+        return;
+      }
+
+      case IrOpcode::kFastApiCall: {
+        VisitFastApiCall(node);
         return;
       }
 

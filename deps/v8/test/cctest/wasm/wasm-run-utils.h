@@ -89,6 +89,7 @@ class TestingModuleBuilder {
  public:
   TestingModuleBuilder(Zone*, ManuallyImportedJSFunction*, ExecutionTier,
                        RuntimeExceptionSupport, LowerSimd);
+  ~TestingModuleBuilder();
 
   void ChangeOriginToAsmjs() { test_module_->origin = kAsmJsSloppyOrigin; }
 
@@ -221,7 +222,8 @@ class TestingModuleBuilder {
 
   void SetExecutable() { native_module_->SetExecutable(true); }
 
-  CompilationEnv CreateCompilationEnv();
+  enum AssumeDebugging : bool { kDebug = true, kNoDebug = false };
+  CompilationEnv CreateCompilationEnv(AssumeDebugging = kNoDebug);
 
   ExecutionTier execution_tier() const { return execution_tier_; }
 
@@ -249,7 +251,6 @@ class TestingModuleBuilder {
   std::vector<byte> data_segment_data_;
   std::vector<Address> data_segment_starts_;
   std::vector<uint32_t> data_segment_sizes_;
-  std::vector<byte> dropped_data_segments_;
   std::vector<byte> dropped_elem_segments_;
 
   const WasmGlobal* AddGlobal(ValueType type);
@@ -558,6 +559,13 @@ class WasmRunner : public WasmRunnerBase {
     Handle<Object> buffer[] = {isolate->factory()->NewNumber(p)...,
                                Handle<Object>()};
     CheckCallApplyViaJS(expected, function()->func_index, buffer, sizeof...(p));
+  }
+
+  void CheckUsedExecutionTier(ExecutionTier expected_tier) {
+    // Liftoff can fail and fallback to Turbofan, so check that the function
+    // gets compiled by the tier requested, to guard against accidental success.
+    CHECK(compiled_);
+    CHECK_EQ(expected_tier, builder_.GetFunctionCode(0)->tier());
   }
 
   Handle<Code> GetWrapperCode() { return wrapper_.GetWrapperCode(); }
