@@ -425,7 +425,12 @@
             '<(V8_ROOT)/src/builtins/mips64/builtins-mips64.cc',
           ],
         }],
-        ['v8_target_arch=="ppc" or v8_target_arch=="ppc64"', {
+        ['v8_target_arch=="ppc"', {
+          'sources': [
+            '<(V8_ROOT)/src/builtins/ppc/builtins-ppc.cc',
+          ],
+        }],
+        ['v8_target_arch=="ppc64"', {
           'sources': [
             '<(V8_ROOT)/src/builtins/ppc/builtins-ppc.cc',
           ],
@@ -590,6 +595,7 @@
       ],
       'direct_dependent_settings': {
         'sources': [
+          '<(V8_ROOT)/include/v8-fast-api-calls.h',
           '<(V8_ROOT)/include/v8-internal.h',
           '<(V8_ROOT)/include/v8.h',
           '<(V8_ROOT)/include/v8config.h',
@@ -768,32 +774,37 @@
         }],
         ['v8_target_arch=="arm"', {
           'sources': [  ### gcmole(arch:arm) ###
-            '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "\\"v8_base_without_compiler.*?v8_current_cpu == \\"arm.*?sources \+= ")',
+            '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "\\"v8_base_without_compiler.*?v8_current_cpu == \\"arm\\".*?sources \+= ")',
           ],
         }],
         ['v8_target_arch=="arm64"', {
           'sources': [  ### gcmole(arch:arm64) ###
-            '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "\\"v8_base_without_compiler.*?v8_current_cpu == \\"arm64.*?sources \+= ")',
+            '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "\\"v8_base_without_compiler.*?v8_current_cpu == \\"arm64\\".*?sources \+= ")',
           ],
         }],
         ['v8_target_arch=="mips" or v8_target_arch=="mipsel"', {
           'sources': [  ### gcmole(arch:mipsel) ###
-            '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "\\"v8_base_without_compiler.*?v8_current_cpu == \\"mips.*?sources \+= ")',
+            '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "\\"v8_base_without_compiler.*?v8_current_cpu == \\"mips\\".*?sources \+= ")',
           ],
         }],
         ['v8_target_arch=="mips64" or v8_target_arch=="mips64el"', {
           'sources': [  ### gcmole(arch:mips64el) ###
-            '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "\\"v8_base_without_compiler.*?v8_current_cpu == \\"mips64.*?sources \+= ")',
+            '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "\\"v8_base_without_compiler.*?v8_current_cpu == \\"mips64\\".*?sources \+= ")',
           ],
         }],
-        ['v8_target_arch=="ppc" or v8_target_arch=="ppc64"', {
+        ['v8_target_arch=="ppc"', {
           'sources': [  ### gcmole(arch:ppc) ###
-            '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "\\"v8_base_without_compiler.*?v8_current_cpu == \\"ppc.*?sources \+= ")',
+            '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "\\"v8_base_without_compiler.*?v8_current_cpu == \\"ppc\\".*?sources \+= ")',
+          ],
+        }],
+        ['v8_target_arch=="ppc64"', {
+          'sources': [  ### gcmole(arch:ppc64) ###
+            '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "\\"v8_base_without_compiler.*?v8_current_cpu == \\"ppc64\\".*?sources \+= ")',
           ],
         }],
         ['v8_target_arch=="s390x"', {
           'sources': [  ### gcmole(arch:s390) ###
-            '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "\\"v8_base_without_compiler.*?v8_current_cpu == \\"s390.*?sources \+= ")',
+            '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "\\"v8_base_without_compiler.*?v8_current_cpu == \\"s390\\".*?sources \+= ")',
           ],
         }],
         ['OS=="win"', {
