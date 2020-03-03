@@ -40,9 +40,79 @@ void* JSArrayBuffer::backing_store() const {
   return reinterpret_cast<void*>(ReadField<Address>(kBackingStoreOffset));
 }
 
-void JSArrayBuffer::set_backing_store(void* value, WriteBarrierMode mode) {
+void JSArrayBuffer::set_backing_store(void* value) {
   WriteField<Address>(kBackingStoreOffset, reinterpret_cast<Address>(value));
 }
+
+ArrayBufferExtension* JSArrayBuffer::extension() const {
+  if (V8_ARRAY_BUFFER_EXTENSION_BOOL) {
+#if V8_COMPRESS_POINTERS
+    // With pointer compression the extension-field might not be
+    // pointer-aligned. However on ARM64 this field needs to be aligned to
+    // perform atomic operations on it. Therefore we split the pointer into two
+    // 32-bit words that we update atomically. We don't have an ABA problem here
+    // since there can never be an Attach() after Detach() (transitions only
+    // from NULL --> some ptr --> NULL).
+
+    // Synchronize with publishing release store of non-null extension
+    uint32_t lo = base::AsAtomic32::Acquire_Load(extension_lo());
+    if (lo & kUninitializedTagMask) return nullptr;
+
+    // Synchronize with release store of null extension
+    uint32_t hi = base::AsAtomic32::Acquire_Load(extension_hi());
+    uint32_t verify_lo = base::AsAtomic32::Relaxed_Load(extension_lo());
+    if (lo != verify_lo) return nullptr;
+
+    uintptr_t address = static_cast<uintptr_t>(lo);
+    address |= static_cast<uintptr_t>(hi) << 32;
+    return reinterpret_cast<ArrayBufferExtension*>(address);
+#else
+    return base::AsAtomicPointer::Acquire_Load(extension_location());
+#endif
+  } else {
+    return nullptr;
+  }
+}
+
+void JSArrayBuffer::set_extension(ArrayBufferExtension* extension) {
+  if (V8_ARRAY_BUFFER_EXTENSION_BOOL) {
+#if V8_COMPRESS_POINTERS
+    if (extension != nullptr) {
+      uintptr_t address = reinterpret_cast<uintptr_t>(extension);
+      base::AsAtomic32::Relaxed_Store(extension_hi(),
+                                      static_cast<uint32_t>(address >> 32));
+      base::AsAtomic32::Release_Store(extension_lo(),
+                                      static_cast<uint32_t>(address));
+    } else {
+      base::AsAtomic32::Relaxed_Store(extension_lo(),
+                                      0 | kUninitializedTagMask);
+      base::AsAtomic32::Release_Store(extension_hi(), 0);
+    }
+#else
+    base::AsAtomicPointer::Release_Store(extension_location(), extension);
+#endif
+    MarkingBarrierForArrayBufferExtension(*this, extension);
+  } else {
+    CHECK_EQ(extension, nullptr);
+  }
+}
+
+ArrayBufferExtension** JSArrayBuffer::extension_location() const {
+  Address location = field_address(kExtensionOffset);
+  return reinterpret_cast<ArrayBufferExtension**>(location);
+}
+
+#if V8_COMPRESS_POINTERS
+uint32_t* JSArrayBuffer::extension_lo() const {
+  Address location = field_address(kExtensionOffset);
+  return reinterpret_cast<uint32_t*>(location);
+}
+
+uint32_t* JSArrayBuffer::extension_hi() const {
+  Address location = field_address(kExtensionOffset) + sizeof(uint32_t);
+  return reinterpret_cast<uint32_t*>(location);
+}
+#endif
 
 size_t JSArrayBuffer::allocation_length() const {
   if (backing_store() == nullptr) {
@@ -86,6 +156,14 @@ BIT_FIELD_ACCESSORS(JSArrayBuffer, bit_field, is_asmjs_memory,
 BIT_FIELD_ACCESSORS(JSArrayBuffer, bit_field, is_shared,
                     JSArrayBuffer::IsSharedBit)
 
+size_t JSArrayBuffer::PerIsolateAccountingLength() {
+  // TODO(titzer): SharedArrayBuffers and shared WasmMemorys cause problems with
+  // accounting for per-isolate external memory. In particular, sharing the same
+  // array buffer or memory multiple times, which happens in stress tests, can
+  // cause overcounting, leading to GC thrashing. Fix with global accounting?
+  return is_shared() ? 0 : byte_length();
+}
+
 size_t JSArrayBufferView::byte_offset() const {
   return ReadField<size_t>(kByteOffsetOffset);
 }
@@ -123,7 +201,7 @@ void JSTypedArray::set_external_pointer(Address value) {
 }
 
 Address JSTypedArray::ExternalPointerCompensationForOnHeapArray(
-    Isolate* isolate) {
+    const Isolate* isolate) {
 #ifdef V8_COMPRESS_POINTERS
   return GetIsolateRoot(isolate);
 #else
@@ -133,7 +211,7 @@ Address JSTypedArray::ExternalPointerCompensationForOnHeapArray(
 
 void JSTypedArray::RemoveExternalPointerCompensationForSerialization() {
   DCHECK(is_on_heap());
-  Isolate* isolate = GetIsolateForPtrCompr(*this);
+  const Isolate* isolate = GetIsolateForPtrCompr(*this);
   set_external_pointer(external_pointer() -
                        ExternalPointerCompensationForOnHeapArray(isolate));
 }
@@ -150,7 +228,7 @@ void* JSTypedArray::DataPtr() {
 }
 
 void JSTypedArray::SetOffHeapDataPtr(void* base, Address offset) {
-  set_base_pointer(Smi::kZero, SKIP_WRITE_BARRIER);
+  set_base_pointer(Smi::zero(), SKIP_WRITE_BARRIER);
   Address address = reinterpret_cast<Address>(base) + offset;
   set_external_pointer(address);
   DCHECK_EQ(address, reinterpret_cast<Address>(DataPtr()));
@@ -158,7 +236,7 @@ void JSTypedArray::SetOffHeapDataPtr(void* base, Address offset) {
 
 void JSTypedArray::SetOnHeapDataPtr(HeapObject base, Address offset) {
   set_base_pointer(base);
-  Isolate* isolate = GetIsolateForPtrCompr(*this);
+  const Isolate* isolate = GetIsolateForPtrCompr(*this);
   set_external_pointer(offset +
                        ExternalPointerCompensationForOnHeapArray(isolate));
   DCHECK_EQ(base.ptr() + offset, reinterpret_cast<Address>(DataPtr()));

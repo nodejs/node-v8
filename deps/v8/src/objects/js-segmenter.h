@@ -12,6 +12,7 @@
 #include <set>
 #include <string>
 
+#include "src/base/bit-field.h"
 #include "src/execution/isolate.h"
 #include "src/heap/factory.h"
 #include "src/objects/managed.h"
@@ -61,10 +62,8 @@ class JSSegmenter : public JSObject {
   inline void set_granularity(Granularity granularity);
   inline Granularity granularity() const;
 
-// Bit positions in |flags|.
-#define FLAGS_BIT_FIELDS(V, _) V(GranularityBits, Granularity, 2, _)
-  DEFINE_BIT_FIELDS(FLAGS_BIT_FIELDS)
-#undef FLAGS_BIT_FIELDS
+  // Bit positions in |flags|.
+  DEFINE_TORQUE_GENERATED_JS_SEGMENTER_FLAGS()
 
   STATIC_ASSERT(Granularity::GRAPHEME <= GranularityBits::kMax);
   STATIC_ASSERT(Granularity::WORD <= GranularityBits::kMax);
@@ -81,8 +80,6 @@ class JSSegmenter : public JSObject {
                                 TORQUE_GENERATED_JS_SEGMENTER_FIELDS)
 
  private:
-  static Granularity GetGranularity(const char* str);
-
   OBJECT_CONSTRUCTORS(JSSegmenter, JSObject);
 };
 

@@ -284,6 +284,21 @@ RUNTIME_FUNCTION(Runtime_StackGuard) {
   return isolate->stack_guard()->HandleInterrupts();
 }
 
+RUNTIME_FUNCTION(Runtime_StackGuardWithGap) {
+  SealHandleScope shs(isolate);
+  DCHECK_EQ(args.length(), 1);
+  CONVERT_UINT32_ARG_CHECKED(gap, 0);
+  TRACE_EVENT0("v8.execute", "V8.StackGuard");
+
+  // First check if this is a real stack overflow.
+  StackLimitCheck check(isolate);
+  if (check.JsHasOverflowed(gap)) {
+    return isolate->StackOverflow();
+  }
+
+  return isolate->stack_guard()->HandleInterrupts();
+}
+
 RUNTIME_FUNCTION(Runtime_BytecodeBudgetInterrupt) {
   HandleScope scope(isolate);
   DCHECK_EQ(1, args.length());
@@ -383,6 +398,13 @@ RUNTIME_FUNCTION(Runtime_ThrowIteratorError) {
   DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(Object, object, 0);
   return isolate->Throw(*ErrorUtils::NewIteratorError(isolate, object));
+}
+
+RUNTIME_FUNCTION(Runtime_ThrowSpreadArgIsNullOrUndefined) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(1, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(Object, object, 0);
+  return ErrorUtils::ThrowSpreadArgIsNullOrUndefinedError(isolate, object);
 }
 
 RUNTIME_FUNCTION(Runtime_ThrowCalledNonCallable) {
@@ -573,5 +595,18 @@ RUNTIME_FUNCTION(Runtime_GetInitializerFunction) {
   Handle<Object> initializer = JSReceiver::GetDataProperty(constructor, key);
   return *initializer;
 }
+
+RUNTIME_FUNCTION(Runtime_DoubleToStringWithRadix) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(2, args.length());
+  CONVERT_DOUBLE_ARG_CHECKED(number, 0);
+  CONVERT_INT32_ARG_CHECKED(radix, 1);
+
+  char* const str = DoubleToRadixCString(number, radix);
+  Handle<String> result = isolate->factory()->NewStringFromAsciiChecked(str);
+  DeleteArray(str);
+  return *result;
+}
+
 }  // namespace internal
 }  // namespace v8

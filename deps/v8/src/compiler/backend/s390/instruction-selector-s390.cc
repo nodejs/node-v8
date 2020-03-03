@@ -293,6 +293,9 @@ ArchOpcode SelectLoadOpcode(Node* node) {
     case MachineRepresentation::kWord32:
       opcode = kS390_LoadWordU32;
       break;
+    case MachineRepresentation::kSimd128:
+      opcode = kS390_LoadSimd128;
+      break;
 #if V8_TARGET_ARCH_S390X
     case MachineRepresentation::kTaggedSigned:   // Fall through.
     case MachineRepresentation::kTaggedPointer:  // Fall through.
@@ -303,10 +306,8 @@ ArchOpcode SelectLoadOpcode(Node* node) {
 #else
     case MachineRepresentation::kWord64:  // Fall through.
 #endif
-    case MachineRepresentation::kCompressedSigned:   // Fall through.
     case MachineRepresentation::kCompressedPointer:  // Fall through.
     case MachineRepresentation::kCompressed:         // Fall through.
-    case MachineRepresentation::kSimd128:  // Fall through.
     case MachineRepresentation::kNone:
     default:
       UNREACHABLE();
@@ -757,7 +758,6 @@ static void VisitGeneralStore(
       case MachineRepresentation::kTaggedSigned:       // Fall through.
       case MachineRepresentation::kTaggedPointer:      // Fall through.
       case MachineRepresentation::kTagged:             // Fall through.
-      case MachineRepresentation::kCompressedSigned:   // Fall through.
       case MachineRepresentation::kCompressedPointer:  // Fall through.
       case MachineRepresentation::kCompressed:         // Fall through.
 #endif
@@ -768,11 +768,17 @@ static void VisitGeneralStore(
           value = value->InputAt(0);
         }
         break;
+      case MachineRepresentation::kSimd128:
+        opcode = kS390_StoreSimd128;
+        if (m.IsSimd128ReverseBytes()) {
+          opcode = kS390_StoreReverseSimd128;
+          value = value->InputAt(0);
+        }
+        break;
 #if V8_TARGET_ARCH_S390X
       case MachineRepresentation::kTaggedSigned:       // Fall through.
       case MachineRepresentation::kTaggedPointer:      // Fall through.
       case MachineRepresentation::kTagged:             // Fall through.
-      case MachineRepresentation::kCompressedSigned:   // Fall through.
       case MachineRepresentation::kCompressedPointer:  // Fall through.
       case MachineRepresentation::kCompressed:         // Fall through.
       case MachineRepresentation::kWord64:
@@ -785,7 +791,6 @@ static void VisitGeneralStore(
 #else
       case MachineRepresentation::kWord64:  // Fall through.
 #endif
-      case MachineRepresentation::kSimd128:  // Fall through.
       case MachineRepresentation::kNone:
         UNREACHABLE();
         return;
@@ -824,11 +829,31 @@ void InstructionSelector::VisitUnalignedStore(Node* node) { UNREACHABLE(); }
 
 void InstructionSelector::VisitStackPointerGreaterThan(
     Node* node, FlagsContinuation* cont) {
-  Node* const value = node->InputAt(0);
-  InstructionCode opcode = kArchStackPointerGreaterThan;
+  StackCheckKind kind = StackCheckKindOf(node->op());
+  InstructionCode opcode =
+      kArchStackPointerGreaterThan | MiscField::encode(static_cast<int>(kind));
 
   S390OperandGenerator g(this);
-  EmitWithContinuation(opcode, g.UseRegister(value), cont);
+
+  // No outputs.
+  InstructionOperand* const outputs = nullptr;
+  const int output_count = 0;
+
+  // Applying an offset to this stack check requires a temp register. Offsets
+  // are only applied to the first stack check. If applying an offset, we must
+  // ensure the input and temp registers do not alias, thus kUniqueRegister.
+  InstructionOperand temps[] = {g.TempRegister()};
+  const int temp_count = (kind == StackCheckKind::kJSFunctionEntry) ? 1 : 0;
+  const auto register_mode = (kind == StackCheckKind::kJSFunctionEntry)
+                                 ? OperandGenerator::kUniqueRegister
+                                 : OperandGenerator::kRegister;
+
+  Node* const value = node->InputAt(0);
+  InstructionOperand inputs[] = {g.UseRegisterWithMode(value, register_mode)};
+  static constexpr int input_count = arraysize(inputs);
+
+  EmitWithContinuation(opcode, output_count, outputs, input_count, inputs,
+                       temp_count, temps, cont);
 }
 
 #if 0
@@ -1171,9 +1196,22 @@ void InstructionSelector::VisitWord32ReverseBytes(Node* node) {
 }
 
 void InstructionSelector::VisitSimd128ReverseBytes(Node* node) {
-  // TODO(miladfar): Implement the s390 selector for reversing SIMD bytes.
-  // Check if the input node is a Load and do a Load Reverse at once.
-  UNIMPLEMENTED();
+  S390OperandGenerator g(this);
+  NodeMatcher input(node->InputAt(0));
+  if (CanCover(node, input.node()) && input.IsLoad()) {
+    LoadRepresentation load_rep = LoadRepresentationOf(input.node()->op());
+    if (load_rep.representation() == MachineRepresentation::kSimd128) {
+      Node* base = input.node()->InputAt(0);
+      Node* offset = input.node()->InputAt(1);
+      Emit(kS390_LoadReverseSimd128 | AddressingModeField::encode(kMode_MRR),
+           // TODO(miladfar): one of the base and offset can be imm.
+           g.DefineAsRegister(node), g.UseRegister(base),
+           g.UseRegister(offset));
+      return;
+    }
+  }
+  Emit(kS390_LoadReverseSimd128RR, g.DefineAsRegister(node),
+       g.UseRegister(node->InputAt(0)));
 }
 
 template <class Matcher, ArchOpcode neg_opcode>
@@ -1582,6 +1620,12 @@ void InstructionSelector::VisitTryTruncateFloat64ToUint64(Node* node) {
 }
 
 #endif
+
+void InstructionSelector::VisitBitcastWord32ToWord64(Node* node) {
+  DCHECK(SmiValuesAre31Bits());
+  DCHECK(COMPRESS_POINTERS_BOOL);
+  EmitIdentity(node);
+}
 
 void InstructionSelector::VisitFloat64Mod(Node* node) {
   S390OperandGenerator g(this);
@@ -2024,7 +2068,7 @@ void InstructionSelector::VisitSwitch(Node* node, const SwitchInfo& sw) {
   S390OperandGenerator g(this);
   InstructionOperand value_operand = g.UseRegister(node->InputAt(0));
 
-  // Emit either ArchTableSwitch or ArchLookupSwitch.
+  // Emit either ArchTableSwitch or ArchBinarySearchSwitch.
   if (enable_switch_jump_table_ == kEnableSwitchJumpTable) {
     static const size_t kMaxTableSwitchValueRange = 2 << 16;
     size_t table_space_cost = 4 + sw.value_range();
@@ -2178,12 +2222,21 @@ void InstructionSelector::EmitPrepareArguments(
     int num_slots = 0;
     int slot = 0;
 
+#define INPUT_SWITCH(param)                            \
+  switch (input.location.GetType().representation()) { \
+    case MachineRepresentation::kSimd128:              \
+      param += kSimd128Size / kSystemPointerSize;      \
+      break;                                           \
+    case MachineRepresentation::kFloat64:              \
+      param += kDoubleSize / kSystemPointerSize;       \
+      break;                                           \
+    default:                                           \
+      param += 1;                                      \
+      break;                                           \
+  }
     for (PushParameter input : *arguments) {
       if (input.node == nullptr) continue;
-      num_slots += input.location.GetType().representation() ==
-                           MachineRepresentation::kFloat64
-                       ? kDoubleSize / kSystemPointerSize
-                       : 1;
+      INPUT_SWITCH(num_slots)
     }
     Emit(kS390_StackClaim, g.NoOutput(), g.TempImmediate(num_slots));
     for (PushParameter input : *arguments) {
@@ -2191,12 +2244,10 @@ void InstructionSelector::EmitPrepareArguments(
       if (input.node) {
         Emit(kS390_StoreToStackSlot, g.NoOutput(), g.UseRegister(input.node),
              g.TempImmediate(slot));
-        slot += input.location.GetType().representation() ==
-                        MachineRepresentation::kFloat64
-                    ? (kDoubleSize / kSystemPointerSize)
-                    : 1;
+        INPUT_SWITCH(slot)
       }
     }
+#undef INPUT_SWITCH
     DCHECK(num_slots == slot);
   }
 }
@@ -2209,34 +2260,6 @@ void InstructionSelector::VisitMemoryBarrier(Node* node) {
 bool InstructionSelector::IsTailCallAddressImmediate() { return false; }
 
 int InstructionSelector::GetTempsCountForTailCallFromJSFunction() { return 3; }
-
-void InstructionSelector::VisitChangeTaggedToCompressed(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitChangeTaggedPointerToCompressedPointer(
-    Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitChangeTaggedSignedToCompressedSigned(
-    Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitChangeCompressedToTagged(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitChangeCompressedPointerToTaggedPointer(
-    Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitChangeCompressedSignedToTaggedSigned(
-    Node* node) {
-  UNIMPLEMENTED();
-}
 
 void InstructionSelector::VisitWord32AtomicLoad(Node* node) {
   LoadRepresentation load_rep = LoadRepresentationOf(node->op());
@@ -2495,173 +2518,281 @@ void InstructionSelector::VisitWord64AtomicStore(Node* node) {
   VisitGeneralStore(this, node, rep);
 }
 
-void InstructionSelector::VisitI32x4Splat(Node* node) { UNIMPLEMENTED(); }
+#define SIMD_TYPES(V) \
+  V(F64x2)            \
+  V(F32x4)            \
+  V(I32x4)            \
+  V(I16x8)            \
+  V(I8x16)
 
-void InstructionSelector::VisitI32x4ExtractLane(Node* node) { UNIMPLEMENTED(); }
+#define SIMD_BINOP_LIST(V) \
+  V(F64x2Add)              \
+  V(F64x2Sub)              \
+  V(F64x2Mul)              \
+  V(F64x2Div)              \
+  V(F64x2Eq)               \
+  V(F64x2Ne)               \
+  V(F64x2Lt)               \
+  V(F64x2Le)               \
+  V(F64x2Min)              \
+  V(F64x2Max)              \
+  V(F32x4Add)              \
+  V(F32x4AddHoriz)         \
+  V(F32x4Sub)              \
+  V(F32x4Mul)              \
+  V(F32x4Eq)               \
+  V(F32x4Ne)               \
+  V(F32x4Lt)               \
+  V(F32x4Le)               \
+  V(F32x4Div)              \
+  V(F32x4Min)              \
+  V(F32x4Max)              \
+  V(I32x4Add)              \
+  V(I32x4AddHoriz)         \
+  V(I32x4Sub)              \
+  V(I32x4Mul)              \
+  V(I32x4MinS)             \
+  V(I32x4MinU)             \
+  V(I32x4MaxS)             \
+  V(I32x4MaxU)             \
+  V(I32x4Eq)               \
+  V(I32x4Ne)               \
+  V(I32x4GtS)              \
+  V(I32x4GeS)              \
+  V(I32x4GtU)              \
+  V(I32x4GeU)              \
+  V(I16x8Add)              \
+  V(I16x8AddHoriz)         \
+  V(I16x8Sub)              \
+  V(I16x8Mul)              \
+  V(I16x8MinS)             \
+  V(I16x8MinU)             \
+  V(I16x8MaxS)             \
+  V(I16x8MaxU)             \
+  V(I16x8Eq)               \
+  V(I16x8Ne)               \
+  V(I16x8GtS)              \
+  V(I16x8GeS)              \
+  V(I16x8GtU)              \
+  V(I16x8GeU)              \
+  V(I16x8SConvertI32x4)    \
+  V(I16x8UConvertI32x4)    \
+  V(I16x8AddSaturateS)     \
+  V(I16x8SubSaturateS)     \
+  V(I16x8AddSaturateU)     \
+  V(I16x8SubSaturateU)     \
+  V(I8x16Add)              \
+  V(I8x16Sub)              \
+  V(I8x16Mul)              \
+  V(I8x16MinS)             \
+  V(I8x16MinU)             \
+  V(I8x16MaxS)             \
+  V(I8x16MaxU)             \
+  V(I8x16Eq)               \
+  V(I8x16Ne)               \
+  V(I8x16GtS)              \
+  V(I8x16GeS)              \
+  V(I8x16GtU)              \
+  V(I8x16GeU)              \
+  V(I8x16SConvertI16x8)    \
+  V(I8x16UConvertI16x8)    \
+  V(I8x16AddSaturateS)     \
+  V(I8x16SubSaturateS)     \
+  V(I8x16AddSaturateU)     \
+  V(I8x16SubSaturateU)     \
+  V(S128And)               \
+  V(S128Or)                \
+  V(S128Xor)
 
-void InstructionSelector::VisitI32x4ReplaceLane(Node* node) { UNIMPLEMENTED(); }
+#define SIMD_UNOP_LIST(V)   \
+  V(F64x2Abs)               \
+  V(F64x2Neg)               \
+  V(F64x2Sqrt)              \
+  V(F32x4Abs)               \
+  V(F32x4Neg)               \
+  V(F32x4RecipApprox)       \
+  V(F32x4RecipSqrtApprox)   \
+  V(F32x4Sqrt)              \
+  V(I32x4Neg)               \
+  V(I32x4SConvertI16x8Low)  \
+  V(I32x4SConvertI16x8High) \
+  V(I32x4UConvertI16x8Low)  \
+  V(I32x4UConvertI16x8High) \
+  V(I16x8Neg)               \
+  V(I16x8SConvertI8x16Low)  \
+  V(I16x8SConvertI8x16High) \
+  V(I16x8UConvertI8x16Low)  \
+  V(I16x8UConvertI8x16High) \
+  V(I8x16Neg)               \
+  V(S128Not)
 
-void InstructionSelector::VisitI32x4Add(Node* node) { UNIMPLEMENTED(); }
+#define SIMD_SHIFT_LIST(V) \
+  V(I32x4Shl)              \
+  V(I32x4ShrS)             \
+  V(I32x4ShrU)             \
+  V(I16x8Shl)              \
+  V(I16x8ShrS)             \
+  V(I16x8ShrU)             \
+  V(I8x16Shl)              \
+  V(I8x16ShrS)             \
+  V(I8x16ShrU)
 
-void InstructionSelector::VisitI32x4Sub(Node* node) { UNIMPLEMENTED(); }
+#define SIMD_BOOL_LIST(V) \
+  V(S1x4AnyTrue)          \
+  V(S1x8AnyTrue)          \
+  V(S1x16AnyTrue)         \
+  V(S1x4AllTrue)          \
+  V(S1x8AllTrue)          \
+  V(S1x16AllTrue)
 
-void InstructionSelector::VisitI32x4Shl(Node* node) { UNIMPLEMENTED(); }
+#define SIMD_CONVERSION_LIST(V) \
+  V(I32x4SConvertF32x4)         \
+  V(I32x4UConvertF32x4)         \
+  V(F32x4SConvertI32x4)         \
+  V(F32x4UConvertI32x4)
 
-void InstructionSelector::VisitI32x4ShrS(Node* node) { UNIMPLEMENTED(); }
+#define SIMD_VISIT_SPLAT(Type)                               \
+  void InstructionSelector::Visit##Type##Splat(Node* node) { \
+    S390OperandGenerator g(this);                            \
+    Emit(kS390_##Type##Splat, g.DefineAsRegister(node),      \
+         g.UseRegister(node->InputAt(0)));                   \
+  }
+SIMD_TYPES(SIMD_VISIT_SPLAT)
+#undef SIMD_VISIT_SPLAT
 
-void InstructionSelector::VisitI32x4Mul(Node* node) { UNIMPLEMENTED(); }
+#define SIMD_VISIT_EXTRACT_LANE(Type, Sign)                              \
+  void InstructionSelector::Visit##Type##ExtractLane##Sign(Node* node) { \
+    S390OperandGenerator g(this);                                        \
+    int32_t lane = OpParameter<int32_t>(node->op());                     \
+    Emit(kS390_##Type##ExtractLane##Sign, g.DefineAsRegister(node),      \
+         g.UseRegister(node->InputAt(0)), g.UseImmediate(lane));         \
+  }
+SIMD_VISIT_EXTRACT_LANE(F64x2, )
+SIMD_VISIT_EXTRACT_LANE(F32x4, )
+SIMD_VISIT_EXTRACT_LANE(I32x4, )
+SIMD_VISIT_EXTRACT_LANE(I16x8, U)
+SIMD_VISIT_EXTRACT_LANE(I16x8, S)
+SIMD_VISIT_EXTRACT_LANE(I8x16, U)
+SIMD_VISIT_EXTRACT_LANE(I8x16, S)
+#undef SIMD_VISIT_EXTRACT_LANE
 
-void InstructionSelector::VisitI32x4MaxS(Node* node) { UNIMPLEMENTED(); }
+#define SIMD_VISIT_REPLACE_LANE(Type)                              \
+  void InstructionSelector::Visit##Type##ReplaceLane(Node* node) { \
+    S390OperandGenerator g(this);                                  \
+    int32_t lane = OpParameter<int32_t>(node->op());               \
+    Emit(kS390_##Type##ReplaceLane, g.DefineAsRegister(node),      \
+         g.UseRegister(node->InputAt(0)), g.UseImmediate(lane),    \
+         g.UseRegister(node->InputAt(1)));                         \
+  }
+SIMD_TYPES(SIMD_VISIT_REPLACE_LANE)
+#undef SIMD_VISIT_REPLACE_LANE
 
-void InstructionSelector::VisitI32x4MinS(Node* node) { UNIMPLEMENTED(); }
+#define SIMD_VISIT_BINOP(Opcode)                                          \
+  void InstructionSelector::Visit##Opcode(Node* node) {                   \
+    S390OperandGenerator g(this);                                         \
+    InstructionOperand temps[] = {g.TempSimd128Register(),                \
+                                  g.TempSimd128Register()};               \
+    Emit(kS390_##Opcode, g.DefineAsRegister(node),                        \
+         g.UseUniqueRegister(node->InputAt(0)),                           \
+         g.UseUniqueRegister(node->InputAt(1)), arraysize(temps), temps); \
+  }
+SIMD_BINOP_LIST(SIMD_VISIT_BINOP)
+#undef SIMD_VISIT_BINOP
+#undef SIMD_BINOP_LIST
 
-void InstructionSelector::VisitI32x4Eq(Node* node) { UNIMPLEMENTED(); }
+#define SIMD_VISIT_UNOP(Opcode)                                     \
+  void InstructionSelector::Visit##Opcode(Node* node) {             \
+    S390OperandGenerator g(this);                                   \
+    InstructionOperand temps[] = {g.TempSimd128Register()};         \
+    Emit(kS390_##Opcode, g.DefineAsRegister(node),                  \
+         g.UseRegister(node->InputAt(0)), arraysize(temps), temps); \
+  }
+SIMD_UNOP_LIST(SIMD_VISIT_UNOP)
+#undef SIMD_VISIT_UNOP
+#undef SIMD_UNOP_LIST
 
-void InstructionSelector::VisitI32x4Ne(Node* node) { UNIMPLEMENTED(); }
+#define SIMD_VISIT_SHIFT(Opcode)                        \
+  void InstructionSelector::Visit##Opcode(Node* node) { \
+    S390OperandGenerator g(this);                       \
+    Emit(kS390_##Opcode, g.DefineAsRegister(node),      \
+         g.UseUniqueRegister(node->InputAt(0)),         \
+         g.UseUniqueRegister(node->InputAt(1)));        \
+  }
+SIMD_SHIFT_LIST(SIMD_VISIT_SHIFT)
+#undef SIMD_VISIT_SHIFT
+#undef SIMD_SHIFT_LIST
 
-void InstructionSelector::VisitI32x4MinU(Node* node) { UNIMPLEMENTED(); }
+#define SIMD_VISIT_BOOL(Opcode)                                           \
+  void InstructionSelector::Visit##Opcode(Node* node) {                   \
+    S390OperandGenerator g(this);                                         \
+    InstructionOperand temps[] = {g.TempRegister()};                      \
+    Emit(kS390_##Opcode, g.DefineAsRegister(node),                        \
+         g.UseUniqueRegister(node->InputAt(0)), arraysize(temps), temps); \
+  }
+SIMD_BOOL_LIST(SIMD_VISIT_BOOL)
+#undef SIMD_VISIT_BOOL
+#undef SIMD_BOOL_LIST
 
-void InstructionSelector::VisitI32x4MaxU(Node* node) { UNIMPLEMENTED(); }
+#define SIMD_VISIT_CONVERSION(Opcode)                   \
+  void InstructionSelector::Visit##Opcode(Node* node) { \
+    S390OperandGenerator g(this);                       \
+    Emit(kS390_##Opcode, g.DefineAsRegister(node),      \
+         g.UseRegister(node->InputAt(0)));              \
+  }
+SIMD_CONVERSION_LIST(SIMD_VISIT_CONVERSION)
+#undef SIMD_VISIT_CONVERSION
+#undef SIMD_CONVERSION_LIST
+#undef SIMD_TYPES
 
-void InstructionSelector::VisitI32x4ShrU(Node* node) { UNIMPLEMENTED(); }
+void InstructionSelector::VisitS8x16Shuffle(Node* node) {
+  uint8_t shuffle[kSimd128Size];
+  bool is_swizzle;
+  CanonicalizeShuffle(node, shuffle, &is_swizzle);
+  S390OperandGenerator g(this);
+  Node* input0 = node->InputAt(0);
+  Node* input1 = node->InputAt(1);
+  // input registers are each in reverse order, we will have to remap the
+  // shuffle indices
+  int max_index = 15;
+  int total_lane_count = 2 * kSimd128Size;
+  uint8_t shuffle_remapped[kSimd128Size];
+  for (int i = 0; i < kSimd128Size; i++) {
+    uint8_t current_index = shuffle[i];
+    shuffle_remapped[i] = (current_index <= max_index
+                               ? max_index - current_index
+                               : total_lane_count - current_index + max_index);
+  }
+  Emit(kS390_S8x16Shuffle, g.DefineAsRegister(node), g.UseRegister(input0),
+       g.UseRegister(input1),
+       // Pack4Lanes reverses the bytes, therefore we will need to pass it in
+       // reverse
+       g.UseImmediate(Pack4Lanes(shuffle_remapped + 12)),
+       g.UseImmediate(Pack4Lanes(shuffle_remapped + 8)),
+       g.UseImmediate(Pack4Lanes(shuffle_remapped + 4)),
+       g.UseImmediate(Pack4Lanes(shuffle_remapped)));
+}
 
-void InstructionSelector::VisitI32x4Neg(Node* node) { UNIMPLEMENTED(); }
+void InstructionSelector::VisitS128Zero(Node* node) {
+  S390OperandGenerator g(this);
+  Emit(kS390_S128Zero, g.DefineAsRegister(node), g.DefineAsRegister(node));
+}
 
-void InstructionSelector::VisitI32x4GtS(Node* node) { UNIMPLEMENTED(); }
+void InstructionSelector::VisitS128Select(Node* node) {
+  S390OperandGenerator g(this);
+  Emit(kS390_S128Select, g.DefineAsRegister(node),
+       g.UseRegister(node->InputAt(0)), g.UseRegister(node->InputAt(1)),
+       g.UseRegister(node->InputAt(2)));
+}
 
-void InstructionSelector::VisitI32x4GeS(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI32x4GtU(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI32x4GeU(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI16x8Splat(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI16x8ExtractLane(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI16x8ReplaceLane(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI16x8Shl(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI16x8ShrS(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI16x8ShrU(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI16x8Add(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI16x8AddSaturateS(Node* node) {
+void InstructionSelector::VisitI16x8RoundingAverageU(Node* node) {
   UNIMPLEMENTED();
 }
 
-void InstructionSelector::VisitI16x8Sub(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI16x8SubSaturateS(Node* node) {
+void InstructionSelector::VisitI8x16RoundingAverageU(Node* node) {
   UNIMPLEMENTED();
 }
 
-void InstructionSelector::VisitI16x8Mul(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI16x8MinS(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI16x8MaxS(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI16x8Eq(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI16x8Ne(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI16x8AddSaturateU(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitI16x8SubSaturateU(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitI16x8MinU(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI16x8MaxU(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI16x8Neg(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI16x8GtS(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI16x8GeS(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI16x8GtU(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI16x8GeU(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI8x16Neg(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI8x16Splat(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI8x16ExtractLane(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI8x16ReplaceLane(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI8x16Add(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI8x16AddSaturateS(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitI8x16Sub(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI8x16SubSaturateS(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitI8x16MinS(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI8x16MaxS(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI8x16Eq(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI8x16Ne(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI8x16GtS(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI8x16GeS(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI8x16AddSaturateU(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitI8x16SubSaturateU(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitI8x16MinU(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI8x16MaxU(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI8x16GtU(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI8x16GeU(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitS128And(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitS128Or(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitS128Xor(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitS128Not(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitS128Zero(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitF32x4Eq(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitF32x4Ne(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitF32x4Lt(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitF32x4Le(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitF32x4Splat(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitF32x4ExtractLane(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitF32x4ReplaceLane(Node* node) { UNIMPLEMENTED(); }
+void InstructionSelector::VisitS128AndNot(Node* node) { UNIMPLEMENTED(); }
 
 void InstructionSelector::EmitPrepareResults(
     ZoneVector<PushParameter>* results, const CallDescriptor* call_descriptor,
@@ -2686,120 +2817,23 @@ void InstructionSelector::EmitPrepareResults(
   }
 }
 
-void InstructionSelector::VisitF32x4Add(Node* node) { UNIMPLEMENTED(); }
+void InstructionSelector::VisitS8x16Swizzle(Node* node) { UNIMPLEMENTED(); }
 
-void InstructionSelector::VisitF32x4Sub(Node* node) { UNIMPLEMENTED(); }
+void InstructionSelector::VisitI64x2Neg(Node* node) { UNIMPLEMENTED(); }
 
-void InstructionSelector::VisitF32x4Mul(Node* node) { UNIMPLEMENTED(); }
+void InstructionSelector::VisitI64x2Add(Node* node) { UNIMPLEMENTED(); }
 
-void InstructionSelector::VisitF32x4Sqrt(Node* node) { UNIMPLEMENTED(); }
+void InstructionSelector::VisitI64x2Sub(Node* node) { UNIMPLEMENTED(); }
 
-void InstructionSelector::VisitF32x4Div(Node* node) { UNIMPLEMENTED(); }
+void InstructionSelector::VisitI64x2Shl(Node* node) { UNIMPLEMENTED(); }
 
-void InstructionSelector::VisitF32x4Min(Node* node) { UNIMPLEMENTED(); }
+void InstructionSelector::VisitI64x2ShrS(Node* node) { UNIMPLEMENTED(); }
 
-void InstructionSelector::VisitF32x4Max(Node* node) { UNIMPLEMENTED(); }
+void InstructionSelector::VisitI64x2ShrU(Node* node) { UNIMPLEMENTED(); }
 
-void InstructionSelector::VisitS128Select(Node* node) { UNIMPLEMENTED(); }
+void InstructionSelector::VisitI64x2Mul(Node* node) { UNIMPLEMENTED(); }
 
-void InstructionSelector::VisitF32x4Neg(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitF32x4Abs(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitF32x4RecipSqrtApprox(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitF32x4RecipApprox(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitF32x4AddHoriz(Node* node) { UNIMPLEMENTED(); }
-void InstructionSelector::VisitI32x4AddHoriz(Node* node) { UNIMPLEMENTED(); }
-void InstructionSelector::VisitI16x8AddHoriz(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitF32x4SConvertI32x4(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitF32x4UConvertI32x4(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitI32x4SConvertF32x4(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitI32x4UConvertF32x4(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitI32x4SConvertI16x8Low(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitI32x4SConvertI16x8High(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitI32x4UConvertI16x8Low(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitI32x4UConvertI16x8High(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitI16x8SConvertI8x16Low(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitI16x8SConvertI8x16High(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitI16x8UConvertI8x16Low(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitI16x8UConvertI8x16High(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitI16x8SConvertI32x4(Node* node) {
-  UNIMPLEMENTED();
-}
-void InstructionSelector::VisitI16x8UConvertI32x4(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitI8x16SConvertI16x8(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitI8x16UConvertI16x8(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitS1x4AnyTrue(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitS1x4AllTrue(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitS1x8AnyTrue(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitS1x8AllTrue(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitS1x16AnyTrue(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitS1x16AllTrue(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI8x16Shl(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI8x16ShrS(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI8x16ShrU(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitI8x16Mul(Node* node) { UNIMPLEMENTED(); }
-
-void InstructionSelector::VisitS8x16Shuffle(Node* node) { UNIMPLEMENTED(); }
+void InstructionSelector::VisitLoadTransform(Node* node) { UNIMPLEMENTED(); }
 
 // static
 MachineOperatorBuilder::Flags

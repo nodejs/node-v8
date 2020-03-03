@@ -24,7 +24,7 @@ enum class SourceRangeKind;
 
 namespace interpreter {
 
-class GlobalDeclarationsBuilder;
+class TopLevelDeclarationsBuilder;
 class LoopBuilder;
 class BlockCoverageBuilder;
 class BytecodeJumpTable;
@@ -37,12 +37,14 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
       std::vector<FunctionLiteral*>* eager_inner_literals);
 
   void GenerateBytecode(uintptr_t stack_limit);
-  Handle<BytecodeArray> FinalizeBytecode(Isolate* isolate,
+  template <typename LocalIsolate>
+  Handle<BytecodeArray> FinalizeBytecode(LocalIsolate* isolate,
                                          Handle<Script> script);
-  Handle<ByteArray> FinalizeSourcePositionTable(Isolate* isolate);
+  template <typename LocalIsolate>
+  Handle<ByteArray> FinalizeSourcePositionTable(LocalIsolate* isolate);
 
 #ifdef DEBUG
-  int CheckBytecodeMatches(Handle<BytecodeArray> bytecode);
+  int CheckBytecodeMatches(BytecodeArray bytecode);
 #endif
 
 #define DECLARE_VISIT(type) void Visit##type(type* node);
@@ -50,6 +52,8 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
 #undef DECLARE_VISIT
 
   // Visiting function for declarations list and statements are overridden.
+  void VisitModuleDeclarations(Declaration::List* declarations);
+  void VisitGlobalDeclarations(Declaration::List* declarations);
   void VisitDeclarations(Declaration::List* declarations);
   void VisitStatements(const ZonePtrList<Statement>* statments);
 
@@ -65,7 +69,7 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
   class ExpressionResultScope;
   class EffectResultScope;
   class FeedbackSlotCache;
-  class GlobalDeclarationsBuilder;
+  class TopLevelDeclarationsBuilder;
   class IteratorRecord;
   class NaryCodeCoverageSlots;
   class RegisterAllocationScope;
@@ -159,7 +163,8 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
   };
 
   void GenerateBytecodeBody();
-  void AllocateDeferredConstants(Isolate* isolate, Handle<Script> script);
+  template <typename LocalIsolate>
+  void AllocateDeferredConstants(LocalIsolate* isolate, Handle<Script> script);
 
   DEFINE_AST_VISITOR_SUBCLASS_MEMBERS();
 
@@ -219,6 +224,8 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
                        LookupHoistingMode lookup_hoisting_mode);
 
   void BuildThisVariableLoad();
+
+  void BuildDeclareCall(Runtime::FunctionId id);
 
   Expression* GetDestructuringDefaultValue(Expression** target);
   void BuildDestructuringArrayAssignment(
@@ -379,6 +386,9 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
                        HandlerTable::CatchPrediction catch_prediction,
                        TryFinallyStatement* stmt_for_coverage = nullptr);
 
+  template <typename ExpressionFunc>
+  void BuildOptionalChain(ExpressionFunc expression_func);
+
   // Visitors for obtaining expression result in the accumulator, in a
   // register, or just getting the effect. Some visitors return a TypeHint which
   // specifies the type of the result of the visited expression.
@@ -458,9 +468,9 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
     return builder()->register_allocator();
   }
 
-  GlobalDeclarationsBuilder* globals_builder() {
-    DCHECK_NOT_NULL(globals_builder_);
-    return globals_builder_;
+  TopLevelDeclarationsBuilder* top_level_builder() {
+    DCHECK_NOT_NULL(top_level_builder_);
+    return top_level_builder_;
   }
   inline LanguageMode language_mode() const;
   inline FunctionKind function_kind() const;
@@ -490,9 +500,8 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
 
   FeedbackSlotCache* feedback_slot_cache_;
 
-  GlobalDeclarationsBuilder* globals_builder_;
+  TopLevelDeclarationsBuilder* top_level_builder_;
   BlockCoverageBuilder* block_coverage_builder_;
-  ZoneVector<GlobalDeclarationsBuilder*> global_declarations_;
   ZoneVector<std::pair<FunctionLiteral*, size_t>> function_literals_;
   ZoneVector<std::pair<NativeFunctionLiteral*, size_t>>
       native_function_literals_;

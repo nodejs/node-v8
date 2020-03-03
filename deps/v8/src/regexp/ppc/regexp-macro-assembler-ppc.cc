@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#if V8_TARGET_ARCH_PPC
+#if V8_TARGET_ARCH_PPC || V8_TARGET_ARCH_PPC64
 
 #include "src/regexp/ppc/regexp-macro-assembler-ppc.h"
 
@@ -111,6 +111,8 @@ RegExpMacroAssemblerPPC::RegExpMacroAssemblerPPC(Isolate* isolate, Zone* zone,
       backtrack_label_(),
       exit_label_(),
       internal_failure_label_() {
+  masm_->set_root_array_available(false);
+
   DCHECK_EQ(0, registers_to_save % 2);
 
 
@@ -122,7 +124,6 @@ RegExpMacroAssemblerPPC::RegExpMacroAssemblerPPC(Isolate* isolate, Zone* zone,
   __ Ret();
   __ bind(&start_label_);  // And then continue from here.
 }
-
 
 RegExpMacroAssemblerPPC::~RegExpMacroAssemblerPPC() {
   delete masm_;
@@ -170,6 +171,19 @@ void RegExpMacroAssemblerPPC::AdvanceRegister(int reg, int by) {
 
 void RegExpMacroAssemblerPPC::Backtrack() {
   CheckPreemption();
+  if (has_backtrack_limit()) {
+    Label next;
+    __ LoadP(r3, MemOperand(frame_pointer(), kBacktrackCount), r0);
+    __ addi(r3, r3, Operand(1));
+    __ StoreP(r3, MemOperand(frame_pointer(), kBacktrackCount), r0);
+    __ cmpi(r3, Operand(backtrack_limit()));
+    __ bne(&next);
+
+    // Exceeded limits are treated as a failed match.
+    Fail();
+
+    __ bind(&next);
+  }
   // Pop Code offset from backtrack stack, add Code and jump to location.
   Pop(r3);
   __ add(r3, r3, code_pointer());
@@ -228,7 +242,7 @@ void RegExpMacroAssemblerPPC::CheckGreedyLoop(Label* on_equal) {
 }
 
 void RegExpMacroAssemblerPPC::CheckNotBackReferenceIgnoreCase(
-    int start_reg, bool read_backward, bool unicode, Label* on_no_match) {
+    int start_reg, bool read_backward, Label* on_no_match) {
   Label fallthrough;
   __ LoadP(r3, register_location(start_reg), r0);  // Index of start of capture
   __ LoadP(r4, register_location(start_reg + 1), r0);  // Index of end
@@ -323,7 +337,7 @@ void RegExpMacroAssemblerPPC::CheckNotBackReferenceIgnoreCase(
     //   r3: Address byte_offset1 - Address captured substring's start.
     //   r4: Address byte_offset2 - Address of current character position.
     //   r5: size_t byte_length - length of capture in bytes(!)
-    //   r6: Isolate* isolate or 0 if unicode flag.
+    //   r6: Isolate* isolate.
 
     // Address of start of capture.
     __ add(r3, r3, end_of_input_address());
@@ -337,14 +351,7 @@ void RegExpMacroAssemblerPPC::CheckNotBackReferenceIgnoreCase(
       __ sub(r4, r4, r25);
     }
     // Isolate.
-#ifdef V8_INTL_SUPPORT
-    if (unicode) {
-      __ li(r6, Operand::Zero());
-    } else  // NOLINT
-#endif      // V8_INTL_SUPPORT
-    {
-      __ mov(r6, Operand(ExternalReference::isolate_address(isolate())));
-    }
+    __ mov(r6, Operand(ExternalReference::isolate_address(isolate())));
 
     {
       AllowExternalCallThatCantCauseGC scope(masm_);
@@ -367,7 +374,6 @@ void RegExpMacroAssemblerPPC::CheckNotBackReferenceIgnoreCase(
 
   __ bind(&fallthrough);
 }
-
 
 void RegExpMacroAssemblerPPC::CheckNotBackReference(int start_reg,
                                                     bool read_backward,
@@ -682,9 +688,16 @@ Handle<HeapObject> RegExpMacroAssemblerPPC::GetCode(Handle<String> source) {
     // Set frame pointer in space for it if this is not a direct call
     // from generated code.
     __ addi(frame_pointer(), sp, Operand(8 * kPointerSize));
+
+    STATIC_ASSERT(kSuccessfulCaptures == kInputString - kSystemPointerSize);
     __ li(r3, Operand::Zero());
     __ push(r3);  // Make room for success counter and initialize it to 0.
+    STATIC_ASSERT(kStringStartMinusOne ==
+                  kSuccessfulCaptures - kSystemPointerSize);
     __ push(r3);  // Make room for "string start - 1" constant.
+    STATIC_ASSERT(kBacktrackCount == kStringStartMinusOne - kSystemPointerSize);
+    __ push(r3);  // The backtrack counter.
+
     // Check if we have space on the stack for registers.
     Label stack_limit_hit;
     Label stack_ok;
@@ -943,7 +956,7 @@ Handle<HeapObject> RegExpMacroAssemblerPPC::GetCode(Handle<String> source) {
                           .set_self_reference(masm_->CodeObject())
                           .Build();
   PROFILE(masm_->isolate(),
-          RegExpCodeCreateEvent(AbstractCode::cast(*code), *source));
+          RegExpCodeCreateEvent(Handle<AbstractCode>::cast(code), source));
   return Handle<HeapObject>::cast(code);
 }
 
@@ -1115,7 +1128,8 @@ void RegExpMacroAssemblerPPC::CallCheckStackGuardState(Register scratch) {
     __ mr(scratch, sp);
     __ addi(sp, sp, Operand(-(stack_passed_arguments + 1) * kPointerSize));
     DCHECK(base::bits::IsPowerOfTwo(frame_alignment));
-    __ ClearRightImm(sp, sp, Operand(WhichPowerOf2(frame_alignment)));
+    __ ClearRightImm(sp, sp,
+                     Operand(base::bits::WhichPowerOfTwo(frame_alignment)));
     __ StoreP(scratch, MemOperand(sp, stack_passed_arguments * kPointerSize));
   } else {
     // Make room for stack arguments
@@ -1137,17 +1151,10 @@ void RegExpMacroAssemblerPPC::CallCheckStackGuardState(Register scratch) {
       ExternalReference::re_check_stack_guard_state(isolate());
   __ mov(ip, Operand(stack_guard_check));
 
-  if (FLAG_embedded_builtins) {
-    EmbeddedData d = EmbeddedData::FromBlob();
-    CHECK(Builtins::IsIsolateIndependent(Builtins::kDirectCEntry));
-    Address entry = d.InstructionStartOfBuiltin(Builtins::kDirectCEntry);
-    __ mov(r0, Operand(entry, RelocInfo::OFF_HEAP_TARGET));
-  } else {
-    // TODO(v8:8519): Remove this once embedded builtins are on unconditionally.
-    Handle<Code> code = BUILTIN_CODE(isolate(), DirectCEntry);
-    __ mov(r0, Operand(reinterpret_cast<intptr_t>(code.location()),
-                       RelocInfo::CODE_TARGET));
-  }
+  EmbeddedData d = EmbeddedData::FromBlob();
+  CHECK(Builtins::IsIsolateIndependent(Builtins::kDirectCEntry));
+  Address entry = d.InstructionStartOfBuiltin(Builtins::kDirectCEntry);
+  __ mov(r0, Operand(entry, RelocInfo::OFF_HEAP_TARGET));
   __ Call(r0);
 
   // Restore the stack pointer
@@ -1357,4 +1364,4 @@ void RegExpMacroAssemblerPPC::LoadCurrentCharacterUnchecked(int cp_offset,
 }  // namespace internal
 }  // namespace v8
 
-#endif  // V8_TARGET_ARCH_PPC
+#endif  //  V8_TARGET_ARCH_PPC || V8_TARGET_ARCH_PPC64

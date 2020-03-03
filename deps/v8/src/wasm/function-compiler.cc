@@ -57,6 +57,9 @@ class WasmInstructionBufferImpl {
     WasmInstructionBufferImpl* const holder_;
   };
 
+  explicit WasmInstructionBufferImpl(size_t size)
+      : buffer_(OwnedVector<uint8_t>::New(size)) {}
+
   std::unique_ptr<AssemblerBuffer> CreateView() {
     DCHECK_NOT_NULL(buffer_);
     return std::make_unique<View>(buffer_.as_vector(), this);
@@ -72,8 +75,7 @@ class WasmInstructionBufferImpl {
 
  private:
   // The current buffer used to emit code.
-  OwnedVector<uint8_t> buffer_ =
-      OwnedVector<uint8_t>::New(AssemblerBase::kMinimalBufferSize);
+  OwnedVector<uint8_t> buffer_;
 
   // While the buffer is grown, we need to temporarily also keep the old buffer
   // alive.
@@ -100,15 +102,15 @@ std::unique_ptr<uint8_t[]> WasmInstructionBuffer::ReleaseBuffer() {
 }
 
 // static
-std::unique_ptr<WasmInstructionBuffer> WasmInstructionBuffer::New() {
+std::unique_ptr<WasmInstructionBuffer> WasmInstructionBuffer::New(size_t size) {
   return std::unique_ptr<WasmInstructionBuffer>{
-      reinterpret_cast<WasmInstructionBuffer*>(
-          new WasmInstructionBufferImpl())};
+      reinterpret_cast<WasmInstructionBuffer*>(new WasmInstructionBufferImpl(
+          std::max(size_t{AssemblerBase::kMinimalBufferSize}, size)))};
 }
 // End of PIMPL interface WasmInstructionBuffer for WasmInstBufferImpl
 
 // static
-ExecutionTier WasmCompilationUnit::GetDefaultExecutionTier(
+ExecutionTier WasmCompilationUnit::GetBaselineExecutionTier(
     const WasmModule* module) {
   // Liftoff does not support the special asm.js opcodes, thus always compile
   // asm.js modules with TurboFan.
@@ -143,7 +145,7 @@ WasmCompilationResult WasmCompilationUnit::ExecuteCompilation(
 
 WasmCompilationResult WasmCompilationUnit::ExecuteImportWrapperCompilation(
     WasmEngine* engine, CompilationEnv* env) {
-  FunctionSig* sig = env->module->functions[func_index_].sig;
+  const FunctionSig* sig = env->module->functions[func_index_].sig;
   // Assume the wrapper is going to be a JS function with matching arity at
   // instantiation time.
   auto kind = compiler::kDefaultImportCallKind;
@@ -231,7 +233,7 @@ void RecordWasmHeapStubCompilation(Isolate* isolate, Handle<Code> code,
   Handle<String> name_str =
       isolate->factory()->NewStringFromAsciiChecked(buffer.begin());
   PROFILE(isolate, CodeCreateEvent(CodeEventListener::STUB_TAG,
-                                   AbstractCode::cast(*code), *name_str));
+                                   Handle<AbstractCode>::cast(code), name_str));
 }
 }  // namespace
 
@@ -263,8 +265,8 @@ void WasmCompilationUnit::CompileWasmFunction(Isolate* isolate,
 }
 
 JSToWasmWrapperCompilationUnit::JSToWasmWrapperCompilationUnit(
-    Isolate* isolate, WasmEngine* wasm_engine, FunctionSig* sig, bool is_import,
-    const WasmFeatures& enabled_features)
+    Isolate* isolate, WasmEngine* wasm_engine, const FunctionSig* sig,
+    bool is_import, const WasmFeatures& enabled_features)
     : is_import_(is_import),
       sig_(sig),
       job_(compiler::NewJSToWasmCompilationJob(isolate, wasm_engine, sig,
@@ -274,7 +276,7 @@ JSToWasmWrapperCompilationUnit::~JSToWasmWrapperCompilationUnit() = default;
 
 void JSToWasmWrapperCompilationUnit::Execute() {
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.wasm"), "CompileJSToWasmWrapper");
-  CompilationJob::Status status = job_->ExecuteJob();
+  CompilationJob::Status status = job_->ExecuteJob(nullptr);
   CHECK_EQ(status, CompilationJob::SUCCEEDED);
 }
 
@@ -291,9 +293,9 @@ Handle<Code> JSToWasmWrapperCompilationUnit::Finalize(Isolate* isolate) {
 
 // static
 Handle<Code> JSToWasmWrapperCompilationUnit::CompileJSToWasmWrapper(
-    Isolate* isolate, FunctionSig* sig, bool is_import) {
+    Isolate* isolate, const FunctionSig* sig, bool is_import) {
   // Run the compilation unit synchronously.
-  WasmFeatures enabled_features = WasmFeaturesFromIsolate(isolate);
+  WasmFeatures enabled_features = WasmFeatures::FromIsolate(isolate);
   JSToWasmWrapperCompilationUnit unit(isolate, isolate->wasm_engine(), sig,
                                       is_import, enabled_features);
   unit.Execute();

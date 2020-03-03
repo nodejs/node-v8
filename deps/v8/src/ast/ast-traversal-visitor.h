@@ -295,13 +295,6 @@ void AstTraversalVisitor<Subclass>::VisitNativeFunctionLiteral(
 }
 
 template <class Subclass>
-void AstTraversalVisitor<Subclass>::VisitDoExpression(DoExpression* expr) {
-  PROCESS_EXPRESSION(expr);
-  RECURSE(VisitBlock(expr->block()));
-  RECURSE(VisitVariableProxy(expr->result()));
-}
-
-template <class Subclass>
 void AstTraversalVisitor<Subclass>::VisitConditional(Conditional* expr) {
   PROCESS_EXPRESSION(expr);
   RECURSE_EXPRESSION(Visit(expr->condition()));
@@ -393,14 +386,6 @@ void AstTraversalVisitor<Subclass>::VisitProperty(Property* expr) {
   PROCESS_EXPRESSION(expr);
   RECURSE_EXPRESSION(Visit(expr->obj()));
   RECURSE_EXPRESSION(Visit(expr->key()));
-}
-
-template <class Subclass>
-void AstTraversalVisitor<Subclass>::VisitResolvedProperty(
-    ResolvedProperty* expr) {
-  PROCESS_EXPRESSION(expr);
-  RECURSE_EXPRESSION(VisitVariableProxy(expr->object()));
-  RECURSE_EXPRESSION(VisitVariableProxy(expr->property()));
 }
 
 template <class Subclass>
@@ -524,15 +509,6 @@ template <class Subclass>
 void AstTraversalVisitor<Subclass>::VisitSpread(Spread* expr) {
   PROCESS_EXPRESSION(expr);
   RECURSE_EXPRESSION(Visit(expr->expression()));
-}
-
-template <class Subclass>
-void AstTraversalVisitor<Subclass>::VisitStoreInArrayLiteral(
-    StoreInArrayLiteral* expr) {
-  PROCESS_EXPRESSION(expr);
-  RECURSE_EXPRESSION(Visit(expr->array()));
-  RECURSE_EXPRESSION(Visit(expr->index()));
-  RECURSE_EXPRESSION(Visit(expr->value()));
 }
 
 template <class Subclass>

@@ -200,9 +200,21 @@ void LoadDescriptor::InitializePlatformSpecific(
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }
 
+void LoadNoFeedbackDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  Register registers[] = {ReceiverRegister(), NameRegister(), ICKindRegister()};
+  data->InitializePlatformSpecific(arraysize(registers), registers);
+}
+
 void LoadGlobalDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   Register registers[] = {NameRegister(), SlotRegister()};
+  data->InitializePlatformSpecific(arraysize(registers), registers);
+}
+
+void LoadGlobalNoFeedbackDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  Register registers[] = {NameRegister(), ICKindRegister()};
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }
 
@@ -389,12 +401,23 @@ void WasmAtomicNotifyDescriptor::InitializePlatformSpecific(
 }
 
 #if !defined(V8_TARGET_ARCH_MIPS) && !defined(V8_TARGET_ARCH_MIPS64)
-void WasmI32AtomicWaitDescriptor::InitializePlatformSpecific(
+void WasmI32AtomicWait32Descriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   DefaultInitializePlatformSpecific(data, kParameterCount);
 }
 
-void WasmI64AtomicWaitDescriptor::InitializePlatformSpecific(
+void WasmI32AtomicWait64Descriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  DefaultInitializePlatformSpecific(data, kParameterCount);
+}
+
+void WasmI64AtomicWait32Descriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  DefaultInitializePlatformSpecific(data,
+                                    kParameterCount - kStackArgumentsCount);
+}
+
+void WasmI64AtomicWait64Descriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   DefaultInitializePlatformSpecific(data, kParameterCount);
 }

@@ -113,6 +113,8 @@ RegExpMacroAssemblerS390::RegExpMacroAssemblerS390(Isolate* isolate, Zone* zone,
       backtrack_label_(),
       exit_label_(),
       internal_failure_label_() {
+  masm_->set_root_array_available(false);
+
   DCHECK_EQ(0, registers_to_save % 2);
 
   __ b(&entry_label_);  // We'll write the entry code later.
@@ -164,6 +166,19 @@ void RegExpMacroAssemblerS390::AdvanceRegister(int reg, int by) {
 
 void RegExpMacroAssemblerS390::Backtrack() {
   CheckPreemption();
+  if (has_backtrack_limit()) {
+    Label next;
+    __ LoadP(r2, MemOperand(frame_pointer(), kBacktrackCount), r0);
+    __ AddP(r2, r2, Operand(1));
+    __ StoreP(r2, MemOperand(frame_pointer(), kBacktrackCount), r0);
+    __ CmpLogicalP(r2, Operand(backtrack_limit()));
+    __ bne(&next);
+
+    // Exceeded limits are treated as a failed match.
+    Fail();
+
+    __ bind(&next);
+  }
   // Pop Code offset from backtrack stack, add Code and jump to location.
   Pop(r2);
   __ AddP(r2, code_pointer());
@@ -215,7 +230,7 @@ void RegExpMacroAssemblerS390::CheckGreedyLoop(Label* on_equal) {
 }
 
 void RegExpMacroAssemblerS390::CheckNotBackReferenceIgnoreCase(
-    int start_reg, bool read_backward, bool unicode, Label* on_no_match) {
+    int start_reg, bool read_backward, Label* on_no_match) {
   Label fallthrough;
   __ LoadP(r2, register_location(start_reg));      // Index of start of
                                                    // capture
@@ -312,7 +327,7 @@ void RegExpMacroAssemblerS390::CheckNotBackReferenceIgnoreCase(
     //   r2: Address byte_offset1 - Address captured substring's start.
     //   r3: Address byte_offset2 - Address of current character position.
     //   r4: size_t byte_length - length of capture in bytes(!)
-    //   r5: Isolate* isolate or 0 if unicode flag.
+    //   r5: Isolate* isolate.
 
     // Address of start of capture.
     __ AddP(r2, end_of_input_address());
@@ -326,14 +341,7 @@ void RegExpMacroAssemblerS390::CheckNotBackReferenceIgnoreCase(
       __ SubP(r3, r3, r6);
     }
 // Isolate.
-#ifdef V8_INTL_SUPPORT
-    if (unicode) {
-      __ LoadImmP(r5, Operand::Zero());
-    } else  // NOLINT
-#endif      // V8_INTL_SUPPORT
-    {
-      __ mov(r5, Operand(ExternalReference::isolate_address(isolate())));
-    }
+    __ mov(r5, Operand(ExternalReference::isolate_address(isolate())));
 
     {
       AllowExternalCallThatCantCauseGC scope(masm_);
@@ -659,10 +667,14 @@ Handle<HeapObject> RegExpMacroAssemblerS390::GetCode(Handle<String> source) {
   // from generated code.
   __ LoadRR(frame_pointer(), sp);
   __ lay(sp, MemOperand(sp, -10 * kSystemPointerSize));
+  STATIC_ASSERT(kSuccessfulCaptures == kInputString - kSystemPointerSize);
   __ mov(r1, Operand::Zero());  // success counter
+  STATIC_ASSERT(kStringStartMinusOne ==
+                kSuccessfulCaptures - kSystemPointerSize);
   __ LoadRR(r0, r1);            // offset of location
   __ StoreMultipleP(r0, r9, MemOperand(sp, 0));
-
+  STATIC_ASSERT(kBacktrackCount == kStringStartMinusOne - kSystemPointerSize);
+  __ Push(r1);  // The backtrack counter.
   // Check if we have space on the stack for registers.
   Label stack_limit_hit;
   Label stack_ok;
@@ -940,7 +952,7 @@ Handle<HeapObject> RegExpMacroAssemblerS390::GetCode(Handle<String> source) {
                           .set_self_reference(masm_->CodeObject())
                           .Build();
   PROFILE(masm_->isolate(),
-          RegExpCodeCreateEvent(AbstractCode::cast(*code), *source));
+          RegExpCodeCreateEvent(Handle<AbstractCode>::cast(code), source));
   return Handle<HeapObject>::cast(code);
 }
 

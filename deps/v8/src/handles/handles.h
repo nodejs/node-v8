@@ -21,6 +21,7 @@ namespace internal {
 class DeferredHandles;
 class HandleScopeImplementer;
 class Isolate;
+class OffThreadIsolate;
 template <typename T>
 class MaybeHandle;
 class Object;
@@ -38,6 +39,7 @@ class HandleBase {
  public:
   V8_INLINE explicit HandleBase(Address* location) : location_(location) {}
   V8_INLINE explicit HandleBase(Address object, Isolate* isolate);
+  V8_INLINE explicit HandleBase(Address object, OffThreadIsolate* isolate);
 
   // Check if this handle refers to the exact same object as the other handle.
   V8_INLINE bool is_identical_to(const HandleBase that) const {
@@ -98,7 +100,7 @@ class Handle final : public HandleBase {
     T* operator->() { return &object_; }
 
    private:
-    friend class Handle;
+    friend class Handle<T>;
     explicit ObjectRef(T object) : object_(object) {}
 
     T object_;
@@ -118,6 +120,7 @@ class Handle final : public HandleBase {
   }
 
   V8_INLINE Handle(T object, Isolate* isolate);
+  V8_INLINE Handle(T object, OffThreadIsolate* isolate);
 
   // Allocate a new handle for the object, do not canonicalize.
   V8_INLINE static Handle<T> New(T object, Isolate* isolate);
@@ -126,6 +129,7 @@ class Handle final : public HandleBase {
   // Ex. Handle<JSFunction> can be passed when Handle<Object> is expected.
   template <typename S, typename = typename std::enable_if<
                             std::is_convertible<S*, T*>::value>::type>
+  // NOLINTNEXTLINE
   V8_INLINE Handle(Handle<S> handle) : HandleBase(handle) {}
 
   V8_INLINE ObjectRef operator->() const { return ObjectRef{**this}; }
@@ -357,6 +361,13 @@ struct HandleScopeData final {
     sealed_level = level = 0;
     canonical_scope = nullptr;
   }
+};
+
+class OffThreadHandleScope {
+ public:
+  // Off-thread Handles are allocated in the parse/compile zone, and not
+  // cleared out, so the scope doesn't have to do anything
+  explicit OffThreadHandleScope(OffThreadIsolate* isolate) {}
 };
 
 }  // namespace internal

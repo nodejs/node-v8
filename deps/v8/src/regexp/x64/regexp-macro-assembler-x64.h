@@ -37,7 +37,6 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerX64
   void CheckNotBackReference(int start_reg, bool read_backward,
                              Label* on_no_match) override;
   void CheckNotBackReferenceIgnoreCase(int start_reg, bool read_backward,
-                                       bool unicode,
                                        Label* on_no_match) override;
   void CheckNotCharacter(uint32_t c, Label* on_not_equal) override;
   void CheckNotCharacterAfterAnd(uint32_t c, uint32_t mask,
@@ -146,15 +145,16 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerX64
   static const int kLastCalleeSaveRegister = kBackup_rbx;
 #endif
 
-  static const int kSuccessfulCaptures =
-      kLastCalleeSaveRegister - kSystemPointerSize;
   // When adding local variables remember to push space for them in
   // the frame in GetCode.
+  static const int kSuccessfulCaptures =
+      kLastCalleeSaveRegister - kSystemPointerSize;
   static const int kStringStartMinusOne =
       kSuccessfulCaptures - kSystemPointerSize;
+  static const int kBacktrackCount = kStringStartMinusOne - kSystemPointerSize;
 
   // First register address. Following registers are below it on the stack.
-  static const int kRegisterZero = kStringStartMinusOne - kSystemPointerSize;
+  static const int kRegisterZero = kBacktrackCount - kSystemPointerSize;
 
   // Initial size of code buffer.
   static const int kRegExpCodeSize = 1024;

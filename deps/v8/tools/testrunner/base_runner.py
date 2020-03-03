@@ -61,7 +61,6 @@ TEST_MAP = {
     "wasm-js",
     "fuzzer",
     "message",
-    "preparser",
     "intl",
     "unittests",
     "wasm-api-tests",
@@ -77,7 +76,6 @@ TEST_MAP = {
     "wasm-js",
     "fuzzer",
     "message",
-    "preparser",
     "intl",
     "unittests",
     "wasm-api-tests",
@@ -88,7 +86,6 @@ TEST_MAP = {
     "mjsunit",
     "webkit",
     "message",
-    "preparser",
     "intl",
   ],
   # This needs to stay in sync with "v8_optimize_for_size" in test/BUILD.gn.
@@ -105,15 +102,17 @@ TEST_MAP = {
   ],
 }
 
-# Double the timeout for these:
-SLOW_ARCHS = ["arm",
-              "mips",
-              "mipsel",
-              "mips64",
-              "mips64el",
-              "s390",
-              "s390x",
-              "arm64"]
+# Increase the timeout for these:
+SLOW_ARCHS = [
+  "arm",
+  "arm64",
+  "mips",
+  "mipsel",
+  "mips64",
+  "mips64el",
+  "s390",
+  "s390x",
+]
 
 
 class ModeConfig(object):
@@ -124,9 +123,8 @@ class ModeConfig(object):
     self.execution_mode = execution_mode
 
 
-DEBUG_FLAGS = ["--nohard-abort", "--enable-slow-asserts", "--verify-heap",
-               "--testing-d8-test-runner"]
-RELEASE_FLAGS = ["--nohard-abort", "--testing-d8-test-runner"]
+DEBUG_FLAGS = ["--nohard-abort", "--enable-slow-asserts", "--verify-heap"]
+RELEASE_FLAGS = ["--nohard-abort"]
 MODES = {
   "debug": ModeConfig(
     flags=DEBUG_FLAGS,
@@ -194,14 +192,10 @@ class BuildConfig(object):
     self.is_full_debug = build_config['is_full_debug']
     self.msan = build_config['is_msan']
     self.no_i18n = not build_config['v8_enable_i18n_support']
-    # TODO(https://crbug.com/v8/8531)
-    # 'v8_use_snapshot' was removed, 'no_snap' can be removed as well.
-    self.no_snap = False
     self.predictable = build_config['v8_enable_verify_predictable']
     self.tsan = build_config['is_tsan']
     # TODO(machenbach): We only have ubsan not ubsan_vptr.
     self.ubsan_vptr = build_config['is_ubsan_vptr']
-    self.embedded_builtins = build_config['v8_enable_embedded_builtins']
     self.verify_csa = build_config['v8_enable_verify_csa']
     self.lite_mode = build_config['v8_enable_lite_mode']
     self.pointer_compression = build_config['v8_enable_pointer_compression']
@@ -230,16 +224,12 @@ class BuildConfig(object):
       detected_options.append('msan')
     if self.no_i18n:
       detected_options.append('no_i18n')
-    if self.no_snap:
-      detected_options.append('no_snap')
     if self.predictable:
       detected_options.append('predictable')
     if self.tsan:
       detected_options.append('tsan')
     if self.ubsan_vptr:
       detected_options.append('ubsan_vptr')
-    if self.embedded_builtins:
-      detected_options.append('embedded_builtins')
     if self.verify_csa:
       detected_options.append('verify_csa')
     if self.lite_mode:
@@ -354,9 +344,8 @@ class BaseTestRunner(object):
                            "color, mono)")
     parser.add_option("--json-test-results",
                       help="Path to a file for storing json results.")
-    parser.add_option("--junitout", help="File name of the JUnit output")
-    parser.add_option("--junittestsuite", default="v8tests",
-                      help="The testsuite name in the JUnit output file")
+    parser.add_option('--slow-tests-cutoff', type="int", default=100,
+                      help='Collect N slowest tests')
     parser.add_option("--exit-after-n-failures", type="int", default=100,
                       help="Exit after the first N failures instead of "
                            "running all tests. Pass 0 to disable this feature.")
@@ -701,7 +690,6 @@ class BaseTestRunner(object):
       "msan": self.build_config.msan,
       "no_harness": options.no_harness,
       "no_i18n": self.build_config.no_i18n,
-      "no_snap": self.build_config.no_snap,
       "novfp3": False,
       "optimize_for_size": "--optimize-for-size" in options.extra_flags,
       "predictable": self.build_config.predictable,
@@ -710,11 +698,14 @@ class BaseTestRunner(object):
       "system": self.target_os,
       "tsan": self.build_config.tsan,
       "ubsan_vptr": self.build_config.ubsan_vptr,
-      "embedded_builtins": self.build_config.embedded_builtins,
       "verify_csa": self.build_config.verify_csa,
       "lite_mode": self.build_config.lite_mode,
       "pointer_compression": self.build_config.pointer_compression,
     }
+
+  def _runner_flags(self):
+    """Extra default flags specific to the test runner implementation."""
+    return []
 
   def _create_test_config(self, options):
     timeout = options.timeout * self._timeout_scalefactor(options)
@@ -722,7 +713,7 @@ class BaseTestRunner(object):
         command_prefix=options.command_prefix,
         extra_flags=options.extra_flags,
         isolates=options.isolates,
-        mode_flags=self.mode_options.flags,
+        mode_flags=self.mode_options.flags + self._runner_flags(),
         no_harness=options.no_harness,
         noi18n=self.build_config.no_i18n,
         random_seed=options.random_seed,
@@ -736,7 +727,7 @@ class BaseTestRunner(object):
     """Increases timeout for slow build configurations."""
     factor = self.mode_options.timeout_scalefactor
     if self.build_config.arch in SLOW_ARCHS:
-      factor *= 4
+      factor *= 4.5
     if self.build_config.lite_mode:
       factor *= 2
     if self.build_config.predictable:
@@ -803,13 +794,9 @@ class BaseTestRunner(object):
 
   def _create_progress_indicators(self, test_count, options):
     procs = [PROGRESS_INDICATORS[options.progress]()]
-    if options.junitout:
-      procs.append(progress.JUnitTestProgressIndicator(options.junitout,
-                                                       options.junittestsuite))
     if options.json_test_results:
       procs.append(progress.JsonTestProgressIndicator(
         self.framework_name,
-        options.json_test_results,
         self.build_config.arch,
         self.mode_options.execution_mode))
 

@@ -32,6 +32,7 @@
 
 #include <inttypes.h>
 
+#include "../../third_party/inspector_protocol/crdtp/json.h"
 #include "src/debug/debug-interface.h"
 #include "src/inspector/injected-script.h"
 #include "src/inspector/inspected-context.h"
@@ -196,7 +197,7 @@ void innerCallFunctionOn(
   }
 
   scope.injectedScript()->addPromiseCallback(
-      session, maybeResultValue, objectGroup, wrapMode,
+      session, maybeResultValue, objectGroup, wrapMode, false /* replMode */,
       EvaluateCallbackWrapper<V8RuntimeAgentImpl::CallFunctionOnCallback>::wrap(
           std::move(callback)));
 }
@@ -234,8 +235,8 @@ void V8RuntimeAgentImpl::evaluate(
     Maybe<bool> includeCommandLineAPI, Maybe<bool> silent,
     Maybe<int> executionContextId, Maybe<bool> returnByValue,
     Maybe<bool> generatePreview, Maybe<bool> userGesture,
-    Maybe<bool> awaitPromise, Maybe<bool> throwOnSideEffect,
-    Maybe<double> timeout, Maybe<bool> disableBreaks,
+    Maybe<bool> maybeAwaitPromise, Maybe<bool> throwOnSideEffect,
+    Maybe<double> timeout, Maybe<bool> disableBreaks, Maybe<bool> maybeReplMode,
     std::unique_ptr<EvaluateCallback> callback) {
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("devtools.timeline"),
                "EvaluateScript");
@@ -259,6 +260,8 @@ void V8RuntimeAgentImpl::evaluate(
 
   if (includeCommandLineAPI.fromMaybe(false)) scope.installCommandLineAPI();
 
+  const bool replMode = maybeReplMode.fromMaybe(false);
+
   // Temporarily enable allow evals for inspector.
   scope.allowCodeGenerationFromStrings();
   v8::MaybeLocal<v8::Value> maybeResultValue;
@@ -280,9 +283,10 @@ void V8RuntimeAgentImpl::evaluate(
     } else if (disableBreaks.fromMaybe(false)) {
       mode = v8::debug::EvaluateGlobalMode::kDisableBreaks;
     }
-    maybeResultValue = v8::debug::EvaluateGlobal(
-        m_inspector->isolate(), toV8String(m_inspector->isolate(), expression),
-        mode);
+    const v8::Local<v8::String> source =
+        toV8String(m_inspector->isolate(), expression);
+    maybeResultValue = v8::debug::EvaluateGlobal(m_inspector->isolate(), source,
+                                                 mode, replMode);
   }  // Run microtasks before returning result.
 
   // Re-initialize after running client's code, as it could have destroyed
@@ -296,14 +300,17 @@ void V8RuntimeAgentImpl::evaluate(
   WrapMode mode = generatePreview.fromMaybe(false) ? WrapMode::kWithPreview
                                                    : WrapMode::kNoPreview;
   if (returnByValue.fromMaybe(false)) mode = WrapMode::kForceValue;
-  if (!awaitPromise.fromMaybe(false) || scope.tryCatch().HasCaught()) {
+
+  // REPL mode always returns a promise that must be awaited.
+  const bool await = replMode || maybeAwaitPromise.fromMaybe(false);
+  if (!await || scope.tryCatch().HasCaught()) {
     wrapEvaluateResultAsync(scope.injectedScript(), maybeResultValue,
                             scope.tryCatch(), objectGroup.fromMaybe(""), mode,
                             callback.get());
     return;
   }
   scope.injectedScript()->addPromiseCallback(
-      m_session, maybeResultValue, objectGroup.fromMaybe(""), mode,
+      m_session, maybeResultValue, objectGroup.fromMaybe(""), mode, replMode,
       EvaluateCallbackWrapper<EvaluateCallback>::wrap(std::move(callback)));
 }
 
@@ -327,6 +334,7 @@ void V8RuntimeAgentImpl::awaitPromise(
   if (returnByValue.fromMaybe(false)) mode = WrapMode::kForceValue;
   scope.injectedScript()->addPromiseCallback(
       m_session, scope.object(), scope.objectGroupName(), mode,
+      false /* replMode */,
       EvaluateCallbackWrapper<AwaitPromiseCallback>::wrap(std::move(callback)));
 }
 
@@ -587,7 +595,7 @@ void V8RuntimeAgentImpl::runScript(
   }
   scope.injectedScript()->addPromiseCallback(
       m_session, maybeResultValue.ToLocalChecked(), objectGroup.fromMaybe(""),
-      mode,
+      mode, false /* replMode */,
       EvaluateCallbackWrapper<RunScriptCallback>::wrap(std::move(callback)));
 }
 
@@ -816,9 +824,14 @@ void V8RuntimeAgentImpl::reportExecutionContextCreated(
           .setName(context->humanReadableName())
           .setOrigin(context->origin())
           .build();
-  if (!context->auxData().isEmpty())
+  const String16& aux = context->auxData();
+  if (!aux.isEmpty()) {
+    std::vector<uint8_t> cbor;
+    v8_crdtp::json::ConvertJSONToCBOR(
+        v8_crdtp::span<uint16_t>(aux.characters16(), aux.length()), &cbor);
     description->setAuxData(protocol::DictionaryValue::cast(
-        protocol::StringUtil::parseJSON(context->auxData())));
+        protocol::Value::parseBinary(cbor.data(), cbor.size())));
+  }
   m_frontend.executionContextCreated(std::move(description));
 }
 

@@ -87,6 +87,7 @@ class V8_EXPORT_PRIVATE GlobalHandles final {
   static void SetFinalizationCallbackForTraced(
       Address* location, void* parameter,
       WeakCallbackInfo<void>::Callback callback);
+  static void MarkTraced(Address* location);
 
   explicit GlobalHandles(Isolate* isolate);
   ~GlobalHandles();
@@ -103,6 +104,8 @@ class V8_EXPORT_PRIVATE GlobalHandles final {
     return Handle<T>::cast(Create(Object(value)));
   }
 
+  Handle<Object> CreateTraced(Object value, Address* slot, bool has_destructor,
+                              bool is_on_stack);
   Handle<Object> CreateTraced(Object value, Address* slot, bool has_destructor);
   Handle<Object> CreateTraced(Address value, Address* slot,
                               bool has_destructor);
@@ -118,6 +121,7 @@ class V8_EXPORT_PRIVATE GlobalHandles final {
       GarbageCollector collector, const v8::GCCallbackFlags gc_callback_flags);
 
   void IterateStrongRoots(RootVisitor* v);
+  void IterateStrongStackRoots(RootVisitor* v);
   void IterateWeakRoots(RootVisitor* v);
   void IterateAllRoots(RootVisitor* v);
   void IterateAllYoungRoots(RootVisitor* v);
@@ -181,6 +185,11 @@ class V8_EXPORT_PRIVATE GlobalHandles final {
     return old;
   }
 
+  void SetStackStart(void* stack_start);
+  void NotifyEmptyEmbedderStack();
+  void CleanupOnStackReferencesBelowCurrentStackPosition();
+  size_t NumberOfOnStackHandlesForTesting();
+
 #ifdef DEBUG
   void PrintStats();
   void Print();
@@ -195,6 +204,9 @@ class V8_EXPORT_PRIVATE GlobalHandles final {
   class NodeSpace;
   class PendingPhantomCallback;
   class TracedNode;
+  class OnStackTracedNodeSpace;
+
+  static GlobalHandles* From(const TracedNode*);
 
   bool InRecursiveGC(unsigned gc_processing_counter);
 
@@ -223,6 +235,7 @@ class V8_EXPORT_PRIVATE GlobalHandles final {
 
   std::unique_ptr<NodeSpace<TracedNode>> traced_nodes_;
   std::vector<TracedNode*> traced_young_nodes_;
+  std::unique_ptr<OnStackTracedNodeSpace> on_stack_nodes_;
 
   // Field always containing the number of handles to global objects.
   size_t handles_count_ = 0;
