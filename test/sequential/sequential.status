@@ -5,6 +5,8 @@ prefix sequential
 # sample-test                       : PASS,FLAKY
 
 [true] # This section applies to all platforms
+# same as https://github.com/nodejs/node-v8/issues/120
+test-inspector-break-when-eval: PASS,FLAKY
 
 [$system==win32]
 # https://github.com/nodejs/node/issues/22327
