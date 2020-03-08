@@ -686,7 +686,7 @@ void TestStringCharacterStream(BuildString build, int test_cases) {
   for (int i = 0; i < test_cases; i++) {
     printf("%d\n", i);
     HandleScope inner_scope(isolate);
-    AlwaysAllocateScope always_allocate(isolate);
+    AlwaysAllocateScopeForTesting always_allocate(isolate->heap());
     // Build flat version of cons string.
     Handle<String> flat_string = build(i, &data);
     ConsStringStats flat_string_stats;
@@ -1873,11 +1873,6 @@ void TestString(i::Isolate* isolate, const IndexData& data) {
     uint32_t index;
     CHECK(s->AsArrayIndex(&index));
     CHECK_EQ(data.array_index, index);
-    // AsArrayIndex only forces hash computation for cacheable indices;
-    // so trigger hash computation for longer strings manually.
-    if (s->length() > String::kMaxCachedArrayIndexLength) s->Hash();
-    CHECK_EQ(0, s->hash_field() & String::kIsNotArrayIndexMask);
-    CHECK(s->HasHashCode());
   }
   if (data.is_integer_index) {
     size_t index;
@@ -1889,9 +1884,6 @@ void TestString(i::Isolate* isolate, const IndexData& data) {
   }
   if (!s->HasHashCode()) s->Hash();
   CHECK(s->HasHashCode());
-  if (!data.is_array_index) {
-    CHECK_NE(0, s->hash_field() & String::kIsNotArrayIndexMask);
-  }
   if (!data.is_integer_index) {
     CHECK_NE(0, s->hash_field() & String::kIsNotIntegerIndexMask);
   }
@@ -1922,12 +1914,14 @@ TEST(HashArrayIndexStrings) {
 #if V8_TARGET_ARCH_32_BIT
     {"4294967295", false, 0, false, 0},  // Valid length but not index.
     {"4294967296", false, 0, false, 0},
-    {"18446744073709551615", false, 0, false, 0},
+    {"9007199254740991", false, 0, false, 0},
 #else
     {"4294967295", false, 0, true, 4294967295u},
     {"4294967296", false, 0, true, 4294967296ull},
-    {"18446744073709551615", false, 0, true, 18446744073709551615ull},
+    {"9007199254740991", false, 0, true, 9007199254740991ull},
 #endif
+    {"9007199254740992", false, 0, false, 0},
+    {"18446744073709551615", false, 0, false, 0},
     {"18446744073709551616", false, 0, false, 0}
   };
   for (int i = 0, n = arraysize(tests); i < n; i++) {

@@ -15,7 +15,9 @@
 #include "src/codegen/label.h"
 #include "src/common/globals.h"
 #include "src/execution/isolate.h"
+#include "src/execution/off-thread-isolate.h"
 #include "src/heap/factory.h"
+#include "src/objects/elements-kind.h"
 #include "src/objects/function-syntax-kind.h"
 #include "src/objects/literal-objects.h"
 #include "src/objects/smi.h"
@@ -88,7 +90,6 @@ namespace internal {
   V(CompoundAssignment)         \
   V(Conditional)                \
   V(CountOperation)             \
-  V(DoExpression)               \
   V(EmptyParentheses)           \
   V(FunctionLiteral)            \
   V(GetTemplateObject)          \
@@ -97,9 +98,7 @@ namespace internal {
   V(NativeFunctionLiteral)      \
   V(OptionalChain)              \
   V(Property)                   \
-  V(ResolvedProperty)           \
   V(Spread)                     \
-  V(StoreInArrayLiteral)        \
   V(SuperCallReference)         \
   V(SuperPropertyReference)     \
   V(TemplateLiteral)            \
@@ -170,7 +169,7 @@ class AstNode: public ZoneObject {
   void* operator new(size_t size);
 
   int position_;
-  using NodeTypeField = BitField<NodeType, 0, 6>;
+  using NodeTypeField = base::BitField<NodeType, 0, 6>;
 
  protected:
   uint32_t bit_field_;
@@ -259,7 +258,7 @@ class Expression : public AstNode {
 
   bool IsPattern() {
     STATIC_ASSERT(kObjectLiteral + 1 == kArrayLiteral);
-    return IsInRange(node_type(), kObjectLiteral, kArrayLiteral);
+    return base::IsInRange(node_type(), kObjectLiteral, kArrayLiteral);
   }
 
   bool is_parenthesized() const {
@@ -295,62 +294,28 @@ class FailureExpression : public Expression {
 // V8's notion of BreakableStatement does not correspond to the notion of
 // BreakableStatement in ECMAScript. In V8, the idea is that a
 // BreakableStatement is a statement that can be the target of a break
-// statement.  The BreakableStatement AST node carries a list of labels, any of
-// which can be used as an argument to the break statement in order to target
-// it.
+// statement.
 //
-// Since we don't want to attach a list of labels to all kinds of statements, we
+// Since we don't want to track a list of labels for all kinds of statements, we
 // only declare switchs, loops, and blocks as BreakableStatements.  This means
 // that we implement breaks targeting other statement forms as breaks targeting
 // a substatement thereof. For instance, in "foo: if (b) { f(); break foo; }" we
 // pretend that foo is the label of the inner block. That's okay because one
 // can't observe the difference.
-//
-// This optimization makes it harder to detect invalid continue labels, see the
-// need for own_labels in IterationStatement.
-//
+// TODO(verwaest): Reconsider this optimization now that the tracking of labels
+// is done at runtime.
 class BreakableStatement : public Statement {
- public:
-  enum BreakableType {
-    TARGET_FOR_ANONYMOUS,
-    TARGET_FOR_NAMED_ONLY
-  };
-
-  // A list of all labels declared on the path up to the previous
-  // BreakableStatement (if any).
-  //
-  // Example: "l1: for (;;) l2: l3: { l4: if (b) l5: { s } }"
-  // labels() of the ForStatement will be l1.
-  // labels() of the Block { l4: ... } will be l2, l3.
-  // labels() of the Block { s } will be l4, l5.
-  ZonePtrList<const AstRawString>* labels() const;
-
-  // Testers.
-  bool is_target_for_anonymous() const {
-    return BreakableTypeField::decode(bit_field_) == TARGET_FOR_ANONYMOUS;
-  }
-
- private:
-  using BreakableTypeField = Statement::NextBitField<BreakableType, 1>;
-
  protected:
-  BreakableStatement(BreakableType breakable_type, int position, NodeType type)
-      : Statement(position, type) {
-    bit_field_ |= BreakableTypeField::encode(breakable_type);
-  }
-
-  template <class T, int size>
-  using NextBitField = BreakableTypeField::Next<T, size>;
+  BreakableStatement(int position, NodeType type) : Statement(position, type) {}
 };
 
-class Block : public BreakableStatement {
+class Block final : public BreakableStatement {
  public:
   ZonePtrList<Statement>* statements() { return &statements_; }
   bool ignore_completion_value() const {
     return IgnoreCompletionField::decode(bit_field_);
   }
-
-  inline ZonePtrList<const AstRawString>* labels() const;
+  bool is_breakable() const { return IsBreakableField::decode(bit_field_); }
 
   Scope* scope() const { return scope_; }
   void set_scope(Scope* scope) { scope_ = scope; }
@@ -368,67 +333,21 @@ class Block : public BreakableStatement {
   Scope* scope_;
 
   using IgnoreCompletionField = BreakableStatement::NextBitField<bool, 1>;
-  using IsLabeledField = IgnoreCompletionField::Next<bool, 1>;
+  using IsBreakableField = IgnoreCompletionField::Next<bool, 1>;
 
  protected:
-  Block(Zone* zone, ZonePtrList<const AstRawString>* labels, int capacity,
-        bool ignore_completion_value)
-      : BreakableStatement(TARGET_FOR_NAMED_ONLY, kNoSourcePosition, kBlock),
+  Block(Zone* zone, int capacity, bool ignore_completion_value,
+        bool is_breakable)
+      : BreakableStatement(kNoSourcePosition, kBlock),
         statements_(capacity, zone),
         scope_(nullptr) {
     bit_field_ |= IgnoreCompletionField::encode(ignore_completion_value) |
-                  IsLabeledField::encode(labels != nullptr);
+                  IsBreakableField::encode(is_breakable);
   }
 
-  Block(ZonePtrList<const AstRawString>* labels, bool ignore_completion_value)
-      : Block(nullptr, labels, 0, ignore_completion_value) {}
+  Block(bool ignore_completion_value, bool is_breakable)
+      : Block(nullptr, 0, ignore_completion_value, is_breakable) {}
 };
-
-class LabeledBlock final : public Block {
- private:
-  friend class AstNodeFactory;
-  friend class Block;
-
-  LabeledBlock(Zone* zone, ZonePtrList<const AstRawString>* labels,
-               int capacity, bool ignore_completion_value)
-      : Block(zone, labels, capacity, ignore_completion_value),
-        labels_(labels) {
-    DCHECK_NOT_NULL(labels);
-    DCHECK_GT(labels->length(), 0);
-  }
-
-  LabeledBlock(ZonePtrList<const AstRawString>* labels,
-               bool ignore_completion_value)
-      : LabeledBlock(nullptr, labels, 0, ignore_completion_value) {}
-
-  ZonePtrList<const AstRawString>* labels_;
-};
-
-inline ZonePtrList<const AstRawString>* Block::labels() const {
-  if (IsLabeledField::decode(bit_field_)) {
-    return static_cast<const LabeledBlock*>(this)->labels_;
-  }
-  return nullptr;
-}
-
-class DoExpression final : public Expression {
- public:
-  Block* block() { return block_; }
-  VariableProxy* result() { return result_; }
-
- private:
-  friend class AstNodeFactory;
-
-  DoExpression(Block* block, VariableProxy* result, int pos)
-      : Expression(pos, kDoExpression), block_(block), result_(result) {
-    DCHECK_NOT_NULL(block_);
-    DCHECK_NOT_NULL(result_);
-  }
-
-  Block* block_;
-  VariableProxy* result_;
-};
-
 
 class Declaration : public AstNode {
  public:
@@ -510,31 +429,12 @@ class IterationStatement : public BreakableStatement {
   Statement* body() const { return body_; }
   void set_body(Statement* s) { body_ = s; }
 
-  ZonePtrList<const AstRawString>* labels() const { return labels_; }
-
-  // A list of all labels that the iteration statement is directly prefixed
-  // with, i.e.  all the labels that a continue statement in the body can use to
-  // continue this iteration statement. This is always a subset of {labels}.
-  //
-  // Example: "l1: { l2: if (b) l3: l4: for (;;) s }"
-  // labels() of the Block will be l1.
-  // labels() of the ForStatement will be l2, l3, l4.
-  // own_labels() of the ForStatement will be l3, l4.
-  ZonePtrList<const AstRawString>* own_labels() const { return own_labels_; }
-
  protected:
-  IterationStatement(ZonePtrList<const AstRawString>* labels,
-                     ZonePtrList<const AstRawString>* own_labels, int pos,
-                     NodeType type)
-      : BreakableStatement(TARGET_FOR_ANONYMOUS, pos, type),
-        labels_(labels),
-        own_labels_(own_labels),
-        body_(nullptr) {}
+  IterationStatement(int pos, NodeType type)
+      : BreakableStatement(pos, type), body_(nullptr) {}
   void Initialize(Statement* body) { body_ = body; }
 
  private:
-  ZonePtrList<const AstRawString>* labels_;
-  ZonePtrList<const AstRawString>* own_labels_;
   Statement* body_;
 };
 
@@ -551,10 +451,8 @@ class DoWhileStatement final : public IterationStatement {
  private:
   friend class AstNodeFactory;
 
-  DoWhileStatement(ZonePtrList<const AstRawString>* labels,
-                   ZonePtrList<const AstRawString>* own_labels, int pos)
-      : IterationStatement(labels, own_labels, pos, kDoWhileStatement),
-        cond_(nullptr) {}
+  explicit DoWhileStatement(int pos)
+      : IterationStatement(pos, kDoWhileStatement), cond_(nullptr) {}
 
   Expression* cond_;
 };
@@ -572,10 +470,8 @@ class WhileStatement final : public IterationStatement {
  private:
   friend class AstNodeFactory;
 
-  WhileStatement(ZonePtrList<const AstRawString>* labels,
-                 ZonePtrList<const AstRawString>* own_labels, int pos)
-      : IterationStatement(labels, own_labels, pos, kWhileStatement),
-        cond_(nullptr) {}
+  explicit WhileStatement(int pos)
+      : IterationStatement(pos, kWhileStatement), cond_(nullptr) {}
 
   Expression* cond_;
 };
@@ -598,9 +494,8 @@ class ForStatement final : public IterationStatement {
  private:
   friend class AstNodeFactory;
 
-  ForStatement(ZonePtrList<const AstRawString>* labels,
-               ZonePtrList<const AstRawString>* own_labels, int pos)
-      : IterationStatement(labels, own_labels, pos, kForStatement),
+  explicit ForStatement(int pos)
+      : IterationStatement(pos, kForStatement),
         init_(nullptr),
         cond_(nullptr),
         next_(nullptr) {}
@@ -636,12 +531,8 @@ class ForEachStatement : public IterationStatement {
  protected:
   friend class AstNodeFactory;
 
-  ForEachStatement(ZonePtrList<const AstRawString>* labels,
-                   ZonePtrList<const AstRawString>* own_labels, int pos,
-                   NodeType type)
-      : IterationStatement(labels, own_labels, pos, type),
-        each_(nullptr),
-        subject_(nullptr) {}
+  ForEachStatement(int pos, NodeType type)
+      : IterationStatement(pos, type), each_(nullptr), subject_(nullptr) {}
 
   Expression* each_;
   Expression* subject_;
@@ -651,9 +542,7 @@ class ForInStatement final : public ForEachStatement {
  private:
   friend class AstNodeFactory;
 
-  ForInStatement(ZonePtrList<const AstRawString>* labels,
-                 ZonePtrList<const AstRawString>* own_labels, int pos)
-      : ForEachStatement(labels, own_labels, pos, kForInStatement) {}
+  explicit ForInStatement(int pos) : ForEachStatement(pos, kForInStatement) {}
 };
 
 enum class IteratorType { kNormal, kAsync };
@@ -664,11 +553,8 @@ class ForOfStatement final : public ForEachStatement {
  private:
   friend class AstNodeFactory;
 
-  ForOfStatement(ZonePtrList<const AstRawString>* labels,
-                 ZonePtrList<const AstRawString>* own_labels, int pos,
-                 IteratorType type)
-      : ForEachStatement(labels, own_labels, pos, kForOfStatement),
-        type_(type) {}
+  ForOfStatement(int pos, IteratorType type)
+      : ForEachStatement(pos, kForOfStatement), type_(type) {}
 
   IteratorType type_;
 };
@@ -796,8 +682,6 @@ class CaseClause final : public ZoneObject {
 
 class SwitchStatement final : public BreakableStatement {
  public:
-  ZonePtrList<const AstRawString>* labels() const { return labels_; }
-
   Expression* tag() const { return tag_; }
   void set_tag(Expression* t) { tag_ = t; }
 
@@ -806,14 +690,9 @@ class SwitchStatement final : public BreakableStatement {
  private:
   friend class AstNodeFactory;
 
-  SwitchStatement(Zone* zone, ZonePtrList<const AstRawString>* labels,
-                  Expression* tag, int pos)
-      : BreakableStatement(TARGET_FOR_ANONYMOUS, pos, kSwitchStatement),
-        labels_(labels),
-        tag_(tag),
-        cases_(4, zone) {}
+  SwitchStatement(Zone* zone, Expression* tag, int pos)
+      : BreakableStatement(pos, kSwitchStatement), tag_(tag), cases_(4, zone) {}
 
-  ZonePtrList<const AstRawString>* labels_;
   Expression* tag_;
   ZonePtrList<CaseClause> cases_;
 };
@@ -914,8 +793,17 @@ class TryCatchStatement final : public TryStatement {
   // (When the catch block doesn't rethrow but is guaranteed to perform an
   // ordinary throw, not clearing the old message is safe but not very
   // useful.)
+  //
+  // For scripts in repl mode there is exactly one catch block with
+  // UNCAUGHT_ASYNC_AWAIT prediction. This catch block needs to preserve
+  // the exception so it can be re-used later by the inspector.
   inline bool ShouldClearPendingException(
       HandlerTable::CatchPrediction outer_catch_prediction) const {
+    if (catch_prediction_ == HandlerTable::UNCAUGHT_ASYNC_AWAIT) {
+      DCHECK_EQ(outer_catch_prediction, HandlerTable::UNCAUGHT);
+      return false;
+    }
+
     return catch_prediction_ != HandlerTable::UNCAUGHT ||
            outer_catch_prediction != HandlerTable::UNCAUGHT;
   }
@@ -1079,7 +967,8 @@ class Literal final : public Expression {
 
   // Returns an appropriate Object representing this Literal, allocating
   // a heap object if needed.
-  Handle<Object> BuildValue(Isolate* isolate) const;
+  template <typename LocalIsolate>
+  Handle<Object> BuildValue(LocalIsolate* isolate) const;
 
   // Support for using Literal as a HashMap key. NOTE: Currently, this works
   // only for string and number literals!
@@ -1155,14 +1044,17 @@ class MaterializedLiteral : public Expression {
   bool NeedsInitialAllocationSite();
 
   // Populate the constant properties/elements fixed array.
-  void BuildConstants(Isolate* isolate);
+  template <typename LocalIsolate>
+  void BuildConstants(LocalIsolate* isolate);
 
   // If the expression is a literal, return the literal value;
   // if the expression is a materialized literal and is_simple
   // then return an Array or Object Boilerplate Description
   // Otherwise, return undefined literal as the placeholder
   // in the object literal boilerplate.
-  Handle<Object> GetBoilerplateValue(Expression* expression, Isolate* isolate);
+  template <typename LocalIsolate>
+  Handle<Object> GetBoilerplateValue(Expression* expression,
+                                     LocalIsolate* isolate);
 };
 
 // Node for capturing a regexp literal.
@@ -1218,22 +1110,35 @@ class AggregateLiteral : public MaterializedLiteral {
   // constants and simple object and array literals.
   bool is_simple() const { return IsSimpleField::decode(bit_field_); }
 
+  ElementsKind boilerplate_descriptor_kind() const {
+    return BoilerplateDescriptorKindField::decode(bit_field_);
+  }
+
  private:
   int depth_ : 31;
   using NeedsInitialAllocationSiteField =
       MaterializedLiteral::NextBitField<bool, 1>;
   using IsSimpleField = NeedsInitialAllocationSiteField::Next<bool, 1>;
+  using BoilerplateDescriptorKindField =
+      IsSimpleField::Next<ElementsKind, kFastElementsKindBits>;
 
  protected:
   friend class AstNodeFactory;
   AggregateLiteral(int pos, NodeType type)
       : MaterializedLiteral(pos, type), depth_(0) {
-    bit_field_ |= NeedsInitialAllocationSiteField::encode(false) |
-                  IsSimpleField::encode(false);
+    bit_field_ |=
+        NeedsInitialAllocationSiteField::encode(false) |
+        IsSimpleField::encode(false) |
+        BoilerplateDescriptorKindField::encode(FIRST_FAST_ELEMENTS_KIND);
   }
 
   void set_is_simple(bool is_simple) {
     bit_field_ = IsSimpleField::update(bit_field_, is_simple);
+  }
+
+  void set_boilerplate_descriptor_kind(ElementsKind kind) {
+    DCHECK(IsFastElementsKind(kind));
+    bit_field_ = BoilerplateDescriptorKindField::update(bit_field_, kind);
   }
 
   void set_depth(int depth) {
@@ -1246,7 +1151,7 @@ class AggregateLiteral : public MaterializedLiteral {
   }
 
   template <class T, int size>
-  using NextBitField = IsSimpleField::Next<T, size>;
+  using NextBitField = BoilerplateDescriptorKindField::Next<T, size>;
 };
 
 // Common supertype for ObjectLiteralProperty and ClassLiteralProperty
@@ -1307,7 +1212,6 @@ class ObjectLiteralProperty final : public LiteralProperty {
   bool emit_store_;
 };
 
-
 // An object literal has a boilerplate object that is used
 // for minimizing the work when constructing it at runtime.
 class ObjectLiteral final : public AggregateLiteral {
@@ -1343,8 +1247,9 @@ class ObjectLiteral final : public AggregateLiteral {
   int InitDepthAndFlags();
 
   // Get the boilerplate description, populating it if necessary.
+  template <typename LocalIsolate>
   Handle<ObjectBoilerplateDescription> GetOrBuildBoilerplateDescription(
-      Isolate* isolate) {
+      LocalIsolate* isolate) {
     if (boilerplate_description_.is_null()) {
       BuildBoilerplateDescription(isolate);
     }
@@ -1352,7 +1257,8 @@ class ObjectLiteral final : public AggregateLiteral {
   }
 
   // Populate the boilerplate description.
-  void BuildBoilerplateDescription(Isolate* isolate);
+  template <typename LocalIsolate>
+  void BuildBoilerplateDescription(LocalIsolate* isolate);
 
   // Mark all computed expressions that are bound to a key that
   // is shadowed by a later occurrence of the same key. For the
@@ -1438,16 +1344,18 @@ class ArrayLiteral final : public AggregateLiteral {
   int InitDepthAndFlags();
 
   // Get the boilerplate description, populating it if necessary.
+  template <typename LocalIsolate>
   Handle<ArrayBoilerplateDescription> GetOrBuildBoilerplateDescription(
-      Isolate* isolate) {
+      LocalIsolate* isolate) {
     if (boilerplate_description_.is_null()) {
       BuildBoilerplateDescription(isolate);
     }
-    return boilerplate_description();
+    return boilerplate_description_;
   }
 
   // Populate the boilerplate description.
-  void BuildBoilerplateDescription(Isolate* isolate);
+  template <typename LocalIsolate>
+  void BuildBoilerplateDescription(LocalIsolate* isolate);
 
   // Determines whether the {CreateShallowArrayLiteral} builtin can be used.
   bool IsFastCloningSupported() const;
@@ -1692,26 +1600,6 @@ class Property final : public Expression {
   Expression* key_;
 };
 
-// ResolvedProperty pairs a receiver field with a value field. It allows Call
-// to support arbitrary receivers while still taking advantage of TypeFeedback.
-class ResolvedProperty final : public Expression {
- public:
-  VariableProxy* object() const { return object_; }
-  VariableProxy* property() const { return property_; }
-
-  void set_object(VariableProxy* e) { object_ = e; }
-  void set_property(VariableProxy* e) { property_ = e; }
-
- private:
-  friend class AstNodeFactory;
-
-  ResolvedProperty(VariableProxy* obj, VariableProxy* property, int pos)
-      : Expression(pos, kResolvedProperty), object_(obj), property_(property) {}
-
-  VariableProxy* object_;
-  VariableProxy* property_;
-};
-
 class Call final : public Expression {
  public:
   Expression* expression() const { return expression_; }
@@ -1738,12 +1626,13 @@ class Call final : public Expression {
     WITH_CALL,
     NAMED_PROPERTY_CALL,
     KEYED_PROPERTY_CALL,
+    NAMED_OPTIONAL_CHAIN_PROPERTY_CALL,
+    KEYED_OPTIONAL_CHAIN_PROPERTY_CALL,
     NAMED_SUPER_PROPERTY_CALL,
     KEYED_SUPER_PROPERTY_CALL,
     PRIVATE_CALL,
     SUPER_CALL,
-    RESOLVED_PROPERTY_CALL,
-    OTHER_CALL
+    OTHER_CALL,
   };
 
   enum PossiblyEval {
@@ -2036,30 +1925,6 @@ class Spread final : public Expression {
   Expression* expression_;
 };
 
-// The StoreInArrayLiteral node corresponds to the StaInArrayLiteral bytecode.
-// It is used in the rewriting of destructuring assignments that contain an
-// array rest pattern.
-class StoreInArrayLiteral final : public Expression {
- public:
-  Expression* array() const { return array_; }
-  Expression* index() const { return index_; }
-  Expression* value() const { return value_; }
-
- private:
-  friend class AstNodeFactory;
-
-  StoreInArrayLiteral(Expression* array, Expression* index, Expression* value,
-                      int position)
-      : Expression(position, kStoreInArrayLiteral),
-        array_(array),
-        index_(index),
-        value_(value) {}
-
-  Expression* array_;
-  Expression* index_;
-  Expression* value_;
-};
-
 class Conditional final : public Expression {
  public:
   Expression* condition() const { return condition_; }
@@ -2215,10 +2080,10 @@ class FunctionLiteral final : public Expression {
 
   // Empty handle means that the function does not have a shared name (i.e.
   // the name will be set dynamically after creation of the function closure).
-  MaybeHandle<String> name() const {
-    return raw_name_ ? raw_name_->string() : MaybeHandle<String>();
+  template <typename LocalIsolate>
+  MaybeHandle<String> GetName(LocalIsolate* isolate) const {
+    return raw_name_ ? raw_name_->AllocateFlat(isolate) : MaybeHandle<String>();
   }
-  Handle<String> name(Isolate* isolate) const;
   bool has_shared_name() const { return raw_name_ != nullptr; }
   const AstConsString* raw_name() const { return raw_name_; }
   void set_raw_name(const AstConsString* name) { raw_name_ = name; }
@@ -2275,21 +2140,26 @@ class FunctionLiteral final : public Expression {
   // Returns either name or inferred name as a cstring.
   std::unique_ptr<char[]> GetDebugName() const;
 
-  Handle<String> inferred_name() const {
+  Handle<String> GetInferredName(Isolate* isolate) {
     if (!inferred_name_.is_null()) {
       DCHECK_NULL(raw_inferred_name_);
       return inferred_name_;
     }
     if (raw_inferred_name_ != nullptr) {
-      return raw_inferred_name_->string();
+      return raw_inferred_name_->GetString(isolate);
     }
     UNREACHABLE();
+  }
+  Handle<String> GetInferredName(OffThreadIsolate* isolate) const {
+    DCHECK(inferred_name_.is_null());
+    DCHECK_NOT_NULL(raw_inferred_name_);
+    return raw_inferred_name_->GetString(isolate);
   }
   const AstConsString* raw_inferred_name() { return raw_inferred_name_; }
 
   // Only one of {set_inferred_name, set_raw_inferred_name} should be called.
   void set_inferred_name(Handle<String> inferred_name);
-  void set_raw_inferred_name(const AstConsString* raw_inferred_name);
+  void set_raw_inferred_name(AstConsString* raw_inferred_name);
 
   bool pretenure() const { return Pretenure::decode(bit_field_); }
   void set_pretenure() { bit_field_ = Pretenure::update(bit_field_, true); }
@@ -2348,7 +2218,12 @@ class FunctionLiteral final : public Expression {
     return RequiresInstanceMembersInitializer::decode(bit_field_);
   }
 
-  bool requires_brand_initialization() const;
+  void set_class_scope_has_private_brand(bool value) {
+    bit_field_ = ClassScopeHasPrivateBrandField::update(bit_field_, value);
+  }
+  bool class_scope_has_private_brand() const {
+    return ClassScopeHasPrivateBrandField::decode(bit_field_);
+  }
 
   bool private_name_lookup_skips_outer_class() const;
 
@@ -2400,7 +2275,9 @@ class FunctionLiteral final : public Expression {
       HasDuplicateParameters::Next<BailoutReason, 8>;
   using RequiresInstanceMembersInitializer =
       DontOptimizeReasonField::Next<bool, 1>;
-  using HasBracesField = RequiresInstanceMembersInitializer::Next<bool, 1>;
+  using ClassScopeHasPrivateBrandField =
+      RequiresInstanceMembersInitializer::Next<bool, 1>;
+  using HasBracesField = ClassScopeHasPrivateBrandField::Next<bool, 1>;
   using OneshotIIFEBit = HasBracesField::Next<bool, 1>;
 
   // expected_property_count_ is the sum of instance fields and properties.
@@ -2415,7 +2292,7 @@ class FunctionLiteral final : public Expression {
   const AstConsString* raw_name_;
   DeclarationScope* scope_;
   ZonePtrList<Statement> body_;
-  const AstConsString* raw_inferred_name_;
+  AstConsString* raw_inferred_name_;
   Handle<String> inferred_name_;
   ProducedPreparseData* produced_preparse_data_;
 };
@@ -2660,7 +2537,9 @@ class GetTemplateObject final : public Expression {
     return raw_strings_;
   }
 
-  Handle<TemplateObjectDescription> GetOrBuildDescription(Isolate* isolate);
+  template <typename LocalIsolate>
+  Handle<TemplateObjectDescription> GetOrBuildDescription(
+      LocalIsolate* isolate);
 
  private:
   friend class AstNodeFactory;
@@ -2822,59 +2701,46 @@ class AstNodeFactory final {
   }
 
   Block* NewBlock(int capacity, bool ignore_completion_value) {
-    return new (zone_) Block(zone_, nullptr, capacity, ignore_completion_value);
+    return new (zone_) Block(zone_, capacity, ignore_completion_value, false);
   }
 
-  Block* NewBlock(bool ignore_completion_value,
-                  ZonePtrList<const AstRawString>* labels) {
-    return labels != nullptr
-               ? new (zone_) LabeledBlock(labels, ignore_completion_value)
-               : new (zone_) Block(labels, ignore_completion_value);
+  Block* NewBlock(bool ignore_completion_value, bool is_breakable) {
+    return new (zone_) Block(ignore_completion_value, is_breakable);
   }
 
   Block* NewBlock(bool ignore_completion_value,
                   const ScopedPtrList<Statement>& statements) {
-    Block* result = NewBlock(ignore_completion_value, nullptr);
+    Block* result = NewBlock(ignore_completion_value, false);
     result->InitializeStatements(statements, zone_);
     return result;
   }
 
-#define STATEMENT_WITH_LABELS(NodeType)                                \
-  NodeType* New##NodeType(ZonePtrList<const AstRawString>* labels,     \
-                          ZonePtrList<const AstRawString>* own_labels, \
-                          int pos) {                                   \
-    return new (zone_) NodeType(labels, own_labels, pos);              \
-  }
-  STATEMENT_WITH_LABELS(DoWhileStatement)
-  STATEMENT_WITH_LABELS(WhileStatement)
-  STATEMENT_WITH_LABELS(ForStatement)
-#undef STATEMENT_WITH_LABELS
+#define STATEMENT_WITH_POSITION(NodeType) \
+  NodeType* New##NodeType(int pos) { return new (zone_) NodeType(pos); }
+  STATEMENT_WITH_POSITION(DoWhileStatement)
+  STATEMENT_WITH_POSITION(WhileStatement)
+  STATEMENT_WITH_POSITION(ForStatement)
+#undef STATEMENT_WITH_POSITION
 
-  SwitchStatement* NewSwitchStatement(ZonePtrList<const AstRawString>* labels,
-                                      Expression* tag, int pos) {
-    return new (zone_) SwitchStatement(zone_, labels, tag, pos);
+  SwitchStatement* NewSwitchStatement(Expression* tag, int pos) {
+    return new (zone_) SwitchStatement(zone_, tag, pos);
   }
 
-  ForEachStatement* NewForEachStatement(
-      ForEachStatement::VisitMode visit_mode,
-      ZonePtrList<const AstRawString>* labels,
-      ZonePtrList<const AstRawString>* own_labels, int pos) {
+  ForEachStatement* NewForEachStatement(ForEachStatement::VisitMode visit_mode,
+                                        int pos) {
     switch (visit_mode) {
       case ForEachStatement::ENUMERATE: {
-        return new (zone_) ForInStatement(labels, own_labels, pos);
+        return new (zone_) ForInStatement(pos);
       }
       case ForEachStatement::ITERATE: {
-        return new (zone_)
-            ForOfStatement(labels, own_labels, pos, IteratorType::kNormal);
+        return new (zone_) ForOfStatement(pos, IteratorType::kNormal);
       }
     }
     UNREACHABLE();
   }
 
-  ForOfStatement* NewForOfStatement(ZonePtrList<const AstRawString>* labels,
-                                    ZonePtrList<const AstRawString>* own_labels,
-                                    int pos, IteratorType type) {
-    return new (zone_) ForOfStatement(labels, own_labels, pos, type);
+  ForOfStatement* NewForOfStatement(int pos, IteratorType type) {
+    return new (zone_) ForOfStatement(pos, type);
   }
 
   ExpressionStatement* NewExpressionStatement(Expression* expression, int pos) {
@@ -2948,6 +2814,14 @@ class AstNodeFactory final {
                                                        int pos) {
     return new (zone_) TryCatchStatement(try_block, scope, catch_block,
                                          HandlerTable::ASYNC_AWAIT, pos);
+  }
+
+  TryCatchStatement* NewTryCatchStatementForReplAsyncAwait(Block* try_block,
+                                                           Scope* scope,
+                                                           Block* catch_block,
+                                                           int pos) {
+    return new (zone_) TryCatchStatement(
+        try_block, scope, catch_block, HandlerTable::UNCAUGHT_ASYNC_AWAIT, pos);
   }
 
   TryFinallyStatement* NewTryFinallyStatement(Block* try_block,
@@ -3091,12 +2965,6 @@ class AstNodeFactory final {
     return new (zone_) Property(obj, key, pos, optional_chain);
   }
 
-  ResolvedProperty* NewResolvedProperty(VariableProxy* obj,
-                                        VariableProxy* property,
-                                        int pos = kNoSourcePosition) {
-    return new (zone_) ResolvedProperty(obj, property, pos);
-  }
-
   Call* NewCall(Expression* expression,
                 const ScopedPtrList<Expression>& arguments, int pos,
                 Call::PossiblyEval possibly_eval = Call::NOT_EVAL,
@@ -3169,12 +3037,6 @@ class AstNodeFactory final {
 
   Spread* NewSpread(Expression* expression, int pos, int expr_pos) {
     return new (zone_) Spread(expression, pos, expr_pos);
-  }
-
-  StoreInArrayLiteral* NewStoreInArrayLiteral(Expression* array,
-                                              Expression* index,
-                                              Expression* value, int pos) {
-    return new (zone_) StoreInArrayLiteral(array, index, value, pos);
   }
 
   Conditional* NewConditional(Expression* condition,
@@ -3285,11 +3147,6 @@ class AstNodeFactory final {
                                                   v8::Extension* extension,
                                                   int pos) {
     return new (zone_) NativeFunctionLiteral(name, extension, pos);
-  }
-
-  DoExpression* NewDoExpression(Block* block, Variable* result_var, int pos) {
-    VariableProxy* result = NewVariableProxy(result_var, pos);
-    return new (zone_) DoExpression(block, result, pos);
   }
 
   SuperPropertyReference* NewSuperPropertyReference(Expression* home_object,

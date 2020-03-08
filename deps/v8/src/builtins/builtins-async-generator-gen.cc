@@ -148,7 +148,7 @@ void AsyncGeneratorBuiltinsAssembler::AsyncGeneratorEnqueue(
   // presently executing, then this method will loop through, processing each
   // request from front to back.
   // This loop resides in AsyncGeneratorResumeNext.
-  TNode<JSPromise> promise = AllocateAndInitJSPromise(context);
+  TNode<JSPromise> promise = NewJSPromise(context);
 
   Label if_receiverisincompatible(this, Label::kDeferred);
   GotoIf(TaggedIsSmi(receiver), &if_receiverisincompatible);
@@ -311,8 +311,8 @@ AsyncGeneratorBuiltinsAssembler::TakeFirstAsyncGeneratorRequestFromQueue(
 TF_BUILTIN(AsyncGeneratorPrototypeNext, AsyncGeneratorBuiltinsAssembler) {
   const int kValueArg = 0;
 
-  TNode<IntPtrT> argc =
-      ChangeInt32ToIntPtr(Parameter(Descriptor::kJSActualArgumentsCount));
+  TNode<IntPtrT> argc = ChangeInt32ToIntPtr(
+      UncheckedCast<Int32T>(Parameter(Descriptor::kJSActualArgumentsCount)));
   CodeStubArguments args(this, argc);
 
   TNode<Object> generator = args.GetReceiver();
@@ -329,8 +329,8 @@ TF_BUILTIN(AsyncGeneratorPrototypeNext, AsyncGeneratorBuiltinsAssembler) {
 TF_BUILTIN(AsyncGeneratorPrototypeReturn, AsyncGeneratorBuiltinsAssembler) {
   const int kValueArg = 0;
 
-  TNode<IntPtrT> argc =
-      ChangeInt32ToIntPtr(Parameter(Descriptor::kJSActualArgumentsCount));
+  TNode<IntPtrT> argc = ChangeInt32ToIntPtr(
+      UncheckedCast<Int32T>(Parameter(Descriptor::kJSActualArgumentsCount)));
   CodeStubArguments args(this, argc);
 
   TNode<Object> generator = args.GetReceiver();
@@ -347,8 +347,8 @@ TF_BUILTIN(AsyncGeneratorPrototypeReturn, AsyncGeneratorBuiltinsAssembler) {
 TF_BUILTIN(AsyncGeneratorPrototypeThrow, AsyncGeneratorBuiltinsAssembler) {
   const int kValueArg = 0;
 
-  TNode<IntPtrT> argc =
-      ChangeInt32ToIntPtr(Parameter(Descriptor::kJSActualArgumentsCount));
+  TNode<IntPtrT> argc = ChangeInt32ToIntPtr(
+      UncheckedCast<Int32T>(Parameter(Descriptor::kJSActualArgumentsCount)));
   CodeStubArguments args(this, argc);
 
   TNode<Object> generator = args.GetReceiver();
@@ -498,8 +498,8 @@ TF_BUILTIN(AsyncGeneratorResolve, AsyncGeneratorBuiltinsAssembler) {
   // Let iteratorResult be CreateIterResultObject(value, done).
   const TNode<HeapObject> iter_result = Allocate(JSIteratorResult::kSize);
   {
-    TNode<Object> map = LoadContextElement(LoadNativeContext(context),
-                                           Context::ITERATOR_RESULT_MAP_INDEX);
+    TNode<Map> map = CAST(LoadContextElement(
+        LoadNativeContext(context), Context::ITERATOR_RESULT_MAP_INDEX));
     StoreMapNoWriteBarrier(iter_result, map);
     StoreObjectFieldRoot(iter_result, JSIteratorResult::kPropertiesOrHashOffset,
                          RootIndex::kEmptyFixedArray);

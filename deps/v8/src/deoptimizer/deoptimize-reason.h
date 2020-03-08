@@ -43,9 +43,11 @@ namespace internal {
   V(NotAJavaScriptObjectOrNullOrUndefined,                                     \
     "not a JavaScript object, Null or Undefined")                              \
   V(NotANumberOrOddball, "not a Number or Oddball")                            \
+  V(NotAnArrayIndex, "not an array index")                                     \
   V(NotASmi, "not a Smi")                                                      \
   V(NotAString, "not a String")                                                \
   V(NotASymbol, "not a Symbol")                                                \
+  V(NotInt32, "not int32")                                                     \
   V(OutOfBounds, "out of bounds")                                              \
   V(Overflow, "overflow")                                                      \
   V(Smi, "Smi")                                                                \
@@ -53,6 +55,7 @@ namespace internal {
   V(ValueMismatch, "value mismatch")                                           \
   V(WrongCallTarget, "wrong call target")                                      \
   V(WrongEnumIndices, "wrong enum indices")                                    \
+  V(WrongFeedbackCell, "wrong feedback cell")                                  \
   V(WrongInstanceType, "wrong instance type")                                  \
   V(WrongMap, "wrong map")                                                     \
   V(WrongName, "wrong name")                                                   \

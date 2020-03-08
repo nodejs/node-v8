@@ -957,6 +957,32 @@ void Int64Lowering::LowerNode(Node* node) {
       }
       break;
     }
+    case IrOpcode::kI64x2Splat: {
+      DCHECK_EQ(1, node->InputCount());
+      Node* input = node->InputAt(0);
+      node->ReplaceInput(0, GetReplacementLow(input));
+      node->AppendInput(zone(), GetReplacementHigh(input));
+      NodeProperties::ChangeOp(node, machine()->I64x2SplatI32Pair());
+      break;
+    }
+    case IrOpcode::kI64x2ExtractLane: {
+      DCHECK_EQ(1, node->InputCount());
+      Node* input = node->InputAt(0);
+      int32_t lane = OpParameter<int32_t>(node->op());
+      ReplaceNode(
+          node, graph()->NewNode(machine()->I32x4ExtractLane(lane * 2), input),
+          graph()->NewNode(machine()->I32x4ExtractLane(lane * 2 + 1), input));
+      break;
+    }
+    case IrOpcode::kI64x2ReplaceLane: {
+      DCHECK_EQ(2, node->InputCount());
+      int32_t lane = OpParameter<int32_t>(node->op());
+      Node* input = node->InputAt(1);
+      node->ReplaceInput(1, GetReplacementLow(input));
+      node->AppendInput(zone(), GetReplacementHigh(input));
+      NodeProperties::ChangeOp(node, machine()->I64x2ReplaceLaneI32Pair(lane));
+      break;
+    }
 
     default: { DefaultLowering(node); }
   }
@@ -997,14 +1023,12 @@ bool Int64Lowering::DefaultLowering(Node* node, bool low_word_only) {
   return something_changed;
 }
 
-CallDescriptor* Int64Lowering::LowerCallDescriptor(
+const CallDescriptor* Int64Lowering::LowerCallDescriptor(
     const CallDescriptor* call_descriptor) {
   if (special_case_) {
-    if (call_descriptor == special_case_->bigint_to_i64_call_descriptor) {
-      return special_case_->bigint_to_i32_pair_call_descriptor;
-    }
-    if (call_descriptor == special_case_->i64_to_bigint_call_descriptor) {
-      return special_case_->i32_pair_to_bigint_call_descriptor;
+    auto replacement = special_case_->replacements.find(call_descriptor);
+    if (replacement != special_case_->replacements.end()) {
+      return replacement->second;
     }
   }
   return GetI32WasmCallDescriptor(zone(), call_descriptor);

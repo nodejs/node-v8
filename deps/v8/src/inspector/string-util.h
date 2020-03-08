@@ -21,23 +21,12 @@ namespace protocol {
 class Value;
 
 using String = v8_inspector::String16;
-using StringBuilder = v8_inspector::String16Builder;
-struct ProtocolMessage {
-  String json;
-  std::vector<uint8_t> binary;
-};
 
 class StringUtil {
  public:
   static String substring(const String& s, size_t pos, size_t len) {
     return s.substring(pos, len);
   }
-  static String fromInteger(int number) { return String::fromInteger(number); }
-  static String fromInteger(size_t number) {
-    return String::fromInteger(number);
-  }
-  static String fromDouble(double number) { return String::fromDouble(number); }
-  static double toDouble(const char* s, size_t len, bool* isOk);
   static size_t find(const String& s, const char* needle) {
     return s.find(needle);
   }
@@ -45,46 +34,13 @@ class StringUtil {
     return s.find(needle);
   }
   static const size_t kNotFound = String::kNotFound;
-  static void builderAppend(
-      StringBuilder& builder,  // NOLINT(runtime/references)
-      const String& s) {
-    builder.append(s);
-  }
-  static void builderAppend(
-      StringBuilder& builder,  // NOLINT(runtime/references)
-      UChar c) {
-    builder.append(c);
-  }
-  static void builderAppend(
-      StringBuilder& builder,  // NOLINT(runtime/references)
-      const char* s, size_t len) {
-    builder.append(s, len);
-  }
-  static void builderAppendQuotedString(StringBuilder&, const String&);
-  static void builderReserve(
-      StringBuilder& builder,  // NOLINT(runtime/references)
-      size_t capacity) {
-    builder.reserveCapacity(capacity);
-  }
-  static String builderToString(
-      StringBuilder& builder) {  // NOLINT(runtime/references)
-    return builder.toString();
-  }
-  static std::unique_ptr<protocol::Value> parseJSON(const String16& json);
-  static std::unique_ptr<protocol::Value> parseJSON(const StringView& json);
-  static ProtocolMessage jsonToMessage(String message);
-  static ProtocolMessage binaryToMessage(std::vector<uint8_t> message);
 
   static String fromUTF8(const uint8_t* data, size_t length) {
     return String16::fromUTF8(reinterpret_cast<const char*>(data), length);
   }
 
-  static String fromUTF16(const uint16_t* data, size_t length) {
-    return String16(data, length);
-  }
-
   static String fromUTF16LE(const uint16_t* data, size_t length) {
-    return String16::fromUTF16LE(data, length);
+    return String16::fromUTF16(data, length);
   }
 
   static const uint8_t* CharactersLatin1(const String& s) { return nullptr; }
@@ -132,32 +88,13 @@ String16 toString16(const StringView&);
 StringView toStringView(const String16&);
 bool stringViewStartsWith(const StringView&, const char*);
 
-class StringBufferImpl : public StringBuffer {
- public:
-  // Destroys string's content.
-  static std::unique_ptr<StringBufferImpl> adopt(String16&);
-  const StringView& string() override { return m_string; }
+// Creates a string buffer instance which owns |str|, a 16 bit string.
+std::unique_ptr<StringBuffer> StringBufferFrom(String16 str);
 
- private:
-  explicit StringBufferImpl(String16&);
-  String16 m_owner;
-  StringView m_string;
-
-  DISALLOW_COPY_AND_ASSIGN(StringBufferImpl);
-};
-
-class BinaryStringBuffer : public StringBuffer {
- public:
-  explicit BinaryStringBuffer(std::vector<uint8_t> data)
-      : m_data(std::move(data)), m_string(m_data.data(), m_data.size()) {}
-  const StringView& string() override { return m_string; }
-
- private:
-  std::vector<uint8_t> m_data;
-  StringView m_string;
-
-  DISALLOW_COPY_AND_ASSIGN(BinaryStringBuffer);
-};
+// Creates a string buffer instance which owns |str|, an 8 bit string.
+// 8 bit strings are used for LATIN1 text (which subsumes 7 bit ASCII, e.g.
+// our generated JSON), as well as for CBOR encoded binary messages.
+std::unique_ptr<StringBuffer> StringBufferFrom(std::vector<uint8_t> str);
 
 String16 stackTraceIdToString(uintptr_t id);
 

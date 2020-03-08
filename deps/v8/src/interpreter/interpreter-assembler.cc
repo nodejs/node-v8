@@ -157,8 +157,7 @@ TNode<Object> InterpreterAssembler::GetAccumulator() {
   return TaggedPoisonOnSpeculation(GetAccumulatorUnchecked());
 }
 
-// TODO(v8:6949): Remove sloppy-ness from SetAccumulator's value argument.
-void InterpreterAssembler::SetAccumulator(SloppyTNode<Object> value) {
+void InterpreterAssembler::SetAccumulator(TNode<Object> value) {
   DCHECK(Bytecodes::WritesAccumulator(bytecode_));
   accumulator_use_ = accumulator_use_ | AccumulatorUse::kWrite;
   accumulator_ = value;
@@ -211,15 +210,15 @@ void InterpreterAssembler::GotoIfHasContextExtensionUpToDepth(
   Goto(&context_search);
   BIND(&context_search);
   {
-    // Check if context has an extension slot
+    // Check if context has an extension slot.
     TNode<BoolT> has_extension =
-        LoadContextHasExtensionField(cur_context.value());
+        LoadScopeInfoHasExtensionField(LoadScopeInfo(cur_context.value()));
     GotoIfNot(has_extension, &no_extension);
 
-    // Jump to the target if the extension slot is not a hole.
+    // Jump to the target if the extension slot is not an undefined value.
     TNode<Object> extension_slot =
         LoadContextElement(cur_context.value(), Context::EXTENSION_INDEX);
-    Branch(TaggedNotEqual(extension_slot, TheHoleConstant()), target,
+    Branch(TaggedNotEqual(extension_slot, UndefinedConstant()), target,
            &no_extension);
 
     BIND(&no_extension);
@@ -266,8 +265,7 @@ TNode<IntPtrT> InterpreterAssembler::LoadAndUntagRegister(Register reg) {
 #if V8_TARGET_LITTLE_ENDIAN
     index += 4;
 #endif
-    return ChangeInt32ToIntPtr(
-        Load(MachineType::Int32(), base, IntPtrConstant(index)));
+    return ChangeInt32ToIntPtr(Load<Int32T>(base, IntPtrConstant(index)));
   } else {
     return SmiToIntPtr(
         Load(MachineType::TaggedSigned(), base, IntPtrConstant(index)));
@@ -626,6 +624,13 @@ TNode<Smi> InterpreterAssembler::BytecodeOperandIdxSmi(int operand_index) {
   return SmiTag(Signed(BytecodeOperandIdx(operand_index)));
 }
 
+TNode<TaggedIndex> InterpreterAssembler::BytecodeOperandIdxTaggedIndex(
+    int operand_index) {
+  TNode<IntPtrT> index =
+      ChangeInt32ToIntPtr(Signed(BytecodeOperandIdxInt32(operand_index)));
+  return IntPtrToTaggedIndex(index);
+}
+
 TNode<UintPtrT> InterpreterAssembler::BytecodeOperandConstantPoolIdx(
     int operand_index, LoadSensitivity needs_poisoning) {
   DCHECK_EQ(OperandType::kIdx,
@@ -767,9 +772,15 @@ void InterpreterAssembler::CallJSAndDispatch(TNode<Object> function,
 
   if (receiver_mode == ConvertReceiverMode::kNullOrUndefined) {
     // The first argument parameter (the receiver) is implied to be undefined.
+#ifdef V8_REVERSE_JSARGS
+    TailCallStubThenBytecodeDispatch(callable.descriptor(), code_target,
+                                     context, function, arg_count, args...,
+                                     UndefinedConstant());
+#else
     TailCallStubThenBytecodeDispatch(callable.descriptor(), code_target,
                                      context, function, arg_count,
                                      UndefinedConstant(), args...);
+#endif
   } else {
     TailCallStubThenBytecodeDispatch(callable.descriptor(), code_target,
                                      context, function, arg_count, args...);
@@ -1187,8 +1198,7 @@ void InterpreterAssembler::UpdateInterruptBudget(TNode<Int32T> weight,
 
   // Update budget.
   StoreObjectFieldNoWriteBarrier(
-      feedback_cell, FeedbackCell::kInterruptBudgetOffset, new_budget.value(),
-      MachineRepresentation::kWord32);
+      feedback_cell, FeedbackCell::kInterruptBudgetOffset, new_budget.value());
   Goto(&done);
   BIND(&done);
   Comment("] UpdateInterruptBudget");
@@ -1478,7 +1488,8 @@ bool InterpreterAssembler::TargetSupportsUnalignedAccess() {
 #if V8_TARGET_ARCH_MIPS || V8_TARGET_ARCH_MIPS64
   return false;
 #elif V8_TARGET_ARCH_IA32 || V8_TARGET_ARCH_X64 || V8_TARGET_ARCH_S390 || \
-    V8_TARGET_ARCH_ARM || V8_TARGET_ARCH_ARM64 || V8_TARGET_ARCH_PPC
+    V8_TARGET_ARCH_ARM || V8_TARGET_ARCH_ARM64 || V8_TARGET_ARCH_PPC ||   \
+    V8_TARGET_ARCH_PPC64
   return true;
 #else
 #error "Unknown Architecture"
@@ -1525,9 +1536,14 @@ TNode<FixedArray> InterpreterAssembler::ExportParametersAndRegisterFile(
     // Iterate over parameters and write them into the array.
     Label loop(this, &var_index), done_loop(this);
 
+#ifdef V8_REVERSE_JSARGS
+    TNode<IntPtrT> reg_base =
+        IntPtrConstant(Register::FromParameterIndex(0, 1).ToOperand() + 1);
+#else
     TNode<IntPtrT> reg_base = IntPtrAdd(
         IntPtrConstant(Register::FromParameterIndex(0, 1).ToOperand() - 1),
         formal_parameter_count_intptr);
+#endif
 
     Goto(&loop);
     BIND(&loop);
@@ -1536,7 +1552,11 @@ TNode<FixedArray> InterpreterAssembler::ExportParametersAndRegisterFile(
       GotoIfNot(UintPtrLessThan(index, formal_parameter_count_intptr),
                 &done_loop);
 
+#ifdef V8_REVERSE_JSARGS
+      TNode<IntPtrT> reg_index = IntPtrAdd(reg_base, index);
+#else
       TNode<IntPtrT> reg_index = IntPtrSub(reg_base, index);
+#endif
       TNode<Object> value = LoadRegister(reg_index);
 
       StoreFixedArrayElement(array, index, value);

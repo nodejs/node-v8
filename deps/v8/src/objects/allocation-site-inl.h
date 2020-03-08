@@ -59,9 +59,9 @@ bool AllocationSite::HasWeakNext() const {
 }
 
 void AllocationSite::Initialize() {
-  set_transition_info_or_boilerplate(Smi::kZero);
+  set_transition_info_or_boilerplate(Smi::zero());
   SetElementsKind(GetInitialFastElementsKind());
-  set_nested_site(Smi::kZero);
+  set_nested_site(Smi::zero());
   set_pretenure_data(0);
   set_pretenure_create_count(0);
   set_dependent_code(
@@ -225,7 +225,7 @@ bool AllocationSite::DigestTransitionFeedback(Handle<AllocationSite> site,
         }
         JSObject::TransitionElementsKind(boilerplate, to_kind);
         site->dependent_code().DeoptimizeDependentCodeGroup(
-            isolate, DependentCode::kAllocationSiteTransitionChangedGroup);
+            DependentCode::kAllocationSiteTransitionChangedGroup);
         result = true;
       }
     }
@@ -245,7 +245,7 @@ bool AllocationSite::DigestTransitionFeedback(Handle<AllocationSite> site,
       }
       site->SetElementsKind(to_kind);
       site->dependent_code().DeoptimizeDependentCodeGroup(
-          isolate, DependentCode::kAllocationSiteTransitionChangedGroup);
+          DependentCode::kAllocationSiteTransitionChangedGroup);
       result = true;
     }
   }

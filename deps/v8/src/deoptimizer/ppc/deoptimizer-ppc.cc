@@ -77,7 +77,7 @@ void Deoptimizer::GenerateDeoptimizationEntries(MacroAssembler* masm,
   Label context_check;
   __ LoadP(r4, MemOperand(fp, CommonFrameConstants::kContextOrFrameTypeOffset));
   __ JumpIfSmi(r4, &context_check);
-  __ LoadP(r3, MemOperand(fp, JavaScriptFrameConstants::kFunctionOffset));
+  __ LoadP(r3, MemOperand(fp, StandardFrameConstants::kFunctionOffset));
   __ bind(&context_check);
   __ li(r4, Operand(static_cast<int>(deopt_kind)));
   // r5: bailout id already loaded.
@@ -257,6 +257,8 @@ void FrameDescription::SetCallerConstantPool(unsigned offset, intptr_t value) {
   DCHECK(FLAG_enable_embedded_constant_pool);
   SetFrameSlot(offset, value);
 }
+
+void FrameDescription::SetPc(intptr_t pc) { pc_ = pc; }
 
 #undef __
 }  // namespace internal

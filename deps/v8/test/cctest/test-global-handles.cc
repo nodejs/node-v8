@@ -50,7 +50,7 @@ class NonRootingEmbedderHeapTracer final : public v8::EmbedderHeapTracer {
   bool AdvanceTracing(double deadline_in_ms) final { return true; }
   bool IsTracingDone() final { return true; }
   void TracePrologue(TraceFlags) final {}
-  void TraceEpilogue() final {}
+  void TraceEpilogue(TraceSummary*) final {}
   void EnterFinalPause(EmbedderStackState) final {}
 
   bool IsRootForNonTracingGC(const v8::TracedGlobal<v8::Value>& handle) final {
@@ -96,6 +96,15 @@ void ConstructJSObject(v8::Isolate* isolate, v8::Global<v8::Object>* global) {
   CHECK(!object.IsEmpty());
   *global = v8::Global<v8::Object>(isolate, object);
   CHECK(!global->IsEmpty());
+}
+
+void ConstructJSObject(v8::Isolate* isolate,
+                       v8::TracedGlobal<v8::Object>* traced) {
+  v8::HandleScope scope(isolate);
+  v8::Local<v8::Object> object(v8::Object::New(isolate));
+  CHECK(!object.IsEmpty());
+  *traced = v8::TracedGlobal<v8::Object>(isolate, object);
+  CHECK(!traced->IsEmpty());
 }
 
 template <typename HandleContainer>
@@ -665,6 +674,32 @@ TEST(MoveWeakGlobal) {
   v8::Global<v8::Object> global2(std::move(*global));
   delete global;
   InvokeMarkSweep();
+}
+
+TEST(TotalSizeRegularNode) {
+  CcTest::InitializeVM();
+  v8::Isolate* isolate = CcTest::isolate();
+  Isolate* i_isolate = CcTest::i_isolate();
+  v8::HandleScope scope(isolate);
+
+  v8::Global<v8::Object>* global = new Global<v8::Object>();
+  CHECK_EQ(i_isolate->global_handles()->TotalSize(), 0);
+  ConstructJSObject(isolate, global);
+  CHECK_GT(i_isolate->global_handles()->TotalSize(), 0);
+  delete global;
+}
+
+TEST(TotalSizeTracedNode) {
+  CcTest::InitializeVM();
+  v8::Isolate* isolate = CcTest::isolate();
+  Isolate* i_isolate = CcTest::i_isolate();
+  v8::HandleScope scope(isolate);
+
+  v8::TracedGlobal<v8::Object>* global = new TracedGlobal<v8::Object>();
+  CHECK_EQ(i_isolate->global_handles()->TotalSize(), 0);
+  ConstructJSObject(isolate, global);
+  CHECK_GT(i_isolate->global_handles()->TotalSize(), 0);
+  delete global;
 }
 
 }  // namespace internal

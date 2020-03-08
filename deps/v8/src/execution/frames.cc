@@ -455,7 +455,10 @@ void SafeStackFrameIterator::Advance() {
       last_callback_scope = external_callback_scope_;
       external_callback_scope_ = external_callback_scope_->previous();
     }
-    if (frame_->is_java_script() || frame_->is_wasm()) break;
+    if (frame_->is_java_script() || frame_->is_wasm() ||
+        frame_->is_wasm_to_js()) {
+      break;
+    }
     if (frame_->is_exit() || frame_->is_builtin_exit()) {
       // Some of the EXIT frames may have ExternalCallbackScope allocated on
       // top of them. In that case the scope corresponds to the first EXIT
@@ -488,15 +491,18 @@ Code StackFrame::LookupCode() const {
 
 void StackFrame::IteratePc(RootVisitor* v, Address* pc_address,
                            Address* constant_pool_address, Code holder) {
-  Address pc = *pc_address;
-  DCHECK(holder.GetHeap()->GcSafeCodeContains(holder, pc));
-  unsigned pc_offset = static_cast<unsigned>(pc - holder.InstructionStart());
+  Address old_pc = ReadPC(pc_address);
+  DCHECK(ReadOnlyHeap::Contains(holder) ||
+         holder.GetHeap()->GcSafeCodeContains(holder, old_pc));
+  unsigned pc_offset =
+      static_cast<unsigned>(old_pc - holder.InstructionStart());
   Object code = holder;
   v->VisitRootPointer(Root::kTop, nullptr, FullObjectSlot(&code));
   if (code == holder) return;
   holder = Code::unchecked_cast(code);
-  pc = holder.InstructionStart() + pc_offset;
-  *pc_address = pc;
+  Address pc = holder.InstructionStart() + pc_offset;
+  // TODO(v8:10026): avoid replacing a signed pointer.
+  PointerAuthentication::ReplacePC(pc_address, pc, kSystemPointerSize);
   if (FLAG_enable_embedded_constant_pool && constant_pool_address) {
     *constant_pool_address = holder.constant_pool();
   }
@@ -517,6 +523,7 @@ StackFrame::Type StackFrame::ComputeType(const StackFrameIteratorBase* iterator,
       kSystemPointerSize);
   intptr_t marker = Memory<intptr_t>(
       state->fp + CommonFrameConstants::kContextOrFrameTypeOffset);
+  Address pc = StackFrame::ReadPC(state->pc_address);
   if (!iterator->can_access_heap_objects_) {
     // TODO(titzer): "can_access_heap_objects" is kind of bogus. It really
     // means that we are being called from the profiler, which can interrupt
@@ -531,15 +538,13 @@ StackFrame::Type StackFrame::ComputeType(const StackFrameIteratorBase* iterator,
     if (!StackFrame::IsTypeMarker(marker)) {
       if (maybe_function.IsSmi()) {
         return NATIVE;
-      } else if (IsInterpreterFramePc(iterator->isolate(), *(state->pc_address),
-                                      state)) {
+      } else if (IsInterpreterFramePc(iterator->isolate(), pc, state)) {
         return INTERPRETED;
       } else {
         return OPTIMIZED;
       }
     }
   } else {
-    Address pc = *(state->pc_address);
     // If the {pc} does not point into WebAssembly code we can rely on the
     // returned {wasm_code} to be null and fall back to {GetContainingCode}.
     wasm::WasmCodeRefScope code_ref_scope;
@@ -617,6 +622,7 @@ StackFrame::Type StackFrame::ComputeType(const StackFrameIteratorBase* iterator,
     case WASM_COMPILED:
     case WASM_COMPILE_LAZY:
     case WASM_EXIT:
+    case WASM_DEBUG_BREAK:
       return candidate;
     case JS_TO_WASM:
     case OPTIMIZED:
@@ -963,6 +969,7 @@ void StandardFrame::IterateCompiledFrame(RootVisitor* v) const {
       case CONSTRUCT:
       case JS_TO_WASM:
       case C_WASM_ENTRY:
+      case WASM_DEBUG_BREAK:
         frame_header_size = TypedFrameConstants::kFixedFrameSizeFromFp;
         break;
       case WASM_TO_JS:
@@ -1316,7 +1323,7 @@ Object JavaScriptBuiltinContinuationFrame::context() const {
 void JavaScriptBuiltinContinuationWithCatchFrame::SetException(
     Object exception) {
   Address exception_argument_slot =
-      fp() + JavaScriptFrameConstants::kLastParameterOffset +
+      fp() + BuiltinContinuationFrameConstants::kFixedFrameSizeAboveFp +
       kSystemPointerSize;  // Skip over return value slot.
 
   // Only allow setting exception if previous value was the hole.
@@ -1413,11 +1420,9 @@ WASM_SUMMARY_DISPATCH(int, byte_offset)
 #undef WASM_SUMMARY_DISPATCH
 
 int FrameSummary::WasmFrameSummary::SourcePosition() const {
-  Handle<WasmModuleObject> module_object(wasm_instance()->module_object(),
-                                         isolate());
-  return WasmModuleObject::GetSourcePosition(module_object, function_index(),
-                                             byte_offset(),
-                                             at_to_number_conversion());
+  const wasm::WasmModule* module = wasm_instance()->module_object().module();
+  return GetSourcePosition(module, function_index(), byte_offset(),
+                           at_to_number_conversion());
 }
 
 Handle<Script> FrameSummary::WasmFrameSummary::script() const {
@@ -1665,6 +1670,7 @@ DeoptimizationData OptimizedFrame::GetDeoptimizationData(
   return DeoptimizationData();
 }
 
+#ifndef V8_REVERSE_JSARGS
 Object OptimizedFrame::receiver() const {
   Code code = LookupCode();
   if (code.kind() == Code::BUILTIN) {
@@ -1679,6 +1685,7 @@ Object OptimizedFrame::receiver() const {
     return JavaScriptFrame::receiver();
   }
 }
+#endif
 
 void OptimizedFrame::GetFunctions(
     std::vector<SharedFunctionInfo>* functions) const {
@@ -1777,7 +1784,7 @@ void InterpretedFrame::PatchBytecodeOffset(int new_offset) {
   DCHECK_EQ(InterpreterFrameConstants::kBytecodeOffsetFromFp,
             InterpreterFrameConstants::kExpressionsOffset -
                 index * kSystemPointerSize);
-  int raw_offset = new_offset + BytecodeArray::kHeaderSize - kHeapObjectTag;
+  int raw_offset = BytecodeArray::kHeaderSize - kHeapObjectTag + new_offset;
   SetExpression(index, Smi::FromInt(raw_offset));
 }
 
@@ -1899,6 +1906,10 @@ WasmInstanceObject WasmCompiledFrame::wasm_instance() const {
   return WasmInstanceObject::cast(instance);
 }
 
+wasm::NativeModule* WasmCompiledFrame::native_module() const {
+  return module_object().native_module();
+}
+
 WasmModuleObject WasmCompiledFrame::module_object() const {
   return wasm_instance().module_object();
 }
@@ -1911,6 +1922,10 @@ Script WasmCompiledFrame::script() const { return module_object().script(); }
 
 int WasmCompiledFrame::position() const {
   return FrameSummary::GetSingle(this).SourcePosition();
+}
+
+Object WasmCompiledFrame::context() const {
+  return wasm_instance().native_context();
 }
 
 void WasmCompiledFrame::Summarize(std::vector<FrameSummary>* functions) const {
@@ -1983,6 +1998,11 @@ void WasmInterpreterEntryFrame::Summarize(
 
 Code WasmInterpreterEntryFrame::unchecked_code() const { return Code(); }
 
+int WasmInterpreterEntryFrame::NumberOfActiveFrames() const {
+  Handle<WasmInstanceObject> instance(wasm_instance(), isolate());
+  return instance->debug_info().NumberOfActiveFrames(fp());
+}
+
 WasmInstanceObject WasmInterpreterEntryFrame::wasm_instance() const {
   const int offset = WasmCompiledFrameConstants::kWasmInstanceOffset;
   Object instance(Memory<Address>(fp() + offset));
@@ -2011,6 +2031,26 @@ Object WasmInterpreterEntryFrame::context() const {
 
 Address WasmInterpreterEntryFrame::GetCallerStackPointer() const {
   return fp() + ExitFrameConstants::kCallerSPOffset;
+}
+
+void WasmDebugBreakFrame::Iterate(RootVisitor* v) const {
+  // Nothing to iterate here. This will change once we support references in
+  // Liftoff.
+}
+
+Code WasmDebugBreakFrame::unchecked_code() const { return Code(); }
+
+void WasmDebugBreakFrame::Print(StringStream* accumulator, PrintMode mode,
+                                int index) const {
+  PrintIndex(accumulator, mode, index);
+  accumulator->Add("WASM DEBUG BREAK");
+  if (mode != OVERVIEW) accumulator->Add("\n");
+}
+
+Address WasmDebugBreakFrame::GetCallerStackPointer() const {
+  // WasmDebugBreak does not receive any arguments, hence the stack pointer of
+  // the caller is at a fixed offset from the frame pointer.
+  return fp() + StandardFrameConstants::kCallerSPOffset;
 }
 
 Code WasmCompileLazyFrame::unchecked_code() const { return Code(); }

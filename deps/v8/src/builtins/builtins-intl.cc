@@ -20,6 +20,7 @@
 #include "src/objects/js-break-iterator-inl.h"
 #include "src/objects/js-collator-inl.h"
 #include "src/objects/js-date-time-format-inl.h"
+#include "src/objects/js-display-names-inl.h"
 #include "src/objects/js-list-format-inl.h"
 #include "src/objects/js-locale-inl.h"
 #include "src/objects/js-number-format-inl.h"
@@ -264,13 +265,11 @@ Object LegacyFormatConstructor(BuiltinArguments args, Isolate* isolate,
 
   // [[Construct]]
   Handle<JSFunction> target = args.target();
-
   Handle<Object> locales = args.atOrUndefined(isolate, 1);
   Handle<Object> options = args.atOrUndefined(isolate, 2);
 
   // 2. Let format be ? OrdinaryCreateFromConstructor(newTarget,
   // "%<T>Prototype%", ...).
-
   Handle<Map> map;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
       isolate, map, JSFunction::GetDerivedMap(isolate, target, new_target));
@@ -280,45 +279,42 @@ Object LegacyFormatConstructor(BuiltinArguments args, Isolate* isolate,
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
       isolate, format, T::New(isolate, map, locales, options, method));
   // 4. Let this be the this value.
-  Handle<Object> receiver = args.receiver();
+  if (args.new_target()->IsUndefined(isolate)) {
+    Handle<Object> receiver = args.receiver();
 
-  // 5. If NewTarget is undefined and ? InstanceofOperator(this, %<T>%)
-  // is true, then
-  //
-  // Look up the intrinsic value that has been stored on the context.
-  // Call the instanceof function
-  Handle<Object> is_instance_of_obj;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, is_instance_of_obj,
-      Object::InstanceOf(isolate, receiver, constructor));
+    // 5. If NewTarget is undefined and ? InstanceofOperator(this, %<T>%)
+    // is true, then Look up the intrinsic value that has been stored on
+    // the context.
+    Handle<Object> is_instance_of_obj;
+    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+        isolate, is_instance_of_obj,
+        Object::InstanceOf(isolate, receiver, constructor));
 
-  // Get the boolean value of the result
-  bool is_instance_of = is_instance_of_obj->BooleanValue(isolate);
-
-  if (args.new_target()->IsUndefined(isolate) && is_instance_of) {
-    if (!receiver->IsJSReceiver()) {
-      THROW_NEW_ERROR_RETURN_FAILURE(
-          isolate,
-          NewTypeError(MessageTemplate::kIncompatibleMethodReceiver,
-                       isolate->factory()->NewStringFromAsciiChecked(method),
-                       receiver));
+    if (is_instance_of_obj->BooleanValue(isolate)) {
+      if (!receiver->IsJSReceiver()) {
+        THROW_NEW_ERROR_RETURN_FAILURE(
+            isolate,
+            NewTypeError(MessageTemplate::kIncompatibleMethodReceiver,
+                         isolate->factory()->NewStringFromAsciiChecked(method),
+                         receiver));
+      }
+      Handle<JSReceiver> rec = Handle<JSReceiver>::cast(receiver);
+      // a. Perform ? DefinePropertyOrThrow(this,
+      // %Intl%.[[FallbackSymbol]], PropertyDescriptor{ [[Value]]: format,
+      // [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: false }).
+      PropertyDescriptor desc;
+      desc.set_value(format);
+      desc.set_writable(false);
+      desc.set_enumerable(false);
+      desc.set_configurable(false);
+      Maybe<bool> success = JSReceiver::DefineOwnProperty(
+          isolate, rec, isolate->factory()->intl_fallback_symbol(), &desc,
+          Just(kThrowOnError));
+      MAYBE_RETURN(success, ReadOnlyRoots(isolate).exception());
+      CHECK(success.FromJust());
+      // b. b. Return this.
+      return *receiver;
     }
-    Handle<JSReceiver> rec = Handle<JSReceiver>::cast(receiver);
-    // a. Perform ? DefinePropertyOrThrow(this,
-    // %Intl%.[[FallbackSymbol]], PropertyDescriptor{ [[Value]]: format,
-    // [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: false }).
-    PropertyDescriptor desc;
-    desc.set_value(format);
-    desc.set_writable(false);
-    desc.set_enumerable(false);
-    desc.set_configurable(false);
-    Maybe<bool> success = JSReceiver::DefineOwnProperty(
-        isolate, rec, isolate->factory()->intl_fallback_symbol(), &desc,
-        Just(kThrowOnError));
-    MAYBE_RETURN(success, ReadOnlyRoots(isolate).exception());
-    CHECK(success.FromJust());
-    // b. b. Return this.
-    return *receiver;
   }
   // 6. Return format.
   return *format;
@@ -386,6 +382,45 @@ Object CallOrConstructConstructor(BuiltinArguments args, Isolate* isolate,
                            T::New(isolate, map, locales, options, method));
 }
 }  // namespace
+
+// Intl.DisplayNames
+
+BUILTIN(DisplayNamesConstructor) {
+  HandleScope scope(isolate);
+
+  return DisallowCallConstructor<JSDisplayNames>(
+      args, isolate, v8::Isolate::UseCounterFeature::kDisplayNames,
+      "Intl.DisplayNames");
+}
+
+BUILTIN(DisplayNamesPrototypeResolvedOptions) {
+  HandleScope scope(isolate);
+  CHECK_RECEIVER(JSDisplayNames, holder,
+                 "Intl.DisplayNames.prototype.resolvedOptions");
+  return *JSDisplayNames::ResolvedOptions(isolate, holder);
+}
+
+BUILTIN(DisplayNamesSupportedLocalesOf) {
+  HandleScope scope(isolate);
+  Handle<Object> locales = args.atOrUndefined(isolate, 1);
+  Handle<Object> options = args.atOrUndefined(isolate, 2);
+
+  RETURN_RESULT_OR_FAILURE(
+      isolate, Intl::SupportedLocalesOf(
+                   isolate, "Intl.DisplayNames.supportedLocalesOf",
+                   JSDisplayNames::GetAvailableLocales(), locales, options));
+}
+
+BUILTIN(DisplayNamesPrototypeOf) {
+  HandleScope scope(isolate);
+  CHECK_RECEIVER(JSDisplayNames, holder, "Intl.DisplayNames.prototype.of");
+  Handle<Object> code_obj = args.atOrUndefined(isolate, 1);
+
+  RETURN_RESULT_OR_FAILURE(isolate,
+                           JSDisplayNames::Of(isolate, holder, code_obj));
+}
+
+// Intl.NumberFormat
 
 BUILTIN(NumberFormatConstructor) {
   HandleScope scope(isolate);

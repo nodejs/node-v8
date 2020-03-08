@@ -314,13 +314,6 @@ Token::Value Scanner::SkipMultiLineComment() {
   return Token::ILLEGAL;
 }
 
-void Scanner::SkipHashBang() {
-  if (c0_ == '#' && Peek() == '!' && source_pos() == 0) {
-    SkipSingleLineComment();
-    Scan();
-  }
-}
-
 Token::Value Scanner::ScanHtmlComment() {
   // Check for <!-- comments.
   DCHECK_EQ(c0_, '!');
@@ -583,7 +576,8 @@ Token::Value Scanner::ScanTemplateSpan() {
   return result;
 }
 
-Handle<String> Scanner::SourceUrl(Isolate* isolate) const {
+template <typename LocalIsolate>
+Handle<String> Scanner::SourceUrl(LocalIsolate* isolate) const {
   Handle<String> tmp;
   if (source_url_.length() > 0) {
     tmp = source_url_.Internalize(isolate);
@@ -591,13 +585,21 @@ Handle<String> Scanner::SourceUrl(Isolate* isolate) const {
   return tmp;
 }
 
-Handle<String> Scanner::SourceMappingUrl(Isolate* isolate) const {
+template Handle<String> Scanner::SourceUrl(Isolate* isolate) const;
+template Handle<String> Scanner::SourceUrl(OffThreadIsolate* isolate) const;
+
+template <typename LocalIsolate>
+Handle<String> Scanner::SourceMappingUrl(LocalIsolate* isolate) const {
   Handle<String> tmp;
   if (source_mapping_url_.length() > 0) {
     tmp = source_mapping_url_.Internalize(isolate);
   }
   return tmp;
 }
+
+template Handle<String> Scanner::SourceMappingUrl(Isolate* isolate) const;
+template Handle<String> Scanner::SourceMappingUrl(
+    OffThreadIsolate* isolate) const;
 
 bool Scanner::ScanDigitsWithNumericSeparators(bool (*predicate)(uc32 ch),
                                               bool is_check_first_digit) {
@@ -913,7 +915,7 @@ Token::Value Scanner::ScanIdentifierOrKeywordInnerSlow(bool escaped,
     Vector<const uint8_t> chars = next().literal_chars.one_byte_literal();
     Token::Value token =
         KeywordOrIdentifierToken(chars.begin(), chars.length());
-    if (IsInRange(token, Token::IDENTIFIER, Token::YIELD)) return token;
+    if (base::IsInRange(token, Token::IDENTIFIER, Token::YIELD)) return token;
 
     if (token == Token::FUTURE_STRICT_RESERVED_WORD) {
       if (escaped) return Token::ESCAPED_STRICT_RESERVED_WORD;
@@ -923,7 +925,7 @@ Token::Value Scanner::ScanIdentifierOrKeywordInnerSlow(bool escaped,
     if (!escaped) return token;
 
     STATIC_ASSERT(Token::LET + 1 == Token::STATIC);
-    if (IsInRange(token, Token::LET, Token::STATIC)) {
+    if (base::IsInRange(token, Token::LET, Token::STATIC)) {
       return Token::ESCAPED_STRICT_RESERVED_WORD;
     }
     return Token::ESCAPED_KEYWORD;

@@ -16,6 +16,7 @@ namespace internal {
 // Forward declarations.
 class Isolate;
 class PartialSerializer;
+class SnapshotCompression;
 class StartupSerializer;
 
 // Wrapper around reservation sizes and the serialization payload.
@@ -37,6 +38,15 @@ class V8_EXPORT_PRIVATE SnapshotData : public SerializedData {
   }
 
  protected:
+  // Empty constructor used by SnapshotCompression so it can manually allocate
+  // memory.
+  SnapshotData() : SerializedData() {}
+  friend class SnapshotCompression;
+
+  // Resize used by SnapshotCompression so it can shrink the compressed
+  // SnapshotData.
+  void Resize(uint32_t size) { size_ = size; }
+
   // The data header consists of uint32_t-sized entries:
   // [0] magic number and (internal) external reference count
   // [1] number of reservation size entries
@@ -77,9 +87,9 @@ class Snapshot : public AllStatic {
   // ---------------- Serialization ----------------
 
   static v8::StartupData CreateSnapshotBlob(
-      const SnapshotData* startup_snapshot,
-      const SnapshotData* read_only_snapshot,
-      const std::vector<SnapshotData*>& context_snapshots,
+      const SnapshotData* startup_snapshot_in,
+      const SnapshotData* read_only_snapshot_in,
+      const std::vector<SnapshotData*>& context_snapshots_in,
       bool can_be_rehashed);
 
 #ifdef DEBUG
@@ -111,12 +121,11 @@ class Snapshot : public AllStatic {
   // Snapshot blob layout:
   // [0] number of contexts N
   // [1] rehashability
-  // [2] checksum part A
-  // [3] checksum part B
-  // [4] (128 bytes) version string
-  // [5] offset to readonly
-  // [6] offset to context 0
-  // [7] offset to context 1
+  // [2] checksum
+  // [3] (128 bytes) version string
+  // [4] offset to readonly
+  // [5] offset to context 0
+  // [6] offset to context 1
   // ...
   // ... offset to context N - 1
   // ... startup snapshot data
@@ -128,12 +137,8 @@ class Snapshot : public AllStatic {
   // TODO(yangguo): generalize rehashing, and remove this flag.
   static const uint32_t kRehashabilityOffset =
       kNumberOfContextsOffset + kUInt32Size;
-  static const uint32_t kChecksumPartAOffset =
-      kRehashabilityOffset + kUInt32Size;
-  static const uint32_t kChecksumPartBOffset =
-      kChecksumPartAOffset + kUInt32Size;
-  static const uint32_t kVersionStringOffset =
-      kChecksumPartBOffset + kUInt32Size;
+  static const uint32_t kChecksumOffset = kRehashabilityOffset + kUInt32Size;
+  static const uint32_t kVersionStringOffset = kChecksumOffset + kUInt32Size;
   static const uint32_t kVersionStringLength = 64;
   static const uint32_t kReadOnlyOffsetOffset =
       kVersionStringOffset + kVersionStringLength;
@@ -141,6 +146,7 @@ class Snapshot : public AllStatic {
       kReadOnlyOffsetOffset + kUInt32Size;
 
   static Vector<const byte> ChecksummedContent(const v8::StartupData* data) {
+    STATIC_ASSERT(kVersionStringOffset == kChecksumOffset + kUInt32Size);
     const uint32_t kChecksumStart = kVersionStringOffset;
     return Vector<const byte>(
         reinterpret_cast<const byte*>(data->data + kChecksumStart),
