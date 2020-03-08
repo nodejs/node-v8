@@ -707,6 +707,7 @@
       'dependencies': [
         # Code generators that only need to be build for the host.
         'torque_generated_definitions',
+        'v8_uninitialized',
         'v8_headers',
         'v8_libbase',
         'v8_libsampler',
@@ -869,6 +870,38 @@
         }],
       ],
     },  # v8_base_without_compiler
+    {
+      'target_name': 'v8_uninitialized',
+      'type': 'static_library',
+      'conditions': [
+        ['want_separate_host_toolset', {
+          'toolsets': ['host', 'target'],
+        }],
+      ],
+      'sources': [
+        '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "\\"v8_uninitialized.*?sources = ")',
+      ],
+      'dependencies': [
+        'generate_bytecode_builtins_list',
+        'run_torque',
+        'v8_maybe_icu',
+      ],
+      'defines!': [
+        '_HAS_EXCEPTIONS=0',
+        'BUILDING_V8_SHARED=1',
+      ],
+      'cflags_cc!': ['-fno-exceptions'],
+      'cflags_cc': ['-fexceptions'],
+      'xcode_settings': {
+        'GCC_ENABLE_CPP_EXCEPTIONS': 'YES',  # -fexceptions
+      },
+      'msvs_settings': {
+        'VCCLCompilerTool': {
+          'RuntimeTypeInfo': 'true',
+          'ExceptionHandling': 1,
+        },
+      },
+    },  # torque_base
     {
       'target_name': 'v8_base',
       'type': 'none',
