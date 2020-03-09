@@ -901,7 +901,7 @@
           'ExceptionHandling': 1,
         },
       },
-    },  # torque_base
+    },  # v8_uninitialized
     {
       'target_name': 'v8_base',
       'type': 'none',
