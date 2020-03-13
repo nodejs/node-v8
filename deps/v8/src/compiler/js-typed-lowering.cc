@@ -428,8 +428,8 @@ JSTypedLowering::JSTypedLowering(Editor* editor, JSGraph* jsgraph,
     : AdvancedReducer(editor),
       jsgraph_(jsgraph),
       broker_(broker),
-      empty_string_type_(Type::HeapConstant(broker, factory()->empty_string(),
-                                            graph()->zone())),
+      empty_string_type_(
+          Type::Constant(broker, factory()->empty_string(), graph()->zone())),
       pointer_comparable_type_(
           Type::Union(Type::Oddball(),
                       Type::Union(Type::SymbolOrReceiver(), empty_string_type_,
@@ -1313,6 +1313,36 @@ Reduction JSTypedLowering::ReduceJSOrdinaryHasInstance(Node* node) {
   return NoChange();
 }
 
+Reduction JSTypedLowering::ReduceJSHasContextExtension(Node* node) {
+  DCHECK_EQ(IrOpcode::kJSHasContextExtension, node->opcode());
+  size_t depth = OpParameter<size_t>(node->op());
+  Node* effect = NodeProperties::GetEffectInput(node);
+  Node* context = NodeProperties::GetContextInput(node);
+  Node* control = graph()->start();
+  for (size_t i = 0; i < depth; ++i) {
+    context = effect = graph()->NewNode(
+        simplified()->LoadField(
+            AccessBuilder::ForContextSlotKnownPointer(Context::PREVIOUS_INDEX)),
+        context, effect, control);
+  }
+  Node* const scope_info = effect = graph()->NewNode(
+      simplified()->LoadField(
+          AccessBuilder::ForContextSlot(Context::SCOPE_INFO_INDEX)),
+      context, effect, control);
+  Node* scope_info_flags = effect = graph()->NewNode(
+      simplified()->LoadField(AccessBuilder::ForScopeInfoFlags()), scope_info,
+      effect, control);
+  Node* flags_masked = graph()->NewNode(
+      simplified()->NumberBitwiseAnd(), scope_info_flags,
+      jsgraph()->SmiConstant(ScopeInfo::HasContextExtensionSlotBit::kMask));
+  Node* no_extension = graph()->NewNode(
+      simplified()->NumberEqual(), flags_masked, jsgraph()->SmiConstant(0));
+  Node* has_extension =
+      graph()->NewNode(simplified()->BooleanNot(), no_extension);
+  ReplaceWithValue(node, has_extension, effect, control);
+  return Changed(node);
+}
+
 Reduction JSTypedLowering::ReduceJSLoadContext(Node* node) {
   DCHECK_EQ(IrOpcode::kJSLoadContext, node->opcode());
   ContextAccess const& access = ContextAccessOf(node->op());
@@ -1500,7 +1530,7 @@ void ReduceBuiltin(JSGraph* jsgraph, Node* node, int builtin_index, int arity,
 }
 
 bool NeedsArgumentAdaptorFrame(SharedFunctionInfoRef shared, int arity) {
-  static const int sentinel = SharedFunctionInfo::kDontAdaptArgumentsSentinel;
+  static const int sentinel = kDontAdaptArgumentsSentinel;
   const int num_decl_parms = shared.internal_formal_parameter_count();
   return (num_decl_parms != arity && num_decl_parms != sentinel);
 }
@@ -1634,34 +1664,46 @@ Reduction JSTypedLowering::ReduceJSCall(Node* node) {
     convert_mode = ConvertReceiverMode::kNotNullOrUndefined;
   }
 
-  // Check if {target} is a known JSFunction.
+  // Check if we know the SharedFunctionInfo of {target}.
+  base::Optional<JSFunctionRef> function;
+  base::Optional<SharedFunctionInfoRef> shared;
+
   if (target_type.IsHeapConstant() &&
       target_type.AsHeapConstant()->Ref().IsJSFunction()) {
-    JSFunctionRef function = target_type.AsHeapConstant()->Ref().AsJSFunction();
+    function = target_type.AsHeapConstant()->Ref().AsJSFunction();
 
-    if (!function.serialized()) {
-      TRACE_BROKER_MISSING(broker(), "data for function " << function);
+    if (!function->serialized()) {
+      TRACE_BROKER_MISSING(broker(), "data for function " << *function);
       return NoChange();
     }
-    SharedFunctionInfoRef shared = function.shared();
+    shared = function->shared();
+  } else if (target->opcode() == IrOpcode::kJSCreateClosure) {
+    CreateClosureParameters const& ccp =
+        CreateClosureParametersOf(target->op());
+    shared = SharedFunctionInfoRef(broker(), ccp.shared_info());
+  } else if (target->opcode() == IrOpcode::kCheckClosure) {
+    FeedbackCellRef cell(broker(), FeedbackCellOf(target->op()));
+    shared = cell.value().AsFeedbackVector().shared_function_info();
+  }
 
+  if (shared.has_value()) {
     // Do not inline the call if we need to check whether to break at entry.
-    if (shared.HasBreakInfo()) return NoChange();
+    if (shared->HasBreakInfo()) return NoChange();
 
     // Class constructors are callable, but [[Call]] will raise an exception.
     // See ES6 section 9.2.1 [[Call]] ( thisArgument, argumentsList ).
-    if (IsClassConstructor(shared.kind())) return NoChange();
+    if (IsClassConstructor(shared->kind())) return NoChange();
 
     // Check if we need to convert the {receiver}, but bailout if it would
     // require data from a foreign native context.
-    if (is_sloppy(shared.language_mode()) && !shared.native() &&
+    if (is_sloppy(shared->language_mode()) && !shared->native() &&
         !receiver_type.Is(Type::Receiver())) {
-      if (!function.native_context().equals(
-              broker()->target_native_context())) {
+      if (!function.has_value() || !function->native_context().equals(
+                                       broker()->target_native_context())) {
         return NoChange();
       }
       Node* global_proxy =
-          jsgraph()->Constant(function.native_context().global_proxy_object());
+          jsgraph()->Constant(function->native_context().global_proxy_object());
       receiver = effect =
           graph()->NewNode(simplified()->ConvertReceiver(convert_mode),
                            receiver, global_proxy, effect, control);
@@ -1681,20 +1723,20 @@ Reduction JSTypedLowering::ReduceJSCall(Node* node) {
     CallDescriptor::Flags flags = CallDescriptor::kNeedsFrameState;
     Node* new_target = jsgraph()->UndefinedConstant();
 
-    if (NeedsArgumentAdaptorFrame(shared, arity)) {
+    if (NeedsArgumentAdaptorFrame(*shared, arity)) {
       // Check if it's safe to skip the arguments adaptor for {shared},
       // that is whether the target function anyways cannot observe the
       // actual arguments. Details can be found in this document at
       // https://bit.ly/v8-faster-calls-with-arguments-mismatch and
       // on the tracking bug at https://crbug.com/v8/8895
-      if (shared.is_safe_to_skip_arguments_adaptor()) {
+      if (shared->is_safe_to_skip_arguments_adaptor()) {
         // Currently we only support skipping arguments adaptor frames
         // for strict mode functions, since there's Function.arguments
         // legacy accessor, which is still available in sloppy mode.
-        DCHECK_EQ(LanguageMode::kStrict, shared.language_mode());
+        DCHECK_EQ(LanguageMode::kStrict, shared->language_mode());
 
         // Massage the arguments to match the expected number of arguments.
-        int expected_argument_count = shared.internal_formal_parameter_count();
+        int expected_argument_count = shared->internal_formal_parameter_count();
         for (; arity > expected_argument_count; --arity) {
           node->RemoveInput(arity + 1);
         }
@@ -1720,20 +1762,21 @@ Reduction JSTypedLowering::ReduceJSCall(Node* node) {
         node->InsertInput(graph()->zone(), 3, jsgraph()->Constant(arity));
         node->InsertInput(
             graph()->zone(), 4,
-            jsgraph()->Constant(shared.internal_formal_parameter_count()));
+            jsgraph()->Constant(shared->internal_formal_parameter_count()));
         NodeProperties::ChangeOp(
             node,
             common()->Call(Linkage::GetStubCallDescriptor(
                 graph()->zone(), callable.descriptor(), 1 + arity, flags)));
       }
-    } else if (shared.HasBuiltinId() && Builtins::IsCpp(shared.builtin_id())) {
+    } else if (shared->HasBuiltinId() &&
+               Builtins::IsCpp(shared->builtin_id())) {
       // Patch {node} to a direct CEntry call.
-      ReduceBuiltin(jsgraph(), node, shared.builtin_id(), arity, flags);
-    } else if (shared.HasBuiltinId() &&
-               Builtins::KindOf(shared.builtin_id()) == Builtins::TFJ) {
+      ReduceBuiltin(jsgraph(), node, shared->builtin_id(), arity, flags);
+    } else if (shared->HasBuiltinId()) {
+      DCHECK(Builtins::HasJSLinkage(shared->builtin_id()));
       // Patch {node} to a direct code object call.
       Callable callable = Builtins::CallableFor(
-          isolate(), static_cast<Builtins::Name>(shared.builtin_id()));
+          isolate(), static_cast<Builtins::Name>(shared->builtin_id()));
       CallDescriptor::Flags flags = CallDescriptor::kNeedsFrameState;
 
       const CallInterfaceDescriptor& descriptor = callable.descriptor();
@@ -1774,8 +1817,9 @@ Reduction JSTypedLowering::ReduceJSCall(Node* node) {
   // Maybe we did at least learn something about the {receiver}.
   if (p.convert_mode() != convert_mode) {
     NodeProperties::ChangeOp(
-        node, javascript()->Call(p.arity(), p.frequency(), p.feedback(),
-                                 convert_mode, p.speculation_mode()));
+        node,
+        javascript()->Call(p.arity(), p.frequency(), p.feedback(), convert_mode,
+                           p.speculation_mode(), p.feedback_relation()));
     return Changed(node);
   }
 
@@ -1926,10 +1970,10 @@ Reduction JSTypedLowering::ReduceJSForInPrepare(Node* node) {
       Node* bit_field3 = effect = graph()->NewNode(
           simplified()->LoadField(AccessBuilder::ForMapBitField3()), enumerator,
           effect, control);
-      STATIC_ASSERT(Map::EnumLengthBits::kShift == 0);
-      cache_length =
-          graph()->NewNode(simplified()->NumberBitwiseAnd(), bit_field3,
-                           jsgraph()->Constant(Map::EnumLengthBits::kMask));
+      STATIC_ASSERT(Map::Bits3::EnumLengthBits::kShift == 0);
+      cache_length = graph()->NewNode(
+          simplified()->NumberBitwiseAnd(), bit_field3,
+          jsgraph()->Constant(Map::Bits3::EnumLengthBits::kMask));
       break;
     }
     case ForInMode::kGeneric: {
@@ -1961,10 +2005,10 @@ Reduction JSTypedLowering::ReduceJSForInPrepare(Node* node) {
         Node* bit_field3 = etrue = graph()->NewNode(
             simplified()->LoadField(AccessBuilder::ForMapBitField3()),
             enumerator, etrue, if_true);
-        STATIC_ASSERT(Map::EnumLengthBits::kShift == 0);
-        cache_length_true =
-            graph()->NewNode(simplified()->NumberBitwiseAnd(), bit_field3,
-                             jsgraph()->Constant(Map::EnumLengthBits::kMask));
+        STATIC_ASSERT(Map::Bits3::EnumLengthBits::kShift == 0);
+        cache_length_true = graph()->NewNode(
+            simplified()->NumberBitwiseAnd(), bit_field3,
+            jsgraph()->Constant(Map::Bits3::EnumLengthBits::kMask));
       }
 
       Node* if_false = graph()->NewNode(common()->IfFalse(), branch);
@@ -2371,6 +2415,8 @@ Reduction JSTypedLowering::Reduce(Node* node) {
       return ReduceJSForInPrepare(node);
     case IrOpcode::kJSForInNext:
       return ReduceJSForInNext(node);
+    case IrOpcode::kJSHasContextExtension:
+      return ReduceJSHasContextExtension(node);
     case IrOpcode::kJSLoadMessage:
       return ReduceJSLoadMessage(node);
     case IrOpcode::kJSStoreMessage:

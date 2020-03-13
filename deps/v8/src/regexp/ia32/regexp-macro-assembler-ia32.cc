@@ -142,6 +142,17 @@ void RegExpMacroAssemblerIA32::AdvanceRegister(int reg, int by) {
 
 void RegExpMacroAssemblerIA32::Backtrack() {
   CheckPreemption();
+  if (has_backtrack_limit()) {
+    Label next;
+    __ inc(Operand(ebp, kBacktrackCount));
+    __ cmp(Operand(ebp, kBacktrackCount), Immediate(backtrack_limit()));
+    __ j(not_equal, &next);
+
+    // Exceeded limits are treated as a failed match.
+    Fail();
+
+    __ bind(&next);
+  }
   // Pop Code offset from backtrack stack, add Code and jump to location.
   Pop(ebx);
   __ add(ebx, Immediate(masm_->CodeObject()));
@@ -194,9 +205,8 @@ void RegExpMacroAssemblerIA32::CheckGreedyLoop(Label* on_equal) {
   __ bind(&fallthrough);
 }
 
-
 void RegExpMacroAssemblerIA32::CheckNotBackReferenceIgnoreCase(
-    int start_reg, bool read_backward, bool unicode, Label* on_no_match) {
+    int start_reg, bool read_backward, Label* on_no_match) {
   Label fallthrough;
   __ mov(edx, register_location(start_reg));  // Index of start of capture
   __ mov(ebx, register_location(start_reg + 1));  // Index of end of capture
@@ -303,18 +313,11 @@ void RegExpMacroAssemblerIA32::CheckNotBackReferenceIgnoreCase(
     //   Address byte_offset1 - Address captured substring's start.
     //   Address byte_offset2 - Address of current character position.
     //   size_t byte_length - length of capture in bytes(!)
-//   Isolate* isolate or 0 if unicode flag.
+    //   Isolate* isolate.
 
     // Set isolate.
-#ifdef V8_INTL_SUPPORT
-    if (unicode) {
-      __ mov(Operand(esp, 3 * kSystemPointerSize), Immediate(0));
-    } else  // NOLINT
-#endif      // V8_INTL_SUPPORT
-    {
-      __ mov(Operand(esp, 3 * kSystemPointerSize),
-             Immediate(ExternalReference::isolate_address(isolate())));
-    }
+    __ mov(Operand(esp, 3 * kSystemPointerSize),
+           Immediate(ExternalReference::isolate_address(isolate())));
     // Set byte_length.
     __ mov(Operand(esp, 2 * kSystemPointerSize), ebx);
     // Set byte_offset2.
@@ -354,7 +357,6 @@ void RegExpMacroAssemblerIA32::CheckNotBackReferenceIgnoreCase(
   }
   __ bind(&fallthrough);
 }
-
 
 void RegExpMacroAssemblerIA32::CheckNotBackReference(int start_reg,
                                                      bool read_backward,
@@ -678,8 +680,14 @@ Handle<HeapObject> RegExpMacroAssemblerIA32::GetCode(Handle<String> source) {
   __ push(esi);
   __ push(edi);
   __ push(ebx);  // Callee-save on MacOS.
+
+  STATIC_ASSERT(kSuccessfulCaptures == kBackup_ebx - kSystemPointerSize);
   __ push(Immediate(0));  // Number of successful matches in a global regexp.
+  STATIC_ASSERT(kStringStartMinusOne ==
+                kSuccessfulCaptures - kSystemPointerSize);
   __ push(Immediate(0));  // Make room for "string start - 1" constant.
+  STATIC_ASSERT(kBacktrackCount == kStringStartMinusOne - kSystemPointerSize);
+  __ push(Immediate(0));  // The backtrack counter.
 
   // Check if we have space on the stack for registers.
   Label stack_limit_hit;
@@ -935,7 +943,7 @@ Handle<HeapObject> RegExpMacroAssemblerIA32::GetCode(Handle<String> source) {
                           .set_self_reference(masm_->CodeObject())
                           .Build();
   PROFILE(masm_->isolate(),
-          RegExpCodeCreateEvent(AbstractCode::cast(*code), *source));
+          RegExpCodeCreateEvent(Handle<AbstractCode>::cast(code), source));
   return Handle<HeapObject>::cast(code);
 }
 

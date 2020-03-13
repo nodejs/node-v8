@@ -7,7 +7,9 @@
 
 namespace d = v8::debug_helper;
 
-namespace v8_debug_helper_internal {
+namespace v8 {
+namespace internal {
+namespace debug_helper_internal {
 
 std::string FindKnownObject(uintptr_t address,
                             const d::HeapAddresses& heap_addresses) {
@@ -49,7 +51,7 @@ std::string FindKnownObject(uintptr_t address,
   return result;
 }
 
-KnownInstanceType FindKnownMapInstanceType(
+KnownInstanceType FindKnownMapInstanceTypes(
     uintptr_t address, const d::HeapAddresses& heap_addresses) {
   uintptr_t containing_page = address & ~i::kPageAlignmentMask;
   uintptr_t offset_in_page = address & i::kPageAlignmentMask;
@@ -82,4 +84,6 @@ KnownInstanceType FindKnownMapInstanceType(
   return result;
 }
 
-}  // namespace v8_debug_helper_internal
+}  // namespace debug_helper_internal
+}  // namespace internal
+}  // namespace v8

@@ -29,7 +29,7 @@ class CommonOperatorReducerTest : public GraphTest {
   Reduction Reduce(
       AdvancedReducer::Editor* editor, Node* node,
       MachineOperatorBuilder::Flags flags = MachineOperatorBuilder::kNoFlags) {
-    JSHeapBroker broker(isolate(), zone(), FLAG_trace_heap_broker);
+    JSHeapBroker broker(isolate(), zone(), FLAG_trace_heap_broker, false);
     MachineOperatorBuilder machine(zone(), MachineType::PointerRepresentation(),
                                    flags);
     CommonOperatorReducer reducer(editor, graph(), &broker, common(), &machine,
@@ -169,6 +169,26 @@ TEST_F(CommonOperatorReducerTest, BranchWithSelect) {
         common()->Branch(hint),
         graph()->NewNode(common()->Select(MachineRepresentation::kTagged),
                          value, FalseConstant(), TrueConstant()),
+        control);
+    Node* const if_true = graph()->NewNode(common()->IfTrue(), branch);
+    Node* const if_false = graph()->NewNode(common()->IfFalse(), branch);
+    Reduction const r = Reduce(branch);
+    ASSERT_TRUE(r.Changed());
+    EXPECT_EQ(branch, r.replacement());
+    EXPECT_THAT(branch, IsBranch(value, control));
+    EXPECT_THAT(if_false, IsIfTrue(branch));
+    EXPECT_THAT(if_true, IsIfFalse(branch));
+    EXPECT_EQ(NegateBranchHint(hint), BranchHintOf(branch->op()));
+  }
+}
+
+TEST_F(CommonOperatorReducerTest, BranchWithEqualsZero) {
+  Node* const value = Parameter(0);
+  TRACED_FOREACH(BranchHint, hint, kBranchHints) {
+    Node* const control = graph()->start();
+    Node* const branch = graph()->NewNode(
+        common()->Branch(hint),
+        graph()->NewNode(machine()->Word32Equal(), Uint32Constant(0), value),
         control);
     Node* const if_true = graph()->NewNode(common()->IfTrue(), branch);
     Node* const if_false = graph()->NewNode(common()->IfFalse(), branch);

@@ -62,6 +62,14 @@ class IsolateData final {
     return kBuiltinsTableOffset - kIsolateRootBias;
   }
 
+  static constexpr int fast_c_call_caller_fp_offset() {
+    return kFastCCallCallerFPOffset - kIsolateRootBias;
+  }
+
+  static constexpr int fast_c_call_caller_pc_offset() {
+    return kFastCCallCallerPCOffset - kIsolateRootBias;
+  }
+
   // Root-register-relative offset of the given builtin table entry.
   // TODO(ishell): remove in favour of typified id version.
   static int builtin_slot_offset(int builtin_index) {
@@ -72,11 +80,6 @@ class IsolateData final {
   // Root-register-relative offset of the builtin table entry.
   static int builtin_slot_offset(Builtins::Name id) {
     return builtins_table_offset() + id * kSystemPointerSize;
-  }
-
-  // Root-register-relative offset of the virtual call target register value.
-  static constexpr int virtual_call_target_register_offset() {
-    return kVirtualCallTargetRegisterOffset - kIsolateRootBias;
   }
 
   // The FP and PC that are saved right before TurboAssembler::CallCFunction.
@@ -122,7 +125,7 @@ class IsolateData final {
   V(kEmbedderDataOffset, Internals::kNumIsolateDataSlots* kSystemPointerSize) \
   V(kExternalMemoryOffset, kInt64Size)                                        \
   V(kExternalMemoryLlimitOffset, kInt64Size)                                  \
-  V(kExternalMemoryAtLastMarkCompactOffset, kInt64Size)                       \
+  V(kExternalMemoryLowSinceMarkCompactOffset, kInt64Size)                     \
   V(kFastCCallCallerFPOffset, kSystemPointerSize)                             \
   V(kFastCCallCallerPCOffset, kSystemPointerSize)                             \
   V(kStackGuardOffset, StackGuard::kSizeInBytes)                              \
@@ -131,7 +134,6 @@ class IsolateData final {
   V(kThreadLocalTopOffset, ThreadLocalTop::kSizeInBytes)                      \
   V(kBuiltinEntryTableOffset, Builtins::builtin_count* kSystemPointerSize)    \
   V(kBuiltinsTableOffset, Builtins::builtin_count* kSystemPointerSize)        \
-  V(kVirtualCallTargetRegisterOffset, kSystemPointerSize)                     \
   V(kStackIsIterableOffset, kUInt8Size)                                       \
   /* This padding aligns IsolateData size by 8 bytes. */                      \
   V(kPaddingOffset,                                                           \
@@ -157,7 +159,7 @@ class IsolateData final {
   int64_t external_memory_limit_ = kExternalAllocationSoftLimit;
 
   // Caches the amount of external memory registered at the last MC.
-  int64_t external_memory_at_last_mark_compact_ = 0;
+  int64_t external_memory_low_since_mark_compact_ = 0;
 
   // Stores the state of the caller for TurboAssembler::CallCFunction so that
   // the sampling CPU profiler can iterate the stack during such calls. These
@@ -183,11 +185,6 @@ class IsolateData final {
 
   // The entries in this array are tagged pointers to Code objects.
   Address builtins_[Builtins::builtin_count] = {};
-
-  // For isolate-independent calls on ia32.
-  // TODO(v8:6666): Remove once wasm supports pc-relative jumps to builtins on
-  // ia32 (otherwise the arguments adaptor call runs out of registers).
-  void* virtual_call_target_register_ = nullptr;
 
   // Whether the SafeStackFrameIterator can successfully iterate the current
   // stack. Only valid values are 0 or 1.
@@ -227,14 +224,13 @@ void IsolateData::AssertPredictableLayout() {
   STATIC_ASSERT(offsetof(IsolateData, thread_local_top_) ==
                 kThreadLocalTopOffset);
   STATIC_ASSERT(offsetof(IsolateData, builtins_) == kBuiltinsTableOffset);
-  STATIC_ASSERT(offsetof(IsolateData, virtual_call_target_register_) ==
-                kVirtualCallTargetRegisterOffset);
   STATIC_ASSERT(offsetof(IsolateData, external_memory_) ==
                 kExternalMemoryOffset);
   STATIC_ASSERT(offsetof(IsolateData, external_memory_limit_) ==
                 kExternalMemoryLlimitOffset);
-  STATIC_ASSERT(offsetof(IsolateData, external_memory_at_last_mark_compact_) ==
-                kExternalMemoryAtLastMarkCompactOffset);
+  STATIC_ASSERT(
+      offsetof(IsolateData, external_memory_low_since_mark_compact_) ==
+      kExternalMemoryLowSinceMarkCompactOffset);
   STATIC_ASSERT(offsetof(IsolateData, fast_c_call_caller_fp_) ==
                 kFastCCallCallerFPOffset);
   STATIC_ASSERT(offsetof(IsolateData, fast_c_call_caller_pc_) ==

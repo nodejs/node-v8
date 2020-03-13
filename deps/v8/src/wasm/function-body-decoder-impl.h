@@ -43,19 +43,19 @@ struct WasmException;
 
 #define RET_ON_PROTOTYPE_OPCODE(feat)                                          \
   DCHECK(!this->module_ || this->module_->origin == kWasmOrigin);              \
-  if (!this->enabled_.feat) {                                                  \
+  if (!this->enabled_.has_##feat()) {                                          \
     this->error("Invalid opcode (enable with --experimental-wasm-" #feat ")"); \
   } else {                                                                     \
-    this->detected_->feat = true;                                              \
+    this->detected_->Add(kFeature_##feat);                                     \
   }
 
 #define CHECK_PROTOTYPE_OPCODE(feat)                                           \
   DCHECK(!this->module_ || this->module_->origin == kWasmOrigin);              \
-  if (!this->enabled_.feat) {                                                  \
+  if (!this->enabled_.has_##feat()) {                                          \
     this->error("Invalid opcode (enable with --experimental-wasm-" #feat ")"); \
     break;                                                                     \
   } else {                                                                     \
-    this->detected_->feat = true;                                              \
+    this->detected_->Add(kFeature_##feat);                                     \
   }
 
 #define OPCODE_ERROR(opcode, message)                                 \
@@ -236,6 +236,9 @@ inline bool decode_local_type(uint8_t val, ValueType* result) {
     case kLocalAnyRef:
       *result = kWasmAnyRef;
       return true;
+    case kLocalNullRef:
+      *result = kWasmNullRef;
+      return true;
     case kLocalExnRef:
       *result = kWasmExnRef;
       return true;
@@ -274,14 +277,14 @@ struct BlockTypeImmediate {
   uint32_t length = 1;
   ValueType type = kWasmStmt;
   uint32_t sig_index = 0;
-  FunctionSig* sig = nullptr;
+  const FunctionSig* sig = nullptr;
 
   inline BlockTypeImmediate(const WasmFeatures& enabled, Decoder* decoder,
                             const byte* pc) {
     uint8_t val = decoder->read_u8<validate>(pc + 1, "block type");
     if (!function_body_decoder::decode_local_type(val, &type)) {
       // Handle multi-value blocks.
-      if (!VALIDATE(enabled.mv)) {
+      if (!VALIDATE(enabled.has_mv())) {
         decoder->error(pc + 1, "invalid block type");
         return;
       }
@@ -374,14 +377,15 @@ template <Decoder::ValidateFlag validate>
 struct CallIndirectImmediate {
   uint32_t table_index;
   uint32_t sig_index;
-  FunctionSig* sig = nullptr;
+  const FunctionSig* sig = nullptr;
   uint32_t length = 0;
   inline CallIndirectImmediate(const WasmFeatures enabled, Decoder* decoder,
                                const byte* pc) {
     uint32_t len = 0;
     sig_index = decoder->read_u32v<validate>(pc + 1, &len, "signature index");
     TableIndexImmediate<validate> table(decoder, pc + len);
-    if (!VALIDATE((table.index == 0 && table.length == 1) || enabled.anyref)) {
+    if (!VALIDATE((table.index == 0 && table.length == 1) ||
+                  enabled.has_anyref())) {
       decoder->errorf(pc + 1 + len, "expected table index 0, found %u",
                       table.index);
     }
@@ -393,7 +397,7 @@ struct CallIndirectImmediate {
 template <Decoder::ValidateFlag validate>
 struct CallFunctionImmediate {
   uint32_t index;
-  FunctionSig* sig = nullptr;
+  const FunctionSig* sig = nullptr;
   uint32_t length;
   inline CallFunctionImmediate(Decoder* decoder, const byte* pc) {
     index = decoder->read_u32v<validate>(pc + 1, &length, "function index");
@@ -486,17 +490,6 @@ struct SimdLaneImmediate {
   }
 };
 
-// Immediate for SIMD shift operations.
-template <Decoder::ValidateFlag validate>
-struct SimdShiftImmediate {
-  uint8_t shift;
-  uint32_t length = 1;
-
-  inline SimdShiftImmediate(Decoder* decoder, const byte* pc) {
-    shift = decoder->read_u8<validate>(pc + 2, "shift");
-  }
-};
-
 // Immediate for SIMD S8x16 shuffle operations.
 template <Decoder::ValidateFlag validate>
 struct Simd8x16ShuffleImmediate {
@@ -518,7 +511,7 @@ struct MemoryInitImmediate {
   inline MemoryInitImmediate(Decoder* decoder, const byte* pc) {
     uint32_t len = 0;
     data_segment_index =
-        decoder->read_i32v<validate>(pc + 2, &len, "data segment index");
+        decoder->read_u32v<validate>(pc + 2, &len, "data segment index");
     memory = MemoryIndexImmediate<validate>(decoder, pc + 1 + len);
     length = len + memory.length;
   }
@@ -530,7 +523,7 @@ struct DataDropImmediate {
   unsigned length;
 
   inline DataDropImmediate(Decoder* decoder, const byte* pc) {
-    index = decoder->read_i32v<validate>(pc + 2, &length, "data segment index");
+    index = decoder->read_u32v<validate>(pc + 2, &length, "data segment index");
   }
 };
 
@@ -557,7 +550,7 @@ struct TableInitImmediate {
   inline TableInitImmediate(Decoder* decoder, const byte* pc) {
     uint32_t len = 0;
     elem_segment_index =
-        decoder->read_i32v<validate>(pc + 2, &len, "elem segment index");
+        decoder->read_u32v<validate>(pc + 2, &len, "elem segment index");
     table = TableIndexImmediate<validate>(decoder, pc + 1 + len);
     length = len + table.length;
   }
@@ -569,7 +562,7 @@ struct ElemDropImmediate {
   unsigned length;
 
   inline ElemDropImmediate(Decoder* decoder, const byte* pc) {
-    index = decoder->read_i32v<validate>(pc + 2, &length, "elem segment index");
+    index = decoder->read_u32v<validate>(pc + 2, &length, "elem segment index");
   }
 };
 
@@ -683,6 +676,11 @@ struct ControlBase {
   }
 };
 
+enum class LoadTransformationKind : uint8_t {
+  kSplat,
+  kExtend,
+};
+
 // This is the list of callback functions that an interface for the
 // WasmFullDecoder should implement.
 // F(Name, args...)
@@ -733,6 +731,8 @@ struct ControlBase {
   F(Else, Control* if_block)                                                  \
   F(LoadMem, LoadType type, const MemoryAccessImmediate<validate>& imm,       \
     const Value& index, Value* result)                                        \
+  F(LoadTransform, LoadType type, LoadTransformationKind transform,           \
+    MemoryAccessImmediate<validate>& imm, const Value& index, Value* result)  \
   F(StoreMem, StoreType type, const MemoryAccessImmediate<validate>& imm,     \
     const Value& index, const Value& value)                                   \
   F(CurrentMemoryPages, Value* result)                                        \
@@ -782,7 +782,7 @@ template <Decoder::ValidateFlag validate>
 class WasmDecoder : public Decoder {
  public:
   WasmDecoder(const WasmModule* module, const WasmFeatures& enabled,
-              WasmFeatures* detected, FunctionSig* sig, const byte* start,
+              WasmFeatures* detected, const FunctionSig* sig, const byte* start,
               const byte* end, uint32_t buffer_offset = 0)
       : Decoder(start, end, buffer_offset),
         module_(module),
@@ -793,7 +793,7 @@ class WasmDecoder : public Decoder {
   const WasmModule* module_;
   const WasmFeatures enabled_;
   WasmFeatures* detected_;
-  FunctionSig* sig_;
+  const FunctionSig* sig_;
 
   ZoneVector<ValueType>* local_types_;
 
@@ -844,7 +844,7 @@ class WasmDecoder : public Decoder {
           type = kWasmF64;
           break;
         case kLocalAnyRef:
-          if (enabled.anyref) {
+          if (enabled.has_anyref()) {
             type = kWasmAnyRef;
             break;
           }
@@ -853,7 +853,7 @@ class WasmDecoder : public Decoder {
                          "--experimental-wasm-anyref");
           return false;
         case kLocalFuncRef:
-          if (enabled.anyref) {
+          if (enabled.has_anyref()) {
             type = kWasmFuncRef;
             break;
           }
@@ -861,8 +861,17 @@ class WasmDecoder : public Decoder {
                          "invalid local type 'funcref', enable with "
                          "--experimental-wasm-anyref");
           return false;
+        case kLocalNullRef:
+          if (enabled.has_anyref()) {
+            type = kWasmNullRef;
+            break;
+          }
+          decoder->error(decoder->pc() - 1,
+                         "invalid local type 'nullref', enable with "
+                         "--experimental-wasm-anyref");
+          return false;
         case kLocalExnRef:
-          if (enabled.eh) {
+          if (enabled.has_eh()) {
             type = kWasmExnRef;
             break;
           }
@@ -871,7 +880,7 @@ class WasmDecoder : public Decoder {
                          "--experimental-wasm-eh");
           return false;
         case kLocalS128:
-          if (enabled.simd) {
+          if (enabled.has_simd()) {
             type = kWasmS128;
             break;
           }
@@ -980,7 +989,7 @@ class WasmDecoder : public Decoder {
     return true;
   }
 
-  inline bool CanReturnCall(FunctionSig* target_sig) {
+  inline bool CanReturnCall(const FunctionSig* target_sig) {
     if (target_sig == nullptr) return false;
     size_t num_returns = sig_->return_count();
     if (num_returns != target_sig->return_count()) return false;
@@ -1091,42 +1100,6 @@ class WasmDecoder : public Decoder {
     }
   }
 
-  inline bool Validate(const byte* pc, WasmOpcode opcode,
-                       SimdShiftImmediate<validate>& imm) {
-    uint8_t max_shift = 0;
-    switch (opcode) {
-      case kExprI64x2Shl:
-      case kExprI64x2ShrS:
-      case kExprI64x2ShrU:
-        max_shift = 64;
-        break;
-      case kExprI32x4Shl:
-      case kExprI32x4ShrS:
-      case kExprI32x4ShrU:
-        max_shift = 32;
-        break;
-      case kExprI16x8Shl:
-      case kExprI16x8ShrS:
-      case kExprI16x8ShrU:
-        max_shift = 16;
-        break;
-      case kExprI8x16Shl:
-      case kExprI8x16ShrS:
-      case kExprI8x16ShrU:
-        max_shift = 8;
-        break;
-      default:
-        UNREACHABLE();
-        break;
-    }
-    if (!VALIDATE(imm.shift >= 0 && imm.shift < max_shift)) {
-      error(pc_ + 2, "invalid shift amount");
-      return false;
-    } else {
-      return true;
-    }
-  }
-
   inline bool Validate(const byte* pc,
                        Simd8x16ShuffleImmediate<validate>& imm) {
     uint8_t max_lane = 0;
@@ -1160,9 +1133,13 @@ class WasmDecoder : public Decoder {
   }
 
   inline bool Validate(const byte* pc, FunctionIndexImmediate<validate>& imm) {
-    if (!VALIDATE(module_ != nullptr &&
-                  imm.index < module_->functions.size())) {
+    if (!module_) return true;
+    if (!VALIDATE(imm.index < module_->functions.size())) {
       errorf(pc, "invalid function index: %u", imm.index);
+      return false;
+    }
+    if (!VALIDATE(module_->functions[imm.index].declared)) {
+      this->errorf(pc, "undeclared reference to function #%u", imm.index);
       return false;
     }
     return true;
@@ -1218,8 +1195,16 @@ class WasmDecoder : public Decoder {
              imm.elem_segment_index);
       return false;
     }
-    if (!Validate(pc_ + imm.length - imm.table.length - 1, imm.table))
+    if (!Validate(pc_ + imm.length - imm.table.length - 1, imm.table)) {
       return false;
+    }
+    ValueType elem_type = module_->elem_segments[imm.elem_segment_index].type;
+    if (!VALIDATE(
+            elem_type.IsSubTypeOf(module_->tables[imm.table.index].type))) {
+      errorf(pc_ + 2, "table %u is not a super-type of %s", imm.table.index,
+             elem_type.type_name());
+      return false;
+    }
     return true;
   }
 
@@ -1235,6 +1220,13 @@ class WasmDecoder : public Decoder {
   inline bool Validate(TableCopyImmediate<validate>& imm) {
     if (!Validate(pc_ + 1, imm.table_src)) return false;
     if (!Validate(pc_ + 2, imm.table_dst)) return false;
+    ValueType src_type = module_->tables[imm.table_src.index].type;
+    if (!VALIDATE(
+            src_type.IsSubTypeOf(module_->tables[imm.table_dst.index].type))) {
+      errorf(pc_ + 2, "table %u is not a super-type of %s", imm.table_dst.index,
+             src_type.type_name());
+      return false;
+    }
     return true;
   }
 
@@ -1271,7 +1263,7 @@ class WasmDecoder : public Decoder {
       }
       case kExprCallIndirect:
       case kExprReturnCallIndirect: {
-        CallIndirectImmediate<validate> imm(kAllWasmFeatures, decoder, pc);
+        CallIndirectImmediate<validate> imm(WasmFeatures::All(), decoder, pc);
         return 1 + imm.length;
       }
 
@@ -1279,7 +1271,7 @@ class WasmDecoder : public Decoder {
       case kExprIf:  // fall through
       case kExprLoop:
       case kExprBlock: {
-        BlockTypeImmediate<validate> imm(kAllWasmFeatures, decoder, pc);
+        BlockTypeImmediate<validate> imm(WasmFeatures::All(), decoder, pc);
         return 1 + imm.length;
       }
 
@@ -1445,7 +1437,7 @@ class WasmDecoder : public Decoder {
   std::pair<uint32_t, uint32_t> StackEffect(const byte* pc) {
     WasmOpcode opcode = static_cast<WasmOpcode>(*pc);
     // Handle "simple" opcodes with a fixed signature first.
-    FunctionSig* sig = WasmOpcodes::Signature(opcode);
+    const FunctionSig* sig = WasmOpcodes::Signature(opcode);
     if (!sig) sig = WasmOpcodes::AsmjsSignature(opcode);
     if (sig) return {sig->parameter_count(), sig->return_count()};
 
@@ -1695,7 +1687,8 @@ class WasmFullDecoder : public WasmDecoder<validate> {
     return true;
   }
 
-  bool CheckHasSharedMemory() {
+  bool CheckHasMemoryForAtomics() {
+    if (FLAG_wasm_atomics_on_non_shared_memory && CheckHasMemory()) return true;
     if (!VALIDATE(this->module_->has_shared_memory)) {
       this->error(this->pc_ - 1, "Atomic opcodes used without shared memory");
       return false;
@@ -1845,8 +1838,8 @@ class WasmFullDecoder : public WasmDecoder<validate> {
           auto exception = Pop(0, kWasmExnRef);
           const WasmExceptionSig* sig = imm.index.exception->sig;
           size_t value_count = sig->parameter_count();
-          // TODO(mstarzinger): This operand stack mutation is an ugly hack to
-          // make both type checking here as well as environment merging in the
+          // TODO(wasm): This operand stack mutation is an ugly hack to make
+          // both type checking here as well as environment merging in the
           // graph builder interface work out of the box. We should introduce
           // special handling for both and do minimal/no stack mutation here.
           for (size_t i = 0; i < value_count; ++i) Push(sig->GetParam(i));
@@ -1928,8 +1921,8 @@ class WasmFullDecoder : public WasmDecoder<validate> {
                   "start-arity and end-arity of one-armed if must match");
               break;
             }
+            if (!TypeCheckOneArmedIf(c)) break;
           }
-
           if (!TypeCheckFallThru()) break;
 
           if (control_.size() == 1) {
@@ -1953,7 +1946,7 @@ class WasmFullDecoder : public WasmDecoder<validate> {
           auto fval = Pop();
           auto tval = Pop(0, fval.type);
           ValueType type = tval.type == kWasmBottom ? fval.type : tval.type;
-          if (ValueTypes::IsSubType(type, kWasmAnyRef)) {
+          if (type.IsSubTypeOf(kWasmAnyRef)) {
             this->error(
                 "select without type is only valid for value type inputs");
             break;
@@ -2349,12 +2342,10 @@ class WasmFullDecoder : public WasmDecoder<validate> {
           byte numeric_index =
               this->template read_u8<validate>(this->pc_ + 1, "numeric index");
           opcode = static_cast<WasmOpcode>(opcode << 8 | numeric_index);
-          if (opcode < kExprMemoryInit) {
-            CHECK_PROTOTYPE_OPCODE(sat_f2i_conversions);
-          } else if (opcode == kExprTableGrow || opcode == kExprTableSize ||
-                     opcode == kExprTableFill) {
+          if (opcode == kExprTableGrow || opcode == kExprTableSize ||
+              opcode == kExprTableFill) {
             CHECK_PROTOTYPE_OPCODE(anyref);
-          } else {
+          } else if (opcode >= kExprMemoryInit) {
             CHECK_PROTOTYPE_OPCODE(bulk_memory);
           }
           TRACE_PART(TRACE_INST_FORMAT, startrel(this->pc_),
@@ -2395,7 +2386,7 @@ class WasmFullDecoder : public WasmDecoder<validate> {
         default: {
           // Deal with special asmjs opcodes.
           if (this->module_ != nullptr && is_asmjs_module(this->module_)) {
-            FunctionSig* sig = WasmOpcodes::AsmjsSignature(opcode);
+            const FunctionSig* sig = WasmOpcodes::AsmjsSignature(opcode);
             if (sig) {
               BuildSimpleOperator(opcode, sig);
             }
@@ -2437,7 +2428,7 @@ class WasmFullDecoder : public WasmDecoder<validate> {
           if (WasmOpcodes::IsPrefixOpcode(opcode)) {
             opcode = static_cast<WasmOpcode>(opcode << 8 | *(val.pc + 1));
           }
-          TRACE_PART(" %c@%d:%s", ValueTypes::ShortNameOf(val.type),
+          TRACE_PART(" %c@%d:%s", val.type.short_name(),
                      static_cast<int>(val.pc - this->start_),
                      WasmOpcodes::OpcodeName(opcode));
           // If the decoder failed, don't try to decode the immediates, as this
@@ -2507,7 +2498,7 @@ class WasmFullDecoder : public WasmDecoder<validate> {
   }
 
   // Pops arguments as required by signature.
-  V8_INLINE ArgVector PopArgs(FunctionSig* sig) {
+  V8_INLINE ArgVector PopArgs(const FunctionSig* sig) {
     int count = sig ? static_cast<int>(sig->parameter_count()) : 0;
     ArgVector args(count);
     for (int i = count - 1; i >= 0; --i) {
@@ -2516,7 +2507,7 @@ class WasmFullDecoder : public WasmDecoder<validate> {
     return args;
   }
 
-  ValueType GetReturnType(FunctionSig* sig) {
+  ValueType GetReturnType(const FunctionSig* sig) {
     DCHECK_GE(1, sig->return_count());
     return sig->return_count() == 0 ? kWasmStmt : sig->GetReturn();
   }
@@ -2552,6 +2543,16 @@ class WasmFullDecoder : public WasmDecoder<validate> {
     auto index = Pop(0, kWasmI32);
     auto* result = Push(type.value_type());
     CALL_INTERFACE_IF_REACHABLE(LoadMem, type, imm, index, result);
+    return imm.length;
+  }
+
+  int DecodeLoadTransformMem(LoadType type, LoadTransformationKind transform) {
+    if (!CheckHasMemory()) return 0;
+    MemoryAccessImmediate<validate> imm(this, this->pc_ + 1, type.size_log_2());
+    auto index = Pop(0, kWasmI32);
+    auto* result = Push(kWasmS128);
+    CALL_INTERFACE_IF_REACHABLE(LoadTransform, type, transform, imm, index,
+                                result);
     return imm.length;
   }
 
@@ -2598,18 +2599,18 @@ class WasmFullDecoder : public WasmDecoder<validate> {
     }
 
     for (int i = 0; i < br_arity; ++i) {
-      if (this->enabled_.anyref) {
+      if (this->enabled_.has_anyref()) {
         // The expected type is the biggest common sub type of all targets.
         (*result_types)[i] =
-            ValueTypes::CommonSubType((*result_types)[i], (*merge)[i].type);
+            ValueType::CommonSubType((*result_types)[i], (*merge)[i].type);
       } else {
         // All target must have the same signature.
         if ((*result_types)[i] != (*merge)[i].type) {
           this->errorf(pos,
                        "inconsistent type in br_table target %u (previous "
                        "was %s, this one is %s)",
-                       index, ValueTypes::TypeName((*result_types)[i]),
-                       ValueTypes::TypeName((*merge)[i].type));
+                       index, (*result_types)[i].type_name(),
+                       (*merge)[i].type.type_name());
           return false;
         }
       }
@@ -2619,7 +2620,7 @@ class WasmFullDecoder : public WasmDecoder<validate> {
 
   bool TypeCheckBrTable(const std::vector<ValueType>& result_types) {
     int br_arity = static_cast<int>(result_types.size());
-    if (V8_LIKELY(control_.back().reachable())) {
+    if (V8_LIKELY(!control_.back().unreachable())) {
       int available =
           static_cast<int>(stack_.size()) - control_.back().stack_depth;
       // There have to be enough values on the stack.
@@ -2634,11 +2635,10 @@ class WasmFullDecoder : public WasmDecoder<validate> {
       // Type-check the topmost br_arity values on the stack.
       for (int i = 0; i < br_arity; ++i) {
         Value& val = stack_values[i];
-        if (!ValueTypes::IsSubType(val.type, result_types[i])) {
+        if (!val.type.IsSubTypeOf(result_types[i])) {
           this->errorf(this->pc_,
                        "type error in merge[%u] (expected %s, got %s)", i,
-                       ValueTypes::TypeName(result_types[i]),
-                       ValueTypes::TypeName(val.type));
+                       result_types[i].type_name(), val.type.type_name());
           return false;
         }
       }
@@ -2737,8 +2737,54 @@ class WasmFullDecoder : public WasmDecoder<validate> {
       case kExprS128StoreMem:
         len = DecodeStoreMem(StoreType::kS128Store, 1);
         break;
+      case kExprS8x16LoadSplat:
+        len = DecodeLoadTransformMem(LoadType::kI32Load8S,
+                                     LoadTransformationKind::kSplat);
+        break;
+      case kExprS16x8LoadSplat:
+        len = DecodeLoadTransformMem(LoadType::kI32Load16S,
+                                     LoadTransformationKind::kSplat);
+        break;
+      case kExprS32x4LoadSplat:
+        len = DecodeLoadTransformMem(LoadType::kI32Load,
+                                     LoadTransformationKind::kSplat);
+        break;
+      case kExprS64x2LoadSplat:
+        len = DecodeLoadTransformMem(LoadType::kI64Load,
+                                     LoadTransformationKind::kSplat);
+        break;
+      case kExprI16x8Load8x8S:
+        len = DecodeLoadTransformMem(LoadType::kI32Load8S,
+                                     LoadTransformationKind::kExtend);
+        break;
+      case kExprI16x8Load8x8U:
+        len = DecodeLoadTransformMem(LoadType::kI32Load8U,
+                                     LoadTransformationKind::kExtend);
+        break;
+      case kExprI32x4Load16x4S:
+        len = DecodeLoadTransformMem(LoadType::kI32Load16S,
+                                     LoadTransformationKind::kExtend);
+        break;
+      case kExprI32x4Load16x4U:
+        len = DecodeLoadTransformMem(LoadType::kI32Load16U,
+                                     LoadTransformationKind::kExtend);
+        break;
+      case kExprI64x2Load32x2S:
+        len = DecodeLoadTransformMem(LoadType::kI64Load32S,
+                                     LoadTransformationKind::kExtend);
+        break;
+      case kExprI64x2Load32x2U:
+        len = DecodeLoadTransformMem(LoadType::kI64Load32U,
+                                     LoadTransformationKind::kExtend);
+        break;
       default: {
-        FunctionSig* sig = WasmOpcodes::Signature(opcode);
+        if (!FLAG_wasm_simd_post_mvp &&
+            WasmOpcodes::IsSimdPostMvpOpcode(opcode)) {
+          this->error(
+              "simd opcode not available, enable with --wasm-simd-post-mvp");
+          break;
+        }
+        const FunctionSig* sig = WasmOpcodes::Signature(opcode);
         if (!VALIDATE(sig != nullptr)) {
           this->error("invalid simd opcode");
           break;
@@ -2755,7 +2801,7 @@ class WasmFullDecoder : public WasmDecoder<validate> {
   uint32_t DecodeAtomicOpcode(WasmOpcode opcode) {
     uint32_t len = 0;
     ValueType ret_type;
-    FunctionSig* sig = WasmOpcodes::Signature(opcode);
+    const FunctionSig* sig = WasmOpcodes::Signature(opcode);
     if (!VALIDATE(sig != nullptr)) {
       this->error("invalid atomic opcode");
       return 0;
@@ -2791,7 +2837,7 @@ class WasmFullDecoder : public WasmDecoder<validate> {
         this->error("invalid atomic opcode");
         return 0;
     }
-    if (!CheckHasSharedMemory()) return 0;
+    if (!CheckHasMemoryForAtomics()) return 0;
     MemoryAccessImmediate<validate> imm(
         this, this->pc_ + 1, ElementSizeLog2Of(memtype.representation()));
     len += imm.length;
@@ -2803,7 +2849,7 @@ class WasmFullDecoder : public WasmDecoder<validate> {
 
   unsigned DecodeNumericOpcode(WasmOpcode opcode) {
     unsigned len = 0;
-    FunctionSig* sig = WasmOpcodes::Signature(opcode);
+    const FunctionSig* sig = WasmOpcodes::Signature(opcode);
     if (sig != nullptr) {
       switch (opcode) {
         case kExprI32SConvertSatF32:
@@ -2945,7 +2991,7 @@ class WasmFullDecoder : public WasmDecoder<validate> {
     DCHECK_EQ(c->stack_depth + merge->arity, stack_.size());
   }
 
-  Value* PushReturns(FunctionSig* sig) {
+  Value* PushReturns(const FunctionSig* sig) {
     size_t return_count = sig->return_count();
     if (return_count == 0) return nullptr;
     size_t old_size = stack_.size();
@@ -2957,12 +3003,11 @@ class WasmFullDecoder : public WasmDecoder<validate> {
 
   V8_INLINE Value Pop(int index, ValueType expected) {
     auto val = Pop();
-    if (!VALIDATE(ValueTypes::IsSubType(val.type, expected) ||
-                  val.type == kWasmBottom || expected == kWasmBottom)) {
+    if (!VALIDATE(val.type.IsSubTypeOf(expected) || val.type == kWasmBottom ||
+                  expected == kWasmBottom)) {
       this->errorf(val.pc, "%s[%d] expected type %s, found %s of type %s",
-                   SafeOpcodeNameAt(this->pc_), index,
-                   ValueTypes::TypeName(expected), SafeOpcodeNameAt(val.pc),
-                   ValueTypes::TypeName(val.type));
+                   SafeOpcodeNameAt(this->pc_), index, expected.type_name(),
+                   SafeOpcodeNameAt(val.pc), val.type.type_name());
     }
     return val;
   }
@@ -2992,9 +3037,9 @@ class WasmFullDecoder : public WasmDecoder<validate> {
     // For conditional branches, stack value '0' is the condition of the branch,
     // and the result values start at index '1'.
     int index_offset = conditional_branch ? 1 : 0;
-    for (int i = 0; i < arity; ++i) Pop(index_offset + i, merge[i].type);
+    for (int i = arity - 1; i >= 0; --i) Pop(index_offset + i, merge[i].type);
     // Push values of the correct type back on the stack.
-    for (int i = arity - 1; i >= 0; --i) Push(merge[i].type);
+    for (int i = 0; i < arity; ++i) Push(merge[i].type);
     return this->ok();
   }
 
@@ -3022,10 +3067,26 @@ class WasmFullDecoder : public WasmDecoder<validate> {
     for (uint32_t i = 0; i < merge->arity; ++i) {
       Value& val = stack_values[i];
       Value& old = (*merge)[i];
-      if (!ValueTypes::IsSubType(val.type, old.type)) {
+      if (!val.type.IsSubTypeOf(old.type)) {
         this->errorf(this->pc_, "type error in merge[%u] (expected %s, got %s)",
-                     i, ValueTypes::TypeName(old.type),
-                     ValueTypes::TypeName(val.type));
+                     i, old.type.type_name(), val.type.type_name());
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  bool TypeCheckOneArmedIf(Control* c) {
+    static_assert(validate, "Call this function only within VALIDATE");
+    DCHECK(c->is_onearmed_if());
+    DCHECK_EQ(c->start_merge.arity, c->end_merge.arity);
+    for (uint32_t i = 0; i < c->start_merge.arity; ++i) {
+      Value& start = c->start_merge[i];
+      Value& end = c->end_merge[i];
+      if (!start.type.IsSubTypeOf(end.type)) {
+        this->errorf(this->pc_, "type error in merge[%u] (expected %s, got %s)",
+                     i, end.type.type_name(), start.type.type_name());
         return false;
       }
     }
@@ -3034,11 +3095,9 @@ class WasmFullDecoder : public WasmDecoder<validate> {
   }
 
   bool TypeCheckFallThru() {
+    static_assert(validate, "Call this function only whithin VALIDATE");
     Control& c = control_.back();
     if (V8_LIKELY(c.reachable())) {
-      // We only do type-checking here. This is only needed during validation.
-      if (!validate) return true;
-
       uint32_t expected = c.end_merge.arity;
       DCHECK_GE(stack_.size(), c.stack_depth);
       uint32_t actual = static_cast<uint32_t>(stack_.size()) - c.stack_depth;
@@ -3129,11 +3188,10 @@ class WasmFullDecoder : public WasmDecoder<validate> {
     for (int i = 0; i < num_returns; ++i) {
       auto& val = stack_values[i];
       ValueType expected_type = this->sig_->GetReturn(i);
-      if (!ValueTypes::IsSubType(val.type, expected_type)) {
+      if (!val.type.IsSubTypeOf(expected_type)) {
         this->errorf(this->pc_,
                      "type error in return[%u] (expected %s, got %s)", i,
-                     ValueTypes::TypeName(expected_type),
-                     ValueTypes::TypeName(val.type));
+                     expected_type.type_name(), val.type.type_name());
         return false;
       }
     }
@@ -3147,17 +3205,14 @@ class WasmFullDecoder : public WasmDecoder<validate> {
   }
 
   void BuildSimplePrototypeOperator(WasmOpcode opcode) {
-    if (WasmOpcodes::IsSignExtensionOpcode(opcode)) {
-      RET_ON_PROTOTYPE_OPCODE(se);
-    }
     if (WasmOpcodes::IsAnyRefOpcode(opcode)) {
       RET_ON_PROTOTYPE_OPCODE(anyref);
     }
-    FunctionSig* sig = WasmOpcodes::Signature(opcode);
+    const FunctionSig* sig = WasmOpcodes::Signature(opcode);
     BuildSimpleOperator(opcode, sig);
   }
 
-  void BuildSimpleOperator(WasmOpcode opcode, FunctionSig* sig) {
+  void BuildSimpleOperator(WasmOpcode opcode, const FunctionSig* sig) {
     switch (sig->parameter_count()) {
       case 1: {
         auto val = Pop(0, sig->GetParam(0));

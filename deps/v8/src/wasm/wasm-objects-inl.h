@@ -88,8 +88,6 @@ ACCESSORS(WasmModuleObject, managed_native_module, Managed<wasm::NativeModule>,
           kNativeModuleOffset)
 ACCESSORS(WasmModuleObject, export_wrappers, FixedArray, kExportWrappersOffset)
 ACCESSORS(WasmModuleObject, script, Script, kScriptOffset)
-OPTIONAL_ACCESSORS(WasmModuleObject, asm_js_offset_table, ByteArray,
-                   kAsmJsOffsetTableOffset)
 wasm::NativeModule* WasmModuleObject::native_module() const {
   return managed_native_module().raw();
 }
@@ -104,12 +102,12 @@ const wasm::WasmModule* WasmModuleObject::module() const {
 bool WasmModuleObject::is_asm_js() {
   bool asm_js = is_asmjs_module(module());
   DCHECK_EQ(asm_js, script().IsUserJavaScript());
-  DCHECK_EQ(asm_js, has_asm_js_offset_table());
   return asm_js;
 }
 
 // WasmTableObject
 ACCESSORS(WasmTableObject, entries, FixedArray, kEntriesOffset)
+SMI_ACCESSORS(WasmTableObject, current_length, kCurrentLengthOffset)
 ACCESSORS(WasmTableObject, maximum_length, Object, kMaximumLengthOffset)
 ACCESSORS(WasmTableObject, dispatch_tables, FixedArray, kDispatchTablesOffset)
 SMI_ACCESSORS(WasmTableObject, raw_type, kRawTypeOffset)
@@ -125,13 +123,16 @@ ACCESSORS(WasmGlobalObject, untagged_buffer, JSArrayBuffer,
 ACCESSORS(WasmGlobalObject, tagged_buffer, FixedArray, kTaggedBufferOffset)
 SMI_ACCESSORS(WasmGlobalObject, offset, kOffsetOffset)
 SMI_ACCESSORS(WasmGlobalObject, flags, kFlagsOffset)
-BIT_FIELD_ACCESSORS(WasmGlobalObject, flags, type, WasmGlobalObject::TypeBits)
+wasm::ValueType WasmGlobalObject::type() const {
+  return wasm::ValueType(TypeBits::decode(flags()));
+}
+void WasmGlobalObject::set_type(wasm::ValueType value) {
+  set_flags(TypeBits::update(flags(), value.kind()));
+}
 BIT_FIELD_ACCESSORS(WasmGlobalObject, flags, is_mutable,
                     WasmGlobalObject::IsMutableBit)
 
-int WasmGlobalObject::type_size() const {
-  return wasm::ValueTypes::ElementSizeInBytes(type());
-}
+int WasmGlobalObject::type_size() const { return type().element_size_bytes(); }
 
 Address WasmGlobalObject::address() const {
   DCHECK_NE(type(), wasm::kWasmAnyRef);
@@ -157,7 +158,7 @@ double WasmGlobalObject::GetF64() {
 
 Handle<Object> WasmGlobalObject::GetRef() {
   // We use this getter for anyref, funcref, and exnref.
-  DCHECK(wasm::ValueTypes::IsReferenceType(type()));
+  DCHECK(type().IsReferenceType());
   return handle(tagged_buffer().get(offset()), GetIsolate());
 }
 
@@ -183,10 +184,19 @@ void WasmGlobalObject::SetAnyRef(Handle<Object> value) {
   tagged_buffer().set(offset(), *value);
 }
 
+bool WasmGlobalObject::SetNullRef(Handle<Object> value) {
+  DCHECK_EQ(type(), wasm::kWasmNullRef);
+  if (!value->IsNull()) {
+    return false;
+  }
+  tagged_buffer().set(offset(), *value);
+  return true;
+}
+
 bool WasmGlobalObject::SetFuncRef(Isolate* isolate, Handle<Object> value) {
   DCHECK_EQ(type(), wasm::kWasmFuncRef);
   if (!value->IsNull(isolate) &&
-      !WasmExportedFunction::IsWasmExportedFunction(*value) &&
+      !WasmExternalFunction::IsWasmExternalFunction(*value) &&
       !WasmCapiFunction::IsWasmCapiFunction(*value)) {
     return false;
   }
@@ -222,8 +232,6 @@ PRIMITIVE_ACCESSORS(WasmInstanceObject, data_segment_starts, Address*,
                     kDataSegmentStartsOffset)
 PRIMITIVE_ACCESSORS(WasmInstanceObject, data_segment_sizes, uint32_t*,
                     kDataSegmentSizesOffset)
-PRIMITIVE_ACCESSORS(WasmInstanceObject, dropped_data_segments, byte*,
-                    kDroppedDataSegmentsOffset)
 PRIMITIVE_ACCESSORS(WasmInstanceObject, dropped_elem_segments, byte*,
                     kDroppedElemSegmentsOffset)
 
@@ -380,7 +388,6 @@ ACCESSORS(WasmDebugInfo, wasm_instance, WasmInstanceObject, kInstanceOffset)
 ACCESSORS(WasmDebugInfo, interpreter_handle, Object, kInterpreterHandleOffset)
 ACCESSORS(WasmDebugInfo, interpreter_reference_stack, Cell,
           kInterpreterReferenceStackOffset)
-OPTIONAL_ACCESSORS(WasmDebugInfo, locals_names, FixedArray, kLocalsNamesOffset)
 OPTIONAL_ACCESSORS(WasmDebugInfo, c_wasm_entries, FixedArray,
                    kCWasmEntriesOffset)
 OPTIONAL_ACCESSORS(WasmDebugInfo, c_wasm_entry_map, Managed<wasm::SignatureMap>,
@@ -391,10 +398,8 @@ OPTIONAL_ACCESSORS(WasmDebugInfo, c_wasm_entry_map, Managed<wasm::SignatureMap>,
 #undef WRITE_PRIMITIVE_FIELD
 #undef PRIMITIVE_ACCESSORS
 
-uint32_t WasmTableObject::current_length() { return entries().length(); }
-
 wasm::ValueType WasmTableObject::type() {
-  return static_cast<wasm::ValueType>(raw_type());
+  return wasm::ValueType(static_cast<wasm::ValueType::Kind>(raw_type()));
 }
 
 bool WasmMemoryObject::has_maximum_pages() { return maximum_pages() >= 0; }
@@ -406,7 +411,6 @@ TQ_SMI_ACCESSORS(WasmExceptionTag, index)
 ACCESSORS(AsmWasmData, managed_native_module, Managed<wasm::NativeModule>,
           kManagedNativeModuleOffset)
 ACCESSORS(AsmWasmData, export_wrappers, FixedArray, kExportWrappersOffset)
-ACCESSORS(AsmWasmData, asm_js_offset_table, ByteArray, kAsmJsOffsetTableOffset)
 ACCESSORS(AsmWasmData, uses_bitset, HeapNumber, kUsesBitsetOffset)
 
 #include "src/objects/object-macros-undef.h"

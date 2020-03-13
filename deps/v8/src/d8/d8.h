@@ -23,6 +23,8 @@
 
 namespace v8 {
 
+class D8Console;
+
 // A single counter in a counter collection.
 class Counter {
  public:
@@ -226,8 +228,6 @@ class PerIsolateData {
     PerIsolateData* data_;
   };
 
-  inline void HostCleanupFinalizationGroup(Local<FinalizationGroup> fg);
-  inline MaybeLocal<FinalizationGroup> GetCleanupFinalizationGroup();
   inline void SetTimeout(Local<Function> callback, Local<Context> context);
   inline MaybeLocal<Function> GetTimeoutCallback();
   inline MaybeLocal<Context> GetTimeoutContext();
@@ -245,7 +245,6 @@ class PerIsolateData {
   Global<Value> realm_shared_;
   std::queue<Global<Function>> set_timeout_callbacks_;
   std::queue<Global<Context>> set_timeout_contexts_;
-  std::queue<Global<FinalizationGroup>> cleanup_finalization_groups_;
   AsyncHooks* async_hooks_wrapper_;
 
   int RealmIndexOrThrow(const v8::FunctionCallbackInfo<v8::Value>& args,
@@ -268,13 +267,13 @@ class ShellOptions {
   bool omit_quit = false;
   bool wait_for_wasm = true;
   bool stress_opt = false;
-  bool stress_deopt = false;
   int stress_runs = 1;
   bool interactive_shell = false;
   bool test_shell = false;
   bool expected_to_throw = false;
   bool mock_arraybuffer_allocator = false;
   size_t mock_arraybuffer_allocator_limit = 0;
+  bool multi_mapped_mock_allocator = false;
   bool enable_inspector = false;
   int num_isolates = 1;
   v8::ScriptCompiler::CompileOptions compile_options =
@@ -297,6 +296,8 @@ class ShellOptions {
   bool stress_delay_tasks = false;
   std::vector<const char*> arguments;
   bool include_arguments = true;
+  bool cpu_profiler = false;
+  bool cpu_profiler_print = false;
 };
 
 class Shell : public i::AllStatic {
@@ -316,6 +317,8 @@ class Shell : public i::AllStatic {
                             ReportExceptions report_exceptions,
                             ProcessMessageQueue process_message_queue);
   static bool ExecuteModule(Isolate* isolate, const char* file_name);
+  static void ReportException(Isolate* isolate, Local<Message> message,
+                              Local<Value> exception);
   static void ReportException(Isolate* isolate, TryCatch* try_catch);
   static Local<String> ReadFile(Isolate* isolate, const char* name);
   static Local<Context> CreateEvaluationContext(Isolate* isolate);
@@ -419,8 +422,6 @@ class Shell : public i::AllStatic {
   static void SetUMask(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void MakeDirectory(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void RemoveDirectory(const v8::FunctionCallbackInfo<v8::Value>& args);
-  static void HostCleanupFinalizationGroup(Local<Context> context,
-                                           Local<FinalizationGroup> fg);
   static MaybeLocal<Promise> HostImportModuleDynamically(
       Local<Context> context, Local<ScriptOrModule> referrer,
       Local<String> specifier);
@@ -457,6 +458,9 @@ class Shell : public i::AllStatic {
   static void AddRunningWorker(std::shared_ptr<Worker> worker);
   static void RemoveRunningWorker(const std::shared_ptr<Worker>& worker);
 
+  static void Initialize(Isolate* isolate, D8Console* console,
+                         bool isOnMainThread = true);
+
  private:
   static Global<Context> evaluation_context_;
   static base::OnceType quit_once_;
@@ -483,7 +487,6 @@ class Shell : public i::AllStatic {
   static void WriteLcovData(v8::Isolate* isolate, const char* file);
   static Counter* GetCounter(const char* name, bool is_histogram);
   static Local<String> Stringify(Isolate* isolate, Local<Value> value);
-  static void Initialize(Isolate* isolate);
   static void RunShell(Isolate* isolate);
   static bool SetOptions(int argc, char* argv[]);
   static Local<ObjectTemplate> CreateGlobalTemplate(Isolate* isolate);

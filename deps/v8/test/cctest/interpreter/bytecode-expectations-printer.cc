@@ -51,8 +51,7 @@ const char* const BytecodeExpectationsPrinter::kIndent = "  ";
 
 v8::Local<v8::String> BytecodeExpectationsPrinter::V8StringFromUTF8(
     const char* data) const {
-  return v8::String::NewFromUtf8(isolate_, data, v8::NewStringType::kNormal)
-      .ToLocalChecked();
+  return v8::String::NewFromUtf8(isolate_, data).ToLocalChecked();
 }
 
 std::string BytecodeExpectationsPrinter::WrapCodeInFunction(
@@ -295,7 +294,7 @@ void BytecodeExpectationsPrinter::PrintConstant(
     *stream << i::HeapObject::cast(*constant).map().instance_type();
     if (constant->IsHeapNumber()) {
       *stream << " [";
-      i::HeapNumber::cast(*constant).HeapNumberPrint(*stream);
+      i::HeapNumber::cast(*constant).HeapNumberShortPrint(*stream);
       *stream << "]";
     } else if (constant->IsString()) {
       *stream << " [";

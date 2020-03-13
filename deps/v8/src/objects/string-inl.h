@@ -397,6 +397,13 @@ Handle<String> String::Flatten(Isolate* isolate, Handle<String> string,
   return string;
 }
 
+Handle<String> String::Flatten(OffThreadIsolate* isolate, Handle<String> string,
+                               AllocationType allocation) {
+  // We should never pass non-flat strings to String::Flatten when off-thread.
+  DCHECK(string->IsFlat());
+  return string;
+}
+
 uint16_t String::Get(int index) {
   DCHECK(index >= 0 && index < length());
 
@@ -771,8 +778,13 @@ void StringCharacterStream::VisitTwoByteString(const uint16_t* chars,
 }
 
 bool String::AsArrayIndex(uint32_t* index) {
+  DisallowHeapAllocation no_gc;
   uint32_t field = hash_field();
-  if (IsHashFieldComputed(field) && (field & kIsNotArrayIndexMask)) {
+  if (ContainsCachedArrayIndex(field)) {
+    *index = ArrayIndexValueBits::decode(field);
+    return true;
+  }
+  if (IsHashFieldComputed(field) && (field & kIsNotIntegerIndexMask)) {
     return false;
   }
   return SlowAsArrayIndex(index);
@@ -780,6 +792,10 @@ bool String::AsArrayIndex(uint32_t* index) {
 
 bool String::AsIntegerIndex(size_t* index) {
   uint32_t field = hash_field();
+  if (ContainsCachedArrayIndex(field)) {
+    *index = ArrayIndexValueBits::decode(field);
+    return true;
+  }
   if (IsHashFieldComputed(field) && (field & kIsNotIntegerIndexMask)) {
     return false;
   }

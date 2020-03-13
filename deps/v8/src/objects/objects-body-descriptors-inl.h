@@ -18,7 +18,7 @@
 #include "src/objects/js-collection.h"
 #include "src/objects/js-weak-refs.h"
 #include "src/objects/oddball.h"
-#include "src/objects/ordered-hash-table.h"
+#include "src/objects/ordered-hash-table-inl.h"
 #include "src/objects/source-text-module.h"
 #include "src/objects/synthetic-module.h"
 #include "src/objects/transitions.h"
@@ -219,7 +219,8 @@ class WeakCell::BodyDescriptor final : public BodyDescriptorBase {
                                  ObjectVisitor* v) {
     IteratePointers(obj, HeapObject::kHeaderSize, kTargetOffset, v);
     IterateCustomWeakPointer(obj, kTargetOffset, v);
-    IteratePointers(obj, kTargetOffset + kTaggedSize, object_size, v);
+    IterateCustomWeakPointer(obj, kUnregisterTokenOffset, v);
+    IteratePointers(obj, kUnregisterTokenOffset + kTaggedSize, object_size, v);
   }
 
   static inline int SizeOf(Map map, HeapObject object) {
@@ -240,6 +241,27 @@ class JSWeakRef::BodyDescriptor final : public BodyDescriptorBase {
     IterateCustomWeakPointer(obj, kTargetOffset, v);
     IterateJSObjectBodyImpl(map, obj, kTargetOffset + kTaggedSize, object_size,
                             v);
+  }
+
+  static inline int SizeOf(Map map, HeapObject object) {
+    return map.instance_size();
+  }
+};
+
+class JSFinalizationRegistry::BodyDescriptor final : public BodyDescriptorBase {
+ public:
+  static bool IsValidSlot(Map map, HeapObject obj, int offset) {
+    return IsValidJSObjectSlotImpl(map, obj, offset);
+  }
+
+  template <typename ObjectVisitor>
+  static inline void IterateBody(Map map, HeapObject obj, int object_size,
+                                 ObjectVisitor* v) {
+    IteratePointers(obj, JSObject::BodyDescriptor::kStartOffset,
+                    kNextDirtyOffset, v);
+    IterateCustomWeakPointer(obj, kNextDirtyOffset, v);
+    IterateJSObjectBodyImpl(map, obj, kNextDirtyOffset + kTaggedSize,
+                            object_size, v);
   }
 
   static inline int SizeOf(Map map, HeapObject object) {
@@ -401,7 +423,7 @@ class V8_EXPORT_PRIVATE SmallOrderedHashTable<Derived>::BodyDescriptor final
 
   static inline int SizeOf(Map map, HeapObject obj) {
     Derived table = Derived::cast(obj);
-    return table.SizeFor(table.Capacity());
+    return Derived::SizeFor(table.Capacity());
   }
 };
 
@@ -545,7 +567,7 @@ class PrototypeInfo::BodyDescriptor final : public BodyDescriptorBase {
 
 class JSWeakCollection::BodyDescriptorImpl final : public BodyDescriptorBase {
  public:
-  STATIC_ASSERT(kTableOffset + kTaggedSize == kSizeOfAllWeakCollections);
+  STATIC_ASSERT(kTableOffset + kTaggedSize == kHeaderSizeOfAllWeakCollections);
 
   static bool IsValidSlot(Map map, HeapObject obj, int offset) {
     return IsValidJSObjectSlotImpl(map, obj, offset);
@@ -597,6 +619,20 @@ class ExternalTwoByteString::BodyDescriptor final : public BodyDescriptorBase {
                                  ObjectVisitor* v) {}
 
   static inline int SizeOf(Map map, HeapObject object) { return kSize; }
+};
+
+class CoverageInfo::BodyDescriptor final : public BodyDescriptorBase {
+ public:
+  static bool IsValidSlot(Map map, HeapObject obj, int offset) { return false; }
+
+  template <typename ObjectVisitor>
+  static inline void IterateBody(Map map, HeapObject obj, int object_size,
+                                 ObjectVisitor* v) {}
+
+  static inline int SizeOf(Map map, HeapObject object) {
+    CoverageInfo info = CoverageInfo::cast(object);
+    return CoverageInfo::SizeFor(info.slot_count());
+  }
 };
 
 class Code::BodyDescriptor final : public BodyDescriptorBase {
@@ -655,7 +691,7 @@ class SeqOneByteString::BodyDescriptor final : public BodyDescriptorBase {
 
   static inline int SizeOf(Map map, HeapObject obj) {
     SeqOneByteString string = SeqOneByteString::cast(obj);
-    return string.SizeFor(string.synchronized_length());
+    return SeqOneByteString::SizeFor(string.synchronized_length());
   }
 };
 
@@ -669,7 +705,7 @@ class SeqTwoByteString::BodyDescriptor final : public BodyDescriptorBase {
 
   static inline int SizeOf(Map map, HeapObject obj) {
     SeqTwoByteString string = SeqTwoByteString::cast(obj);
-    return string.SizeFor(string.synchronized_length());
+    return SeqTwoByteString::SizeFor(string.synchronized_length());
   }
 };
 
@@ -695,7 +731,7 @@ class WasmInstanceObject::BodyDescriptor final : public BodyDescriptorBase {
     for (uint16_t offset : kTaggedFieldOffsets) {
       IteratePointer(obj, offset, v);
     }
-    IterateJSObjectBodyImpl(map, obj, kSize, object_size, v);
+    IterateJSObjectBodyImpl(map, obj, kHeaderSize, object_size, v);
   }
 
   static inline int SizeOf(Map map, HeapObject object) {
@@ -911,6 +947,8 @@ ReturnType BodyDescriptorApply(InstanceType type, T1 p1, T2 p2, T3 p3, T4 p4) {
       return Op::template apply<FeedbackCell::BodyDescriptor>(p1, p2, p3, p4);
     case FEEDBACK_VECTOR_TYPE:
       return Op::template apply<FeedbackVector::BodyDescriptor>(p1, p2, p3, p4);
+    case COVERAGE_INFO_TYPE:
+      return Op::template apply<CoverageInfo::BodyDescriptor>(p1, p2, p3, p4);
     case JS_OBJECT_TYPE:
     case JS_ERROR_TYPE:
     case JS_ARGUMENTS_OBJECT_TYPE:
@@ -941,12 +979,13 @@ ReturnType BodyDescriptorApply(InstanceType type, T1 p1, T2 p2, T3 p3, T4 p4) {
     case JS_SPECIAL_API_OBJECT_TYPE:
     case JS_MESSAGE_OBJECT_TYPE:
     case JS_BOUND_FUNCTION_TYPE:
-    case JS_FINALIZATION_GROUP_CLEANUP_ITERATOR_TYPE:
-    case JS_FINALIZATION_GROUP_TYPE:
+    case JS_FINALIZATION_REGISTRY_CLEANUP_ITERATOR_TYPE:
+    case JS_FINALIZATION_REGISTRY_TYPE:
 #ifdef V8_INTL_SUPPORT
     case JS_V8_BREAK_ITERATOR_TYPE:
     case JS_COLLATOR_TYPE:
     case JS_DATE_TIME_FORMAT_TYPE:
+    case JS_DISPLAY_NAMES_TYPE:
     case JS_LIST_FORMAT_TYPE:
     case JS_LOCALE_TYPE:
     case JS_NUMBER_FORMAT_TYPE:
@@ -1061,6 +1100,12 @@ ReturnType BodyDescriptorApply(InstanceType type, T1 p1, T2 p2, T3 p3, T4 p4) {
     case SYNTHETIC_MODULE_TYPE:
       return Op::template apply<SyntheticModule::BodyDescriptor>(p1, p2, p3,
                                                                  p4);
+#define MAKE_TORQUE_BODY_DESCRIPTOR_APPLY(TYPE, TypeName) \
+  case TYPE:                                              \
+    return Op::template apply<TypeName::BodyDescriptor>(p1, p2, p3, p4);
+      TORQUE_BODY_DESCRIPTOR_LIST(MAKE_TORQUE_BODY_DESCRIPTOR_APPLY)
+#undef MAKE_TORQUE_BODY_DESCRIPTOR_APPLY
+
     default:
       PrintF("Unknown type: %d\n", type);
       UNREACHABLE();
@@ -1106,11 +1151,10 @@ class EphemeronHashTable::BodyDescriptor final : public BodyDescriptorBase {
                         EphemeronHashTable::kElementsStartIndex * kTaggedSize;
     IteratePointers(obj, EphemeronHashTable::kHeaderSize, entries_start, v);
     EphemeronHashTable table = EphemeronHashTable::unchecked_cast(obj);
-    int entries = table.Capacity();
-    for (int i = 0; i < entries; ++i) {
+    for (InternalIndex i : table.IterateEntries()) {
       const int key_index = EphemeronHashTable::EntryToIndex(i);
       const int value_index = EphemeronHashTable::EntryToValueIndex(i);
-      IterateEphemeron(obj, i, OffsetOfElementAt(key_index),
+      IterateEphemeron(obj, i.as_int(), OffsetOfElementAt(key_index),
                        OffsetOfElementAt(value_index), v);
     }
   }

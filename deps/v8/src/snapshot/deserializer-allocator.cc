@@ -26,7 +26,7 @@ Address DeserializerAllocator::AllocateRaw(SnapshotSpace space, int size) {
     AlwaysAllocateScope scope(heap_);
     // Note that we currently do not support deserialization of large code
     // objects.
-    LargeObjectSpace* lo_space = heap_->lo_space();
+    OldLargeObjectSpace* lo_space = heap_->lo_space();
     AllocationResult result = lo_space->AllocateRaw(size);
     HeapObject obj = result.ToObjectChecked();
     deserialized_large_objects_.push_back(obj);
@@ -45,10 +45,12 @@ Address DeserializerAllocator::AllocateRaw(SnapshotSpace space, int size) {
     int chunk_index = current_chunk_[space_number];
     DCHECK_LE(high_water_[space_number], reservation[chunk_index].end);
 #endif
+#ifndef V8_ENABLE_THIRD_PARTY_HEAP
     if (space == SnapshotSpace::kCode)
       MemoryChunk::FromAddress(address)
           ->GetCodeObjectRegistry()
           ->RegisterNewlyAllocatedCodeObject(address);
+#endif
     return address;
   }
 }
@@ -56,6 +58,21 @@ Address DeserializerAllocator::AllocateRaw(SnapshotSpace space, int size) {
 Address DeserializerAllocator::Allocate(SnapshotSpace space, int size) {
   Address address;
   HeapObject obj;
+  // TODO(steveblackburn) Note that the third party heap allocates objects
+  // at reservation time, which means alignment must be acted on at
+  // reservation time, not here.   Since the current encoding does not
+  // inform the reservation of the alignment, it must be conservatively
+  // aligned.
+  //
+  // A more general approach will be to avoid reservation altogether, and
+  // instead of chunk index/offset encoding, simply encode backreferences
+  // by index (this can be optimized by applying something like register
+  // allocation to keep the metadata needed to record the in-flight
+  // backreferences minimal).   This has the significant advantage of
+  // abstracting away the details of the memory allocator from this code.
+  // At each allocation, the regular allocator performs allocation,
+  // and a fixed-sized table is used to track and fix all back references.
+  if (V8_ENABLE_THIRD_PARTY_HEAP_BOOL) return AllocateRaw(space, size);
 
   if (next_alignment_ != kWordAligned) {
     const int reserved = size + Heap::GetMaximumFillToAlign(next_alignment_);
@@ -110,7 +127,8 @@ HeapObject DeserializerAllocator::GetObject(SnapshotSpace space,
   if (next_alignment_ != kWordAligned) {
     int padding = Heap::GetFillToAlign(address, next_alignment_);
     next_alignment_ = kWordAligned;
-    DCHECK(padding == 0 || HeapObject::FromAddress(address).IsFiller());
+    DCHECK(padding == 0 ||
+           HeapObject::FromAddress(address).IsFreeSpaceOrFiller());
     address += padding;
   }
   return HeapObject::FromAddress(address);

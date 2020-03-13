@@ -9,6 +9,9 @@
 #include "src/objects/objects-inl.h"
 #include "src/regexp/regexp-macro-assembler-arch.h"
 #include "src/regexp/regexp-macro-assembler-tracer.h"
+#ifdef V8_INTL_SUPPORT
+#include "src/regexp/special-case.h"
+#endif  // V8_INTL_SUPPORT
 #include "src/strings/unicode-inl.h"
 #include "src/zone/zone-list-inl.h"
 
@@ -249,7 +252,7 @@ RegExpCompiler::CompilationResult RegExpCompiler::Assemble(
 #endif
     macro_assembler_ = macro_assembler;
 
-  std::vector<RegExpNode*> work_list;
+  ZoneVector<RegExpNode*> work_list(zone());
   work_list_ = &work_list;
   Label fail;
   macro_assembler_->PushBacktrack(&fail);
@@ -269,7 +272,7 @@ RegExpCompiler::CompilationResult RegExpCompiler::Assemble(
   }
 
   Handle<HeapObject> code = macro_assembler_->GetCode(pattern);
-  isolate->IncreaseTotalRegexpCodeGenerated(code->Size());
+  isolate->IncreaseTotalRegexpCodeGenerated(code);
   work_list_ = nullptr;
 
 #ifdef DEBUG
@@ -725,32 +728,34 @@ static int GetCaseIndependentLetters(Isolate* isolate, uc16 character,
                                      unibrow::uchar* letters,
                                      int letter_length) {
 #ifdef V8_INTL_SUPPORT
-  // Special case for U+017F which has upper case in ASCII range.
-  if (character == 0x017f) {
+  if (RegExpCaseFolding::IgnoreSet().contains(character)) {
     letters[0] = character;
     return 1;
   }
+  bool in_special_add_set =
+      RegExpCaseFolding::SpecialAddSet().contains(character);
+
   icu::UnicodeSet set;
   set.add(character);
   set = set.closeOver(USET_CASE_INSENSITIVE);
+
+  UChar32 canon = 0;
+  if (in_special_add_set) {
+    canon = RegExpCaseFolding::Canonicalize(character);
+  }
+
   int32_t range_count = set.getRangeCount();
   int items = 0;
   for (int32_t i = 0; i < range_count; i++) {
     UChar32 start = set.getRangeStart(i);
     UChar32 end = set.getRangeEnd(i);
     CHECK(end - start + items <= letter_length);
-    // Only add to the output if character is not in ASCII range
-    // or the case equivalent character is in ASCII range.
-    // #sec-runtime-semantics-canonicalize-ch
-    // 3.g If the numeric value of ch ≥ 128 and the numeric value of cu < 128,
-    //     return ch.
-    if (!((start >= 128) && (character < 128))) {
-      // No range have start and end span across code point 128.
-      DCHECK((start >= 128) == (end >= 128));
-      for (UChar32 cu = start; cu <= end; cu++) {
-        if (one_byte_subject && cu > String::kMaxOneByteCharCode) break;
-        letters[items++] = (unibrow::uchar)(cu);
+    for (UChar32 cu = start; cu <= end; cu++) {
+      if (one_byte_subject && cu > String::kMaxOneByteCharCode) break;
+      if (in_special_add_set && RegExpCaseFolding::Canonicalize(cu) != canon) {
+        continue;
       }
+      letters[items++] = (unibrow::uchar)(cu);
     }
   }
   return items;
@@ -856,10 +861,6 @@ static bool ShortCutEmitCharacterPair(RegExpMacroAssembler* macro_assembler,
   }
   return false;
 }
-
-using EmitCharacterFunction = bool(Isolate* isolate, RegExpCompiler* compiler,
-                                   uc16 c, Label* on_failure, int cp_offset,
-                                   bool check, bool preloaded);
 
 // Only emits letters (things that have case).  Only used for case independent
 // matches.
@@ -1848,13 +1849,13 @@ RegExpNode* TextNode::FilterOneByte(int depth) {
     if (elm.text_type() == TextElement::ATOM) {
       Vector<const uc16> quarks = elm.atom()->data();
       for (int j = 0; j < quarks.length(); j++) {
-        uint16_t c = quarks[j];
+        uc16 c = quarks[j];
         if (elm.atom()->ignore_case()) {
           c = unibrow::Latin1::TryConvertToLatin1(c);
         }
         if (c > unibrow::Latin1::kMaxChar) return set_replacement(nullptr);
         // Replace quark in case we converted to Latin-1.
-        uint16_t* writable_quarks = const_cast<uint16_t*>(quarks.begin());
+        uc16* writable_quarks = const_cast<uc16*>(quarks.begin());
         writable_quarks[j] = c;
       }
     } else {
@@ -2309,7 +2310,6 @@ void TextNode::TextEmitPass(RegExpCompiler* compiler, TextEmitPassType pass,
       for (int j = preloaded ? 0 : quarks.length() - 1; j >= 0; j--) {
         if (first_element_checked && i == 0 && j == 0) continue;
         if (DeterminedAlready(quick_check, elm.cp_offset() + j)) continue;
-        EmitCharacterFunction* emit_function = nullptr;
         uc16 quark = quarks[j];
         if (elm.atom()->ignore_case()) {
           // Everywhere else we assume that a non-Latin-1 character cannot match
@@ -2317,6 +2317,9 @@ void TextNode::TextEmitPass(RegExpCompiler* compiler, TextEmitPassType pass,
           // invalid by using the Latin1 equivalent instead.
           quark = unibrow::Latin1::TryConvertToLatin1(quark);
         }
+        bool needs_bounds_check =
+            *checked_up_to < cp_offset + j || read_backward();
+        bool bounds_checked = false;
         switch (pass) {
           case NON_LATIN1_MATCH:
             DCHECK(one_byte);
@@ -2326,24 +2329,24 @@ void TextNode::TextEmitPass(RegExpCompiler* compiler, TextEmitPassType pass,
             }
             break;
           case NON_LETTER_CHARACTER_MATCH:
-            emit_function = &EmitAtomNonLetter;
+            bounds_checked =
+                EmitAtomNonLetter(isolate, compiler, quark, backtrack,
+                                  cp_offset + j, needs_bounds_check, preloaded);
             break;
           case SIMPLE_CHARACTER_MATCH:
-            emit_function = &EmitSimpleCharacter;
+            bounds_checked = EmitSimpleCharacter(isolate, compiler, quark,
+                                                 backtrack, cp_offset + j,
+                                                 needs_bounds_check, preloaded);
             break;
           case CASE_CHARACTER_MATCH:
-            emit_function = &EmitAtomLetter;
+            bounds_checked =
+                EmitAtomLetter(isolate, compiler, quark, backtrack,
+                               cp_offset + j, needs_bounds_check, preloaded);
             break;
           default:
             break;
         }
-        if (emit_function != nullptr) {
-          bool bounds_check = *checked_up_to < cp_offset + j || read_backward();
-          bool bound_checked =
-              emit_function(isolate, compiler, quark, backtrack, cp_offset + j,
-                            bounds_check, preloaded);
-          if (bound_checked) UpdateBoundsCheck(cp_offset + j, checked_up_to);
-        }
+        if (bounds_checked) UpdateBoundsCheck(cp_offset + j, checked_up_to);
       }
     } else {
       DCHECK_EQ(TextElement::CHAR_CLASS, elm.text_type());
@@ -3429,8 +3432,8 @@ void BackReferenceNode::Emit(RegExpCompiler* compiler, Trace* trace) {
 
   DCHECK_EQ(start_reg_ + 1, end_reg_);
   if (IgnoreCase(flags_)) {
-    assembler->CheckNotBackReferenceIgnoreCase(
-        start_reg_, read_backward(), IsUnicode(flags_), trace->backtrack());
+    assembler->CheckNotBackReferenceIgnoreCase(start_reg_, read_backward(),
+                                               trace->backtrack());
   } else {
     assembler->CheckNotBackReference(start_reg_, read_backward(),
                                      trace->backtrack());
@@ -3607,6 +3610,9 @@ class Analysis : public NodeVisitor {
   void EnsureAnalyzed(RegExpNode* that) {
     StackLimitCheck check(isolate());
     if (check.HasOverflowed()) {
+      if (FLAG_correctness_fuzzer_suppressions) {
+        FATAL("Analysis: Aborting on stack overflow");
+      }
       fail("Stack overflow");
       return;
     }

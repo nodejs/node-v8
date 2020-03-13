@@ -19,12 +19,11 @@ snippet: "
 "
 frame size: 5
 parameter count: 1
-bytecode array length: 19
+bytecode array length: 18
 bytecodes: [
-                B(CreateRestParameter),
+  /*   93 E> */ B(CreateRestParameter),
                 B(Star), R(2),
                 B(Mov), R(closure), R(1),
-  /*   93 E> */ B(StackCheck),
   /*   93 S> */ B(Ldar), R(1),
                 B(GetSuperConstructor), R(4),
                 B(Ldar), R(0),
@@ -51,12 +50,11 @@ snippet: "
 "
 frame size: 9
 parameter count: 1
-bytecode array length: 40
+bytecode array length: 39
 bytecodes: [
-                B(CreateRestParameter),
+  /*  128 E> */ B(CreateRestParameter),
                 B(Star), R(3),
                 B(Mov), R(closure), R(1),
-  /*  128 E> */ B(StackCheck),
                 B(Mov), R(3), R(2),
   /*  140 S> */ B(Ldar), R(closure),
                 B(GetSuperConstructor), R(5),
@@ -93,12 +91,11 @@ snippet: "
 "
 frame size: 11
 parameter count: 1
-bytecode array length: 112
+bytecode array length: 119
 bytecodes: [
-                B(CreateRestParameter),
+  /*  128 E> */ B(CreateRestParameter),
                 B(Star), R(3),
                 B(Mov), R(closure), R(1),
-  /*  128 E> */ B(StackCheck),
                 B(Mov), R(3), R(2),
   /*  140 S> */ B(Ldar), R(closure),
                 B(GetSuperConstructor), R(5),
@@ -112,22 +109,25 @@ bytecodes: [
                 B(Inc), U8(3),
   /*  152 S> */ B(Star), R(6),
                 B(GetIterator), R(3), U8(4), U8(6),
+                B(Mov), R(1), R(4),
+                B(JumpIfJSReceiver), U8(7),
+                B(CallRuntime), U16(Runtime::kThrowSymbolIteratorInvalid), R(0), U8(0),
                 B(Star), R(9),
                 B(LdaNamedProperty), R(9), U8(0), U8(8),
                 B(Star), R(8),
-                B(Mov), R(1), R(4),
                 B(CallProperty0), R(8), R(9), U8(14),
                 B(Star), R(10),
                 B(JumpIfJSReceiver), U8(7),
                 B(CallRuntime), U16(Runtime::kThrowIteratorResultNotAnObject), R(10), U8(1),
                 B(LdaNamedProperty), R(10), U8(1), U8(16),
-                B(JumpIfToBooleanTrue), U8(19),
+                B(JumpIfToBooleanTrue), U8(20),
                 B(LdaNamedProperty), R(10), U8(2), U8(10),
                 B(StaInArrayLiteral), R(7), R(6), U8(1),
                 B(Ldar), R(6),
                 B(Inc), U8(3),
                 B(Star), R(6),
-                B(JumpLoop), U8(33), I8(0),
+                B(StackCheck),
+                B(JumpLoop), U8(34), I8(0),
                 B(LdaSmi), I8(1),
                 B(StaInArrayLiteral), R(7), R(6), U8(1),
                 B(Mov), R(5), R(6),

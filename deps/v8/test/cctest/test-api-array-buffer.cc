@@ -48,15 +48,31 @@ Local<TypedArray> CreateAndCheck(Local<v8::ArrayBuffer> ab, int byteOffset,
 
 std::shared_ptr<v8::BackingStore> Externalize(Local<v8::ArrayBuffer> ab) {
   std::shared_ptr<v8::BackingStore> backing_store = ab->GetBackingStore();
+  // Keep the tests until the deprecated functions are removed.
+#if __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated"
+#endif
   ab->Externalize(backing_store);
   CHECK(ab->IsExternal());
+#if __clang__
+#pragma clang diagnostic pop
+#endif
   return backing_store;
 }
 
 std::shared_ptr<v8::BackingStore> Externalize(Local<v8::SharedArrayBuffer> ab) {
   std::shared_ptr<v8::BackingStore> backing_store = ab->GetBackingStore();
+  // Keep the tests until the deprecated functions are removed.
+#if __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated"
+#endif
   ab->Externalize(backing_store);
   CHECK(ab->IsExternal());
+#if __clang__
+#pragma clang diagnostic pop
+#endif
   return backing_store;
 }
 
@@ -70,7 +86,6 @@ THREADED_TEST(ArrayBuffer_ApiInternalToExternal) {
   Local<v8::ArrayBuffer> ab = v8::ArrayBuffer::New(isolate, 1024);
   CheckInternalFieldsAreZero(ab);
   CHECK_EQ(1024, ab->ByteLength());
-  CHECK(!ab->IsExternal());
   CcTest::CollectAllGarbage();
 
   std::shared_ptr<v8::BackingStore> backing_store = Externalize(ab);
@@ -110,7 +125,6 @@ THREADED_TEST(ArrayBuffer_JSInternalToExternal) {
   Local<v8::ArrayBuffer> ab1 = Local<v8::ArrayBuffer>::Cast(result);
   CheckInternalFieldsAreZero(ab1);
   CHECK_EQ(2, ab1->ByteLength());
-  CHECK(!ab1->IsExternal());
   std::shared_ptr<v8::BackingStore> backing_store = Externalize(ab1);
 
   result = CompileRun("ab1.byteLength");
@@ -144,11 +158,19 @@ THREADED_TEST(ArrayBuffer_External) {
 
   i::ScopedVector<uint8_t> my_data(100);
   memset(my_data.begin(), 0, 100);
+  // Keep the tests until the deprecated functions are removed.
+#if __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated"
+#endif
   Local<v8::ArrayBuffer> ab3 =
       v8::ArrayBuffer::New(isolate, my_data.begin(), 100);
   CheckInternalFieldsAreZero(ab3);
   CHECK_EQ(100, ab3->ByteLength());
   CHECK(ab3->IsExternal());
+#if __clang__
+#pragma clang diagnostic pop
+#endif
 
   CHECK(env->Global()->Set(env.local(), v8_str("ab3"), ab3).FromJust());
 
@@ -174,10 +196,7 @@ THREADED_TEST(ArrayBuffer_DisableDetach) {
   v8::Isolate* isolate = env->GetIsolate();
   v8::HandleScope handle_scope(isolate);
 
-  i::ScopedVector<uint8_t> my_data(100);
-  memset(my_data.begin(), 0, 100);
-  Local<v8::ArrayBuffer> ab =
-      v8::ArrayBuffer::New(isolate, my_data.begin(), 100);
+  Local<v8::ArrayBuffer> ab = v8::ArrayBuffer::New(isolate, 100);
   CHECK(ab->IsDetachable());
 
   i::Handle<i::JSArrayBuffer> buf = v8::Utils::OpenHandle(*ab);
@@ -285,7 +304,15 @@ THREADED_TEST(ArrayBuffer_AllocationInformation) {
 
   const size_t ab_size = 1024;
   Local<v8::ArrayBuffer> ab = v8::ArrayBuffer::New(isolate, ab_size);
+#if __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated"
+#endif
   v8::ArrayBuffer::Contents contents(ab->GetContents());
+#if __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated"
+#endif
 
   // Array buffers should have normal allocation mode.
   CHECK_EQ(contents.AllocationMode(),
@@ -308,7 +335,6 @@ THREADED_TEST(ArrayBuffer_ExternalizeEmpty) {
   Local<v8::ArrayBuffer> ab = v8::ArrayBuffer::New(isolate, 2);
   CheckInternalFieldsAreZero(ab);
   CHECK_EQ(2, ab->ByteLength());
-  CHECK(!ab->IsExternal());
 
   // Externalize the buffer (taking ownership of the backing store memory).
   std::shared_ptr<v8::BackingStore> backing_store = Externalize(ab);
@@ -332,7 +358,6 @@ THREADED_TEST(SharedArrayBuffer_ApiInternalToExternal) {
   Local<v8::SharedArrayBuffer> ab = v8::SharedArrayBuffer::New(isolate, 1024);
   CheckInternalFieldsAreZero(ab);
   CHECK_EQ(1024, ab->ByteLength());
-  CHECK(!ab->IsExternal());
   CcTest::CollectAllGarbage();
 
   std::shared_ptr<v8::BackingStore> backing_store = Externalize(ab);
@@ -550,6 +575,7 @@ THREADED_TEST(ArrayBuffer_NewBackingStore) {
   v8::HandleScope handle_scope(isolate);
   std::shared_ptr<v8::BackingStore> backing_store =
       v8::ArrayBuffer::NewBackingStore(isolate, 100);
+  CHECK(!backing_store->IsShared());
   Local<v8::ArrayBuffer> ab = v8::ArrayBuffer::New(isolate, backing_store);
   CHECK_EQ(backing_store.get(), ab->GetBackingStore().get());
 }
@@ -560,6 +586,7 @@ THREADED_TEST(SharedArrayBuffer_NewBackingStore) {
   v8::HandleScope handle_scope(isolate);
   std::shared_ptr<v8::BackingStore> backing_store =
       v8::SharedArrayBuffer::NewBackingStore(isolate, 100);
+  CHECK(backing_store->IsShared());
   Local<v8::SharedArrayBuffer> ab =
       v8::SharedArrayBuffer::New(isolate, backing_store);
   CHECK_EQ(backing_store.get(), ab->GetBackingStore().get());
@@ -607,6 +634,40 @@ TEST(SharedArrayBuffer_NewBackingStore_CustomDeleter) {
         reinterpret_cast<void*>(backing_store_custom_deleter_data));
   }
   CHECK(backing_store_custom_called);
+}
+
+THREADED_TEST(BackingStore_NotShared) {
+  LocalContext env;
+  v8::Isolate* isolate = env->GetIsolate();
+  v8::HandleScope handle_scope(isolate);
+  Local<v8::ArrayBuffer> ab = v8::ArrayBuffer::New(isolate, 8);
+  CHECK(!ab->GetBackingStore()->IsShared());
+  CHECK(!v8::ArrayBuffer::NewBackingStore(isolate, 8)->IsShared());
+  backing_store_custom_called = false;
+  backing_store_custom_data = malloc(100);
+  backing_store_custom_length = 100;
+  CHECK(!v8::ArrayBuffer::NewBackingStore(
+             backing_store_custom_data, backing_store_custom_length,
+             BackingStoreCustomDeleter,
+             reinterpret_cast<void*>(backing_store_custom_deleter_data))
+             ->IsShared());
+}
+
+THREADED_TEST(BackingStore_Shared) {
+  LocalContext env;
+  v8::Isolate* isolate = env->GetIsolate();
+  v8::HandleScope handle_scope(isolate);
+  Local<v8::SharedArrayBuffer> ab = v8::SharedArrayBuffer::New(isolate, 8);
+  CHECK(ab->GetBackingStore()->IsShared());
+  CHECK(v8::SharedArrayBuffer::NewBackingStore(isolate, 8)->IsShared());
+  backing_store_custom_called = false;
+  backing_store_custom_data = malloc(100);
+  backing_store_custom_length = 100;
+  CHECK(v8::SharedArrayBuffer::NewBackingStore(
+            backing_store_custom_data, backing_store_custom_length,
+            BackingStoreCustomDeleter,
+            reinterpret_cast<void*>(backing_store_custom_deleter_data))
+            ->IsShared());
 }
 
 class DummyAllocator final : public v8::ArrayBuffer::Allocator {
@@ -699,4 +760,75 @@ TEST(BackingStore_HoldAllocatorAlive_AfterIsolateShutdown) {
   CHECK_EQ(allocator_weak.lock()->allocation_count(), 1);
   backing_store.reset();
   CHECK(allocator_weak.expired());
+}
+
+TEST(BackingStore_ReallocateExpand) {
+  LocalContext env;
+  v8::Isolate* isolate = env->GetIsolate();
+  std::unique_ptr<v8::BackingStore> backing_store =
+      v8::ArrayBuffer::NewBackingStore(isolate, 10);
+  {
+    uint8_t* data = reinterpret_cast<uint8_t*>(
+        reinterpret_cast<uintptr_t>(backing_store->Data()));
+    for (uint8_t i = 0; i < 10; i++) {
+      data[i] = i;
+    }
+  }
+  std::unique_ptr<v8::BackingStore> new_backing_store =
+      v8::BackingStore::Reallocate(isolate, std::move(backing_store), 20);
+  CHECK_EQ(new_backing_store->ByteLength(), 20);
+  CHECK(!new_backing_store->IsShared());
+  {
+    uint8_t* data = reinterpret_cast<uint8_t*>(
+        reinterpret_cast<uintptr_t>(new_backing_store->Data()));
+    for (uint8_t i = 0; i < 10; i++) {
+      CHECK_EQ(data[i], i);
+    }
+    for (uint8_t i = 10; i < 20; i++) {
+      CHECK_EQ(data[i], 0);
+    }
+  }
+}
+
+TEST(BackingStore_ReallocateShrink) {
+  LocalContext env;
+  v8::Isolate* isolate = env->GetIsolate();
+  std::unique_ptr<v8::BackingStore> backing_store =
+      v8::ArrayBuffer::NewBackingStore(isolate, 20);
+  {
+    uint8_t* data = reinterpret_cast<uint8_t*>(backing_store->Data());
+    for (uint8_t i = 0; i < 20; i++) {
+      data[i] = i;
+    }
+  }
+  std::unique_ptr<v8::BackingStore> new_backing_store =
+      v8::BackingStore::Reallocate(isolate, std::move(backing_store), 10);
+  CHECK_EQ(new_backing_store->ByteLength(), 10);
+  CHECK(!new_backing_store->IsShared());
+  {
+    uint8_t* data = reinterpret_cast<uint8_t*>(new_backing_store->Data());
+    for (uint8_t i = 0; i < 10; i++) {
+      CHECK_EQ(data[i], i);
+    }
+  }
+}
+
+TEST(BackingStore_ReallocateNotShared) {
+  LocalContext env;
+  v8::Isolate* isolate = env->GetIsolate();
+  std::unique_ptr<v8::BackingStore> backing_store =
+      v8::ArrayBuffer::NewBackingStore(isolate, 20);
+  std::unique_ptr<v8::BackingStore> new_backing_store =
+      v8::BackingStore::Reallocate(isolate, std::move(backing_store), 10);
+  CHECK(!new_backing_store->IsShared());
+}
+
+TEST(BackingStore_ReallocateShared) {
+  LocalContext env;
+  v8::Isolate* isolate = env->GetIsolate();
+  std::unique_ptr<v8::BackingStore> backing_store =
+      v8::SharedArrayBuffer::NewBackingStore(isolate, 20);
+  std::unique_ptr<v8::BackingStore> new_backing_store =
+      v8::BackingStore::Reallocate(isolate, std::move(backing_store), 10);
+  CHECK(new_backing_store->IsShared());
 }

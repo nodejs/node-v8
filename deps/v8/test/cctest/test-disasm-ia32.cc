@@ -136,7 +136,7 @@ TEST(DisasmIa320) {
   __ push(Immediate(23456));
   __ push(ecx);
   __ push(esi);
-  __ push(Operand(ebp, JavaScriptFrameConstants::kFunctionOffset));
+  __ push(Operand(ebp, StandardFrameConstants::kFunctionOffset));
   __ push(Operand(ebx, ecx, times_4, 0));
   __ push(Operand(ebx, ecx, times_4, 0));
   __ push(Operand(ebx, ecx, times_4, 10000));
@@ -291,7 +291,7 @@ TEST(DisasmIa320) {
   __ bind(&L2);
   __ call(Operand(ebx, ecx, times_4, 10000));
   __ nop();
-  Handle<Code> ic = BUILTIN_CODE(isolate, LoadIC);
+  Handle<Code> ic = BUILTIN_CODE(isolate, ArrayFrom);
   __ call(ic, RelocInfo::CODE_TARGET);
   __ nop();
   __ call(FUNCTION_ADDR(DummyStaticFunction), RelocInfo::RUNTIME_ENTRY);
@@ -535,9 +535,7 @@ TEST(DisasmIa320) {
     __ psraw(xmm0, 17);
     __ psrad(xmm0, 17);
     __ psllq(xmm0, 17);
-    __ psllq(xmm0, xmm1);
     __ psrlq(xmm0, 17);
-    __ psrlq(xmm0, xmm1);
 
     __ pshufhw(xmm5, xmm1, 5);
     __ pshufhw(xmm5, Operand(edx, 4), 5);
@@ -581,6 +579,8 @@ TEST(DisasmIa320) {
       CpuFeatureScope scope(&assm, SSE3);
       __ haddps(xmm1, xmm0);
       __ haddps(xmm1, Operand(ebx, ecx, times_4, 10000));
+      __ movddup(xmm1, Operand(eax, 5));
+      __ movddup(xmm1, xmm2);
     }
   }
 
@@ -592,6 +592,7 @@ TEST(DisasmIa320) {
     if (CpuFeatures::IsSupported(SSSE3)) {
       CpuFeatureScope scope(&assm, SSSE3);
       SSSE3_INSTRUCTION_LIST(EMIT_SSE34_INSTR)
+      SSSE3_UNOP_INSTRUCTION_LIST(EMIT_SSE34_INSTR)
       __ palignr(xmm5, xmm1, 5);
       __ palignr(xmm5, Operand(edx, 4), 5);
     }
@@ -735,6 +736,7 @@ TEST(DisasmIa320) {
 
       __ vpsllw(xmm0, xmm7, 21);
       __ vpslld(xmm0, xmm7, 21);
+      __ vpsllq(xmm0, xmm7, 21);
       __ vpsrlw(xmm0, xmm7, 21);
       __ vpsrld(xmm0, xmm7, 21);
       __ vpsrlq(xmm0, xmm7, 21);
@@ -771,6 +773,9 @@ TEST(DisasmIa320) {
       __ vcvttps2dq(xmm1, xmm0);
       __ vcvttps2dq(xmm1, Operand(ebx, ecx, times_4, 10000));
 
+      __ vmovddup(xmm1, xmm2);
+      __ vmovddup(xmm1, Operand(ebx, ecx, times_4, 10000));
+      __ vbroadcastss(xmm1, Operand(ebx, ecx, times_4, 10000));
       __ vmovdqu(xmm0, Operand(ebx, ecx, times_4, 10000));
       __ vmovdqu(Operand(ebx, ecx, times_4, 10000), xmm0);
       __ vmovd(xmm0, edi);
@@ -798,6 +803,7 @@ TEST(DisasmIa320) {
   __ v##instruction(xmm5, xmm1);                                         \
   __ v##instruction(xmm5, Operand(edx, 4));
 
+      SSSE3_UNOP_INSTRUCTION_LIST(EMIT_SSE4_RM_AVXINSTR)
       SSE4_RM_INSTRUCTION_LIST(EMIT_SSE4_RM_AVXINSTR)
 #undef EMIT_SSE4_RM_AVXINSTR
     }

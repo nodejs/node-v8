@@ -37,7 +37,7 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerIA32
   virtual void CheckNotBackReference(int start_reg, bool read_backward,
                                      Label* on_no_match);
   virtual void CheckNotBackReferenceIgnoreCase(int start_reg,
-                                               bool read_backward, bool unicode,
+                                               bool read_backward,
                                                Label* on_no_match);
   virtual void CheckNotCharacter(uint32_t c, Label* on_not_equal);
   virtual void CheckNotCharacterAfterAnd(uint32_t c,
@@ -120,8 +120,9 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerIA32
   static const int kSuccessfulCaptures = kBackup_ebx - kSystemPointerSize;
   static const int kStringStartMinusOne =
       kSuccessfulCaptures - kSystemPointerSize;
+  static const int kBacktrackCount = kStringStartMinusOne - kSystemPointerSize;
   // First register address. Following registers are below it on the stack.
-  static const int kRegisterZero = kStringStartMinusOne - kSystemPointerSize;
+  static const int kRegisterZero = kBacktrackCount - kSystemPointerSize;
 
   // Initial size of code buffer.
   static const int kRegExpCodeSize = 1024;

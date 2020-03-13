@@ -11,7 +11,9 @@
 
 #include "src/base/bits.h"
 #include "src/base/ieee754.h"
+#include "src/common/assert-scope.h"
 #include "src/utils/memcopy.h"
+#include "src/wasm/wasm-objects-inl.h"
 
 #if defined(ADDRESS_SANITIZER) || defined(MEMORY_SANITIZER) || \
     defined(THREAD_SANITIZER) || defined(LEAK_SANITIZER) ||    \
@@ -303,52 +305,120 @@ uint32_t word32_ror_wrapper(Address data) {
   return (input >> shift) | (input << ((32 - shift) & 31));
 }
 
+void word64_rol_wrapper(Address data) {
+  uint64_t input = ReadUnalignedValue<uint64_t>(data);
+  uint64_t shift = ReadUnalignedValue<uint64_t>(data + sizeof(input)) & 63;
+  uint64_t result = (input << shift) | (input >> ((64 - shift) & 63));
+  WriteUnalignedValue<uint64_t>(data, result);
+}
+
+void word64_ror_wrapper(Address data) {
+  uint64_t input = ReadUnalignedValue<uint64_t>(data);
+  uint64_t shift = ReadUnalignedValue<uint64_t>(data + sizeof(input)) & 63;
+  uint64_t result = (input >> shift) | (input << ((64 - shift) & 63));
+  WriteUnalignedValue<uint64_t>(data, result);
+}
+
 void float64_pow_wrapper(Address data) {
   double x = ReadUnalignedValue<double>(data);
   double y = ReadUnalignedValue<double>(data + sizeof(x));
   WriteUnalignedValue<double>(data, base::ieee754::pow(x, y));
 }
 
-// Asan on Windows triggers exceptions in this function to allocate
-// shadow memory lazily. When this function is called from WebAssembly,
-// these exceptions would be handled by the trap handler before they get
-// handled by Asan, and thereby confuse the thread-in-wasm flag.
-// Therefore we disable ASAN for this function. Alternatively we could
-// reset the thread-in-wasm flag before calling this function. However,
-// as this is only a problem with Asan on Windows, we did not consider
-// it worth the overhead.
-DISABLE_ASAN void memory_copy_wrapper(Address dst, Address src, uint32_t size) {
-  // Use explicit forward and backward copy to match the required semantics for
-  // the memory.copy instruction. It is assumed that the caller of this
-  // function has already performed bounds checks, so {src + size} and
-  // {dst + size} should not overflow.
-  DCHECK(src + size >= src && dst + size >= dst);
-  uint8_t* dst8 = reinterpret_cast<uint8_t*>(dst);
-  uint8_t* src8 = reinterpret_cast<uint8_t*>(src);
-  if (src < dst && src + size > dst && dst + size > src) {
-    dst8 += size - 1;
-    src8 += size - 1;
-    for (; size > 0; size--) {
-      *dst8-- = *src8--;
-    }
-  } else {
-    for (; size > 0; size--) {
-      *dst8++ = *src8++;
+namespace {
+class ThreadNotInWasmScope {
+// Asan on Windows triggers exceptions to allocate shadow memory lazily. When
+// this function is called from WebAssembly, these exceptions would be handled
+// by the trap handler before they get handled by Asan, and thereby confuse the
+// thread-in-wasm flag. Therefore we disable ASAN for this function.
+// Alternatively we could reset the thread-in-wasm flag before calling this
+// function. However, as this is only a problem with Asan on Windows, we did not
+// consider it worth the overhead.
+#if defined(RESET_THREAD_IN_WASM_FLAG_FOR_ASAN_ON_WINDOWS)
+
+ public:
+  ThreadNotInWasmScope() : thread_was_in_wasm_(trap_handler::IsThreadInWasm()) {
+    if (thread_was_in_wasm_) {
+      trap_handler::ClearThreadInWasm();
     }
   }
-}
 
-// Asan on Windows triggers exceptions in this function that confuse the
-// WebAssembly trap handler, so Asan is disabled. See the comment on
-// memory_copy_wrapper above for more info.
-void memory_fill_wrapper(Address dst, uint32_t value, uint32_t size) {
-#if defined(RESET_THREAD_IN_WASM_FLAG_FOR_ASAN_ON_WINDOWS)
-  bool thread_was_in_wasm = trap_handler::IsThreadInWasm();
-  if (thread_was_in_wasm) {
-    trap_handler::ClearThreadInWasm();
+  ~ThreadNotInWasmScope() {
+    if (thread_was_in_wasm_) {
+      trap_handler::SetThreadInWasm();
+    }
+  }
+
+ private:
+  bool thread_was_in_wasm_;
+#else
+
+ public:
+  ThreadNotInWasmScope() {
+    // This is needed to avoid compilation errors (unused variable).
+    USE(this);
   }
 #endif
+};
+}  // namespace
 
+int32_t memory_init_wrapper(Address data) {
+  constexpr int32_t kSuccess = 1;
+  constexpr int32_t kOutOfBounds = 0;
+  ThreadNotInWasmScope thread_not_in_wasm_scope;
+  DisallowHeapAllocation disallow_heap_allocation;
+  size_t offset = 0;
+  Object raw_instance = ReadUnalignedValue<Object>(data);
+  WasmInstanceObject instance = WasmInstanceObject::cast(raw_instance);
+  offset += sizeof(Object);
+  size_t dst = ReadUnalignedValue<uint32_t>(data + offset);
+  offset += sizeof(uint32_t);
+  size_t src = ReadUnalignedValue<uint32_t>(data + offset);
+  offset += sizeof(uint32_t);
+  uint32_t seg_index = ReadUnalignedValue<uint32_t>(data + offset);
+  offset += sizeof(uint32_t);
+  size_t size = ReadUnalignedValue<uint32_t>(data + offset);
+
+  size_t mem_size = instance.memory_size();
+  if (!base::IsInBounds(dst, size, mem_size)) return kOutOfBounds;
+
+  size_t seg_size = instance.data_segment_sizes()[seg_index];
+  if (!base::IsInBounds(src, size, seg_size)) return kOutOfBounds;
+
+  byte* mem_start = instance.memory_start();
+  byte* seg_start =
+      reinterpret_cast<byte*>(instance.data_segment_starts()[seg_index]);
+  std::memcpy(mem_start + dst, seg_start + src, size);
+  return kSuccess;
+}
+
+int32_t memory_copy_wrapper(Address data) {
+  constexpr int32_t kSuccess = 1;
+  constexpr int32_t kOutOfBounds = 0;
+  ThreadNotInWasmScope thread_not_in_wasm_scope;
+  DisallowHeapAllocation disallow_heap_allocation;
+  size_t offset = 0;
+  Object raw_instance = ReadUnalignedValue<Object>(data);
+  WasmInstanceObject instance = WasmInstanceObject::cast(raw_instance);
+  offset += sizeof(Object);
+  size_t dst = ReadUnalignedValue<uint32_t>(data + offset);
+  offset += sizeof(uint32_t);
+  size_t src = ReadUnalignedValue<uint32_t>(data + offset);
+  offset += sizeof(uint32_t);
+  size_t size = ReadUnalignedValue<uint32_t>(data + offset);
+
+  size_t mem_size = instance.memory_size();
+  if (!base::IsInBounds(dst, size, mem_size)) return kOutOfBounds;
+  if (!base::IsInBounds(src, size, mem_size)) return kOutOfBounds;
+
+  byte* memory_start = instance.memory_start();
+  // Use std::memmove, because the ranges can overlap.
+  std::memmove(memory_start + dst, memory_start + src, size);
+  return kSuccess;
+}
+
+void memory_fill_wrapper(Address dst, uint32_t value, uint32_t size) {
+  ThreadNotInWasmScope thread_not_in_wasm_scope;
   // Use an explicit forward copy to match the required semantics for the
   // memory.fill instruction. It is assumed that the caller of this function
   // has already performed bounds checks, so {dst + size} should not overflow.
@@ -358,11 +428,6 @@ void memory_fill_wrapper(Address dst, uint32_t value, uint32_t size) {
   for (; size > 0; size--) {
     *dst8++ = value8;
   }
-#if defined(RESET_THREAD_IN_WASM_FLAG_FOR_ASAN_ON_WINDOWS)
-  if (thread_was_in_wasm) {
-    trap_handler::SetThreadInWasm();
-  }
-#endif
 }
 
 static WasmTrapCallbackForTesting wasm_trap_callback_for_testing = nullptr;

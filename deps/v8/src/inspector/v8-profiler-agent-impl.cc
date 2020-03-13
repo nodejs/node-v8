@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "src/base/atomicops.h"
+#include "src/base/platform/time.h"
 #include "src/debug/debug-interface.h"
 #include "src/inspector/protocol/Protocol.h"
 #include "src/inspector/string-util.h"
@@ -26,8 +27,10 @@ static const char profilerEnabled[] = "profilerEnabled";
 static const char preciseCoverageStarted[] = "preciseCoverageStarted";
 static const char preciseCoverageCallCount[] = "preciseCoverageCallCount";
 static const char preciseCoverageDetailed[] = "preciseCoverageDetailed";
+static const char preciseCoverageAllowTriggeredUpdates[] =
+    "preciseCoverageAllowTriggeredUpdates";
 static const char typeProfileStarted[] = "typeProfileStarted";
-}
+}  // namespace ProfilerAgentState
 
 namespace {
 
@@ -260,7 +263,11 @@ void V8ProfilerAgentImpl::restore() {
         ProfilerAgentState::preciseCoverageCallCount, false);
     bool detailed = m_state->booleanProperty(
         ProfilerAgentState::preciseCoverageDetailed, false);
-    startPreciseCoverage(Maybe<bool>(callCount), Maybe<bool>(detailed));
+    bool updatesAllowed = m_state->booleanProperty(
+        ProfilerAgentState::preciseCoverageAllowTriggeredUpdates, false);
+    double timestamp;
+    startPreciseCoverage(Maybe<bool>(callCount), Maybe<bool>(detailed),
+                         Maybe<bool>(updatesAllowed), &timestamp);
   }
 }
 
@@ -291,16 +298,22 @@ Response V8ProfilerAgentImpl::stop(
   return Response::OK();
 }
 
-Response V8ProfilerAgentImpl::startPreciseCoverage(Maybe<bool> callCount,
-                                                   Maybe<bool> detailed) {
+Response V8ProfilerAgentImpl::startPreciseCoverage(
+    Maybe<bool> callCount, Maybe<bool> detailed,
+    Maybe<bool> allowTriggeredUpdates, double* out_timestamp) {
   if (!m_enabled) return Response::Error("Profiler is not enabled");
+  *out_timestamp =
+      v8::base::TimeTicks::HighResolutionNow().since_origin().InSecondsF();
   bool callCountValue = callCount.fromMaybe(false);
   bool detailedValue = detailed.fromMaybe(false);
+  bool allowTriggeredUpdatesValue = allowTriggeredUpdates.fromMaybe(false);
   m_state->setBoolean(ProfilerAgentState::preciseCoverageStarted, true);
   m_state->setBoolean(ProfilerAgentState::preciseCoverageCallCount,
                       callCountValue);
   m_state->setBoolean(ProfilerAgentState::preciseCoverageDetailed,
                       detailedValue);
+  m_state->setBoolean(ProfilerAgentState::preciseCoverageAllowTriggeredUpdates,
+                      allowTriggeredUpdatesValue);
   // BlockCount is a superset of PreciseCount. It includes block-granularity
   // coverage data if it exists (at the time of writing, that's the case for
   // each function recompiled after the BlockCount mode has been set); and
@@ -395,14 +408,37 @@ Response coverageToProtocol(
 
 Response V8ProfilerAgentImpl::takePreciseCoverage(
     std::unique_ptr<protocol::Array<protocol::Profiler::ScriptCoverage>>*
-        out_result) {
+        out_result,
+    double* out_timestamp) {
   if (!m_state->booleanProperty(ProfilerAgentState::preciseCoverageStarted,
                                 false)) {
     return Response::Error("Precise coverage has not been started.");
   }
   v8::HandleScope handle_scope(m_isolate);
   v8::debug::Coverage coverage = v8::debug::Coverage::CollectPrecise(m_isolate);
+  *out_timestamp =
+      v8::base::TimeTicks::HighResolutionNow().since_origin().InSecondsF();
   return coverageToProtocol(m_session->inspector(), coverage, out_result);
+}
+
+void V8ProfilerAgentImpl::triggerPreciseCoverageDeltaUpdate(
+    const String16& occassion) {
+  if (!m_state->booleanProperty(ProfilerAgentState::preciseCoverageStarted,
+                                false)) {
+    return;
+  }
+  if (!m_state->booleanProperty(
+          ProfilerAgentState::preciseCoverageAllowTriggeredUpdates, false)) {
+    return;
+  }
+  v8::HandleScope handle_scope(m_isolate);
+  v8::debug::Coverage coverage = v8::debug::Coverage::CollectPrecise(m_isolate);
+  std::unique_ptr<protocol::Array<protocol::Profiler::ScriptCoverage>>
+      out_result;
+  coverageToProtocol(m_session->inspector(), coverage, &out_result);
+  double now =
+      v8::base::TimeTicks::HighResolutionNow().since_origin().InSecondsF();
+  m_frontend.preciseCoverageDeltaUpdate(now, occassion, std::move(out_result));
 }
 
 Response V8ProfilerAgentImpl::getBestEffortCoverage(
@@ -485,6 +521,44 @@ Response V8ProfilerAgentImpl::takeTypeProfile(
   v8::debug::TypeProfile type_profile =
       v8::debug::TypeProfile::Collect(m_isolate);
   *out_result = typeProfileToProtocol(m_session->inspector(), type_profile);
+  return Response::OK();
+}
+
+Response V8ProfilerAgentImpl::enableRuntimeCallStats() {
+  if (m_counters)
+    return Response::Error("RuntimeCallStats collection already enabled.");
+
+  if (V8Inspector* inspector = v8::debug::GetInspector(m_isolate))
+    m_counters = inspector->enableCounters();
+  else
+    return Response::Error("No inspector found.");
+
+  return Response::OK();
+}
+
+Response V8ProfilerAgentImpl::disableRuntimeCallStats() {
+  if (m_counters) m_counters.reset();
+  return Response::OK();
+}
+
+Response V8ProfilerAgentImpl::getRuntimeCallStats(
+    std::unique_ptr<protocol::Array<protocol::Profiler::CounterInfo>>*
+        out_result) {
+  if (!m_counters)
+    return Response::Error("RuntimeCallStats collection is not enabled.");
+
+  *out_result =
+      std::make_unique<protocol::Array<protocol::Profiler::CounterInfo>>();
+
+  for (const auto& counter : m_counters->getCountersMap()) {
+    (*out_result)
+        ->emplace_back(
+            protocol::Profiler::CounterInfo::create()
+                .setName(String16(counter.first.data(), counter.first.length()))
+                .setValue(counter.second)
+                .build());
+  }
+
   return Response::OK();
 }
 

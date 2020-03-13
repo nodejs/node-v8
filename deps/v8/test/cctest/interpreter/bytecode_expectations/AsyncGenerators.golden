@@ -14,14 +14,13 @@ snippet: "
 "
 frame size: 8
 parameter count: 1
-bytecode array length: 148
+bytecode array length: 144
 bytecodes: [
                 B(SwitchOnGeneratorState), R(0), U8(0), U8(1),
                 B(Mov), R(closure), R(1),
                 B(Mov), R(this), R(2),
-                B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(1), U8(2),
+  /*   17 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(1), U8(2),
                 B(Star), R(0),
-  /*   17 E> */ B(StackCheck),
                 B(Mov), R(context), R(3),
                 B(Mov), R(context), R(4),
                 B(Ldar), R(0),
@@ -35,9 +34,12 @@ bytecodes: [
                 B(LdaSmi), I8(1),
                 B(Star), R(1),
                 B(Mov), R(5), R(2),
-                B(Jump), U8(53),
-                B(Ldar), R(5),
-                B(Jump), U8(36),
+                B(Jump), U8(50),
+                B(LdaUndefined),
+                B(Star), R(2),
+                B(LdaSmi), I8(1),
+                B(Star), R(1),
+                B(Jump), U8(41),
                 B(Star), R(5),
                 B(CreateCatchContext), R(5), U8(3),
                 B(Star), R(4),
@@ -45,17 +47,13 @@ bytecodes: [
                 B(SetPendingMessage),
                 B(Ldar), R(4),
                 B(PushContext), R(5),
-                B(LdaImmutableCurrentContextSlot), U8(4),
+                B(LdaImmutableCurrentContextSlot), U8(2),
                 B(Star), R(7),
                 B(Mov), R(0), R(6),
                 B(InvokeIntrinsic), U8(Runtime::k_AsyncGeneratorReject), R(6), U8(2),
                 B(PopContext), R(5),
                 B(Star), R(2),
                 B(LdaSmi), I8(2),
-                B(Star), R(1),
-                B(Jump), U8(15),
-                B(LdaSmi), I8(-1),
-                B(Star), R(2),
                 B(Star), R(1),
                 B(Jump), U8(7),
                 B(Star), R(2),
@@ -84,7 +82,7 @@ bytecodes: [
   /*   22 S> */ B(Return),
 ]
 constant pool: [
-  Smi [30],
+  Smi [29],
   Smi [16],
   Smi [7],
   SCOPE_INFO_TYPE,
@@ -93,8 +91,8 @@ constant pool: [
   Smi [23],
 ]
 handlers: [
-  [20, 94, 102],
-  [23, 56, 60],
+  [19, 98, 98],
+  [22, 64, 64],
 ]
 
 ---
@@ -104,14 +102,13 @@ snippet: "
 "
 frame size: 8
 parameter count: 1
-bytecode array length: 193
+bytecode array length: 189
 bytecodes: [
                 B(SwitchOnGeneratorState), R(0), U8(0), U8(2),
                 B(Mov), R(closure), R(1),
                 B(Mov), R(this), R(2),
-                B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(1), U8(2),
+  /*   17 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(1), U8(2),
                 B(Star), R(0),
-  /*   17 E> */ B(StackCheck),
                 B(Mov), R(context), R(3),
                 B(Mov), R(context), R(4),
                 B(Ldar), R(0),
@@ -125,7 +122,7 @@ bytecodes: [
                 B(LdaSmi), I8(1),
                 B(Star), R(1),
                 B(Mov), R(5), R(2),
-                B(Jump), U8(98),
+                B(Jump), U8(95),
   /*   22 S> */ B(LdaSmi), I8(42),
                 B(Star), R(6),
                 B(LdaFalse),
@@ -142,9 +139,12 @@ bytecodes: [
                 B(LdaSmi), I8(1),
                 B(Star), R(1),
                 B(Mov), R(5), R(2),
-                B(Jump), U8(53),
-                B(Ldar), R(5),
-                B(Jump), U8(36),
+                B(Jump), U8(50),
+                B(LdaUndefined),
+                B(Star), R(2),
+                B(LdaSmi), I8(1),
+                B(Star), R(1),
+                B(Jump), U8(41),
                 B(Star), R(5),
                 B(CreateCatchContext), R(5), U8(6),
                 B(Star), R(4),
@@ -152,17 +152,13 @@ bytecodes: [
                 B(SetPendingMessage),
                 B(Ldar), R(4),
                 B(PushContext), R(5),
-                B(LdaImmutableCurrentContextSlot), U8(4),
+                B(LdaImmutableCurrentContextSlot), U8(2),
                 B(Star), R(7),
                 B(Mov), R(0), R(6),
                 B(InvokeIntrinsic), U8(Runtime::k_AsyncGeneratorReject), R(6), U8(2),
                 B(PopContext), R(5),
                 B(Star), R(2),
                 B(LdaSmi), I8(2),
-                B(Star), R(1),
-                B(Jump), U8(15),
-                B(LdaSmi), I8(-1),
-                B(Star), R(2),
                 B(Star), R(1),
                 B(Jump), U8(7),
                 B(Star), R(2),
@@ -191,8 +187,8 @@ bytecodes: [
   /*   31 S> */ B(Return),
 ]
 constant pool: [
-  Smi [30],
-  Smi [75],
+  Smi [29],
+  Smi [74],
   Smi [16],
   Smi [7],
   Smi [16],
@@ -203,8 +199,8 @@ constant pool: [
   Smi [23],
 ]
 handlers: [
-  [20, 139, 147],
-  [23, 101, 105],
+  [19, 143, 143],
+  [22, 109, 109],
 ]
 
 ---
@@ -214,14 +210,13 @@ snippet: "
 "
 frame size: 19
 parameter count: 1
-bytecode array length: 357
+bytecode array length: 362
 bytecodes: [
                 B(SwitchOnGeneratorState), R(0), U8(0), U8(2),
                 B(Mov), R(closure), R(4),
                 B(Mov), R(this), R(5),
-                B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(4), U8(2),
+  /*   17 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(4), U8(2),
                 B(Star), R(0),
-  /*   17 E> */ B(StackCheck),
                 B(Mov), R(context), R(6),
                 B(Mov), R(context), R(7),
                 B(Ldar), R(0),
@@ -239,6 +234,8 @@ bytecodes: [
   /*   36 S> */ B(CreateArrayLiteral), U8(4), U8(0), U8(37),
                 B(Star), R(10),
                 B(GetIterator), R(10), U8(1), U8(3),
+                B(JumpIfJSReceiver), U8(7),
+                B(CallRuntime), U16(Runtime::kThrowSymbolIteratorInvalid), R(0), U8(0),
                 B(Star), R(9),
                 B(LdaNamedProperty), R(9), U8(5), U8(5),
                 B(Star), R(8),
@@ -258,7 +255,6 @@ bytecodes: [
                 B(LdaFalse),
                 B(Star), R(10),
                 B(Mov), R(14), R(1),
-  /*   22 E> */ B(StackCheck),
   /*   31 S> */ B(Mov), R(1), R(3),
   /*   42 S> */ B(LdaFalse),
                 B(Star), R(17),
@@ -275,8 +271,9 @@ bytecodes: [
                 B(LdaSmi), I8(1),
                 B(Star), R(11),
                 B(Mov), R(15), R(12),
-                B(Jump), U8(20),
+                B(Jump), U8(21),
                 B(Ldar), R(15),
+  /*   22 E> */ B(StackCheck),
                 B(JumpLoop), U8(84), I8(0),
                 B(LdaSmi), I8(-1),
                 B(Star), R(12),
@@ -296,7 +293,7 @@ bytecodes: [
                 B(Mov), R(context), R(16),
                 B(TestTypeOf), U8(6),
                 B(JumpIfTrue), U8(18),
-                B(Wide), B(LdaSmi), I16(159),
+                B(Wide), B(LdaSmi), I16(160),
                 B(Star), R(17),
                 B(LdaConstant), U8(11),
                 B(Star), R(18),
@@ -323,8 +320,12 @@ bytecodes: [
                 B(LdaSmi), I8(1),
                 B(Star), R(4),
                 B(Mov), R(12), R(5),
-                B(Jump), U8(51),
-                B(Jump), U8(36),
+                B(Jump), U8(50),
+                B(LdaUndefined),
+                B(Star), R(5),
+                B(LdaSmi), I8(1),
+                B(Star), R(4),
+                B(Jump), U8(41),
                 B(Star), R(8),
                 B(CreateCatchContext), R(8), U8(14),
                 B(Star), R(7),
@@ -332,17 +333,13 @@ bytecodes: [
                 B(SetPendingMessage),
                 B(Ldar), R(7),
                 B(PushContext), R(8),
-                B(LdaImmutableCurrentContextSlot), U8(4),
+                B(LdaImmutableCurrentContextSlot), U8(2),
                 B(Star), R(10),
                 B(Mov), R(0), R(9),
                 B(InvokeIntrinsic), U8(Runtime::k_AsyncGeneratorReject), R(9), U8(2),
                 B(PopContext), R(8),
                 B(Star), R(5),
                 B(LdaSmi), I8(2),
-                B(Star), R(4),
-                B(Jump), U8(15),
-                B(LdaSmi), I8(-1),
-                B(Star), R(5),
                 B(Star), R(4),
                 B(Jump), U8(7),
                 B(Star), R(5),
@@ -371,8 +368,8 @@ bytecodes: [
   /*   50 S> */ B(Return),
 ]
 constant pool: [
-  Smi [30],
-  Smi [136],
+  Smi [29],
+  Smi [141],
   Smi [16],
   Smi [7],
   ARRAY_BOILERPLATE_DESCRIPTION_TYPE,
@@ -386,16 +383,16 @@ constant pool: [
   Smi [6],
   Smi [9],
   SCOPE_INFO_TYPE,
-  Smi [262],
+  Smi [268],
   Smi [6],
   Smi [9],
   Smi [23],
 ]
 handlers: [
-  [20, 303, 311],
-  [23, 267, 269],
-  [80, 167, 175],
-  [199, 232, 234],
+  [19, 316, 316],
+  [22, 282, 282],
+  [86, 173, 181],
+  [205, 238, 240],
 ]
 
 ---
@@ -406,14 +403,13 @@ snippet: "
 "
 frame size: 17
 parameter count: 1
-bytecode array length: 467
+bytecode array length: 464
 bytecodes: [
                 B(SwitchOnGeneratorState), R(0), U8(0), U8(5),
                 B(Mov), R(closure), R(1),
                 B(Mov), R(this), R(2),
-                B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(1), U8(2),
+  /*   44 E> */ B(InvokeIntrinsic), U8(Runtime::k_CreateJSGeneratorObject), R(1), U8(2),
                 B(Star), R(0),
-  /*   44 E> */ B(StackCheck),
                 B(Mov), R(context), R(3),
                 B(Mov), R(context), R(4),
                 B(Ldar), R(0),
@@ -475,7 +471,7 @@ bytecodes: [
                 B(LdaSmi), I8(1),
                 B(Star), R(1),
                 B(Mov), R(10), R(2),
-                B(Jump), U8(241),
+                B(Jump), U8(239),
                 B(LdaNamedProperty), R(7), U8(14), U8(20),
                 B(JumpIfUndefinedOrNull), U8(11),
                 B(Star), R(12),
@@ -522,7 +518,7 @@ bytecodes: [
                 B(JumpIfJSReceiver), U8(7),
                 B(CallRuntime), U16(Runtime::kThrowIteratorResultNotAnObject), R(5), U8(1),
                 B(LdaNamedProperty), R(5), U8(15), U8(28),
-                B(JumpIfToBooleanTrue), U8(38),
+                B(JumpIfToBooleanTrue), U8(39),
                 B(LdaNamedProperty), R(5), U8(16), U8(30),
                 B(Star), R(15),
                 B(LdaFalse),
@@ -534,7 +530,8 @@ bytecodes: [
                 B(Star), R(8),
                 B(InvokeIntrinsic), U8(Runtime::k_GeneratorGetResumeMode), R(0), U8(1),
                 B(Star), R(6),
-                B(JumpLoop), U8(236), I8(0),
+                B(StackCheck),
+                B(JumpLoop), U8(237), I8(0),
                 B(LdaNamedProperty), R(5), U8(16), U8(32),
                 B(Star), R(7),
                 B(LdaSmi), I8(1),
@@ -543,9 +540,12 @@ bytecodes: [
                 B(LdaSmi), I8(1),
                 B(Star), R(1),
                 B(Mov), R(7), R(2),
-                B(Jump), U8(53),
-                B(Ldar), R(7),
-                B(Jump), U8(36),
+                B(Jump), U8(50),
+                B(LdaUndefined),
+                B(Star), R(2),
+                B(LdaSmi), I8(1),
+                B(Star), R(1),
+                B(Jump), U8(41),
                 B(Star), R(5),
                 B(CreateCatchContext), R(5), U8(17),
                 B(Star), R(4),
@@ -553,17 +553,13 @@ bytecodes: [
                 B(SetPendingMessage),
                 B(Ldar), R(4),
                 B(PushContext), R(5),
-                B(LdaImmutableCurrentContextSlot), U8(4),
+                B(LdaImmutableCurrentContextSlot), U8(2),
                 B(Star), R(7),
                 B(Mov), R(0), R(6),
                 B(InvokeIntrinsic), U8(Runtime::k_AsyncGeneratorReject), R(6), U8(2),
                 B(PopContext), R(5),
                 B(Star), R(2),
                 B(LdaSmi), I8(2),
-                B(Star), R(1),
-                B(Jump), U8(15),
-                B(LdaSmi), I8(-1),
-                B(Star), R(2),
                 B(Star), R(1),
                 B(Jump), U8(7),
                 B(Star), R(2),
@@ -592,11 +588,11 @@ bytecodes: [
   /*   60 S> */ B(Return),
 ]
 constant pool: [
-  Smi [30],
-  Smi [158],
-  Smi [230],
-  Smi [280],
-  Smi [339],
+  Smi [29],
+  Smi [157],
+  Smi [229],
+  Smi [279],
+  Smi [338],
   Smi [16],
   Smi [7],
   ONE_BYTE_INTERNALIZED_STRING_TYPE ["g"],
@@ -610,13 +606,13 @@ constant pool: [
   ONE_BYTE_INTERNALIZED_STRING_TYPE ["done"],
   ONE_BYTE_INTERNALIZED_STRING_TYPE ["value"],
   SCOPE_INFO_TYPE,
-  Smi [372],
+  Smi [370],
   Smi [6],
   Smi [9],
   Smi [23],
 ]
 handlers: [
-  [20, 413, 421],
-  [23, 375, 379],
+  [19, 418, 418],
+  [22, 384, 384],
 ]
 

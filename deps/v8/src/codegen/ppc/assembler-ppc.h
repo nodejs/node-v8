@@ -230,10 +230,6 @@ class Assembler : public AssemblerBase {
     return link(L) - pc_offset();
   }
 
-  // Puts a labels target address at the given position.
-  // The high 8 bits are set to zero.
-  void label_at_put(Label* L, int at_offset);
-
   V8_INLINE static bool IsConstantPoolLoadStart(
       Address pc, ConstantPoolEntry::Access* access = nullptr);
   V8_INLINE static bool IsConstantPoolLoadEnd(
@@ -1158,6 +1154,7 @@ class Assembler : public AssemblerBase {
   // not have to check for overflow. The same is true for writes of large
   // relocation info entries.
   static constexpr int kGap = 32;
+  STATIC_ASSERT(AssemblerBase::kMinimalBufferSize >= 2 * kGap);
 
   RelocInfoWriter reloc_info_writer;
 
