@@ -165,11 +165,8 @@ namespace promise {
       }
 
       // 11. If IsCallable(thenAction) is false, then
-      if (TaggedIsSmi(then)) {
-        return FulfillPromise(promise, resolution);
-      }
-
-      if (!IsCallable(UnsafeCast<HeapObject>(then))) {
+      if (!Is<Callable>(then)) {
+        // a. Return FulfillPromise(promise, resolution).
         return FulfillPromise(promise, resolution);
       }
       goto Enqueue;
@@ -177,7 +174,14 @@ namespace promise {
     label Enqueue {
       // 12. Perform EnqueueJob("PromiseJobs", PromiseResolveThenableJob,
       //                        «promise, resolution, thenAction»).
-      const nativeContext = LoadNativeContext(context);
+
+      // According to HTML, we use the context of the then function
+      // (|thenAction|) as the context of the microtask. See step 3 of HTML's
+      // EnqueueJob:
+      // https://html.spec.whatwg.org/C/#enqueuejob(queuename,-job,-arguments)
+      const thenContext: Context =
+          ExtractHandlerContext(UnsafeCast<Callable>(then));
+      const nativeContext = LoadNativeContext(thenContext);
       const task = NewPromiseResolveThenableJobTask(
           promise, UnsafeCast<JSReceiver>(then),
           UnsafeCast<JSReceiver>(resolution), nativeContext);

@@ -17,7 +17,7 @@ extern "C" char** environ;
 #if V8_OS_QNX
 #include <sys/syspage.h>  // cpuinfo
 #endif
-#if (V8_OS_LINUX && V8_HOST_ARCH_PPC) || V8_OS_ANDROID
+#if (V8_OS_LINUX && (V8_HOST_ARCH_PPC || V8_HOST_ARCH_PPC64)) || V8_OS_ANDROID
 #include <elf.h>
 #endif
 #if V8_OS_AIX
@@ -600,9 +600,13 @@ CPU::CPU()
 #endif
 
 #elif V8_HOST_ARCH_ARM64
-// Implementer, variant and part are currently unused under ARM64.
+#ifdef V8_OS_WIN
+  // Windows makes high-resolution thread timing information available in
+  // user-space.
+  has_non_stop_time_stamp_counter_ = true;
+#endif  // V8_OS_WIN
 
-#elif V8_HOST_ARCH_PPC
+#elif V8_HOST_ARCH_PPC || V8_HOST_ARCH_PPC64
 
 #ifndef USE_SIMULATOR
 #if V8_OS_LINUX
@@ -671,7 +675,7 @@ CPU::CPU()
   }
 #endif  // V8_OS_AIX
 #endif  // !USE_SIMULATOR
-#endif  // V8_HOST_ARCH_PPC
+#endif  // V8_HOST_ARCH_PPC || V8_HOST_ARCH_PPC64
 }
 
 }  // namespace base
