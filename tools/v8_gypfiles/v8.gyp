@@ -46,6 +46,7 @@
       "<(V8_ROOT)/src/builtins/finalization-registry.tq",
       "<(V8_ROOT)/src/builtins/frames.tq",
       "<(V8_ROOT)/src/builtins/frame-arguments.tq",
+      "<(V8_ROOT)/src/builtins/function.tq",
       "<(V8_ROOT)/src/builtins/growable-fixed-array.tq",
       "<(V8_ROOT)/src/builtins/ic-callable.tq",
       "<(V8_ROOT)/src/builtins/ic.tq",
