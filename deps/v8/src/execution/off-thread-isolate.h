@@ -11,6 +11,7 @@
 #include "src/handles/maybe-handles.h"
 #include "src/heap/off-thread-factory.h"
 #include "src/heap/off-thread-heap.h"
+#include "src/handles/off-thread-transfer-handle-storage.h"
 
 namespace v8 {
 namespace internal {
