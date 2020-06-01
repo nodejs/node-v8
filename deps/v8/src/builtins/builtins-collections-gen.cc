@@ -334,8 +334,9 @@ void BaseCollectionsAssembler::AddConstructorEntriesFromIterable(
   }
   BIND(&if_exception);
   {
-    iterator_assembler.IteratorCloseOnException(context, iterator,
-                                                var_exception.value());
+    IteratorCloseOnException(context, iterator);
+    CallRuntime(Runtime::kReThrow, context, var_exception.value());
+    Unreachable();
   }
   BIND(&exit);
 }
@@ -760,7 +761,7 @@ void CollectionsBuiltinsAssembler::FindOrderedHashTableEntry(
   const TNode<IntPtrT> number_of_buckets =
       SmiUntag(CAST(UnsafeLoadFixedArrayElement(
           table, CollectionType::NumberOfBucketsIndex())));
-  const TNode<WordT> bucket =
+  const TNode<IntPtrT> bucket =
       WordAnd(hash, IntPtrSub(number_of_buckets, IntPtrConstant(1)));
   const TNode<IntPtrT> first_entry = SmiUntag(CAST(UnsafeLoadFixedArrayElement(
       table, bucket, CollectionType::HashTableStartIndex() * kTaggedSize)));

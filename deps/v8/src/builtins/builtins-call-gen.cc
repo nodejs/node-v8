@@ -64,6 +64,49 @@ void Builtins::Generate_CallFunctionForwardVarargs(MacroAssembler* masm) {
       masm->isolate()->builtins()->CallFunction());
 }
 
+TF_BUILTIN(Call_ReceiverIsNullOrUndefined_WithFeedback,
+           CallOrConstructBuiltinsAssembler) {
+  TNode<Object> target = CAST(Parameter(Descriptor::kFunction));
+  TNode<Int32T> argc =
+      UncheckedCast<Int32T>(Parameter(Descriptor::kActualArgumentsCount));
+  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  TNode<HeapObject> maybe_feedback_vector =
+      CAST(Parameter(Descriptor::kMaybeFeedbackVector));
+  TNode<Int32T> slot = UncheckedCast<Int32T>(Parameter(Descriptor::kSlot));
+  CollectCallFeedback(target, context, maybe_feedback_vector,
+                      Unsigned(ChangeInt32ToIntPtr(slot)));
+  TailCallBuiltin(Builtins::kCall_ReceiverIsNullOrUndefined, context, target,
+                  argc);
+}
+
+TF_BUILTIN(Call_ReceiverIsNotNullOrUndefined_WithFeedback,
+           CallOrConstructBuiltinsAssembler) {
+  TNode<Object> target = CAST(Parameter(Descriptor::kFunction));
+  TNode<Int32T> argc =
+      UncheckedCast<Int32T>(Parameter(Descriptor::kActualArgumentsCount));
+  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  TNode<HeapObject> maybe_feedback_vector =
+      CAST(Parameter(Descriptor::kMaybeFeedbackVector));
+  TNode<Int32T> slot = UncheckedCast<Int32T>(Parameter(Descriptor::kSlot));
+  CollectCallFeedback(target, context, maybe_feedback_vector,
+                      Unsigned(ChangeInt32ToIntPtr(slot)));
+  TailCallBuiltin(Builtins::kCall_ReceiverIsNotNullOrUndefined, context, target,
+                  argc);
+}
+
+TF_BUILTIN(Call_ReceiverIsAny_WithFeedback, CallOrConstructBuiltinsAssembler) {
+  TNode<Object> target = CAST(Parameter(Descriptor::kFunction));
+  TNode<Int32T> argc =
+      UncheckedCast<Int32T>(Parameter(Descriptor::kActualArgumentsCount));
+  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  TNode<HeapObject> maybe_feedback_vector =
+      CAST(Parameter(Descriptor::kMaybeFeedbackVector));
+  TNode<Int32T> slot = UncheckedCast<Int32T>(Parameter(Descriptor::kSlot));
+  CollectCallFeedback(target, context, maybe_feedback_vector,
+                      Unsigned(ChangeInt32ToIntPtr(slot)));
+  TailCallBuiltin(Builtins::kCall_ReceiverIsAny, context, target, argc);
+}
+
 void CallOrConstructBuiltinsAssembler::CallOrConstructWithArrayLike(
     TNode<Object> target, base::Optional<TNode<Object>> new_target,
     TNode<Object> arguments_list, TNode<Context> context) {
@@ -317,7 +360,9 @@ void CallOrConstructBuiltinsAssembler::CallOrConstructWithSpread(
   BIND(&if_generic);
   {
     Label if_iterator_fn_not_callable(this, Label::kDeferred),
-        if_iterator_is_null_or_undefined(this, Label::kDeferred);
+        if_iterator_is_null_or_undefined(this, Label::kDeferred),
+        throw_spread_error(this, Label::kDeferred);
+    TVARIABLE(Smi, message_id);
 
     GotoIf(IsNullOrUndefined(spread), &if_iterator_is_null_or_undefined);
 
@@ -336,10 +381,18 @@ void CallOrConstructBuiltinsAssembler::CallOrConstructWithSpread(
            &if_smiorobject, &if_double);
 
     BIND(&if_iterator_fn_not_callable);
-    ThrowTypeError(context, MessageTemplate::kIteratorSymbolNonCallable);
+    message_id = SmiConstant(
+        static_cast<int>(MessageTemplate::kIteratorSymbolNonCallable)),
+    Goto(&throw_spread_error);
 
     BIND(&if_iterator_is_null_or_undefined);
-    CallRuntime(Runtime::kThrowSpreadArgIsNullOrUndefined, context, spread);
+    message_id = SmiConstant(
+        static_cast<int>(MessageTemplate::kNotIterableNoSymbolLoad));
+    Goto(&throw_spread_error);
+
+    BIND(&throw_spread_error);
+    CallRuntime(Runtime::kThrowSpreadArgError, context, message_id.value(),
+                spread);
     Unreachable();
   }
 
@@ -377,6 +430,19 @@ TF_BUILTIN(CallWithArrayLike, CallOrConstructBuiltinsAssembler) {
   CallOrConstructWithArrayLike(target, new_target, arguments_list, context);
 }
 
+TF_BUILTIN(CallWithArrayLike_WithFeedback, CallOrConstructBuiltinsAssembler) {
+  TNode<Object> target = CAST(Parameter(Descriptor::kTarget));
+  base::Optional<TNode<Object>> new_target = base::nullopt;
+  TNode<Object> arguments_list = CAST(Parameter(Descriptor::kArgumentsList));
+  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  TNode<HeapObject> maybe_feedback_vector =
+      CAST(Parameter(Descriptor::kMaybeFeedbackVector));
+  TNode<Int32T> slot = UncheckedCast<Int32T>(Parameter(Descriptor::kSlot));
+  CollectCallFeedback(target, context, maybe_feedback_vector,
+                      Unsigned(ChangeInt32ToIntPtr(slot)));
+  CallOrConstructWithArrayLike(target, new_target, arguments_list, context);
+}
+
 TF_BUILTIN(CallWithSpread, CallOrConstructBuiltinsAssembler) {
   TNode<Object> target = CAST(Parameter(Descriptor::kTarget));
   base::Optional<TNode<Object>> new_target = base::nullopt;
@@ -384,6 +450,21 @@ TF_BUILTIN(CallWithSpread, CallOrConstructBuiltinsAssembler) {
   TNode<Int32T> args_count =
       UncheckedCast<Int32T>(Parameter(Descriptor::kArgumentsCount));
   TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  CallOrConstructWithSpread(target, new_target, spread, args_count, context);
+}
+
+TF_BUILTIN(CallWithSpread_WithFeedback, CallOrConstructBuiltinsAssembler) {
+  TNode<Object> target = CAST(Parameter(Descriptor::kTarget));
+  base::Optional<TNode<Object>> new_target = base::nullopt;
+  TNode<Object> spread = CAST(Parameter(Descriptor::kSpread));
+  TNode<Int32T> args_count =
+      UncheckedCast<Int32T>(Parameter(Descriptor::kArgumentsCount));
+  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  TNode<HeapObject> maybe_feedback_vector =
+      CAST(Parameter(Descriptor::kMaybeFeedbackVector));
+  TNode<Int32T> slot = UncheckedCast<Int32T>(Parameter(Descriptor::kSlot));
+  CollectCallFeedback(target, context, maybe_feedback_vector,
+                      Unsigned(ChangeInt32ToIntPtr(slot)));
   CallOrConstructWithSpread(target, new_target, spread, args_count, context);
 }
 
@@ -525,7 +606,7 @@ void CallOrConstructBuiltinsAssembler::CallFunctionTemplate(
     TNode<IntPtrT> function_template_info_flags = LoadAndUntagObjectField(
         function_template_info, FunctionTemplateInfo::kFlagOffset);
     Branch(IsSetWord(function_template_info_flags,
-                     1 << FunctionTemplateInfo::kAcceptAnyReceiver),
+                     1 << FunctionTemplateInfo::AcceptAnyReceiverBit::kShift),
            &receiver_done, &receiver_needs_access_check);
 
     BIND(&receiver_needs_access_check);
@@ -565,7 +646,7 @@ void CallOrConstructBuiltinsAssembler::CallFunctionTemplate(
   TNode<Foreign> foreign = LoadObjectField<Foreign>(
       call_handler_info, CallHandlerInfo::kJsCallbackOffset);
   TNode<RawPtrT> callback =
-      LoadObjectField<RawPtrT>(foreign, Foreign::kForeignAddressOffset);
+      DecodeExternalPointer(LoadForeignForeignAddress(foreign));
   TNode<Object> call_data =
       LoadObjectField<Object>(call_handler_info, CallHandlerInfo::kDataOffset);
   TailCallStub(CodeFactory::CallApiCallback(isolate()), context, callback, argc,

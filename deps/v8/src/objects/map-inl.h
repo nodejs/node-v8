@@ -227,8 +227,6 @@ FixedArrayBase Map::GetInitialElements() const {
   if (has_fast_elements() || has_fast_string_wrapper_elements() ||
       has_any_nonextensible_elements()) {
     result = GetReadOnlyRoots().empty_fixed_array();
-  } else if (has_fast_sloppy_arguments_elements()) {
-    result = GetReadOnlyRoots().empty_sloppy_arguments_elements();
   } else if (has_typed_array_elements()) {
     result = GetReadOnlyRoots().empty_byte_array();
   } else if (has_dictionary_elements()) {
@@ -756,6 +754,9 @@ ACCESSORS_CHECKED2(Map, constructor_or_backpointer, Object,
 ACCESSORS_CHECKED(Map, native_context, NativeContext,
                   kConstructorOrBackPointerOrNativeContextOffset,
                   IsContextMap())
+ACCESSORS_CHECKED(Map, wasm_type_info, Foreign,
+                  kConstructorOrBackPointerOrNativeContextOffset,
+                  IsWasmStructMap() || IsWasmArrayMap())
 
 bool Map::IsPrototypeValidityCellValid() const {
   Object validity_cell = prototype_validity_cell();

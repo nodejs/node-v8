@@ -208,7 +208,7 @@ void AccessorAssembler::HandleLoadAccessor(
   TNode<Foreign> foreign = LoadObjectField<Foreign>(
       call_handler_info, CallHandlerInfo::kJsCallbackOffset);
   TNode<RawPtrT> callback =
-      LoadObjectField<RawPtrT>(foreign, Foreign::kForeignAddressOffset);
+      DecodeExternalPointer(LoadForeignForeignAddress(foreign));
   TNode<Object> data =
       LoadObjectField(call_handler_info, CallHandlerInfo::kDataOffset);
 
@@ -1655,7 +1655,7 @@ void AccessorAssembler::HandleStoreICProtoHandler(
       TNode<Foreign> foreign = LoadObjectField<Foreign>(
           call_handler_info, CallHandlerInfo::kJsCallbackOffset);
       TNode<RawPtrT> callback =
-          LoadObjectField<RawPtrT>(foreign, Foreign::kForeignAddressOffset);
+          DecodeExternalPointer(LoadForeignForeignAddress(foreign));
       TNode<Object> data =
           LoadObjectField(call_handler_info, CallHandlerInfo::kDataOffset);
 
@@ -1968,23 +1968,21 @@ TNode<PropertyArray> AccessorAssembler::ExtendPropertiesBackingStore(
     // Previous property deletion could have left behind unused backing store
     // capacity even for a map that think it doesn't have any unused fields.
     // Perform a bounds check to see if we actually have to grow the array.
-    GotoIf(UintPtrLessThan(index, ParameterToIntPtr(var_length.value(), mode)),
+    GotoIf(UintPtrLessThan(index, ParameterToIntPtr(var_length.value())),
            &done);
 
     TNode<BInt> delta = BIntConstant(JSObject::kFieldsAdded);
-    Node* new_capacity = IntPtrOrSmiAdd(var_length.value(), delta, mode);
+    TNode<BInt> new_capacity = IntPtrOrSmiAdd(var_length.value(), delta);
 
     // Grow properties array.
     DCHECK(kMaxNumberOfDescriptors + JSObject::kFieldsAdded <
            FixedArrayBase::GetMaxLengthForNewSpaceAllocation(PACKED_ELEMENTS));
     // The size of a new properties backing store is guaranteed to be small
     // enough that the new backing store will be allocated in new space.
-    CSA_ASSERT(this,
-               UintPtrOrSmiLessThan(
-                   new_capacity,
-                   IntPtrOrSmiConstant(
-                       kMaxNumberOfDescriptors + JSObject::kFieldsAdded, mode),
-                   mode));
+    CSA_ASSERT(this, UintPtrOrSmiLessThan(
+                         new_capacity,
+                         IntPtrOrSmiConstant<BInt>(kMaxNumberOfDescriptors +
+                                                   JSObject::kFieldsAdded)));
 
     TNode<PropertyArray> new_properties =
         AllocatePropertyArray(new_capacity, mode);
@@ -2002,7 +2000,7 @@ TNode<PropertyArray> AccessorAssembler::ExtendPropertiesBackingStore(
     // TODO(gsathya): Clean up the type conversions by creating smarter
     // helpers that do the correct op based on the mode.
     TNode<Int32T> new_capacity_int32 =
-        TruncateIntPtrToInt32(ParameterToIntPtr(new_capacity, mode));
+        TruncateIntPtrToInt32(ParameterToIntPtr(new_capacity));
     TNode<Int32T> new_length_and_hash_int32 =
         Word32Or(var_encoded_hash.value(), new_capacity_int32);
     StoreObjectField(new_properties, PropertyArray::kLengthAndHashOffset,
@@ -3653,6 +3651,9 @@ void AccessorAssembler::GenerateLoadIC_Megamorphic() {
   ExitPoint direct_exit(this);
   TVARIABLE(MaybeObject, var_handler);
   Label if_handler(this, &var_handler), miss(this, Label::kDeferred);
+
+  CSA_ASSERT(this, TaggedEqual(LoadFeedbackVectorSlot(CAST(vector), slot),
+                               MegamorphicSymbolConstant()));
 
   TryProbeStubCache(isolate()->load_stub_cache(), receiver, CAST(name),
                     &if_handler, &var_handler, &miss);

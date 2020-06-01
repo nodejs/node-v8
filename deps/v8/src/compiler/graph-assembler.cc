@@ -19,7 +19,8 @@ namespace compiler {
 
 class GraphAssembler::BasicBlockUpdater {
  public:
-  BasicBlockUpdater(Schedule* schedule, Graph* graph, Zone* temp_zone);
+  BasicBlockUpdater(Schedule* schedule, Graph* graph,
+                    CommonOperatorBuilder* common, Zone* temp_zone);
 
   Node* AddNode(Node* node);
   Node* AddNode(Node* node, BasicBlock* to);
@@ -31,7 +32,6 @@ class GraphAssembler::BasicBlockUpdater {
   void AddBranch(Node* branch, BasicBlock* tblock, BasicBlock* fblock);
   void AddGoto(BasicBlock* to);
   void AddGoto(BasicBlock* from, BasicBlock* to);
-  void AddThrow(Node* node);
 
   void StartBlock(BasicBlock* block);
   BasicBlock* Finalize(BasicBlock* original);
@@ -48,6 +48,7 @@ class GraphAssembler::BasicBlockUpdater {
   bool IsOriginalNode(Node* node);
   void UpdateSuccessors(BasicBlock* block);
   void SetBlockDeferredFromPredecessors();
+  void RemoveSuccessorsFromSchedule();
   void CopyForChange();
 
   Zone* temp_zone_;
@@ -64,6 +65,7 @@ class GraphAssembler::BasicBlockUpdater {
 
   Schedule* schedule_;
   Graph* graph_;
+  CommonOperatorBuilder* common_;
 
   // The nodes in the original block if we are in 'changed' state. Retained to
   // avoid invalidating iterators that are iterating over the original nodes of
@@ -85,14 +87,15 @@ class GraphAssembler::BasicBlockUpdater {
   State state_;
 };
 
-GraphAssembler::BasicBlockUpdater::BasicBlockUpdater(Schedule* schedule,
-                                                     Graph* graph,
-                                                     Zone* temp_zone)
+GraphAssembler::BasicBlockUpdater::BasicBlockUpdater(
+    Schedule* schedule, Graph* graph, CommonOperatorBuilder* common,
+    Zone* temp_zone)
     : temp_zone_(temp_zone),
       current_block_(nullptr),
       original_block_(nullptr),
       schedule_(schedule),
       graph_(graph),
+      common_(common),
       saved_nodes_(schedule->zone()),
       saved_successors_(schedule->zone()),
       original_control_(BasicBlock::kNone),
@@ -264,28 +267,6 @@ void GraphAssembler::BasicBlockUpdater::AddGoto(BasicBlock* from,
   current_block_ = nullptr;
 }
 
-void GraphAssembler::BasicBlockUpdater::AddThrow(Node* node) {
-  if (state_ == kUnchanged) {
-    CopyForChange();
-  }
-  schedule_->AddThrow(current_block_, node);
-
-  // Clear original successors and replace the block's original control and
-  // control input to the throw, since this block is now connected directly to
-  // the end.
-  if (original_control_input_ != nullptr) {
-    NodeProperties::ReplaceUses(original_control_input_, node, nullptr, node);
-    original_control_input_->Kill();
-  }
-  original_control_input_ = node;
-  original_control_ = BasicBlock::kThrow;
-
-  for (SuccessorInfo succ : saved_successors_) {
-    succ.block->RemovePredecessor(succ.index);
-  }
-  saved_successors_.clear();
-}
-
 void GraphAssembler::BasicBlockUpdater::UpdateSuccessors(BasicBlock* block) {
   for (SuccessorInfo succ : saved_successors_) {
     (succ.block->predecessors())[succ.index] = block;
@@ -341,9 +322,10 @@ GraphAssembler::GraphAssembler(MachineGraph* mcgraph, Zone* zone,
       mcgraph_(mcgraph),
       effect_(nullptr),
       control_(nullptr),
-      block_updater_(schedule != nullptr ? new BasicBlockUpdater(
-                                               schedule, mcgraph->graph(), zone)
-                                         : nullptr),
+      block_updater_(schedule != nullptr
+                         ? new BasicBlockUpdater(schedule, mcgraph->graph(),
+                                                 mcgraph->common(), zone)
+                         : nullptr),
       loop_headers_(zone),
       mark_loop_exits_(mark_loop_exits) {}
 
@@ -590,6 +572,11 @@ TNode<Boolean> JSGraphAssembler::ObjectIsCallable(TNode<Object> value) {
       graph()->NewNode(simplified()->ObjectIsCallable(), value));
 }
 
+TNode<Boolean> JSGraphAssembler::ObjectIsUndetectable(TNode<Object> value) {
+  return AddNode<Boolean>(
+      graph()->NewNode(simplified()->ObjectIsUndetectable(), value));
+}
+
 Node* JSGraphAssembler::CheckIf(Node* cond, DeoptimizeReason reason) {
   return AddNode(graph()->NewNode(simplified()->CheckIf(reason), cond, effect(),
                                   control()));
@@ -832,11 +819,15 @@ BasicBlock* GraphAssembler::FinalizeCurrentBlock(BasicBlock* block) {
 
 void GraphAssembler::ConnectUnreachableToEnd() {
   DCHECK_EQ(effect()->opcode(), IrOpcode::kUnreachable);
-  Node* throw_node = graph()->NewNode(common()->Throw(), effect(), control());
-  NodeProperties::MergeControlToEnd(graph(), common(), throw_node);
-  effect_ = control_ = mcgraph()->Dead();
-  if (block_updater_) {
-    block_updater_->AddThrow(throw_node);
+  // When maintaining the schedule we can't easily rewire the successor blocks
+  // to disconnect them from the graph, so we just leave the unreachable nodes
+  // in the schedule.
+  // TODO(9684): Add a scheduled dead-code elimination phase to remove all the
+  // subsiquent unreacahble code from the schedule.
+  if (!block_updater_) {
+    Node* throw_node = graph()->NewNode(common()->Throw(), effect(), control());
+    NodeProperties::MergeControlToEnd(graph(), common(), throw_node);
+    effect_ = control_ = mcgraph()->Dead();
   }
 }
 

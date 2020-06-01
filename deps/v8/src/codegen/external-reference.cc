@@ -277,6 +277,14 @@ FUNCTION_REFERENCE(wasm_float32_to_int64, wasm::float32_to_int64_wrapper)
 FUNCTION_REFERENCE(wasm_float32_to_uint64, wasm::float32_to_uint64_wrapper)
 FUNCTION_REFERENCE(wasm_float64_to_int64, wasm::float64_to_int64_wrapper)
 FUNCTION_REFERENCE(wasm_float64_to_uint64, wasm::float64_to_uint64_wrapper)
+FUNCTION_REFERENCE(wasm_float32_to_int64_sat,
+                   wasm::float32_to_int64_sat_wrapper)
+FUNCTION_REFERENCE(wasm_float32_to_uint64_sat,
+                   wasm::float32_to_uint64_sat_wrapper)
+FUNCTION_REFERENCE(wasm_float64_to_int64_sat,
+                   wasm::float64_to_int64_sat_wrapper)
+FUNCTION_REFERENCE(wasm_float64_to_uint64_sat,
+                   wasm::float64_to_uint64_sat_wrapper)
 FUNCTION_REFERENCE(wasm_int64_div, wasm::int64_div_wrapper)
 FUNCTION_REFERENCE(wasm_int64_mod, wasm::int64_mod_wrapper)
 FUNCTION_REFERENCE(wasm_uint64_div, wasm::uint64_div_wrapper)
@@ -901,6 +909,10 @@ static int EnterMicrotaskContextWrapper(HandleScopeImplementer* hsi,
 }
 
 FUNCTION_REFERENCE(call_enter_context_function, EnterMicrotaskContextWrapper)
+
+FUNCTION_REFERENCE(
+    js_finalization_registry_remove_cell_from_unregister_token_map,
+    JSFinalizationRegistry::RemoveCellFromUnregisterTokenMap)
 
 bool operator==(ExternalReference lhs, ExternalReference rhs) {
   return lhs.address() == rhs.address();

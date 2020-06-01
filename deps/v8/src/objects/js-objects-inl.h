@@ -5,8 +5,6 @@
 #ifndef V8_OBJECTS_JS_OBJECTS_INL_H_
 #define V8_OBJECTS_JS_OBJECTS_INL_H_
 
-#include "src/objects/js-objects.h"
-
 #include "src/diagnostics/code-tracer.h"
 #include "src/heap/heap-write-barrier.h"
 #include "src/objects/elements.h"
@@ -16,6 +14,7 @@
 #include "src/objects/field-index-inl.h"
 #include "src/objects/hash-table-inl.h"
 #include "src/objects/heap-number-inl.h"
+#include "src/objects/js-objects.h"
 #include "src/objects/keys.h"
 #include "src/objects/lookup-inl.h"
 #include "src/objects/property-array-inl.h"
@@ -775,9 +774,8 @@ DEF_GETTER(JSObject, GetElementsKind, ElementsKind) {
       DCHECK(kind > DICTIONARY_ELEMENTS ||
              IsAnyNonextensibleElementsKind(kind));
     }
-    DCHECK(
-        !IsSloppyArgumentsElementsKind(kind) ||
-        (elements(isolate).IsFixedArray() && elements(isolate).length() >= 2));
+    DCHECK(!IsSloppyArgumentsElementsKind(kind) ||
+           elements(isolate).IsSloppyArgumentsElements());
   }
 #endif
   return kind;
@@ -816,7 +814,7 @@ DEF_GETTER(JSObject, HasFastPackedElements, bool) {
 }
 
 DEF_GETTER(JSObject, HasDictionaryElements, bool) {
-  return GetElementsKind(isolate) == DICTIONARY_ELEMENTS;
+  return IsDictionaryElementsKind(GetElementsKind(isolate));
 }
 
 DEF_GETTER(JSObject, HasPackedElements, bool) {
@@ -836,11 +834,11 @@ DEF_GETTER(JSObject, HasNonextensibleElements, bool) {
 }
 
 DEF_GETTER(JSObject, HasFastArgumentsElements, bool) {
-  return GetElementsKind(isolate) == FAST_SLOPPY_ARGUMENTS_ELEMENTS;
+  return IsFastArgumentsElementsKind(GetElementsKind(isolate));
 }
 
 DEF_GETTER(JSObject, HasSlowArgumentsElements, bool) {
-  return GetElementsKind(isolate) == SLOW_SLOPPY_ARGUMENTS_ELEMENTS;
+  return IsSlowArgumentsElementsKind(GetElementsKind(isolate));
 }
 
 DEF_GETTER(JSObject, HasSloppyArgumentsElements, bool) {

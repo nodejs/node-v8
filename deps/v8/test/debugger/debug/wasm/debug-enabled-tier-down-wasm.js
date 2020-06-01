@@ -6,7 +6,7 @@ load("test/mjsunit/wasm/wasm-module-builder.js");
 
 const num_functions = 200;
 
-// Create a simple Wasm script.
+// Create a simple Wasm module.
 function create_builder(delta = 0) {
   const builder = new WasmModuleBuilder();
   for (let i = 0; i < num_functions; ++i) {
@@ -23,7 +23,7 @@ function checkTieredDown(instance) {
   }
 }
 
-function checkTieredUp(instance) {
+function waitForTieredUp(instance) {
   // Busy waiting until all functions are tiered up.
   let num_liftoff_functions = 0;
   while (true) {
@@ -37,26 +37,39 @@ function checkTieredUp(instance) {
   }
 }
 
-const instance = create_builder().instantiate();
 const Debug = new DebugWrapper();
-Debug.enable();
-checkTieredDown(instance);
-const newInstance = create_builder(num_functions*2).instantiate();
-checkTieredDown(newInstance);
-Debug.disable();
-checkTieredUp(instance);
-checkTieredUp(newInstance);
 
-// Async.
-async function testTierDownToLiftoffAsync() {
-  const asyncInstance = await create_builder(num_functions).asyncInstantiate();
+(function testTierDownToLiftoff() {
+  // In the 'isolates' test, this test runs in parallel to itself on two
+  // isolates. All checks below should still hold.
+  const instance = create_builder(0).instantiate();
   Debug.enable();
-  checkTieredDown(asyncInstance);
-  const newAsyncInstance = await create_builder(num_functions*3).asyncInstantiate();
-  checkTieredDown(newAsyncInstance);
+  checkTieredDown(instance);
+  const instance2 = create_builder(1).instantiate();
+  checkTieredDown(instance2);
   Debug.disable();
-  checkTieredUp(asyncInstance);
-  checkTieredUp(newAsyncInstance);
-}
+  // Eventually the instances will be completely tiered up again.
+  waitForTieredUp(instance);
+  waitForTieredUp(instance2);
+})();
 
-assertPromiseResult(testTierDownToLiftoffAsync());
+// Test async compilation.
+assertPromiseResult((async function testTierDownToLiftoffAsync() {
+  // First test: enable the debugger *after* compiling the module.
+  const instance = await create_builder(2).asyncInstantiate();
+  Debug.enable();
+  checkTieredDown(instance);
+  const instance2 = await create_builder(3).asyncInstantiate();
+  checkTieredDown(instance2);
+  Debug.disable();
+  waitForTieredUp(instance);
+  waitForTieredUp(instance2);
+
+  // Second test: enable the debugger *while* compiling the module.
+  const instancePromise = create_builder(4).asyncInstantiate();
+  Debug.enable();
+  const instance3 = await instancePromise;
+  checkTieredDown(instance3);
+  Debug.disable();
+  waitForTieredUp(instance3);
+})());

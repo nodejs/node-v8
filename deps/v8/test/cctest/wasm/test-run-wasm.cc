@@ -3752,14 +3752,23 @@ TEST(Liftoff_tier_up) {
     memcpy(buffer.get(), sub_code->instructions().begin(), sub_size);
     desc.buffer = buffer.get();
     desc.instr_size = static_cast<int>(sub_size);
-    std::unique_ptr<WasmCode> new_code =
-        native_module->AddCode(add.function_index(), desc, 0, 0, {}, {},
-                               WasmCode::kFunction, ExecutionTier::kTurbofan);
+    std::unique_ptr<WasmCode> new_code = native_module->AddCode(
+        add.function_index(), desc, 0, 0, {}, {}, WasmCode::kFunction,
+        ExecutionTier::kTurbofan, kNoDebugging);
     native_module->PublishCode(std::move(new_code));
 
     // Second run should now execute {sub}.
     CHECK_EQ(4, r.Call(11, 7));
   }
+}
+
+TEST(Regression_1085507) {
+  EXPERIMENTAL_FLAG_SCOPE(mv);
+  WasmRunner<int32_t> r(ExecutionTier::kInterpreter);
+  TestSignatures sigs;
+  uint32_t sig_v_i = r.builder().AddSignature(sigs.v_i());
+  BUILD(r, WASM_I32V_1(0), kExprIf, kLocalVoid, WASM_UNREACHABLE,
+        WASM_BLOCK_X(sig_v_i, kExprDrop), kExprElse, kExprEnd, WASM_I32V_1(0));
 }
 
 #undef B1

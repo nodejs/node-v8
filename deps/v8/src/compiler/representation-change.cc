@@ -11,6 +11,7 @@
 #include "src/compiler/js-heap-broker.h"
 #include "src/compiler/machine-operator.h"
 #include "src/compiler/node-matchers.h"
+#include "src/compiler/simplified-operator.h"
 #include "src/compiler/type-cache.h"
 #include "src/heap/factory-inl.h"
 
@@ -170,7 +171,12 @@ Node* RepresentationChanger::GetRepresentationFor(
 
   // Handle the no-op shortcuts when no checking is necessary.
   if (use_info.type_check() == TypeCheckKind::kNone ||
-      output_rep != MachineRepresentation::kWord32) {
+      // TODO(nicohartmann@, chromium:1077804): Ignoring {use_info.type_check()}
+      // in case the representation already matches is not correct. For now,
+      // this behavior is disabled only for TypeCheckKind::kBigInt, but should
+      // be fixed for all other type checks.
+      (output_rep != MachineRepresentation::kWord32 &&
+       use_info.type_check() != TypeCheckKind::kBigInt)) {
     if (use_info.representation() == output_rep) {
       // Representations are the same. That's a no-op.
       return node;
@@ -381,6 +387,7 @@ Node* RepresentationChanger::GetTaggedPointerRepresentationFor(
   switch (node->opcode()) {
     case IrOpcode::kHeapConstant:
     case IrOpcode::kDelayedStringConstant:
+      if (use_info.type_check() == TypeCheckKind::kBigInt) break;
       return node;  // No change necessary.
     case IrOpcode::kInt32Constant:
     case IrOpcode::kFloat64Constant:
@@ -656,6 +663,7 @@ Node* RepresentationChanger::GetFloat64RepresentationFor(
     switch (use_info.type_check()) {
       case TypeCheckKind::kNone:
       case TypeCheckKind::kNumber:
+      case TypeCheckKind::kNumberOrBoolean:
       case TypeCheckKind::kNumberOrOddball:
         return jsgraph()->Float64Constant(m.Value());
       case TypeCheckKind::kBigInt:
@@ -689,6 +697,7 @@ Node* RepresentationChanger::GetFloat64RepresentationFor(
   } else if (output_rep == MachineRepresentation::kBit) {
     CHECK(output_type.Is(Type::Boolean()));
     if (use_info.truncation().TruncatesOddballAndBigIntToNumber() ||
+        use_info.type_check() == TypeCheckKind::kNumberOrBoolean ||
         use_info.type_check() == TypeCheckKind::kNumberOrOddball) {
       op = machine()->ChangeUint32ToFloat64();
     } else {
@@ -701,9 +710,16 @@ Node* RepresentationChanger::GetFloat64RepresentationFor(
     }
   } else if (IsAnyTagged(output_rep)) {
     if (output_type.Is(Type::Undefined())) {
-      return jsgraph()->Float64Constant(
-          std::numeric_limits<double>::quiet_NaN());
-
+      if (use_info.type_check() == TypeCheckKind::kNumberOrBoolean) {
+        Node* unreachable = InsertUnconditionalDeopt(
+            use_node, DeoptimizeReason::kNotANumberOrBoolean);
+        return jsgraph()->graph()->NewNode(
+            jsgraph()->common()->DeadValue(MachineRepresentation::kFloat64),
+            unreachable);
+      } else {
+        return jsgraph()->Float64Constant(
+            std::numeric_limits<double>::quiet_NaN());
+      }
     } else if (output_rep == MachineRepresentation::kTaggedSigned) {
       node = InsertChangeTaggedSignedToInt32(node);
       op = machine()->ChangeInt32ToFloat64();
@@ -726,6 +742,9 @@ Node* RepresentationChanger::GetFloat64RepresentationFor(
                 !output_type.Maybe(Type::BooleanOrNullOrNumber()))) {
       op = simplified()->CheckedTaggedToFloat64(CheckTaggedInputMode::kNumber,
                                                 use_info.feedback());
+    } else if (use_info.type_check() == TypeCheckKind::kNumberOrBoolean) {
+      op = simplified()->CheckedTaggedToFloat64(
+          CheckTaggedInputMode::kNumberOrBoolean, use_info.feedback());
     } else if (use_info.type_check() == TypeCheckKind::kNumberOrOddball) {
       op = simplified()->CheckedTaggedToFloat64(
           CheckTaggedInputMode::kNumberOrOddball, use_info.feedback());
@@ -1156,6 +1175,14 @@ Node* RepresentationChanger::GetWord64RepresentationFor(
           use_info.feedback());
     } else if (use_info.type_check() == TypeCheckKind::kArrayIndex) {
       op = simplified()->CheckedTaggedToArrayIndex(use_info.feedback());
+    } else {
+      return TypeError(node, output_rep, output_type,
+                       MachineRepresentation::kWord64);
+    }
+  } else if (output_rep == MachineRepresentation::kWord64) {
+    DCHECK_EQ(use_info.type_check(), TypeCheckKind::kBigInt);
+    if (output_type.Is(Type::BigInt())) {
+      return node;
     } else {
       return TypeError(node, output_rep, output_type,
                        MachineRepresentation::kWord64);

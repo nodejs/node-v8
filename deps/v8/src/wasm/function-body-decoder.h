@@ -34,6 +34,8 @@ struct FunctionBody {
       : sig(sig), offset(offset), start(start), end(end) {}
 };
 
+enum class LoadTransformationKind : uint8_t { kSplat, kExtend };
+
 V8_EXPORT_PRIVATE DecodeResult VerifyWasmCode(AccountingAllocator* allocator,
                                               const WasmFeatures& enabled,
                                               const WasmModule* module,
@@ -173,9 +175,7 @@ class V8_EXPORT_PRIVATE BytecodeIterator : public NON_EXPORTED_BASE(Decoder) {
   bool has_next() { return pc_ < end_; }
 
   WasmOpcode prefixed_opcode() {
-    byte prefix = read_u8<Decoder::kNoValidate>(pc_, "expected prefix");
-    byte index = read_u8<Decoder::kNoValidate>(pc_ + 1, "expected index");
-    return static_cast<WasmOpcode>(prefix << 8 | index);
+    return read_prefixed_opcode<Decoder::kNoValidate>(pc_);
   }
 };
 

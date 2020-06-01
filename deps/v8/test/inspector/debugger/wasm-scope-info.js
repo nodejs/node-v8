@@ -2,8 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --debug-in-liftoff
-
 let {session, contextGroup, Protocol} = InspectorTest.start(
     'Test retrieving scope information when pausing in wasm functions');
 session.setupScriptMap();
@@ -69,8 +67,10 @@ async function instantiateWasm() {
   utils.load('test/mjsunit/wasm/wasm-module-builder.js');
 
   var builder = new WasmModuleBuilder();
-  // Also add a global, so we have some global scope.
-  builder.addGlobal(kWasmI32, true);
+  // Add a global, memory and exports to populate the module scope.
+  builder.addGlobal(kWasmI32, true).exportAs('exported_global');
+  builder.addMemory(1,1).exportMemoryAs('exported_memory');
+  builder.addTable(kWasmAnyFunc, 0).exportAs('exported_table');
 
   // Add a function without breakpoint, to check that locals are shown
   // correctly in compiled code.
@@ -144,22 +144,54 @@ async function waitForWasmScripts() {
   return wasm_script_ids;
 }
 
-async function getScopeValues(value) {
+async function getScopeValues(name, value) {
   if (value.type == 'object') {
+    if (value.subtype == 'typedarray') return value.description;
+    if (name == 'instance') return dumpInstanceProperties(value);
+
     let msg = await Protocol.Runtime.getProperties({objectId: value.objectId});
     printIfFailure(msg);
     const printProperty = function(elem) {
-      return `"${elem.name}": ${elem.value.value} (${elem.value.type})`;
+      return `"${elem.name}": ${getWasmValue(elem.value)} (${elem.value.subtype})`;
     }
     return msg.result.result.map(printProperty).join(', ');
   }
-  return value.value + ' (' + value.type + ')';
+  return getWasmValue(value) + ' (' + value.subtype + ')';
 }
 
 async function dumpScopeProperties(message) {
   printIfFailure(message);
   for (var value of message.result.result) {
-    var value_str = await getScopeValues(value.value);
+    var value_str = await getScopeValues(value.name, value.value);
     InspectorTest.log('   ' + value.name + ': ' + value_str);
   }
+}
+
+async function dumpInstanceProperties(instanceObj) {
+  function invokeGetter(property) {
+    return this[JSON.parse(property)];
+  }
+
+  const exportsName = 'exports';
+  let exportsObj = await Protocol.Runtime.callFunctionOn(
+      {objectId: instanceObj.objectId,
+       functionDeclaration: invokeGetter.toString(),
+       arguments: [{value: JSON.stringify(exportsName)}]
+  });
+  printIfFailure(exportsObj);
+  let exports = await Protocol.Runtime.getProperties(
+      {objectId: exportsObj.result.result.objectId});
+  printIfFailure(exports);
+
+  const printExports = function(value) {
+    return `"${value.name}" (${value.value.className})`;
+  }
+  const formattedExports = exports.result.result.map(printExports).join(', ');
+  return `${exportsName}: ${formattedExports}`
+}
+
+function getWasmValue(wasmValue) {
+  return typeof (wasmValue.value) === 'undefined' ?
+      wasmValue.unserializableValue :
+      wasmValue.value;
 }

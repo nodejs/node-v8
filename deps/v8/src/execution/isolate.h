@@ -85,6 +85,9 @@ class MaterializedObjectStore;
 class Microtask;
 class MicrotaskQueue;
 class OptimizingCompileDispatcher;
+class PersistentHandles;
+class PersistentHandlesList;
+class ReadOnlyArtifacts;
 class ReadOnlyDeserializer;
 class RegExpStack;
 class RootVisitor;
@@ -405,6 +408,7 @@ using DebugObjectCache = std::vector<Handle<HeapObject>>;
   V(WasmStreamingCallback, wasm_streaming_callback, nullptr)                   \
   V(WasmThreadsEnabledCallback, wasm_threads_enabled_callback, nullptr)        \
   V(WasmLoadSourceMapCallback, wasm_load_source_map_callback, nullptr)         \
+  V(WasmSimdEnabledCallback, wasm_simd_enabled_callback, nullptr)              \
   /* State for Relocatable. */                                                 \
   V(Relocatable*, relocatable_top, nullptr)                                    \
   V(DebugObjectCache*, string_stream_debug_object_cache, nullptr)              \
@@ -460,6 +464,8 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
 
  public:
   using HandleScopeType = HandleScope;
+  void* operator new(size_t) = delete;
+  void operator delete(void*) = delete;
 
   // A thread has a PerIsolateThreadData instance for each isolate that it has
   // entered. That instance is allocated when the isolate is initially entered
@@ -522,7 +528,7 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   // for legacy API reasons.
   static void Delete(Isolate* isolate);
 
-  void SetUpFromReadOnlyHeap(ReadOnlyHeap* ro_heap);
+  void SetUpFromReadOnlyArtifacts(std::shared_ptr<ReadOnlyArtifacts> artifacts);
 
   // Returns allocation mode of this isolate.
   V8_INLINE IsolateAllocationMode isolate_allocation_mode();
@@ -618,6 +624,7 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   inline void clear_pending_exception();
 
   bool AreWasmThreadsEnabled(Handle<Context> context);
+  bool IsWasmSimdEnabled(Handle<Context> context);
 
   THREAD_LOCAL_TOP_ADDRESS(Object, pending_exception)
 
@@ -822,10 +829,6 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   // Un-schedule an exception that was caught by a TryCatch handler.
   void CancelScheduledExceptionFromTryCatch(v8::TryCatch* handler);
   void ReportPendingMessages();
-  void ReportPendingMessagesFromJavaScript();
-
-  // Implements code shared between the two above methods
-  void ReportPendingMessagesImpl(bool report_externally);
 
   // Promote a scheduled exception to pending. Asserts has_scheduled_exception.
   Object PromoteScheduledException();
@@ -842,6 +845,8 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
 
   Handle<JSMessageObject> CreateMessage(Handle<Object> exception,
                                         MessageLocation* location);
+  Handle<JSMessageObject> CreateMessageOrAbort(Handle<Object> exception,
+                                               MessageLocation* location);
 
   // Out of resource exception helpers.
   Object StackOverflow();
@@ -1171,6 +1176,7 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   void set_icu_object_in_cache(ICUObjectCacheType cache_type,
                                std::shared_ptr<icu::UMemory> obj);
   void clear_cached_icu_object(ICUObjectCacheType cache_type);
+  void ClearCachedIcuObjects();
 
 #endif  // V8_INTL_SUPPORT
 
@@ -1199,6 +1205,12 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   void IterateDeferredHandles(RootVisitor* visitor);
   void LinkDeferredHandles(DeferredHandles* deferred_handles);
   void UnlinkDeferredHandles(DeferredHandles* deferred_handles);
+
+  std::unique_ptr<PersistentHandles> NewPersistentHandles();
+
+  PersistentHandlesList* persistent_handles_list() {
+    return persistent_handles_list_.get();
+  }
 
 #ifdef DEBUG
   bool IsDeferredHandle(Address* location);
@@ -1281,6 +1293,8 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
 
   int GetNextScriptId();
 
+  int GetNextStackFrameInfoId();
+
 #if V8_SFI_HAS_UNIQUE_ID
   int GetNextUniqueSharedFunctionInfoId() {
     int current_id = next_unique_sfi_id_.load(std::memory_order_relaxed);
@@ -1336,9 +1350,7 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
 
   void AddSharedWasmMemory(Handle<WasmMemoryObject> memory_object);
 
-  std::vector<Object>* partial_snapshot_cache() {
-    return &partial_snapshot_cache_;
-  }
+  std::vector<Object>* startup_object_cache() { return &startup_object_cache_; }
 
   bool IsGeneratingEmbeddedBuiltins() const {
     return builtins_constants_table_builder() != nullptr;
@@ -1408,14 +1420,6 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   bool IsInAnyContext(Object object, uint32_t index);
 
   void ClearKeptObjects();
-  void SetHostCleanupFinalizationGroupCallback(
-      HostCleanupFinalizationGroupCallback callback);
-  HostCleanupFinalizationGroupCallback
-  host_cleanup_finalization_group_callback() const {
-    return host_cleanup_finalization_group_callback_;
-  }
-  void RunHostCleanupFinalizationGroupCallback(
-      Handle<JSFinalizationRegistry> fr);
 
   void SetHostImportModuleDynamicallyCallback(
       HostImportModuleDynamicallyCallback callback);
@@ -1623,6 +1627,7 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   std::unique_ptr<IsolateAllocator> isolate_allocator_;
   Heap heap_;
   ReadOnlyHeap* read_only_heap_ = nullptr;
+  std::shared_ptr<ReadOnlyArtifacts> artifacts_;
 
   const int id_;
   EntryStackItem* entry_stack_ = nullptr;
@@ -1671,8 +1676,6 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   v8::Isolate::AtomicsWaitCallback atomics_wait_callback_ = nullptr;
   void* atomics_wait_callback_data_ = nullptr;
   PromiseHook promise_hook_ = nullptr;
-  HostCleanupFinalizationGroupCallback
-      host_cleanup_finalization_group_callback_ = nullptr;
   HostImportModuleDynamicallyCallback host_import_module_dynamically_callback_ =
       nullptr;
   HostInitializeImportMetaObjectCallback
@@ -1764,6 +1767,8 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   DeferredHandles* deferred_handles_head_ = nullptr;
   OptimizingCompileDispatcher* optimizing_compile_dispatcher_ = nullptr;
 
+  std::unique_ptr<PersistentHandlesList> persistent_handles_list_;
+
   // Counts deopt points if deopt_every_n_times is enabled.
   unsigned int stress_deopt_count_ = 0;
 
@@ -1785,7 +1790,7 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
 
   v8::Isolate::UseCounterCallback use_counter_callback_ = nullptr;
 
-  std::vector<Object> partial_snapshot_cache_;
+  std::vector<Object> startup_object_cache_;
 
   // Used during builtins compilation to build the builtins constants table,
   // which is stored on the root list prior to serialization.
@@ -1859,8 +1864,6 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   // Delete new/delete operators to ensure that Isolate::New() and
   // Isolate::Delete() are used for Isolate creation and deletion.
   void* operator new(size_t, void* ptr) { return ptr; }
-  void* operator new(size_t) = delete;
-  void operator delete(void*) = delete;
 
   friend class heap::HeapTester;
   friend class TestSerializer;

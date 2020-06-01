@@ -191,11 +191,6 @@ void AbortDescriptor::InitializePlatformSpecific(
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }
 
-void AllocateHeapNumberDescriptor::InitializePlatformSpecific(
-    CallInterfaceDescriptorData* data) {
-  data->InitializePlatformSpecific(0, nullptr);
-}
-
 void CompareDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   // x1: left operand
@@ -285,6 +280,54 @@ void RunMicrotasksEntryDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   Register registers[] = {x0, x1};
   data->InitializePlatformSpecific(arraysize(registers), registers);
+}
+
+void BinaryOp_WithFeedbackDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // TODO(v8:8888): Implement on this platform.
+  DefaultInitializePlatformSpecific(data, 4);
+}
+
+void CallTrampoline_WithFeedbackDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // TODO(v8:8888): Implement on this platform.
+  DefaultInitializePlatformSpecific(data, 4);
+}
+
+void CallWithArrayLike_WithFeedbackDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // TODO(v8:8888): Implement on this platform.
+  DefaultInitializePlatformSpecific(data, 4);
+}
+
+void CallWithSpread_WithFeedbackDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // TODO(v8:8888): Implement on this platform.
+  DefaultInitializePlatformSpecific(data, 4);
+}
+
+void ConstructWithArrayLike_WithFeedbackDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // TODO(v8:8888): Implement on this platform.
+  DefaultInitializePlatformSpecific(data, 4);
+}
+
+void ConstructWithSpread_WithFeedbackDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // TODO(v8:8888): Implement on this platform.
+  DefaultInitializePlatformSpecific(data, 4);
+}
+
+void Compare_WithFeedbackDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // TODO(v8:8888): Implement on this platform.
+  DefaultInitializePlatformSpecific(data, 4);
+}
+
+void UnaryOp_WithFeedbackDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // TODO(v8:8888): Implement on this platform.
+  DefaultInitializePlatformSpecific(data, 3);
 }
 
 }  // namespace internal

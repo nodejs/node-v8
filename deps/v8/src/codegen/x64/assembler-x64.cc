@@ -3424,6 +3424,13 @@ void Assembler::roundsd(XMMRegister dst, XMMRegister src, RoundingMode mode) {
   emit(static_cast<byte>(mode) | 0x8);
 }
 
+void Assembler::roundps(XMMRegister dst, XMMRegister src, RoundingMode mode) {
+  DCHECK(!IsEnabled(AVX));
+  sse4_instr(dst, src, 0x66, 0x0F, 0x3A, 0x08);
+  // Mask precision exception.
+  emit(static_cast<byte>(mode) | 0x8);
+}
+
 void Assembler::movmskpd(Register dst, XMMRegister src) {
   EnsureSpace ensure_space(this);
   emit(0x66);
@@ -3438,6 +3445,15 @@ void Assembler::movmskps(Register dst, XMMRegister src) {
   emit_optional_rex_32(dst, src);
   emit(0x0F);
   emit(0x50);
+  emit_sse_operand(dst, src);
+}
+
+void Assembler::pmovmskb(Register dst, XMMRegister src) {
+  EnsureSpace ensure_space(this);
+  emit_optional_rex_32(dst, src);
+  emit(0x66);
+  emit(0x0F);
+  emit(0xD7);
   emit_sse_operand(dst, src);
 }
 
@@ -3632,6 +3648,15 @@ void Assembler::vucomiss(XMMRegister dst, Operand src) {
   emit_vex_prefix(dst, xmm0, src, kLIG, kNone, k0F, kWIG);
   emit(0x2E);
   emit_sse_operand(dst, src);
+}
+
+void Assembler::vpmovmskb(Register dst, XMMRegister src) {
+  XMMRegister idst = XMMRegister::from_code(dst.code());
+  DCHECK(IsEnabled(AVX));
+  EnsureSpace ensure_space(this);
+  emit_vex_prefix(idst, xmm0, src, kL128, k66, k0F, kWIG);
+  emit(0xD7);
+  emit_sse_operand(idst, src);
 }
 
 void Assembler::vss(byte op, XMMRegister dst, XMMRegister src1,

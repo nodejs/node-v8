@@ -1233,6 +1233,8 @@ void InstructionSelector::VisitWord32PairSar(Node* node) {
   VisitWord32PairShift(this, kArmAsrPair, node);
 }
 
+void InstructionSelector::VisitWord32Rol(Node* node) { UNREACHABLE(); }
+
 void InstructionSelector::VisitWord32Ror(Node* node) {
   VisitShift(this, node, TryMatchROR);
 }
@@ -2437,23 +2439,24 @@ void InstructionSelector::VisitWord32AtomicPairExchange(Node* node) {
                          AddressingModeField::encode(addressing_mode);
   Node* projection0 = NodeProperties::FindProjection(node, 0);
   Node* projection1 = NodeProperties::FindProjection(node, 1);
-  if (projection1) {
-    InstructionOperand outputs[] = {g.DefineAsFixed(projection0, r6),
-                                    g.DefineAsFixed(projection1, r7)};
-    InstructionOperand temps[] = {g.TempRegister(), g.TempRegister()};
-    Emit(code, arraysize(outputs), outputs, arraysize(inputs), inputs,
-         arraysize(temps), temps);
-  } else if (projection0) {
-    InstructionOperand outputs[] = {g.DefineAsFixed(projection0, r6)};
-    InstructionOperand temps[] = {g.TempRegister(), g.TempRegister(),
-                                  g.TempRegister(r7)};
-    Emit(code, arraysize(outputs), outputs, arraysize(inputs), inputs,
-         arraysize(temps), temps);
+  InstructionOperand outputs[2];
+  size_t output_count = 0;
+  InstructionOperand temps[4];
+  size_t temp_count = 0;
+  temps[temp_count++] = g.TempRegister();
+  temps[temp_count++] = g.TempRegister();
+  if (projection0) {
+    outputs[output_count++] = g.DefineAsFixed(projection0, r6);
   } else {
-    InstructionOperand temps[] = {g.TempRegister(), g.TempRegister(),
-                                  g.TempRegister(r6), g.TempRegister(r7)};
-    Emit(code, 0, nullptr, arraysize(inputs), inputs, arraysize(temps), temps);
+    temps[temp_count++] = g.TempRegister(r6);
   }
+  if (projection1) {
+    outputs[output_count++] = g.DefineAsFixed(projection1, r7);
+  } else {
+    temps[temp_count++] = g.TempRegister(r7);
+  }
+  Emit(code, output_count, outputs, arraysize(inputs), inputs, temp_count,
+       temps);
 }
 
 void InstructionSelector::VisitWord32AtomicPairCompareExchange(Node* node) {
@@ -2522,12 +2525,12 @@ void InstructionSelector::VisitWord32AtomicPairCompareExchange(Node* node) {
   V(I8x16Neg, kArmI8x16Neg)                             \
   V(I8x16Abs, kArmI8x16Abs)                             \
   V(S128Not, kArmS128Not)                               \
-  V(S1x4AnyTrue, kArmS1x4AnyTrue)                       \
-  V(S1x4AllTrue, kArmS1x4AllTrue)                       \
-  V(S1x8AnyTrue, kArmS1x8AnyTrue)                       \
-  V(S1x8AllTrue, kArmS1x8AllTrue)                       \
-  V(S1x16AnyTrue, kArmS1x16AnyTrue)                     \
-  V(S1x16AllTrue, kArmS1x16AllTrue)
+  V(V32x4AnyTrue, kArmV32x4AnyTrue)                     \
+  V(V32x4AllTrue, kArmV32x4AllTrue)                     \
+  V(V16x8AnyTrue, kArmV16x8AnyTrue)                     \
+  V(V16x8AllTrue, kArmV16x8AllTrue)                     \
+  V(V8x16AnyTrue, kArmV8x16AnyTrue)                     \
+  V(V8x16AllTrue, kArmV8x16AllTrue)
 
 #define SIMD_SHIFT_OP_LIST(V) \
   V(I64x2Shl, 64)             \
@@ -2936,6 +2939,42 @@ void InstructionSelector::VisitI16x8BitMask(Node* node) {
 
 void InstructionSelector::VisitI32x4BitMask(Node* node) {
   VisitBitMask<kArmI32x4BitMask>(this, node);
+}
+
+namespace {
+void VisitF32x4PminOrPmax(InstructionSelector* selector, ArchOpcode opcode,
+                          Node* node) {
+  ArmOperandGenerator g(selector);
+  // Need all unique registers because we first compare the two inputs, then we
+  // need the inputs to remain unchanged for the bitselect later.
+  selector->Emit(opcode, g.DefineAsRegister(node),
+                 g.UseUniqueRegister(node->InputAt(0)),
+                 g.UseUniqueRegister(node->InputAt(1)));
+}
+
+void VisitF64x2PminOrPMax(InstructionSelector* selector, ArchOpcode opcode,
+                          Node* node) {
+  ArmOperandGenerator g(selector);
+  selector->Emit(opcode, g.DefineSameAsFirst(node),
+                 g.UseRegister(node->InputAt(0)),
+                 g.UseRegister(node->InputAt(1)));
+}
+}  // namespace
+
+void InstructionSelector::VisitF32x4Pmin(Node* node) {
+  VisitF32x4PminOrPmax(this, kArmF32x4Pmin, node);
+}
+
+void InstructionSelector::VisitF32x4Pmax(Node* node) {
+  VisitF32x4PminOrPmax(this, kArmF32x4Pmax, node);
+}
+
+void InstructionSelector::VisitF64x2Pmin(Node* node) {
+  VisitF64x2PminOrPMax(this, kArmF64x2Pmin, node);
+}
+
+void InstructionSelector::VisitF64x2Pmax(Node* node) {
+  VisitF64x2PminOrPMax(this, kArmF64x2Pmax, node);
 }
 
 // static

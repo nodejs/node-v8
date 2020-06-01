@@ -151,6 +151,8 @@ constexpr int kMaxInt16 = (1 << 15) - 1;
 constexpr int kMinInt16 = -(1 << 15);
 constexpr int kMaxUInt16 = (1 << 16) - 1;
 constexpr int kMinUInt16 = 0;
+constexpr int kMaxInt31 = kMaxInt / 2;
+constexpr int kMinInt31 = kMinInt / 2;
 
 constexpr uint32_t kMaxUInt32 = 0xFFFFFFFFu;
 constexpr int kMinUInt32 = 0;
@@ -278,6 +280,11 @@ constexpr int kPointerSize = kSystemPointerSize;
 constexpr int kPointerSizeLog2 = kSystemPointerSizeLog2;
 STATIC_ASSERT(kPointerSize == (1 << kPointerSizeLog2));
 #endif
+
+// This type defines raw storage type for external (or off-V8 heap) pointers
+// stored on V8 heap.
+using ExternalPointer_t = Address;
+constexpr int kExternalPointerSize = sizeof(ExternalPointer_t);
 
 constexpr int kEmbedderDataSlotSize = kSystemPointerSize;
 
@@ -646,6 +653,7 @@ class NewSpace;
 class NewLargeObjectSpace;
 class NumberDictionary;
 class Object;
+class OffThreadIsolate;
 class OldLargeObjectSpace;
 template <HeapObjectReferenceType kRefType, typename StorageType>
 class TaggedImpl;
@@ -805,17 +813,6 @@ enum class LocalSpaceKind {
 
 enum Executability { NOT_EXECUTABLE, EXECUTABLE };
 
-enum VisitMode {
-  VISIT_ALL,
-  VISIT_ALL_IN_MINOR_MC_MARK,
-  VISIT_ALL_IN_MINOR_MC_UPDATE,
-  VISIT_ALL_IN_SCAVENGE,
-  VISIT_ALL_IN_SWEEP_NEWSPACE,
-  VISIT_ONLY_STRONG,
-  VISIT_ONLY_STRONG_IGNORE_STACK,
-  VISIT_FOR_SERIALIZATION,
-};
-
 enum class BytecodeFlushMode {
   kDoNotFlushBytecode,
   kFlushBytecode,
@@ -837,7 +834,7 @@ enum NativesFlag { NOT_NATIVES_CODE, EXTENSION_CODE, INSPECTOR_CODE };
 
 // ParseRestriction is used to restrict the set of valid statements in a
 // unit of compilation.  Restriction violations cause a syntax error.
-enum ParseRestriction {
+enum ParseRestriction : bool {
   NO_PARSE_RESTRICTION,         // All expressions are allowed.
   ONLY_SINGLE_FUNCTION_LITERAL  // Only a single FunctionLiteral expression.
 };
@@ -1342,31 +1339,46 @@ class BinaryOperationFeedback {
 };
 
 // Type feedback is encoded in such a way that, we can combine the feedback
-// at different points by performing an 'OR' operation. Type feedback moves
-// to a more generic type when we combine feedback.
-//
-//   kSignedSmall -> kNumber             -> kNumberOrOddball           -> kAny
-//                   kReceiver           -> kReceiverOrNullOrUndefined -> kAny
-//                   kInternalizedString -> kString                    -> kAny
-//                                          kSymbol                    -> kAny
-//                                          kBigInt                    -> kAny
-//
+// at different points by performing an 'OR' operation.
 // This is distinct from BinaryOperationFeedback on purpose, because the
 // feedback that matters differs greatly as well as the way it is consumed.
 class CompareOperationFeedback {
- public:
   enum {
-    kNone = 0x000,
-    kSignedSmall = 0x001,
-    kNumber = 0x003,
-    kNumberOrOddball = 0x007,
-    kInternalizedString = 0x008,
-    kString = 0x018,
-    kSymbol = 0x020,
-    kBigInt = 0x040,
-    kReceiver = 0x080,
-    kReceiverOrNullOrUndefined = 0x180,
-    kAny = 0x1ff
+    kSignedSmallFlag = 1 << 0,
+    kOtherNumberFlag = 1 << 1,
+    kBooleanFlag = 1 << 2,
+    kNullOrUndefinedFlag = 1 << 3,
+    kInternalizedStringFlag = 1 << 4,
+    kOtherStringFlag = 1 << 5,
+    kSymbolFlag = 1 << 6,
+    kBigIntFlag = 1 << 7,
+    kReceiverFlag = 1 << 8,
+    kAnyMask = 0x1FF,
+  };
+
+ public:
+  enum Type {
+    kNone = 0,
+
+    kBoolean = kBooleanFlag,
+    kNullOrUndefined = kNullOrUndefinedFlag,
+    kOddball = kBoolean | kNullOrUndefined,
+
+    kSignedSmall = kSignedSmallFlag,
+    kNumber = kSignedSmall | kOtherNumberFlag,
+    kNumberOrBoolean = kNumber | kBoolean,
+    kNumberOrOddball = kNumber | kOddball,
+
+    kInternalizedString = kInternalizedStringFlag,
+    kString = kInternalizedString | kOtherStringFlag,
+
+    kReceiver = kReceiverFlag,
+    kReceiverOrNullOrUndefined = kReceiver | kNullOrUndefined,
+
+    kBigInt = kBigIntFlag,
+    kSymbol = kSymbolFlag,
+
+    kAny = kAnyMask,
   };
 };
 
@@ -1598,7 +1610,10 @@ enum class LoadSensitivity {
   V(TrapElemSegmentDropped)        \
   V(TrapTableOutOfBounds)          \
   V(TrapBrOnExnNullRef)            \
-  V(TrapRethrowNullRef)
+  V(TrapRethrowNullRef)            \
+  V(TrapNullDereference)           \
+  V(TrapIllegalCast)               \
+  V(TrapArrayOutOfBounds)
 
 enum KeyedAccessLoadMode {
   STANDARD_LOAD,

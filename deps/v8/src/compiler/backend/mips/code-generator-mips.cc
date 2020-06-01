@@ -11,7 +11,7 @@
 #include "src/compiler/backend/gap-resolver.h"
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/osr.h"
-#include "src/heap/heap-inl.h"  // crbug.com/v8/8499
+#include "src/heap/memory-chunk.h"
 #include "src/wasm/wasm-code-manager.h"
 
 namespace v8 {
@@ -2800,9 +2800,9 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
                i.InputSimd128Register(0));
       break;
     }
-    case kMipsS1x4AnyTrue:
-    case kMipsS1x8AnyTrue:
-    case kMipsS1x16AnyTrue: {
+    case kMipsV32x4AnyTrue:
+    case kMipsV16x8AnyTrue:
+    case kMipsV8x16AnyTrue: {
       CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
       Register dst = i.OutputRegister();
       Label all_false;
@@ -2814,7 +2814,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ bind(&all_false);
       break;
     }
-    case kMipsS1x4AllTrue: {
+    case kMipsV32x4AllTrue: {
       CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
       Register dst = i.OutputRegister();
       Label all_true;
@@ -2825,7 +2825,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ bind(&all_true);
       break;
     }
-    case kMipsS1x8AllTrue: {
+    case kMipsV16x8AllTrue: {
       CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
       Register dst = i.OutputRegister();
       Label all_true;
@@ -2836,7 +2836,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ bind(&all_true);
       break;
     }
-    case kMipsS1x16AllTrue: {
+    case kMipsV8x16AllTrue: {
       CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
       Register dst = i.OutputRegister();
       Label all_true;
@@ -3508,7 +3508,7 @@ void CodeGenerator::AssembleArchTrap(Instruction* instr,
         __ PrepareCallCFunction(0, 0, cp);
         __ CallCFunction(
             ExternalReference::wasm_call_trap_callback_for_testing(), 0);
-        __ LeaveFrame(StackFrame::WASM_COMPILED);
+        __ LeaveFrame(StackFrame::WASM);
         auto call_descriptor = gen_->linkage()->GetIncomingDescriptor();
         int pop_count =
             static_cast<int>(call_descriptor->StackParameterCount());

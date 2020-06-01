@@ -90,6 +90,15 @@ FromConstexpr<LanguageModeSmi, constexpr LanguageMode>(
     c: constexpr LanguageMode): LanguageModeSmi {
   return %RawDownCast<LanguageModeSmi>(SmiConstant(c));
 }
+FromConstexpr<PromiseState, constexpr PromiseState>(c: constexpr PromiseState):
+    PromiseState {
+  return %RawDownCast<PromiseState>(Int32Constant(c));
+}
+
+FromConstexpr<IterationKind, constexpr IterationKind>(
+    c: constexpr IterationKind): IterationKind {
+  return %RawDownCast<IterationKind>(Unsigned(%FromConstexpr<int32>(c)));
+}
 
 macro Convert<To: type, From: type>(i: From): To {
   return i;
@@ -99,6 +108,9 @@ macro Convert<To: type, From: type>(i: From): To labels Overflow {
   return i;
 }
 
+Convert<Boolean, bool>(b: bool): Boolean {
+  return b ? True : False;
+}
 extern macro ConvertElementsKindToInt(ElementsKind): int32;
 Convert<int32, ElementsKind>(elementsKind: ElementsKind): int32 {
   return ConvertElementsKindToInt(elementsKind);
@@ -197,6 +209,9 @@ Convert<PositiveSmi, intptr>(i: intptr): PositiveSmi labels IfOverflow {
       goto IfOverflow;
     }
 }
+Convert<PositiveSmi, uint32>(ui: uint32): PositiveSmi labels IfOverflow {
+  return Convert<PositiveSmi>(Convert<uintptr>(ui)) otherwise IfOverflow;
+}
 Convert<int32, Smi>(s: Smi): int32 {
   return SmiToInt32(s);
 }
@@ -208,6 +223,9 @@ Convert<float64, Number>(n: Number): float64 {
 }
 Convert<uintptr, Number>(n: Number): uintptr {
   return ChangeUintPtrNumberToUintPtr(n);
+}
+Convert<float64, int32>(f: int32): float64 {
+  return ChangeInt32ToFloat64(f);
 }
 Convert<float64, float32>(f: float32): float64 {
   return ChangeFloat32ToFloat64(f);

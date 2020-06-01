@@ -203,6 +203,9 @@ namespace compiler {
   V(Mips64F64x2Splat)                        \
   V(Mips64F64x2ExtractLane)                  \
   V(Mips64F64x2ReplaceLane)                  \
+  V(Mips64I64x2Splat)                        \
+  V(Mips64I64x2ExtractLane)                  \
+  V(Mips64I64x2ReplaceLane)                  \
   V(Mips64I64x2Add)                          \
   V(Mips64I64x2Sub)                          \
   V(Mips64I64x2Mul)                          \
@@ -295,12 +298,12 @@ namespace compiler {
   V(Mips64S128Not)                           \
   V(Mips64S128Select)                        \
   V(Mips64S128AndNot)                        \
-  V(Mips64S1x4AnyTrue)                       \
-  V(Mips64S1x4AllTrue)                       \
-  V(Mips64S1x8AnyTrue)                       \
-  V(Mips64S1x8AllTrue)                       \
-  V(Mips64S1x16AnyTrue)                      \
-  V(Mips64S1x16AllTrue)                      \
+  V(Mips64V32x4AnyTrue)                      \
+  V(Mips64V32x4AllTrue)                      \
+  V(Mips64V16x8AnyTrue)                      \
+  V(Mips64V16x8AllTrue)                      \
+  V(Mips64V8x16AnyTrue)                      \
+  V(Mips64V8x16AllTrue)                      \
   V(Mips64S32x4InterleaveRight)              \
   V(Mips64S32x4InterleaveLeft)               \
   V(Mips64S32x4PackEven)                     \

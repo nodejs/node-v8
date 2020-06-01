@@ -195,12 +195,6 @@ void AbortDescriptor::InitializePlatformSpecific(
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }
 
-void AllocateHeapNumberDescriptor::InitializePlatformSpecific(
-    CallInterfaceDescriptorData* data) {
-  // register state
-  data->InitializePlatformSpecific(0, nullptr);
-}
-
 void CompareDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   Register registers[] = {edx, eax};
@@ -282,6 +276,70 @@ void FrameDropperTrampolineDescriptor::InitializePlatformSpecific(
 void RunMicrotasksEntryDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   data->InitializePlatformSpecific(0, nullptr);
+}
+
+void WasmFloat32ToNumberDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // Work around using eax, whose register code is 0, and leads to the FP
+  // parameter being passed via xmm0, which is not allocatable on ia32.
+  Register registers[] = {ecx};
+  data->InitializePlatformSpecific(arraysize(registers), registers);
+}
+
+void WasmFloat64ToNumberDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // Work around using eax, whose register code is 0, and leads to the FP
+  // parameter being passed via xmm0, which is not allocatable on ia32.
+  Register registers[] = {ecx};
+  data->InitializePlatformSpecific(arraysize(registers), registers);
+}
+
+void BinaryOp_WithFeedbackDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // TODO(v8:8888): Implement on this platform.
+  DefaultInitializePlatformSpecific(data, 4);
+}
+
+void CallTrampoline_WithFeedbackDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // TODO(v8:8888): Implement on this platform.
+  DefaultInitializePlatformSpecific(data, 4);
+}
+
+void CallWithArrayLike_WithFeedbackDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // TODO(v8:8888): Implement on this platform.
+  DefaultInitializePlatformSpecific(data, 4);
+}
+
+void CallWithSpread_WithFeedbackDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // TODO(v8:8888): Implement on this platform.
+  DefaultInitializePlatformSpecific(data, 4);
+}
+
+void ConstructWithArrayLike_WithFeedbackDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // TODO(v8:8888): Implement on this platform.
+  DefaultInitializePlatformSpecific(data, 4);
+}
+
+void ConstructWithSpread_WithFeedbackDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // TODO(v8:8888): Implement on this platform.
+  DefaultInitializePlatformSpecific(data, 4);
+}
+
+void Compare_WithFeedbackDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // TODO(v8:8888): Implement on this platform.
+  DefaultInitializePlatformSpecific(data, 4);
+}
+
+void UnaryOp_WithFeedbackDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // TODO(v8:8888): Implement on this platform.
+  DefaultInitializePlatformSpecific(data, 3);
 }
 
 }  // namespace internal

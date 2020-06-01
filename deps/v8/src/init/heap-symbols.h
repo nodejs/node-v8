@@ -118,6 +118,7 @@
 #define INTERNALIZED_STRING_LIST_GENERATOR(V, _)                     \
   INTERNALIZED_STRING_LIST_GENERATOR_INTL(V, _)                      \
   V(_, add_string, "add")                                            \
+  V(_, AggregateError_string, "AggregateError")                      \
   V(_, always_string, "always")                                      \
   V(_, anonymous_function_string, "(anonymous function)")            \
   V(_, anonymous_string, "anonymous")                                \
@@ -179,11 +180,13 @@
   V(_, enumerable_string, "enumerable")                              \
   V(_, element_string, "element")                                    \
   V(_, Error_string, "Error")                                        \
+  V(_, errors_string, "errors")                                      \
   V(_, error_to_string, "[object Error]")                            \
   V(_, eval_string, "eval")                                          \
   V(_, EvalError_string, "EvalError")                                \
   V(_, exec_string, "exec")                                          \
   V(_, false_string, "false")                                        \
+  V(_, FinalizationRegistry_string, "FinalizationRegistry")          \
   V(_, flags_string, "flags")                                        \
   V(_, Float32Array_string, "Float32Array")                          \
   V(_, Float64Array_string, "Float64Array")                          \
@@ -240,7 +243,7 @@
   V(_, NFD_string, "NFD")                                            \
   V(_, NFKC_string, "NFKC")                                          \
   V(_, NFKD_string, "NFKD")                                          \
-  V(_, not_equal, "not-equal")                                       \
+  V(_, not_equal_string, "not-equal")                                \
   V(_, null_string, "null")                                          \
   V(_, null_to_string, "[object Null]")                              \
   V(_, Number_string, "Number")                                      \
@@ -250,7 +253,7 @@
   V(_, object_string, "object")                                      \
   V(_, object_to_string, "[object Object]")                          \
   V(_, of_string, "of")                                              \
-  V(_, ok, "ok")                                                     \
+  V(_, ok_string, "ok")                                              \
   V(_, one_string, "1")                                              \
   V(_, other_string, "other")                                        \
   V(_, ownKeys_string, "ownKeys")                                    \
@@ -302,7 +305,7 @@
   V(_, this_function_string, ".this_function")                       \
   V(_, this_string, "this")                                          \
   V(_, throw_string, "throw")                                        \
-  V(_, timed_out, "timed-out")                                       \
+  V(_, timed_out_string, "timed-out")                                \
   V(_, toJSON_string, "toJSON")                                      \
   V(_, toString_string, "toString")                                  \
   V(_, true_string, "true")                                          \
@@ -492,6 +495,7 @@
   F(SCAVENGER_SCAVENGE_WEAK_GLOBAL_HANDLES_PROCESS)  \
   F(SCAVENGER_SCAVENGE_PARALLEL)                     \
   F(SCAVENGER_SCAVENGE_ROOTS)                        \
+  F(SCAVENGER_SCAVENGE_STACK_ROOTS)                  \
   F(SCAVENGER_SCAVENGE_UPDATE_REFS)                  \
   F(SCAVENGER_SCAVENGE_WEAK)                         \
   F(SCAVENGER_SCAVENGE_FINALIZE)                     \

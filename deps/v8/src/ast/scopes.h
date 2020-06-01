@@ -102,6 +102,10 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
     }
     inline explicit Snapshot(Scope* scope);
 
+    // Disallow copy and move.
+    Snapshot(const Snapshot&) = delete;
+    Snapshot(Snapshot&&) = delete;
+
     ~Snapshot() {
       // If we're still active, there was no arrow function. In that case outer
       // calls eval if it already called eval before this snapshot started, or
@@ -142,10 +146,6 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
     Scope* top_inner_scope_;
     UnresolvedList::Iterator top_unresolved_;
     base::ThreadedList<Variable>::Iterator top_local_;
-
-    // Disallow copy and move.
-    Snapshot(const Snapshot&) = delete;
-    Snapshot(Snapshot&&) = delete;
   };
 
   enum class DeserializationMode { kIncludingVariables, kScopesOnly };
@@ -909,7 +909,8 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
   // Check if the scope has conflicting var
   // declarations, i.e. a var declaration that has been hoisted from a nested
   // scope over a let binding of the same name.
-  Declaration* CheckConflictingVarDeclarations();
+  Declaration* CheckConflictingVarDeclarations(
+      bool* allowed_catch_binding_var_redeclaration);
 
   void set_has_checked_syntax(bool has_checked_syntax) {
     has_checked_syntax_ = has_checked_syntax;

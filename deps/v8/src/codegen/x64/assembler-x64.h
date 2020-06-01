@@ -1124,6 +1124,8 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
 
   void movmskpd(Register dst, XMMRegister src);
 
+  void pmovmskb(Register dst, XMMRegister src);
+
   // SSE 4.1 instruction
   void insertps(XMMRegister dst, XMMRegister src, byte imm8);
   void insertps(XMMRegister dst, Operand src, byte imm8);
@@ -1139,6 +1141,7 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
 
   void roundss(XMMRegister dst, XMMRegister src, RoundingMode mode);
   void roundsd(XMMRegister dst, XMMRegister src, RoundingMode mode);
+  void roundps(XMMRegister dst, XMMRegister src, RoundingMode mode);
 
   void cmpps(XMMRegister dst, XMMRegister src, int8_t cmp);
   void cmpps(XMMRegister dst, Operand src, int8_t cmp);
@@ -1356,6 +1359,11 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
     vinstr(0x0b, dst, src1, src2, k66, k0F3A, kWIG);
     emit(static_cast<byte>(mode) | 0x8);  // Mask precision exception.
   }
+  void vroundps(XMMRegister dst, XMMRegister src1, XMMRegister src2,
+                RoundingMode mode) {
+    vinstr(0x08, dst, src1, src2, k66, k0F3A, kWIG);
+    emit(static_cast<byte>(mode) | 0x8);  // Mask precision exception.
+  }
 
   void vsd(byte op, XMMRegister dst, XMMRegister src1, XMMRegister src2) {
     vinstr(op, dst, src1, src2, kF2, k0F, kWIG);
@@ -1393,6 +1401,7 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
     XMMRegister idst = XMMRegister::from_code(dst.code());
     vpd(0x50, idst, xmm0, src);
   }
+  void vpmovmskb(Register dst, XMMRegister src);
   void vcmpps(XMMRegister dst, XMMRegister src1, XMMRegister src2, int8_t cmp) {
     vps(0xC2, dst, src1, src2);
     emit(cmp);

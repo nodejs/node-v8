@@ -70,6 +70,8 @@ type bool generates 'TNode<BoolT>' constexpr 'bool';
 type bint generates 'TNode<BInt>' constexpr 'BInt';
 type string constexpr 'const char*';
 type RawPtr generates 'TNode<RawPtrT>' constexpr 'void*';
+type ExternalPointer
+    generates 'TNode<ExternalPointerT>' constexpr 'ExternalPointer_t';
 type Code extends HeapObject generates 'TNode<Code>';
 type BuiltinPtr extends Smi generates 'TNode<BuiltinPtr>';
 type Context extends HeapObject generates 'TNode<Context>';
@@ -85,6 +87,8 @@ struct float64_or_hole {
 }
 
 extern operator '+' macro IntPtrAdd(intptr, intptr): intptr;
+extern operator '!' macro Word32BinaryNot(bool): bool;
+extern operator '==' macro Word32Equal(int32, int32): bool;
 
 intrinsic %FromConstexpr<To: type, From: type>(b: From): To;
 intrinsic %RawDownCast<To: type, From: type>(x: From): To;
@@ -110,6 +114,13 @@ FromConstexpr<intptr, constexpr int31>(i: constexpr int31): intptr {
 }
 FromConstexpr<intptr, constexpr intptr>(i: constexpr intptr): intptr {
   return %FromConstexpr<intptr>(i);
+}
+extern macro BoolConstant(constexpr bool): bool;
+FromConstexpr<bool, constexpr bool>(b: constexpr bool): bool {
+  return BoolConstant(b);
+}
+FromConstexpr<int32, constexpr int31>(i: constexpr int31): int32 {
+  return %FromConstexpr<int32>(i);
 }
 
 macro Cast<A : type extends Object>(implicit context: Context)(o: Object): A
@@ -332,6 +343,22 @@ TEST(Torque, ConstexprLetBindingDoesNotCrash) {
   ExpectFailingCompilation(
       R"(@export macro FooBar() { let foo = 0; check(foo >= 0); })",
       HasSubstr("Use 'const' instead of 'let' for variable 'foo'"));
+}
+
+TEST(Torque, FailedImplicitCastFromConstexprDoesNotCrash) {
+  ExpectFailingCompilation(
+      R"(
+    extern enum SomeEnum {
+      kValue,
+      ...
+    }
+    macro Foo() {
+      Bar(SomeEnum::kValue);
+    }
+    macro Bar<T: type>(value: T) {}
+  )",
+      HasSubstr(
+          "Cannot find non-constexpr type corresponding to constexpr kValue"));
 }
 
 TEST(Torque, DoubleUnderScorePrefixIllegalForIdentifiers) {
@@ -625,6 +652,20 @@ TEST(Torque, EnumInTypeswitch) {
       }
     }
   )");
+
+  ExpectSuccessfulCompilation(R"(
+  extern enum MyEnum extends Smi {
+    kA,
+    kB,
+    kC,
+    ...
+  }
+
+  @export
+  macro Test(implicit context: Context)(b: bool): Smi {
+    return b ? MyEnum::kB : MyEnum::kA;
+  }
+)");
 }
 
 TEST(Torque, ConstClassFields) {
@@ -753,6 +794,39 @@ TEST(Torque, References) {
     }
   )",
                            HasSubstr("cannot assign to const value"));
+}
+
+TEST(Torque, CatchFirstHandler) {
+  ExpectFailingCompilation(
+      R"(
+    @export
+    macro Test() {
+      try {
+      } label Foo {
+      } catch (e) {}
+    }
+  )",
+      HasSubstr(
+          "catch handler always has to be first, before any label handler"));
+}
+
+TEST(Torque, BitFieldLogicalAnd) {
+  std::string prelude = R"(
+    bitfield struct S extends uint32 {
+      a: bool: 1 bit;
+      b: bool: 1 bit;
+      c: int32: 5 bit;
+    }
+    macro Test(s: S): bool { return
+  )";
+  std::string postlude = ";}";
+  std::string message = "use & rather than &&";
+  ExpectFailingCompilation(prelude + "s.a && s.b" + postlude,
+                           HasSubstr(message));
+  ExpectFailingCompilation(prelude + "s.a && !s.b" + postlude,
+                           HasSubstr(message));
+  ExpectFailingCompilation(prelude + "!s.b && s.c == 34" + postlude,
+                           HasSubstr(message));
 }
 
 }  // namespace torque

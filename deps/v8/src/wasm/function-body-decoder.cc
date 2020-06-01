@@ -21,14 +21,24 @@ namespace wasm {
 
 bool DecodeLocalDecls(const WasmFeatures& enabled, BodyLocalDecls* decls,
                       const byte* start, const byte* end) {
-  Decoder decoder(start, end);
-  if (WasmDecoder<Decoder::kValidate>::DecodeLocals(enabled, &decoder, nullptr,
-                                                    &decls->type_list)) {
+  WasmFeatures no_features = WasmFeatures::None();
+  WasmDecoder<Decoder::kValidate> decoder(nullptr, enabled, &no_features,
+                                          nullptr, start, end, 0);
+  // The decoded functions need to be inserted into &decls->type_list,
+  // so we pass a pointer to it to local_types_ which will be updated
+  // in DecodeLocals.
+  decoder.local_types_ = &decls->type_list;
+  uint32_t length;
+  if (decoder.DecodeLocals(
+          decoder.pc(), &length,
+          static_cast<uint32_t>(decoder.local_types_->size()))) {
     DCHECK(decoder.ok());
-    decls->encoded_size = decoder.pc_offset();
+    decls->encoded_size = length;
     return true;
+  } else {
+    decls->encoded_size = 0;
+    return false;
   }
-  return false;
 }
 
 BytecodeIterator::BytecodeIterator(const byte* start, const byte* end,
@@ -54,7 +64,9 @@ DecodeResult VerifyWasmCode(AccountingAllocator* allocator,
 }
 
 unsigned OpcodeLength(const byte* pc, const byte* end) {
-  Decoder decoder(pc, end);
+  WasmFeatures no_features = WasmFeatures::None();
+  WasmDecoder<Decoder::kNoValidate> decoder(nullptr, no_features, &no_features,
+                                            nullptr, pc, end, 0);
   return WasmDecoder<Decoder::kNoValidate>::OpcodeLength(&decoder, pc);
 }
 
@@ -154,7 +166,7 @@ bool PrintRawWasmCode(AccountingAllocator* allocator, const FunctionBody& body,
     ++line_nr;
   }
 
-  os << "// body: " << std::endl;
+  os << "// body:" << std::endl;
   if (line_numbers) line_numbers->push_back(kNoByteCode);
   ++line_nr;
   unsigned control_depth = 0;
@@ -187,6 +199,7 @@ bool PrintRawWasmCode(AccountingAllocator* allocator, const FunctionBody& body,
         opcode == kExprTry) {
       DCHECK_EQ(2, length);
 
+      // TODO(7748) Update this for gc and ref types if needed
       switch (i.pc()[1]) {
 #define CASE_LOCAL_TYPE(local_name, type_name) \
   case kLocal##local_name:                     \
@@ -282,7 +295,9 @@ bool PrintRawWasmCode(AccountingAllocator* allocator, const FunctionBody& body,
 
 BitVector* AnalyzeLoopAssignmentForTesting(Zone* zone, size_t num_locals,
                                            const byte* start, const byte* end) {
-  Decoder decoder(start, end);
+  WasmFeatures no_features = WasmFeatures::None();
+  WasmDecoder<Decoder::kValidate> decoder(nullptr, no_features, &no_features,
+                                          nullptr, start, end, 0);
   return WasmDecoder<Decoder::kValidate>::AnalyzeLoopAssignment(
       &decoder, start, static_cast<uint32_t>(num_locals), zone);
 }

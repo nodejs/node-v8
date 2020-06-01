@@ -74,6 +74,7 @@ class Decoder {
   void Unknown(Instruction* instr);
   void UnknownFormat(Instruction* instr, const char* opcname);
 
+  void DecodeExt0(Instruction* instr);
   void DecodeExt1(Instruction* instr);
   void DecodeExt2(Instruction* instr);
   void DecodeExt3(Instruction* instr);
@@ -219,6 +220,11 @@ int Decoder::FormatOption(Instruction* instr, const char* format) {
       out_buffer_pos_ += SNPrintF(out_buffer_ + out_buffer_pos_, "%d", value);
       return 6;
     }
+    case 'U': {  // UIM
+      int32_t value = instr->Bits(20, 16);
+      out_buffer_pos_ += SNPrintF(out_buffer_ + out_buffer_pos_, "%d", value);
+      return 3;
+    }
     case 'l': {
       // Link (LK) Bit 0
       if (instr->Bit(0) == 1) {
@@ -349,6 +355,110 @@ void Decoder::UnknownFormat(Instruction* instr, const char* name) {
   char buffer[100];
   snprintf(buffer, sizeof(buffer), "%s (unknown-format)", name);
   Format(instr, buffer);
+}
+
+void Decoder::DecodeExt0(Instruction* instr) {
+  // Some encodings are 5-0 bits, handle those first
+  switch (EXT0 | (instr->BitField(5, 0))) {
+    case VPERM: {
+      Format(instr, "vperm   'Dt, 'Da, 'Db, 'Dc");
+      return;
+    }
+    case VMLADDUHM: {
+      Format(instr, "vmladduhm 'Dt, 'Da, 'Db, 'Dc");
+      return;
+    }
+  }
+  switch (EXT0 | (instr->BitField(10, 0))) {
+    case VSPLTB: {
+      Format(instr, "vspltb  'Dt, 'Db, 'UIM");
+      break;
+    }
+    case VSPLTW: {
+      Format(instr, "vspltw  'Dt, 'Db, 'UIM");
+      break;
+    }
+    case VSPLTH: {
+      Format(instr, "vsplth  'Dt, 'Db, 'UIM");
+      break;
+    }
+    case VSRO: {
+      Format(instr, "vsro    'Dt, 'Da, 'Db");
+      break;
+    }
+    case VOR: {
+      Format(instr, "vor     'Dt, 'Da, 'Db");
+      break;
+    }
+    case VXOR: {
+      Format(instr, "vxor    'Dt, 'Da, 'Db");
+      break;
+    }
+    case VNOR: {
+      Format(instr, "vnor    'Dt, 'Da, 'Db");
+      break;
+    }
+    case VSLO: {
+      Format(instr, "vslo    'Dt, 'Da, 'Db");
+      break;
+    }
+    case VADDUDM: {
+      Format(instr, "vaddudm    'Dt, 'Da, 'Db");
+      break;
+    }
+    case VADDUWM: {
+      Format(instr, "vadduwm    'Dt, 'Da, 'Db");
+      break;
+    }
+    case VADDUHM: {
+      Format(instr, "vadduhm    'Dt, 'Da, 'Db");
+      break;
+    }
+    case VADDUBM: {
+      Format(instr, "vaddubm    'Dt, 'Da, 'Db");
+      break;
+    }
+    case VADDFP: {
+      Format(instr, "vaddfp    'Dt, 'Da, 'Db");
+      break;
+    }
+    case VSUBFP: {
+      Format(instr, "vsubfp    'Dt, 'Da, 'Db");
+      break;
+    }
+    case VSUBUDM: {
+      Format(instr, "vsubudm    'Dt, 'Da, 'Db");
+      break;
+    }
+    case VSUBUWM: {
+      Format(instr, "vsubuwm    'Dt, 'Da, 'Db");
+      break;
+    }
+    case VSUBUHM: {
+      Format(instr, "vsubuhm    'Dt, 'Da, 'Db");
+      break;
+    }
+    case VSUBUBM: {
+      Format(instr, "vsububm    'Dt, 'Da, 'Db");
+      break;
+    }
+    case VMULUWM: {
+      Format(instr, "vmuluwm    'Dt, 'Da, 'Db");
+      break;
+    }
+    case VPKUHUM: {
+      Format(instr, "vpkuhum    'Dt, 'Da, 'Db");
+      break;
+    }
+    case VMULEUB: {
+      Format(instr, "vmuleub    'Dt, 'Da, 'Db");
+      break;
+    }
+    case VMULOUB: {
+      Format(instr, "vmuloub    'Dt, 'Da, 'Db");
+      break;
+    }
+  }
 }
 
 void Decoder::DecodeExt1(Instruction* instr) {
@@ -832,6 +942,10 @@ void Decoder::DecodeExt2(Instruction* instr) {
       Format(instr, "sthux   'rs, 'ra, 'rb");
       return;
     }
+    case STVX: {
+      Format(instr, "stvx    'Dt, 'ra, 'rb");
+      return;
+    }
     case LWZX: {
       Format(instr, "lwzx    'rt, 'ra, 'rb");
       return;
@@ -874,6 +988,10 @@ void Decoder::DecodeExt2(Instruction* instr) {
     }
     case LWARX: {
       Format(instr, "lwarx   'rt, 'ra, 'rb");
+      return;
+    }
+    case LVX: {
+      Format(instr, "lvx     'Dt, 'ra, 'rb");
       return;
     }
 #if V8_TARGET_ARCH_PPC64
@@ -1266,6 +1384,10 @@ int Decoder::InstructionDecode(byte* instr_ptr) {
     }
     case BX: {
       Format(instr, "b'l'a 'target26");
+      break;
+    }
+    case EXT0: {
+      DecodeExt0(instr);
       break;
     }
     case EXT1: {

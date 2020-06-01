@@ -532,6 +532,7 @@
   V(Word32Shl)                   \
   V(Word32Shr)                   \
   V(Word32Sar)                   \
+  V(Word32Rol)                   \
   V(Word32Ror)                   \
   V(Int32Add)                    \
   V(Int32AddWithOverflow)        \
@@ -553,6 +554,7 @@
   V(Word64Shl)                   \
   V(Word64Shr)                   \
   V(Word64Sar)                   \
+  V(Word64Rol)                   \
   V(Word64Ror)                   \
   V(Int64Add)                    \
   V(Int64AddWithOverflow)        \
@@ -761,6 +763,8 @@
   V(F64x2Le)                    \
   V(F64x2Qfma)                  \
   V(F64x2Qfms)                  \
+  V(F64x2Pmin)                  \
+  V(F64x2Pmax)                  \
   V(F32x4Splat)                 \
   V(F32x4ExtractLane)           \
   V(F32x4ReplaceLane)           \
@@ -786,6 +790,12 @@
   V(F32x4Ge)                    \
   V(F32x4Qfma)                  \
   V(F32x4Qfms)                  \
+  V(F32x4Pmin)                  \
+  V(F32x4Pmax)                  \
+  V(F32x4Ceil)                  \
+  V(F32x4Floor)                 \
+  V(F32x4Trunc)                 \
+  V(F32x4NearestInt)            \
   V(I64x2Splat)                 \
   V(I64x2SplatI32Pair)          \
   V(I64x2ExtractLane)           \
@@ -925,14 +935,14 @@
   V(S128AndNot)                 \
   V(S8x16Swizzle)               \
   V(S8x16Shuffle)               \
-  V(S1x2AnyTrue)                \
-  V(S1x2AllTrue)                \
-  V(S1x4AnyTrue)                \
-  V(S1x4AllTrue)                \
-  V(S1x8AnyTrue)                \
-  V(S1x8AllTrue)                \
-  V(S1x16AnyTrue)               \
-  V(S1x16AllTrue)               \
+  V(V64x2AnyTrue)               \
+  V(V64x2AllTrue)               \
+  V(V32x4AnyTrue)               \
+  V(V32x4AllTrue)               \
+  V(V16x8AnyTrue)               \
+  V(V16x8AllTrue)               \
+  V(V8x16AnyTrue)               \
+  V(V8x16AllTrue)               \
   V(LoadTransform)
 
 #define VALUE_OP_LIST(V)  \

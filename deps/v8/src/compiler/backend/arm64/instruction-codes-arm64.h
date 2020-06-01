@@ -186,6 +186,8 @@ namespace compiler {
   V(Arm64F64x2Le)                           \
   V(Arm64F64x2Qfma)                         \
   V(Arm64F64x2Qfms)                         \
+  V(Arm64F64x2Pmin)                         \
+  V(Arm64F64x2Pmax)                         \
   V(Arm64F32x4Splat)                        \
   V(Arm64F32x4ExtractLane)                  \
   V(Arm64F32x4ReplaceLane)                  \
@@ -209,6 +211,8 @@ namespace compiler {
   V(Arm64F32x4Le)                           \
   V(Arm64F32x4Qfma)                         \
   V(Arm64F32x4Qfms)                         \
+  V(Arm64F32x4Pmin)                         \
+  V(Arm64F32x4Pmax)                         \
   V(Arm64I64x2Splat)                        \
   V(Arm64I64x2ExtractLane)                  \
   V(Arm64I64x2ReplaceLane)                  \
@@ -238,6 +242,8 @@ namespace compiler {
   V(Arm64I32x4AddHoriz)                     \
   V(Arm64I32x4Sub)                          \
   V(Arm64I32x4Mul)                          \
+  V(Arm64I32x4Mla)                          \
+  V(Arm64I32x4Mls)                          \
   V(Arm64I32x4MinS)                         \
   V(Arm64I32x4MaxS)                         \
   V(Arm64I32x4Eq)                           \
@@ -270,6 +276,8 @@ namespace compiler {
   V(Arm64I16x8Sub)                          \
   V(Arm64I16x8SubSaturateS)                 \
   V(Arm64I16x8Mul)                          \
+  V(Arm64I16x8Mla)                          \
+  V(Arm64I16x8Mls)                          \
   V(Arm64I16x8MinS)                         \
   V(Arm64I16x8MaxS)                         \
   V(Arm64I16x8Eq)                           \
@@ -302,6 +310,8 @@ namespace compiler {
   V(Arm64I8x16Sub)                          \
   V(Arm64I8x16SubSaturateS)                 \
   V(Arm64I8x16Mul)                          \
+  V(Arm64I8x16Mla)                          \
+  V(Arm64I8x16Mls)                          \
   V(Arm64I8x16MinS)                         \
   V(Arm64I8x16MaxS)                         \
   V(Arm64I8x16Eq)                           \
@@ -355,14 +365,14 @@ namespace compiler {
   V(Arm64S8x8Reverse)                       \
   V(Arm64S8x4Reverse)                       \
   V(Arm64S8x2Reverse)                       \
-  V(Arm64S1x2AnyTrue)                       \
-  V(Arm64S1x2AllTrue)                       \
-  V(Arm64S1x4AnyTrue)                       \
-  V(Arm64S1x4AllTrue)                       \
-  V(Arm64S1x8AnyTrue)                       \
-  V(Arm64S1x8AllTrue)                       \
-  V(Arm64S1x16AnyTrue)                      \
-  V(Arm64S1x16AllTrue)                      \
+  V(Arm64V64x2AnyTrue)                      \
+  V(Arm64V64x2AllTrue)                      \
+  V(Arm64V32x4AnyTrue)                      \
+  V(Arm64V32x4AllTrue)                      \
+  V(Arm64V16x8AnyTrue)                      \
+  V(Arm64V16x8AllTrue)                      \
+  V(Arm64V8x16AnyTrue)                      \
+  V(Arm64V8x16AllTrue)                      \
   V(Arm64S8x16LoadSplat)                    \
   V(Arm64S16x8LoadSplat)                    \
   V(Arm64S32x4LoadSplat)                    \

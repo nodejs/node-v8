@@ -5,6 +5,7 @@
 #ifndef V8_HEAP_INCREMENTAL_MARKING_H_
 #define V8_HEAP_INCREMENTAL_MARKING_H_
 
+#include "src/base/platform/mutex.h"
 #include "src/heap/heap.h"
 #include "src/heap/incremental-marking-job.h"
 #include "src/heap/mark-compact.h"
@@ -28,7 +29,7 @@ enum class StepResult {
 
 class V8_EXPORT_PRIVATE IncrementalMarking final {
  public:
-  enum State { STOPPED, SWEEPING, MARKING, COMPLETE };
+  enum State : uint8_t { STOPPED, SWEEPING, MARKING, COMPLETE };
 
   enum CompletionAction { GC_VIA_STACK_GUARD, NO_GC_VIA_STACK_GUARD };
 
@@ -168,6 +169,8 @@ class V8_EXPORT_PRIVATE IncrementalMarking final {
                                  StepOrigin step_origin);
 
   void FinalizeSweeping();
+  bool ContinueConcurrentSweeping();
+  void SupportConcurrentSweeping();
 
   StepResult Step(double max_step_size_in_ms, CompletionAction action,
                   StepOrigin step_origin);
@@ -205,6 +208,8 @@ class V8_EXPORT_PRIVATE IncrementalMarking final {
   // the concurrent marker.
   void MarkBlackAndVisitObjectDueToLayoutChange(HeapObject obj);
 
+  void MarkBlackBackground(HeapObject obj, int object_size);
+
   bool IsCompacting() { return IsMarking() && is_compacting_; }
 
   void ProcessBlackAllocatedObject(HeapObject obj);
@@ -234,6 +239,11 @@ class V8_EXPORT_PRIVATE IncrementalMarking final {
   void EnsureBlackAllocated(Address allocated, size_t size);
 
   bool IsBelowActivationThresholds() const;
+
+  void IncrementLiveBytesBackground(MemoryChunk* chunk, intptr_t by) {
+    base::MutexGuard guard(&background_live_bytes_mutex_);
+    background_live_bytes_[chunk] += by;
+  }
 
  private:
   class Observer : public AllocationObserver {
@@ -317,7 +327,10 @@ class V8_EXPORT_PRIVATE IncrementalMarking final {
   size_t bytes_marked_concurrently_ = 0;
 
   // Must use SetState() above to update state_
-  State state_;
+  // Atomic since main thread can complete marking (= changing state), while a
+  // background thread's slow allocation path will check whether incremental
+  // marking is currently running.
+  std::atomic<State> state_;
 
   bool is_compacting_ = false;
   bool was_activated_ = false;
@@ -325,7 +338,7 @@ class V8_EXPORT_PRIVATE IncrementalMarking final {
   bool finalize_marking_completed_ = false;
   IncrementalMarkingJob incremental_marking_job_;
 
-  GCRequestType request_type_ = NONE;
+  std::atomic<GCRequestType> request_type_{NONE};
 
   Observer new_generation_observer_;
   Observer old_generation_observer_;
@@ -333,6 +346,9 @@ class V8_EXPORT_PRIVATE IncrementalMarking final {
   MarkingState marking_state_;
   AtomicMarkingState atomic_marking_state_;
   NonAtomicMarkingState non_atomic_marking_state_;
+
+  base::Mutex background_live_bytes_mutex_;
+  std::unordered_map<MemoryChunk*, intptr_t> background_live_bytes_;
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(IncrementalMarking);
 };

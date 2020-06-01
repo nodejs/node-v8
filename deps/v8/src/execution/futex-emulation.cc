@@ -89,11 +89,11 @@ Object WaitJsTranslateReturn(Isolate* isolate, Object res) {
     int val = Smi::ToInt(res);
     switch (val) {
       case WaitReturnValue::kOk:
-        return ReadOnlyRoots(isolate).ok();
+        return ReadOnlyRoots(isolate).ok_string();
       case WaitReturnValue::kNotEqual:
-        return ReadOnlyRoots(isolate).not_equal();
+        return ReadOnlyRoots(isolate).not_equal_string();
       case WaitReturnValue::kTimedOut:
-        return ReadOnlyRoots(isolate).timed_out();
+        return ReadOnlyRoots(isolate).timed_out_string();
       default:
         UNREACHABLE();
     }
@@ -188,13 +188,14 @@ Object FutexEmulation::Wait(Isolate* isolate,
     return isolate->PromoteScheduledException();
   }
 
-  Object result;
+  Handle<Object> result;
   AtomicsWaitEvent callback_result = AtomicsWaitEvent::kWokenUp;
 
   do {  // Not really a loop, just makes it easier to break out early.
     base::MutexGuard lock_guard(mutex_.Pointer());
-    void* backing_store = array_buffer->backing_store();
-
+    std::shared_ptr<BackingStore> backing_store =
+        array_buffer->GetBackingStore();
+    DCHECK(backing_store);
     FutexWaitListNode* node = isolate->futex_wait_list_node();
     node->backing_store_ = backing_store;
     node->wait_addr_ = addr;
@@ -204,9 +205,10 @@ Object FutexEmulation::Wait(Isolate* isolate,
     // still holding the lock).
     ResetWaitingOnScopeExit reset_waiting(node);
 
-    T* p = reinterpret_cast<T*>(static_cast<int8_t*>(backing_store) + addr);
+    T* p = reinterpret_cast<T*>(
+        static_cast<int8_t*>(backing_store->buffer_start()) + addr);
     if (*p != value) {
-      result = Smi::FromInt(WaitReturnValue::kNotEqual);
+      result = handle(Smi::FromInt(WaitReturnValue::kNotEqual), isolate);
       callback_result = AtomicsWaitEvent::kNotEqual;
       break;
     }
@@ -244,7 +246,7 @@ Object FutexEmulation::Wait(Isolate* isolate,
       if (interrupted) {
         Object interrupt_object = isolate->stack_guard()->HandleInterrupts();
         if (interrupt_object.IsException(isolate)) {
-          result = interrupt_object;
+          result = handle(interrupt_object, isolate);
           callback_result = AtomicsWaitEvent::kTerminatedExecution;
           mutex_.Pointer()->Lock();
           break;
@@ -264,7 +266,7 @@ Object FutexEmulation::Wait(Isolate* isolate,
       }
 
       if (!node->waiting_) {
-        result = Smi::FromInt(WaitReturnValue::kOk);
+        result = handle(Smi::FromInt(WaitReturnValue::kOk), isolate);
         break;
       }
 
@@ -272,7 +274,7 @@ Object FutexEmulation::Wait(Isolate* isolate,
       if (use_timeout) {
         current_time = base::TimeTicks::Now();
         if (current_time >= timeout_time) {
-          result = Smi::FromInt(WaitReturnValue::kTimedOut);
+          result = handle(Smi::FromInt(WaitReturnValue::kTimedOut), isolate);
           callback_result = AtomicsWaitEvent::kTimedOut;
           break;
         }
@@ -297,10 +299,10 @@ Object FutexEmulation::Wait(Isolate* isolate,
 
   if (isolate->has_scheduled_exception()) {
     CHECK_NE(callback_result, AtomicsWaitEvent::kTerminatedExecution);
-    result = isolate->PromoteScheduledException();
+    result = handle(isolate->PromoteScheduledException(), isolate);
   }
 
-  return result;
+  return *result;
 }
 
 Object FutexEmulation::Wake(Handle<JSArrayBuffer> array_buffer, size_t addr,
@@ -308,13 +310,16 @@ Object FutexEmulation::Wake(Handle<JSArrayBuffer> array_buffer, size_t addr,
   DCHECK_LT(addr, array_buffer->byte_length());
 
   int waiters_woken = 0;
-  void* backing_store = array_buffer->backing_store();
+  std::shared_ptr<BackingStore> backing_store = array_buffer->GetBackingStore();
 
   base::MutexGuard lock_guard(mutex_.Pointer());
   FutexWaitListNode* node = wait_list_.Pointer()->head_;
   while (node && num_waiters_to_wake > 0) {
-    if (backing_store == node->backing_store_ && addr == node->wait_addr_ &&
-        node->waiting_) {
+    std::shared_ptr<BackingStore> node_backing_store =
+        node->backing_store_.lock();
+    DCHECK(node_backing_store);
+    if (backing_store.get() == node_backing_store.get() &&
+        addr == node->wait_addr_ && node->waiting_) {
       node->waiting_ = false;
       node->cond_.NotifyOne();
       if (num_waiters_to_wake != kWakeAll) {
@@ -332,15 +337,18 @@ Object FutexEmulation::Wake(Handle<JSArrayBuffer> array_buffer, size_t addr,
 Object FutexEmulation::NumWaitersForTesting(Handle<JSArrayBuffer> array_buffer,
                                             size_t addr) {
   DCHECK_LT(addr, array_buffer->byte_length());
-  void* backing_store = array_buffer->backing_store();
+  std::shared_ptr<BackingStore> backing_store = array_buffer->GetBackingStore();
 
   base::MutexGuard lock_guard(mutex_.Pointer());
 
   int waiters = 0;
   FutexWaitListNode* node = wait_list_.Pointer()->head_;
   while (node) {
-    if (backing_store == node->backing_store_ && addr == node->wait_addr_ &&
-        node->waiting_) {
+    std::shared_ptr<BackingStore> node_backing_store =
+        node->backing_store_.lock();
+    DCHECK(node_backing_store);
+    if (backing_store.get() == node_backing_store.get() &&
+        addr == node->wait_addr_ && node->waiting_) {
       waiters++;
     }
 

@@ -4,6 +4,7 @@
 
 #include "src/wasm/wasm-debug.h"
 
+#include <iomanip>
 #include <unordered_map>
 
 #include "src/base/optional.h"
@@ -15,7 +16,6 @@
 #include "src/execution/frames-inl.h"
 #include "src/execution/isolate.h"
 #include "src/heap/factory.h"
-#include "src/utils/identity-map.h"
 #include "src/wasm/baseline/liftoff-compiler.h"
 #include "src/wasm/baseline/liftoff-register.h"
 #include "src/wasm/module-decoder.h"
@@ -24,6 +24,7 @@
 #include "src/wasm/wasm-limits.h"
 #include "src/wasm/wasm-module.h"
 #include "src/wasm/wasm-objects-inl.h"
+#include "src/wasm/wasm-value.h"
 #include "src/zone/accounting-allocator.h"
 
 namespace v8 {
@@ -49,28 +50,43 @@ Handle<String> PrintFToOneByteString(Isolate* isolate, const char* format,
 }
 
 Handle<Object> WasmValueToValueObject(Isolate* isolate, WasmValue value) {
+  Handle<ByteArray> bytes;
   switch (value.type().kind()) {
-    case ValueType::kI32:
-      if (Smi::IsValid(value.to<int32_t>()))
-        return handle(Smi::FromInt(value.to<int32_t>()), isolate);
-      return PrintFToOneByteString<false>(isolate, "%d", value.to<int32_t>());
-    case ValueType::kI64: {
-      int64_t i64 = value.to<int64_t>();
-      int32_t i32 = static_cast<int32_t>(i64);
-      if (i32 == i64 && Smi::IsValid(i32))
-        return handle(Smi::FromIntptr(i32), isolate);
-      return PrintFToOneByteString<false>(isolate, "%" PRId64, i64);
+    case ValueType::kI32: {
+      int32_t val = value.to_i32();
+      bytes = isolate->factory()->NewByteArray(sizeof(val));
+      memcpy(bytes->GetDataStartAddress(), &val, sizeof(val));
+      break;
     }
-    case ValueType::kF32:
-      return isolate->factory()->NewNumber(value.to<float>());
-    case ValueType::kF64:
-      return isolate->factory()->NewNumber(value.to<double>());
-    case ValueType::kAnyRef:
-      return value.to_anyref();
-    default:
+    case ValueType::kI64: {
+      int64_t val = value.to_i64();
+      bytes = isolate->factory()->NewByteArray(sizeof(val));
+      memcpy(bytes->GetDataStartAddress(), &val, sizeof(val));
+      break;
+    }
+    case ValueType::kF32: {
+      float val = value.to_f32();
+      bytes = isolate->factory()->NewByteArray(sizeof(val));
+      memcpy(bytes->GetDataStartAddress(), &val, sizeof(val));
+      break;
+    }
+    case ValueType::kF64: {
+      double val = value.to_f64();
+      bytes = isolate->factory()->NewByteArray(sizeof(val));
+      memcpy(bytes->GetDataStartAddress(), &val, sizeof(val));
+      break;
+    }
+    case ValueType::kAnyRef: {
+      return isolate->factory()->NewWasmValue(
+          static_cast<int32_t>(value.type().kind()), value.to_anyref());
+    }
+    default: {
       UNIMPLEMENTED();
       return isolate->factory()->undefined_value();
+    }
   }
+  return isolate->factory()->NewWasmValue(
+      static_cast<int32_t>(value.type().kind()), bytes);
 }
 
 MaybeHandle<String> GetLocalNameString(Isolate* isolate,
@@ -90,8 +106,6 @@ class InterpreterHandle {
   Isolate* isolate_;
   const WasmModule* module_;
   WasmInterpreter interpreter_;
-  StepAction next_step_action_ = StepNone;
-  int last_step_stack_depth_ = 0;
   std::unordered_map<Address, uint32_t> activations_;
 
   uint32_t StartActivation(Address frame_pointer) {
@@ -145,18 +159,6 @@ class InterpreterHandle {
   WasmInterpreter* interpreter() { return &interpreter_; }
   const WasmModule* module() const { return module_; }
 
-  void PrepareStep(StepAction step_action) {
-    next_step_action_ = step_action;
-    last_step_stack_depth_ = CurrentStackDepth();
-  }
-
-  void ClearStepping() { next_step_action_ = StepNone; }
-
-  int CurrentStackDepth() {
-    DCHECK_EQ(1, interpreter()->GetThreadCount());
-    return interpreter()->GetThread(0)->GetFrameCount();
-  }
-
   // Returns true if exited regularly, false if a trap/exception occurred and
   // was not handled inside this activation. In the latter case, a pending
   // exception will have been set on the isolate.
@@ -178,11 +180,10 @@ class InterpreterHandle {
     bool finished = false;
     while (!finished) {
       // TODO(clemensb): Add occasional StackChecks.
-      WasmInterpreter::State state = ContinueExecution(thread);
+      WasmInterpreter::State state = thread->Run();
       switch (state) {
         case WasmInterpreter::State::PAUSED:
-          NotifyDebugEventListeners(thread);
-          break;
+          UNREACHABLE();
         case WasmInterpreter::State::FINISHED:
           // Perfect, just break the switch and exit the loop.
           finished = true;
@@ -212,7 +213,6 @@ class InterpreterHandle {
           return false;
         // RUNNING should never occur here.
         case WasmInterpreter::State::RUNNING:
-        default:
           UNREACHABLE();
       }
     }
@@ -230,247 +230,12 @@ class InterpreterHandle {
 
     FinishActivation(frame_pointer, activation_id);
 
-    // If we do stepping and it exits wasm interpreter then debugger need to
-    // prepare for it.
-    if (next_step_action_ != StepNone) {
-      // Enter the debugger.
-      DebugScope debug_scope(isolate_->debug());
-
-      isolate_->debug()->PrepareStep(StepOut);
-    }
-    ClearStepping();
-
     return true;
-  }
-
-  WasmInterpreter::State ContinueExecution(WasmInterpreter::Thread* thread) {
-    switch (next_step_action_) {
-      case StepNone:
-        return thread->Run();
-      case StepIn:
-        return thread->Step();
-      case StepOut:
-        thread->AddBreakFlags(WasmInterpreter::BreakFlag::AfterReturn);
-        return thread->Run();
-      case StepNext: {
-        int stack_depth = thread->GetFrameCount();
-        if (stack_depth == last_step_stack_depth_) return thread->Step();
-        thread->AddBreakFlags(stack_depth > last_step_stack_depth_
-                                  ? WasmInterpreter::BreakFlag::AfterReturn
-                                  : WasmInterpreter::BreakFlag::AfterCall);
-        return thread->Run();
-      }
-      default:
-        UNREACHABLE();
-    }
-  }
-
-  Handle<WasmInstanceObject> GetInstanceObject() {
-    StackTraceFrameIterator it(isolate_);
-    WasmInterpreterEntryFrame* frame =
-        WasmInterpreterEntryFrame::cast(it.frame());
-    Handle<WasmInstanceObject> instance_obj(frame->wasm_instance(), isolate_);
-    // Check that this is indeed the instance which is connected to this
-    // interpreter.
-    DCHECK_EQ(this, Managed<InterpreterHandle>::cast(
-                        instance_obj->debug_info().interpreter_handle())
-                        .raw());
-    return instance_obj;
-  }
-
-  void NotifyDebugEventListeners(WasmInterpreter::Thread* thread) {
-    // Enter the debugger.
-    DebugScope debug_scope(isolate_->debug());
-
-    // Check whether we hit a breakpoint.
-    if (isolate_->debug()->break_points_active()) {
-      Handle<WasmModuleObject> module_object(
-          GetInstanceObject()->module_object(), isolate_);
-      Handle<Script> script(module_object->script(), isolate_);
-      int position = GetTopPosition(module_object);
-      Handle<FixedArray> breakpoints;
-      if (WasmScript::CheckBreakPoints(isolate_, script, position)
-              .ToHandle(&breakpoints)) {
-        // We hit one or several breakpoints. Clear stepping, notify the
-        // listeners and return.
-        ClearStepping();
-        isolate_->debug()->OnDebugBreak(breakpoints);
-        return;
-      }
-    }
-
-    // We did not hit a breakpoint, so maybe this pause is related to stepping.
-    bool hit_step = false;
-    switch (next_step_action_) {
-      case StepNone:
-        break;
-      case StepIn:
-        hit_step = true;
-        break;
-      case StepOut:
-        hit_step = thread->GetFrameCount() < last_step_stack_depth_;
-        break;
-      case StepNext: {
-        hit_step = thread->GetFrameCount() == last_step_stack_depth_;
-        break;
-      }
-      default:
-        UNREACHABLE();
-    }
-    if (!hit_step) return;
-    ClearStepping();
-    isolate_->debug()->OnDebugBreak(isolate_->factory()->empty_fixed_array());
-  }
-
-  int GetTopPosition(Handle<WasmModuleObject> module_object) {
-    DCHECK_EQ(1, interpreter()->GetThreadCount());
-    WasmInterpreter::Thread* thread = interpreter()->GetThread(0);
-    DCHECK_LT(0, thread->GetFrameCount());
-
-    auto frame = thread->GetFrame(thread->GetFrameCount() - 1);
-    return GetWasmFunctionOffset(module_object->module(),
-                                 frame->function()->func_index) +
-           frame->pc();
-  }
-
-  std::vector<std::pair<uint32_t, int>> GetInterpretedStack(
-      Address frame_pointer) {
-    DCHECK_EQ(1, interpreter()->GetThreadCount());
-    WasmInterpreter::Thread* thread = interpreter()->GetThread(0);
-
-    std::pair<uint32_t, uint32_t> frame_range =
-        GetActivationFrameRange(thread, frame_pointer);
-
-    std::vector<std::pair<uint32_t, int>> stack;
-    stack.reserve(frame_range.second - frame_range.first);
-    for (uint32_t fp = frame_range.first; fp < frame_range.second; ++fp) {
-      auto frame = thread->GetFrame(fp);
-      stack.emplace_back(frame->function()->func_index, frame->pc());
-    }
-    return stack;
-  }
-
-  int NumberOfActiveFrames(Address frame_pointer) {
-    if (!HasActivation(frame_pointer)) return 0;
-
-    DCHECK_EQ(1, interpreter()->GetThreadCount());
-    WasmInterpreter::Thread* thread = interpreter()->GetThread(0);
-
-    std::pair<uint32_t, uint32_t> frame_range =
-        GetActivationFrameRange(thread, frame_pointer);
-
-    return frame_range.second - frame_range.first;
-  }
-
-  WasmInterpreter::FramePtr GetInterpretedFrame(Address frame_pointer,
-                                                int idx) {
-    DCHECK_EQ(1, interpreter()->GetThreadCount());
-    WasmInterpreter::Thread* thread = interpreter()->GetThread(0);
-
-    std::pair<uint32_t, uint32_t> frame_range =
-        GetActivationFrameRange(thread, frame_pointer);
-    DCHECK_LE(0, idx);
-    DCHECK_GT(frame_range.second - frame_range.first, idx);
-
-    return thread->GetFrame(frame_range.first + idx);
-  }
-
-  uint64_t NumInterpretedCalls() {
-    DCHECK_EQ(1, interpreter()->GetThreadCount());
-    return interpreter()->GetThread(0)->NumInterpretedCalls();
-  }
-
-  Handle<JSObject> GetLocalScopeObject(InterpretedFrame* frame,
-                                       Handle<WasmDebugInfo> debug_info) {
-    Isolate* isolate = isolate_;
-
-    Handle<JSObject> local_scope_object =
-        isolate_->factory()->NewJSObjectWithNullProto();
-    // Fill parameters and locals.
-    int num_locals = frame->GetLocalCount();
-    DCHECK_LE(frame->GetParameterCount(), num_locals);
-    if (num_locals > 0) {
-      Handle<JSObject> locals_obj =
-          isolate_->factory()->NewJSObjectWithNullProto();
-      Handle<String> locals_name =
-          isolate_->factory()->InternalizeString(StaticCharVector("locals"));
-      JSObject::AddProperty(isolate, local_scope_object, locals_name,
-                            locals_obj, NONE);
-      NativeModule* native_module =
-          debug_info->wasm_instance().module_object().native_module();
-      for (int i = 0; i < num_locals; ++i) {
-        Handle<Name> name;
-        if (!GetLocalNameString(isolate, native_module,
-                                frame->function()->func_index, i)
-                 .ToHandle(&name)) {
-          name = PrintFToOneByteString<true>(isolate_, "var%d", i);
-        }
-        WasmValue value = frame->GetLocalValue(i);
-        Handle<Object> value_obj = WasmValueToValueObject(isolate_, value);
-        // {name} can be a string representation of an element index.
-        LookupIterator::Key lookup_key{isolate, name};
-        LookupIterator it(isolate, locals_obj, lookup_key, locals_obj,
-                          LookupIterator::OWN_SKIP_INTERCEPTOR);
-        if (it.IsFound()) continue;
-        Object::AddDataProperty(&it, value_obj, NONE,
-                                Just(ShouldThrow::kThrowOnError),
-                                StoreOrigin::kNamed)
-            .Check();
-      }
-    }
-
-    // Fill stack values.
-    int stack_count = frame->GetStackHeight();
-    // Use an object without prototype instead of an Array, for nicer displaying
-    // in DevTools. For Arrays, the length field and prototype is displayed,
-    // which does not make too much sense here.
-    Handle<JSObject> stack_obj =
-        isolate_->factory()->NewJSObjectWithNullProto();
-    Handle<String> stack_name =
-        isolate_->factory()->InternalizeString(StaticCharVector("stack"));
-    JSObject::AddProperty(isolate, local_scope_object, stack_name, stack_obj,
-                          NONE);
-    for (int i = 0; i < stack_count; ++i) {
-      WasmValue value = frame->GetStackValue(i);
-      Handle<Object> value_obj = WasmValueToValueObject(isolate_, value);
-      JSObject::AddDataElement(stack_obj, static_cast<uint32_t>(i), value_obj,
-                               NONE);
-    }
-    return local_scope_object;
-  }
-
-  Handle<JSObject> GetStackScopeObject(InterpretedFrame* frame,
-                                       Handle<WasmDebugInfo> debug_info) {
-    // Fill stack values.
-    int stack_count = frame->GetStackHeight();
-    // Use an object without prototype instead of an Array, for nicer displaying
-    // in DevTools. For Arrays, the length field and prototype is displayed,
-    // which does not make too much sense here.
-    Handle<JSObject> stack_scope_obj =
-        isolate_->factory()->NewJSObjectWithNullProto();
-    for (int i = 0; i < stack_count; ++i) {
-      WasmValue value = frame->GetStackValue(i);
-      Handle<Object> value_obj = WasmValueToValueObject(isolate_, value);
-      JSObject::AddDataElement(stack_scope_obj, static_cast<uint32_t>(i),
-                               value_obj, NONE);
-    }
-    return stack_scope_obj;
   }
 
  private:
   DISALLOW_COPY_AND_ASSIGN(InterpreterHandle);
 };
-
-int FindByteOffset(int pc_offset, WasmCode* wasm_code) {
-  int position = 0;
-  SourcePositionTableIterator iterator(wasm_code->source_positions());
-  for (SourcePositionTableIterator iterator(wasm_code->source_positions());
-       !iterator.done() && iterator.code_offset() < pc_offset;
-       iterator.Advance()) {
-    position = iterator.source_position().ScriptOffset();
-  }
-  return position;
-}
 
 // Generate a sorted and deduplicated list of byte offsets for this function's
 // current positions on the stack.
@@ -479,14 +244,11 @@ std::vector<int> StackFramePositions(int func_index, Isolate* isolate) {
   WasmCodeRefScope code_ref_scope;
   for (StackTraceFrameIterator it(isolate); !it.done(); it.Advance()) {
     if (!it.is_wasm()) continue;
-    WasmCompiledFrame* frame = WasmCompiledFrame::cast(it.frame());
+    WasmFrame* frame = WasmFrame::cast(it.frame());
     if (static_cast<int>(frame->function_index()) != func_index) continue;
     WasmCode* wasm_code = frame->wasm_code();
     if (!wasm_code->is_liftoff()) continue;
-    int pc_offset =
-        static_cast<int>(frame->pc() - wasm_code->instruction_start());
-    int byte_offset = FindByteOffset(pc_offset, wasm_code);
-    byte_offsets.push_back(byte_offset);
+    byte_offsets.push_back(frame->byte_offset());
   }
   std::sort(byte_offsets.begin(), byte_offsets.end());
   auto last = std::unique(byte_offsets.begin(), byte_offsets.end());
@@ -527,19 +289,58 @@ Address FindNewPC(WasmCode* wasm_code, int byte_offset,
 
 }  // namespace
 
-Handle<JSObject> GetGlobalScopeObject(Handle<WasmInstanceObject> instance) {
+void DebugSideTable::Print(std::ostream& os) const {
+  os << "Debug side table (" << num_locals_ << " locals, " << entries_.size()
+     << " entries):\n";
+  for (auto& entry : entries_) entry.Print(os);
+  os << "\n";
+}
+
+void DebugSideTable::Entry::Print(std::ostream& os) const {
+  os << std::setw(6) << std::hex << pc_offset_ << std::dec << " [";
+  for (auto& value : values_) {
+    os << " " << value.type.type_name() << ":";
+    switch (value.kind) {
+      case kConstant:
+        os << "const#" << value.i32_const;
+        break;
+      case kRegister:
+        os << "reg#" << value.reg_code;
+        break;
+      case kStack:
+        os << "stack#" << value.stack_offset;
+        break;
+    }
+  }
+  os << " ]\n";
+}
+
+Handle<JSObject> GetModuleScopeObject(Handle<WasmInstanceObject> instance) {
   Isolate* isolate = instance->GetIsolate();
 
-  Handle<JSObject> global_scope_object =
+  Handle<JSObject> module_scope_object =
       isolate->factory()->NewJSObjectWithNullProto();
+
+  Handle<String> instance_name =
+      isolate->factory()->InternalizeString(StaticCharVector("instance"));
+  JSObject::AddProperty(isolate, module_scope_object, instance_name, instance,
+                        NONE);
+
   if (instance->has_memory_object()) {
-    Handle<String> name =
-        isolate->factory()->InternalizeString(StaticCharVector("memory"));
+    Handle<String> name;
+    // TODO(duongn): extend the logic when multiple memories are supported.
+    const uint32_t memory_index = 0;
+    if (!WasmInstanceObject::GetMemoryNameOrNull(isolate, instance,
+                                                 memory_index)
+             .ToHandle(&name)) {
+      const char* label = "memory%d";
+      name = PrintFToOneByteString<true>(isolate, label, memory_index);
+    }
     Handle<JSArrayBuffer> memory_buffer(
         instance->memory_object().array_buffer(), isolate);
     Handle<JSTypedArray> uint8_array = isolate->factory()->NewJSTypedArray(
         kExternalUint8Array, memory_buffer, 0, memory_buffer->byte_length());
-    JSObject::AddProperty(isolate, global_scope_object, name, uint8_array,
+    JSObject::AddProperty(isolate, module_scope_object, name, uint8_array,
                           NONE);
   }
 
@@ -549,7 +350,7 @@ Handle<JSObject> GetGlobalScopeObject(Handle<WasmInstanceObject> instance) {
         isolate->factory()->NewJSObjectWithNullProto();
     Handle<String> globals_name =
         isolate->factory()->InternalizeString(StaticCharVector("globals"));
-    JSObject::AddProperty(isolate, global_scope_object, globals_name,
+    JSObject::AddProperty(isolate, module_scope_object, globals_name,
                           globals_obj, NONE);
 
     for (uint32_t i = 0; i < globals.size(); ++i) {
@@ -565,8 +366,7 @@ Handle<JSObject> GetGlobalScopeObject(Handle<WasmInstanceObject> instance) {
       JSObject::AddProperty(isolate, globals_obj, name, value_obj, NONE);
     }
   }
-
-  return global_scope_object;
+  return module_scope_object;
 }
 
 class DebugInfoImpl {
@@ -574,26 +374,49 @@ class DebugInfoImpl {
   explicit DebugInfoImpl(NativeModule* native_module)
       : native_module_(native_module) {}
 
+  int GetNumLocals(Address pc) {
+    FrameInspectionScope scope(this, pc);
+    if (!scope.is_inspectable()) return 0;
+    return scope.debug_side_table->num_locals();
+  }
+
+  WasmValue GetLocalValue(int local, Address pc, Address fp,
+                          Address debug_break_fp) {
+    FrameInspectionScope scope(this, pc);
+    return GetValue(scope.debug_side_table_entry, local, fp, debug_break_fp);
+  }
+
+  int GetStackDepth(Address pc) {
+    FrameInspectionScope scope(this, pc);
+    if (!scope.is_inspectable()) return 0;
+    int num_locals = static_cast<int>(scope.debug_side_table->num_locals());
+    int value_count = scope.debug_side_table_entry->num_values();
+    return value_count - num_locals;
+  }
+
+  WasmValue GetStackValue(int index, Address pc, Address fp,
+                          Address debug_break_fp) {
+    FrameInspectionScope scope(this, pc);
+    int num_locals = static_cast<int>(scope.debug_side_table->num_locals());
+    int value_count = scope.debug_side_table_entry->num_values();
+    if (num_locals + index >= value_count) return {};
+    return GetValue(scope.debug_side_table_entry, num_locals + index, fp,
+                    debug_break_fp);
+  }
+
   Handle<JSObject> GetLocalScopeObject(Isolate* isolate, Address pc, Address fp,
                                        Address debug_break_fp) {
+    FrameInspectionScope scope(this, pc);
     Handle<JSObject> local_scope_object =
         isolate->factory()->NewJSObjectWithNullProto();
 
-    wasm::WasmCodeRefScope wasm_code_ref_scope;
-    wasm::WasmCode* code =
-        isolate->wasm_engine()->code_manager()->LookupCode(pc);
-    // Only Liftoff code can be inspected.
-    if (!code->is_liftoff()) return local_scope_object;
+    if (!scope.is_inspectable()) return local_scope_object;
 
     auto* module = native_module_->module();
-    auto* function = &module->functions[code->index()];
-    auto* debug_side_table = GetDebugSideTable(code, isolate->allocator());
-    int pc_offset = static_cast<int>(pc - code->instruction_start());
-    auto* debug_side_table_entry = debug_side_table->GetEntry(pc_offset);
-    DCHECK_NOT_NULL(debug_side_table_entry);
+    auto* function = &module->functions[scope.code->index()];
 
     // Fill parameters and locals.
-    int num_locals = static_cast<int>(debug_side_table->num_locals());
+    int num_locals = static_cast<int>(scope.debug_side_table->num_locals());
     DCHECK_LE(static_cast<int>(function->sig->parameter_count()), num_locals);
     if (num_locals > 0) {
       Handle<JSObject> locals_obj =
@@ -610,7 +433,7 @@ class DebugInfoImpl {
           name = PrintFToOneByteString<true>(isolate, "var%d", i);
         }
         WasmValue value =
-            GetValue(debug_side_table_entry, i, fp, debug_break_fp);
+            GetValue(scope.debug_side_table_entry, i, fp, debug_break_fp);
         Handle<Object> value_obj = WasmValueToValueObject(isolate, value);
         // {name} can be a string representation of an element index.
         LookupIterator::Key lookup_key{isolate, name};
@@ -623,50 +446,26 @@ class DebugInfoImpl {
             .Check();
       }
     }
-
-    // Fill stack values.
-    // Use an object without prototype instead of an Array, for nicer displaying
-    // in DevTools. For Arrays, the length field and prototype is displayed,
-    // which does not make too much sense here.
-    Handle<JSObject> stack_obj = isolate->factory()->NewJSObjectWithNullProto();
-    Handle<String> stack_name =
-        isolate->factory()->InternalizeString(StaticCharVector("stack"));
-    JSObject::AddProperty(isolate, local_scope_object, stack_name, stack_obj,
-                          NONE);
-    int value_count = debug_side_table_entry->num_values();
-    for (int i = num_locals; i < value_count; ++i) {
-      WasmValue value = GetValue(debug_side_table_entry, i, fp, debug_break_fp);
-      Handle<Object> value_obj = WasmValueToValueObject(isolate, value);
-      JSObject::AddDataElement(stack_obj, static_cast<uint32_t>(i - num_locals),
-                               value_obj, NONE);
-    }
     return local_scope_object;
   }
 
   Handle<JSObject> GetStackScopeObject(Isolate* isolate, Address pc, Address fp,
                                        Address debug_break_fp) {
+    FrameInspectionScope scope(this, pc);
     Handle<JSObject> stack_scope_obj =
         isolate->factory()->NewJSObjectWithNullProto();
-    wasm::WasmCodeRefScope wasm_code_ref_scope;
 
-    wasm::WasmCode* code =
-        isolate->wasm_engine()->code_manager()->LookupCode(pc);
-    // Only Liftoff code can be inspected.
-    if (!code->is_liftoff()) return stack_scope_obj;
-
-    auto* debug_side_table = GetDebugSideTable(code, isolate->allocator());
-    int pc_offset = static_cast<int>(pc - code->instruction_start());
-    auto* debug_side_table_entry = debug_side_table->GetEntry(pc_offset);
-    DCHECK_NOT_NULL(debug_side_table_entry);
+    if (!scope.is_inspectable()) return stack_scope_obj;
 
     // Fill stack values.
     // Use an object without prototype instead of an Array, for nicer displaying
     // in DevTools. For Arrays, the length field and prototype is displayed,
     // which does not make too much sense here.
-    int num_locals = static_cast<int>(debug_side_table->num_locals());
-    int value_count = debug_side_table_entry->num_values();
+    int num_locals = static_cast<int>(scope.debug_side_table->num_locals());
+    int value_count = scope.debug_side_table_entry->num_values();
     for (int i = num_locals; i < value_count; ++i) {
-      WasmValue value = GetValue(debug_side_table_entry, i, fp, debug_break_fp);
+      WasmValue value =
+          GetValue(scope.debug_side_table_entry, i, fp, debug_break_fp);
       Handle<Object> value_obj = WasmValueToValueObject(isolate, value);
       JSObject::AddDataElement(stack_scope_obj,
                                static_cast<uint32_t>(i - num_locals), value_obj,
@@ -684,13 +483,8 @@ class DebugInfoImpl {
     return local_names_->GetName(func_index, local_index);
   }
 
-  void RecompileLiftoffWithBreakpoints(int func_index, Vector<int> offsets,
-                                       Isolate* current_isolate) {
-    if (func_index == flooded_function_index_) {
-      // We should not be flooding a function that is already flooded.
-      DCHECK(!(offsets.size() == 1 && offsets[0] == 0));
-      flooded_function_index_ = -1;
-    }
+  WasmCode* RecompileLiftoffWithBreakpoints(
+      int func_index, Vector<int> offsets, Vector<int> extra_source_positions) {
     // Recompile the function with Liftoff, setting the new breakpoints.
     // Not thread-safe. The caller is responsible for locking {mutex_}.
     CompilationEnv env = native_module_->CreateCompilationEnv();
@@ -701,114 +495,150 @@ class DebugInfoImpl {
                       wire_bytes.begin() + function->code.end_offset()};
     std::unique_ptr<DebugSideTable> debug_sidetable;
 
-    // Generate additional source positions for current stack frame positions.
-    // These source positions are used to find return addresses in the new code.
-    std::vector<int> stack_frame_positions =
-        StackFramePositions(func_index, current_isolate);
-
+    ForDebugging for_debugging =
+        offsets.size() == 1 && offsets[0] == 0 ? kForStepping : kForDebugging;
     WasmCompilationResult result = ExecuteLiftoffCompilation(
-        native_module_->engine()->allocator(), &env, body, func_index, nullptr,
-        nullptr, offsets, &debug_sidetable, VectorOf(stack_frame_positions));
+        native_module_->engine()->allocator(), &env, body, func_index,
+        for_debugging, nullptr, nullptr, offsets, &debug_sidetable,
+        extra_source_positions);
     // Liftoff compilation failure is a FATAL error. We rely on complete Liftoff
     // support for debugging.
     if (!result.succeeded()) FATAL("Liftoff compilation failed");
     DCHECK_NOT_NULL(debug_sidetable);
 
-    WasmCodeRefScope wasm_code_ref_scope;
-    WasmCode* new_code = native_module_->AddCompiledCode(std::move(result));
-    bool added =
-        debug_side_tables_.emplace(new_code, std::move(debug_sidetable)).second;
-    DCHECK(added);
-    USE(added);
+    WasmCode* new_code = native_module_->PublishCode(
+        native_module_->AddCompiledCode(std::move(result)));
 
-    UpdateReturnAddresses(current_isolate, new_code);
-  }
-
-  void SetBreakpoint(int func_index, int offset, Isolate* current_isolate) {
-    // Hold the mutex while setting the breakpoint. This guards against multiple
-    // isolates setting breakpoints at the same time. We don't really support
-    // that scenario yet, but concurrently compiling and installing different
-    // Liftoff variants of a function would be problematic.
-    base::MutexGuard guard(&mutex_);
-
-    // offset == 0 indicates flooding and should not happen here.
-    DCHECK_NE(0, offset);
-
-    std::vector<int>& breakpoints = breakpoints_per_function_[func_index];
-    auto insertion_point =
-        std::lower_bound(breakpoints.begin(), breakpoints.end(), offset);
-    if (insertion_point != breakpoints.end() && *insertion_point == offset) {
-      // The breakpoint is already set.
-      return;
+    DCHECK(new_code->is_inspectable());
+    {
+      base::MutexGuard guard(&mutex_);
+      DCHECK_EQ(0, debug_side_tables_.count(new_code));
+      debug_side_tables_.emplace(new_code, std::move(debug_sidetable));
     }
-    breakpoints.insert(insertion_point, offset);
 
-    // No need to recompile if the function is already flooded.
-    if (func_index == flooded_function_index_) return;
-
-    RecompileLiftoffWithBreakpoints(func_index, VectorOf(breakpoints),
-                                    current_isolate);
+    return new_code;
   }
 
-  void FloodWithBreakpoints(int func_index, Isolate* current_isolate) {
-    base::MutexGuard guard(&mutex_);
+  void SetBreakpoint(int func_index, int offset, Isolate* isolate) {
+    std::vector<int> breakpoints_copy;
+    StackFrameId stepping_frame = NO_ID;
+    {
+      // Hold the mutex while modifying the set of breakpoints, but release it
+      // before compiling the new code (see comment in
+      // {RecompileLiftoffWithBreakpoints}). This needs to be revisited once we
+      // support setting different breakpoints in different isolates
+      // (https://crbug.com/v8/10351).
+      base::MutexGuard guard(&mutex_);
+
+      // offset == 0 indicates flooding and should not happen here.
+      DCHECK_NE(0, offset);
+
+      std::vector<int>& breakpoints = breakpoints_per_function_[func_index];
+      auto insertion_point =
+          std::lower_bound(breakpoints.begin(), breakpoints.end(), offset);
+      if (insertion_point != breakpoints.end() && *insertion_point == offset) {
+        // The breakpoint is already set.
+        return;
+      }
+      breakpoints.insert(insertion_point, offset);
+      breakpoints_copy = breakpoints;
+
+      stepping_frame = per_isolate_data_[isolate].stepping_frame;
+    }
+
+    UpdateBreakpoints(func_index, VectorOf(breakpoints_copy), isolate,
+                      stepping_frame);
+  }
+
+  void UpdateBreakpoints(int func_index, Vector<int> breakpoints,
+                         Isolate* isolate, StackFrameId stepping_frame) {
+    // Generate additional source positions for current stack frame positions.
+    // These source positions are used to find return addresses in the new code.
+    std::vector<int> stack_frame_positions =
+        StackFramePositions(func_index, isolate);
+
+    WasmCodeRefScope wasm_code_ref_scope;
+    WasmCode* new_code = RecompileLiftoffWithBreakpoints(
+        func_index, breakpoints, VectorOf(stack_frame_positions));
+    UpdateReturnAddresses(isolate, new_code, stepping_frame);
+  }
+
+  void FloodWithBreakpoints(WasmFrame* frame, ReturnLocation return_location) {
     // 0 is an invalid offset used to indicate flooding.
     int offset = 0;
-    RecompileLiftoffWithBreakpoints(func_index, Vector<int>(&offset, 1),
-                                    current_isolate);
+    WasmCodeRefScope wasm_code_ref_scope;
+    DCHECK(frame->wasm_code()->is_liftoff());
+    // Generate an additional source position for the current byte offset.
+    int byte_offset = frame->byte_offset();
+    WasmCode* new_code = RecompileLiftoffWithBreakpoints(
+        frame->function_index(), VectorOf(&offset, 1),
+        VectorOf(&byte_offset, 1));
+    UpdateReturnAddress(frame, new_code, return_location);
   }
 
   void PrepareStep(Isolate* isolate, StackFrameId break_frame_id) {
     StackTraceFrameIterator it(isolate, break_frame_id);
     DCHECK(!it.done());
-    DCHECK(it.frame()->is_wasm_compiled());
-    WasmCompiledFrame* frame = WasmCompiledFrame::cast(it.frame());
+    DCHECK(it.frame()->is_wasm());
+    WasmFrame* frame = WasmFrame::cast(it.frame());
     StepAction step_action = isolate->debug()->last_step_action();
+
+    // If we are flooding the top frame, the return location is after a
+    // breakpoints. Otherwise, it's after a call.
+    ReturnLocation return_location = kAfterBreakpoint;
 
     // If we are at a return instruction, then any stepping action is equivalent
     // to StepOut, and we need to flood the parent function.
     if (IsAtReturn(frame) || step_action == StepOut) {
       it.Advance();
-      if (it.done() || !it.frame()->is_wasm_compiled()) return;
-      frame = WasmCompiledFrame::cast(it.frame());
+      if (it.done() || !it.frame()->is_wasm()) return;
+      frame = WasmFrame::cast(it.frame());
+      return_location = kAfterWasmCall;
     }
 
-    if (static_cast<int>(frame->function_index()) != flooded_function_index_) {
-      if (flooded_function_index_ != -1) {
-        std::vector<int>& breakpoints =
-            breakpoints_per_function_[flooded_function_index_];
-        RecompileLiftoffWithBreakpoints(flooded_function_index_,
-                                        VectorOf(breakpoints), isolate);
-      }
-      FloodWithBreakpoints(frame->function_index(), isolate);
-      flooded_function_index_ = frame->function_index();
-    }
-    stepping_frame_ = frame->id();
-  }
+    FloodWithBreakpoints(frame, return_location);
 
-  void ClearStepping() { stepping_frame_ = NO_ID; }
-
-  bool IsStepping(WasmCompiledFrame* frame) {
-    Isolate* isolate = frame->wasm_instance().GetIsolate();
-    StepAction last_step_action = isolate->debug()->last_step_action();
-    return stepping_frame_ == frame->id() || last_step_action == StepIn;
-  }
-
-  void RemoveBreakpoint(int func_index, int position,
-                        Isolate* current_isolate) {
     base::MutexGuard guard(&mutex_);
-    const auto& function = native_module_->module()->functions[func_index];
-    int offset = position - function.code.offset();
+    per_isolate_data_[isolate].stepping_frame = frame->id();
+  }
 
-    std::vector<int>& breakpoints = breakpoints_per_function_[func_index];
-    DCHECK_LT(0, offset);
-    auto insertion_point =
-        std::lower_bound(breakpoints.begin(), breakpoints.end(), offset);
-    if (insertion_point != breakpoints.end() && *insertion_point == offset) {
+  void ClearStepping(Isolate* isolate) {
+    base::MutexGuard guard(&mutex_);
+    auto it = per_isolate_data_.find(isolate);
+    if (it != per_isolate_data_.end()) it->second.stepping_frame = NO_ID;
+  }
+
+  bool IsStepping(WasmFrame* frame) {
+    Isolate* isolate = frame->wasm_instance().GetIsolate();
+    if (isolate->debug()->last_step_action() == StepIn) return true;
+    base::MutexGuard guard(&mutex_);
+    auto it = per_isolate_data_.find(isolate);
+    return it != per_isolate_data_.end() &&
+           it->second.stepping_frame == frame->id();
+  }
+
+  void RemoveBreakpoint(int func_index, int position, Isolate* isolate) {
+    std::vector<int> breakpoints_copy;
+    StackFrameId stepping_frame = NO_ID;
+    {
+      base::MutexGuard guard(&mutex_);
+      const auto& function = native_module_->module()->functions[func_index];
+      int offset = position - function.code.offset();
+
+      std::vector<int>& breakpoints = breakpoints_per_function_[func_index];
+      DCHECK_LT(0, offset);
+      auto insertion_point =
+          std::lower_bound(breakpoints.begin(), breakpoints.end(), offset);
+      if (insertion_point == breakpoints.end()) return;
+      if (*insertion_point != offset) return;
       breakpoints.erase(insertion_point);
+      breakpoints_copy = breakpoints;
+
+      stepping_frame = per_isolate_data_[isolate].stepping_frame;
     }
-    RecompileLiftoffWithBreakpoints(func_index, VectorOf(breakpoints),
-                                    current_isolate);
+
+    UpdateBreakpoints(func_index, VectorOf(breakpoints_copy), isolate,
+                      stepping_frame);
   }
 
   void RemoveDebugSideTables(Vector<WasmCode* const> codes) {
@@ -818,12 +648,52 @@ class DebugInfoImpl {
     }
   }
 
+  DebugSideTable* GetDebugSideTableIfExists(const WasmCode* code) const {
+    base::MutexGuard guard(&mutex_);
+    auto it = debug_side_tables_.find(code);
+    return it == debug_side_tables_.end() ? nullptr : it->second.get();
+  }
+
+  void RemoveIsolate(Isolate* isolate) {
+    base::MutexGuard guard(&mutex_);
+    per_isolate_data_.erase(isolate);
+  }
+
  private:
+  struct FrameInspectionScope {
+    FrameInspectionScope(DebugInfoImpl* debug_info, Address pc)
+        : code(debug_info->native_module_->engine()->code_manager()->LookupCode(
+              pc)),
+          pc_offset(static_cast<int>(pc - code->instruction_start())),
+          debug_side_table(
+              code->is_inspectable()
+                  ? debug_info->GetDebugSideTable(
+                        code, debug_info->native_module_->engine()->allocator())
+                  : nullptr),
+          debug_side_table_entry(debug_side_table
+                                     ? debug_side_table->GetEntry(pc_offset)
+                                     : nullptr) {
+      DCHECK_IMPLIES(code->is_inspectable(), debug_side_table_entry != nullptr);
+    }
+
+    bool is_inspectable() const { return debug_side_table_entry; }
+
+    wasm::WasmCodeRefScope wasm_code_ref_scope;
+    wasm::WasmCode* code;
+    int pc_offset;
+    const DebugSideTable* debug_side_table;
+    const DebugSideTable::Entry* debug_side_table_entry;
+  };
+
   const DebugSideTable* GetDebugSideTable(WasmCode* code,
                                           AccountingAllocator* allocator) {
-    base::MutexGuard guard(&mutex_);
-    if (auto& existing_table = debug_side_tables_[code]) {
-      return existing_table.get();
+    DCHECK(code->is_inspectable());
+    {
+      // Only hold the mutex temporarily. We can't hold it while generating the
+      // debug side table, because compilation takes the {NativeModule} lock.
+      base::MutexGuard guard(&mutex_);
+      auto it = debug_side_tables_.find(code);
+      if (it != debug_side_tables_.end()) return it->second.get();
     }
 
     // Otherwise create the debug side table now.
@@ -838,8 +708,17 @@ class DebugInfoImpl {
         GenerateLiftoffDebugSideTable(allocator, &env, func_body);
     DebugSideTable* ret = debug_side_table.get();
 
-    // Install into cache and return.
-    debug_side_tables_[code] = std::move(debug_side_table);
+    // Check cache again, maybe another thread concurrently generated a debug
+    // side table already.
+    {
+      base::MutexGuard guard(&mutex_);
+      auto& slot = debug_side_tables_[code];
+      if (slot != nullptr) return slot.get();
+      slot = std::move(debug_side_table);
+    }
+
+    // Print the code together with the debug table, if requested.
+    code->MaybePrint();
     return ret;
   }
 
@@ -909,36 +788,41 @@ class DebugInfoImpl {
   // After installing a Liftoff code object with a different set of breakpoints,
   // update return addresses on the stack so that execution resumes in the new
   // code. The frame layout itself should be independent of breakpoints.
-  // TODO(thibaudm): update other threads as well.
-  void UpdateReturnAddresses(Isolate* isolate, WasmCode* new_code) {
-    DCHECK(new_code->is_liftoff());
+  void UpdateReturnAddresses(Isolate* isolate, WasmCode* new_code,
+                             StackFrameId stepping_frame) {
     // The first return location is after the breakpoint, others are after wasm
     // calls.
     ReturnLocation return_location = kAfterBreakpoint;
     for (StackTraceFrameIterator it(isolate); !it.done();
          it.Advance(), return_location = kAfterWasmCall) {
       // We still need the flooded function for stepping.
-      if (it.frame()->id() == stepping_frame_) continue;
+      if (it.frame()->id() == stepping_frame) continue;
       if (!it.is_wasm()) continue;
-      WasmCompiledFrame* frame = WasmCompiledFrame::cast(it.frame());
+      WasmFrame* frame = WasmFrame::cast(it.frame());
       if (frame->native_module() != new_code->native_module()) continue;
       if (frame->function_index() != new_code->index()) continue;
-      WasmCode* old_code = frame->wasm_code();
-      if (!old_code->is_liftoff()) continue;
-      int pc_offset =
-          static_cast<int>(frame->pc() - old_code->instruction_start());
-      int position = frame->position();
-      int byte_offset = FindByteOffset(pc_offset, old_code);
-      Address new_pc = FindNewPC(new_code, byte_offset, return_location);
-      PointerAuthentication::ReplacePC(frame->pc_address(), new_pc,
-                                       kSystemPointerSize);
-      USE(position);
-      // The frame position should still be the same after OSR.
-      DCHECK_EQ(position, frame->position());
+      if (!frame->wasm_code()->is_liftoff()) continue;
+      UpdateReturnAddress(frame, new_code, return_location);
     }
   }
 
-  bool IsAtReturn(WasmCompiledFrame* frame) {
+  void UpdateReturnAddress(WasmFrame* frame, WasmCode* new_code,
+                           ReturnLocation return_location) {
+    DCHECK(new_code->is_liftoff());
+    DCHECK_EQ(frame->function_index(), new_code->index());
+    DCHECK_EQ(frame->native_module(), new_code->native_module());
+    DCHECK(frame->wasm_code()->is_liftoff());
+#ifdef DEBUG
+    int old_position = frame->position();
+#endif
+    Address new_pc = FindNewPC(new_code, frame->byte_offset(), return_location);
+    PointerAuthentication::ReplacePC(frame->pc_address(), new_pc,
+                                     kSystemPointerSize);
+    // The frame position should still be the same after OSR.
+    DCHECK_EQ(old_position, frame->position());
+  }
+
+  bool IsAtReturn(WasmFrame* frame) {
     DisallowHeapAllocation no_gc;
     int position = frame->position();
     NativeModule* native_module =
@@ -951,13 +835,23 @@ class DebugInfoImpl {
     return static_cast<size_t>(position) == code.end_offset() - 1;
   }
 
+  // Isolate-specific data, for debugging modules that are shared by multiple
+  // isolates.
+  struct PerIsolateDebugData {
+    // Store the frame ID when stepping, to avoid overwriting that frame when
+    // setting or removing a breakpoint.
+    StackFrameId stepping_frame = NO_ID;
+
+    // TODO(clemensb): Also move breakpoint here.
+  };
+
   NativeModule* const native_module_;
 
   // {mutex_} protects all fields below.
   mutable base::Mutex mutex_;
 
   // DebugSideTable per code object, lazily initialized.
-  std::unordered_map<WasmCode*, std::unique_ptr<DebugSideTable>>
+  std::unordered_map<const WasmCode*, std::unique_ptr<DebugSideTable>>
       debug_side_tables_;
 
   // Names of locals, lazily decoded from the wire bytes.
@@ -965,12 +859,11 @@ class DebugInfoImpl {
 
   // Keeps track of the currently set breakpoints (by offset within that
   // function).
+  // TODO(clemensb): Move this into {PerIsolateDebugData}.
   std::unordered_map<int, std::vector<int>> breakpoints_per_function_;
 
-  // Store the frame ID when stepping, to avoid breaking in recursive calls of
-  // the same function.
-  StackFrameId stepping_frame_ = NO_ID;
-  int flooded_function_index_ = -1;
+  // Isolate-specific data.
+  std::unordered_map<Isolate*, PerIsolateDebugData> per_isolate_data_;
 
   DISALLOW_COPY_AND_ASSIGN(DebugInfoImpl);
 };
@@ -979,6 +872,20 @@ DebugInfo::DebugInfo(NativeModule* native_module)
     : impl_(std::make_unique<DebugInfoImpl>(native_module)) {}
 
 DebugInfo::~DebugInfo() = default;
+
+int DebugInfo::GetNumLocals(Address pc) { return impl_->GetNumLocals(pc); }
+
+WasmValue DebugInfo::GetLocalValue(int local, Address pc, Address fp,
+                                   Address debug_break_fp) {
+  return impl_->GetLocalValue(local, pc, fp, debug_break_fp);
+}
+
+int DebugInfo::GetStackDepth(Address pc) { return impl_->GetStackDepth(pc); }
+
+WasmValue DebugInfo::GetStackValue(int index, Address pc, Address fp,
+                                   Address debug_break_fp) {
+  return impl_->GetStackValue(index, pc, fp, debug_break_fp);
+}
 
 Handle<JSObject> DebugInfo::GetLocalScopeObject(Isolate* isolate, Address pc,
                                                 Address fp,
@@ -1005,9 +912,11 @@ void DebugInfo::PrepareStep(Isolate* isolate, StackFrameId break_frame_id) {
   impl_->PrepareStep(isolate, break_frame_id);
 }
 
-void DebugInfo::ClearStepping() { impl_->ClearStepping(); }
+void DebugInfo::ClearStepping(Isolate* isolate) {
+  impl_->ClearStepping(isolate);
+}
 
-bool DebugInfo::IsStepping(WasmCompiledFrame* frame) {
+bool DebugInfo::IsStepping(WasmFrame* frame) {
   return impl_->IsStepping(frame);
 }
 
@@ -1020,41 +929,16 @@ void DebugInfo::RemoveDebugSideTables(Vector<WasmCode* const> code) {
   impl_->RemoveDebugSideTables(code);
 }
 
+DebugSideTable* DebugInfo::GetDebugSideTableIfExists(
+    const WasmCode* code) const {
+  return impl_->GetDebugSideTableIfExists(code);
+}
+
+void DebugInfo::RemoveIsolate(Isolate* isolate) {
+  return impl_->RemoveIsolate(isolate);
+}
+
 }  // namespace wasm
-
-namespace {
-
-wasm::InterpreterHandle* GetOrCreateInterpreterHandle(
-    Isolate* isolate, Handle<WasmDebugInfo> debug_info) {
-  Handle<Object> handle(debug_info->interpreter_handle(), isolate);
-  if (handle->IsUndefined(isolate)) {
-    // Use the maximum stack size to estimate the maximum size of the
-    // interpreter. The interpreter keeps its own stack internally, and the size
-    // of the stack should dominate the overall size of the interpreter. We
-    // multiply by '2' to account for the growing strategy for the backing store
-    // of the stack.
-    size_t interpreter_size = FLAG_stack_size * KB * 2;
-    handle = Managed<wasm::InterpreterHandle>::Allocate(
-        isolate, interpreter_size, isolate, debug_info);
-    debug_info->set_interpreter_handle(*handle);
-  }
-
-  return Handle<Managed<wasm::InterpreterHandle>>::cast(handle)->raw();
-}
-
-wasm::InterpreterHandle* GetInterpreterHandle(WasmDebugInfo debug_info) {
-  Object handle_obj = debug_info.interpreter_handle();
-  DCHECK(!handle_obj.IsUndefined());
-  return Managed<wasm::InterpreterHandle>::cast(handle_obj).raw();
-}
-
-wasm::InterpreterHandle* GetInterpreterHandleOrNull(WasmDebugInfo debug_info) {
-  Object handle_obj = debug_info.interpreter_handle();
-  if (handle_obj.IsUndefined()) return nullptr;
-  return Managed<wasm::InterpreterHandle>::cast(handle_obj).raw();
-}
-
-}  // namespace
 
 Handle<WasmDebugInfo> WasmDebugInfo::New(Handle<WasmInstanceObject> instance) {
   DCHECK(!instance->has_debug_info());
@@ -1081,128 +965,6 @@ wasm::WasmInterpreter* WasmDebugInfo::SetupForTesting(
       isolate, interpreter_size, isolate, debug_info);
   debug_info->set_interpreter_handle(*interp_handle);
   return interp_handle->raw()->interpreter();
-}
-
-// static
-void WasmDebugInfo::PrepareStepIn(Handle<WasmDebugInfo> debug_info,
-                                  int func_index) {
-  Isolate* isolate = debug_info->GetIsolate();
-  auto* handle = GetOrCreateInterpreterHandle(isolate, debug_info);
-  RedirectToInterpreter(debug_info, Vector<int>(&func_index, 1));
-  const wasm::WasmFunction* func = &handle->module()->functions[func_index];
-  handle->interpreter()->PrepareStepIn(func);
-  // Debug break would be considered as a step-in inside wasm.
-  handle->PrepareStep(StepAction::StepIn);
-}
-
-// static
-void WasmDebugInfo::SetBreakpoint(Handle<WasmDebugInfo> debug_info,
-                                  int func_index, int offset) {
-  Isolate* isolate = debug_info->GetIsolate();
-  auto* handle = GetOrCreateInterpreterHandle(isolate, debug_info);
-  RedirectToInterpreter(debug_info, Vector<int>(&func_index, 1));
-  const wasm::WasmFunction* func = &handle->module()->functions[func_index];
-  handle->interpreter()->SetBreakpoint(func, offset, true);
-}
-
-// static
-void WasmDebugInfo::ClearBreakpoint(Handle<WasmDebugInfo> debug_info,
-                                    int func_index, int offset) {
-  Isolate* isolate = debug_info->GetIsolate();
-  auto* handle = GetOrCreateInterpreterHandle(isolate, debug_info);
-  // TODO(leese): If there are no more breakpoints left it would be good to
-  // undo redirecting to the interpreter.
-  const wasm::WasmFunction* func = &handle->module()->functions[func_index];
-  handle->interpreter()->SetBreakpoint(func, offset, false);
-}
-
-// static
-void WasmDebugInfo::RedirectToInterpreter(Handle<WasmDebugInfo> debug_info,
-                                          Vector<int> func_indexes) {
-  Isolate* isolate = debug_info->GetIsolate();
-  // Ensure that the interpreter is instantiated.
-  GetOrCreateInterpreterHandle(isolate, debug_info);
-  Handle<WasmInstanceObject> instance(debug_info->wasm_instance(), isolate);
-  wasm::NativeModule* native_module = instance->module_object().native_module();
-  const wasm::WasmModule* module = instance->module();
-
-  // We may modify the wasm jump table.
-  wasm::NativeModuleModificationScope native_module_modification_scope(
-      native_module);
-
-  for (int func_index : func_indexes) {
-    DCHECK_LE(0, func_index);
-    DCHECK_GT(module->functions.size(), func_index);
-    // Note that this is just a best effort check. Multiple threads can still
-    // race at redirecting the same function to the interpreter, which is OK.
-    if (native_module->IsRedirectedToInterpreter(func_index)) continue;
-
-    wasm::WasmCodeRefScope code_ref_scope;
-    wasm::WasmCompilationResult result = compiler::CompileWasmInterpreterEntry(
-        isolate->wasm_engine(), native_module->enabled_features(), func_index,
-        module->functions[func_index].sig);
-    std::unique_ptr<wasm::WasmCode> wasm_code = native_module->AddCode(
-        func_index, result.code_desc, result.frame_slot_count,
-        result.tagged_parameter_slots,
-        result.protected_instructions_data.as_vector(),
-        result.source_positions.as_vector(), wasm::WasmCode::kInterpreterEntry,
-        wasm::ExecutionTier::kInterpreter);
-    native_module->PublishCode(std::move(wasm_code));
-    DCHECK(native_module->IsRedirectedToInterpreter(func_index));
-  }
-}
-
-void WasmDebugInfo::PrepareStep(StepAction step_action) {
-  GetInterpreterHandle(*this)->PrepareStep(step_action);
-}
-
-// static
-bool WasmDebugInfo::RunInterpreter(Isolate* isolate,
-                                   Handle<WasmDebugInfo> debug_info,
-                                   Address frame_pointer, int func_index,
-                                   Vector<wasm::WasmValue> argument_values,
-                                   Vector<wasm::WasmValue> return_values) {
-  DCHECK_LE(0, func_index);
-  auto* handle = GetOrCreateInterpreterHandle(isolate, debug_info);
-  Handle<WasmInstanceObject> instance(debug_info->wasm_instance(), isolate);
-  return handle->Execute(instance, frame_pointer,
-                         static_cast<uint32_t>(func_index), argument_values,
-                         return_values);
-}
-
-std::vector<std::pair<uint32_t, int>> WasmDebugInfo::GetInterpretedStack(
-    Address frame_pointer) {
-  return GetInterpreterHandle(*this)->GetInterpretedStack(frame_pointer);
-}
-
-int WasmDebugInfo::NumberOfActiveFrames(Address frame_pointer) {
-  return GetInterpreterHandle(*this)->NumberOfActiveFrames(frame_pointer);
-}
-
-wasm::WasmInterpreter::FramePtr WasmDebugInfo::GetInterpretedFrame(
-    Address frame_pointer, int idx) {
-  return GetInterpreterHandle(*this)->GetInterpretedFrame(frame_pointer, idx);
-}
-
-uint64_t WasmDebugInfo::NumInterpretedCalls() {
-  auto* handle = GetInterpreterHandleOrNull(*this);
-  return handle ? handle->NumInterpretedCalls() : 0;
-}
-
-// static
-Handle<JSObject> WasmDebugInfo::GetLocalScopeObject(
-    Handle<WasmDebugInfo> debug_info, Address frame_pointer, int frame_index) {
-  auto* interp_handle = GetInterpreterHandle(*debug_info);
-  auto frame = interp_handle->GetInterpretedFrame(frame_pointer, frame_index);
-  return interp_handle->GetLocalScopeObject(frame.get(), debug_info);
-}
-
-// static
-Handle<JSObject> WasmDebugInfo::GetStackScopeObject(
-    Handle<WasmDebugInfo> debug_info, Address frame_pointer, int frame_index) {
-  auto* interp_handle = GetInterpreterHandle(*debug_info);
-  auto frame = interp_handle->GetInterpretedFrame(frame_pointer, frame_index);
-  return interp_handle->GetStackScopeObject(frame.get(), debug_info);
 }
 
 // static
@@ -1315,90 +1077,9 @@ bool WasmScript::SetBreakPointForFunction(Handle<Script> script, int func_index,
   WasmScript::AddBreakpointToInfo(script, func.code.offset() + offset,
                                   break_point);
 
-  if (FLAG_debug_in_liftoff) {
-    native_module->GetDebugInfo()->SetBreakpoint(func_index, offset, isolate);
-  } else {
-    // Iterate over all instances and tell them to set this new breakpoint.
-    // We do this using the weak list of all instances from the script.
-    Handle<WeakArrayList> weak_instance_list(script->wasm_weak_instance_list(),
-                                             isolate);
-    for (int i = 0; i < weak_instance_list->length(); ++i) {
-      MaybeObject maybe_instance = weak_instance_list->Get(i);
-      if (maybe_instance->IsWeak()) {
-        Handle<WasmInstanceObject> instance(
-            WasmInstanceObject::cast(maybe_instance->GetHeapObjectAssumeWeak()),
-            isolate);
-        Handle<WasmDebugInfo> debug_info =
-            WasmInstanceObject::GetOrCreateDebugInfo(instance);
-        WasmDebugInfo::SetBreakpoint(debug_info, func_index, offset);
-      }
-    }
-  }
+  native_module->GetDebugInfo()->SetBreakpoint(func_index, offset, isolate);
 
   return true;
-}
-
-// static
-bool WasmScript::ClearBreakPoint(Handle<Script> script, int position,
-                                 Handle<BreakPoint> break_point) {
-  Isolate* isolate = script->GetIsolate();
-
-  // Find the function for this breakpoint.
-  const wasm::WasmModule* module = script->wasm_native_module()->module();
-  int func_index = GetContainingWasmFunction(module, position);
-  if (func_index < 0) return false;
-  const wasm::WasmFunction& func = module->functions[func_index];
-  int offset_in_func = position - func.code.offset();
-
-  if (!WasmScript::RemoveBreakpointFromInfo(script, position, break_point)) {
-    return false;
-  }
-
-  // Iterate over all instances and tell them to remove this breakpoint.
-  // We do this using the weak list of all instances from the script.
-  Handle<WeakArrayList> weak_instance_list(script->wasm_weak_instance_list(),
-                                           isolate);
-  for (int i = 0; i < weak_instance_list->length(); ++i) {
-    MaybeObject maybe_instance = weak_instance_list->Get(i);
-    if (maybe_instance->IsWeak()) {
-      Handle<WasmInstanceObject> instance(
-          WasmInstanceObject::cast(maybe_instance->GetHeapObjectAssumeWeak()),
-          isolate);
-      Handle<WasmDebugInfo> debug_info =
-          WasmInstanceObject::GetOrCreateDebugInfo(instance);
-      WasmDebugInfo::ClearBreakpoint(debug_info, func_index, offset_in_func);
-    }
-  }
-
-  return true;
-}
-
-// static
-bool WasmScript::ClearBreakPointById(Handle<Script> script, int breakpoint_id) {
-  if (!script->has_wasm_breakpoint_infos()) {
-    return false;
-  }
-  Isolate* isolate = script->GetIsolate();
-  Handle<FixedArray> breakpoint_infos(script->wasm_breakpoint_infos(), isolate);
-  // If the array exists, it should not be empty.
-  DCHECK_LT(0, breakpoint_infos->length());
-
-  for (int i = 0, e = breakpoint_infos->length(); i < e; ++i) {
-    Handle<Object> obj(breakpoint_infos->get(i), isolate);
-    if (obj->IsUndefined(isolate)) {
-      continue;
-    }
-    Handle<BreakPointInfo> breakpoint_info = Handle<BreakPointInfo>::cast(obj);
-    Handle<BreakPoint> breakpoint;
-    if (BreakPointInfo::GetBreakPointById(isolate, breakpoint_info,
-                                          breakpoint_id)
-            .ToHandle(&breakpoint)) {
-      DCHECK(breakpoint->id() == breakpoint_id);
-      return WasmScript::ClearBreakPoint(
-          script, breakpoint_info->source_position(), breakpoint);
-    }
-  }
-  return false;
 }
 
 namespace {
@@ -1432,6 +1113,71 @@ int FindBreakpointInfoInsertPos(Isolate* isolate,
 }
 
 }  // namespace
+
+// static
+bool WasmScript::ClearBreakPoint(Handle<Script> script, int position,
+                                 Handle<BreakPoint> break_point) {
+  if (!script->has_wasm_breakpoint_infos()) return false;
+
+  Isolate* isolate = script->GetIsolate();
+  Handle<FixedArray> breakpoint_infos(script->wasm_breakpoint_infos(), isolate);
+
+  int pos = FindBreakpointInfoInsertPos(isolate, breakpoint_infos, position);
+
+  // Does a BreakPointInfo object already exist for this position?
+  if (pos == breakpoint_infos->length()) return false;
+
+  Handle<BreakPointInfo> info(BreakPointInfo::cast(breakpoint_infos->get(pos)),
+                              isolate);
+  BreakPointInfo::ClearBreakPoint(isolate, info, break_point);
+
+  // Check if there are no more breakpoints at this location.
+  if (info->GetBreakPointCount(isolate) == 0) {
+    // Update array by moving breakpoints up one position.
+    for (int i = pos; i < breakpoint_infos->length() - 1; i++) {
+      Object entry = breakpoint_infos->get(i + 1);
+      breakpoint_infos->set(i, entry);
+      if (entry.IsUndefined(isolate)) break;
+    }
+    // Make sure last array element is empty as a result.
+    breakpoint_infos->set_undefined(breakpoint_infos->length() - 1);
+  }
+  return true;
+}
+
+// static
+bool WasmScript::ClearBreakPointById(Handle<Script> script, int breakpoint_id) {
+  if (!script->has_wasm_breakpoint_infos()) {
+    return false;
+  }
+  Isolate* isolate = script->GetIsolate();
+  Handle<FixedArray> breakpoint_infos(script->wasm_breakpoint_infos(), isolate);
+  // If the array exists, it should not be empty.
+  DCHECK_LT(0, breakpoint_infos->length());
+
+  for (int i = 0, e = breakpoint_infos->length(); i < e; ++i) {
+    Handle<Object> obj(breakpoint_infos->get(i), isolate);
+    if (obj->IsUndefined(isolate)) {
+      continue;
+    }
+    Handle<BreakPointInfo> breakpoint_info = Handle<BreakPointInfo>::cast(obj);
+    Handle<BreakPoint> breakpoint;
+    if (BreakPointInfo::GetBreakPointById(isolate, breakpoint_info,
+                                          breakpoint_id)
+            .ToHandle(&breakpoint)) {
+      DCHECK(breakpoint->id() == breakpoint_id);
+      return WasmScript::ClearBreakPoint(
+          script, breakpoint_info->source_position(), breakpoint);
+    }
+  }
+  return false;
+}
+
+// static
+void WasmScript::ClearAllBreakpoints(Script script) {
+  script.set_wasm_breakpoint_infos(
+      ReadOnlyRoots(script.GetIsolate()).empty_fixed_array());
+}
 
 // static
 void WasmScript::AddBreakpointToInfo(Handle<Script> script, int position,
@@ -1487,69 +1233,6 @@ void WasmScript::AddBreakpointToInfo(Handle<Script> script, int position,
 
   // Now insert new position at insert_pos.
   new_breakpoint_infos->set(insert_pos, *breakpoint_info);
-}
-
-// static
-bool WasmScript::RemoveBreakpointFromInfo(Handle<Script> script, int position,
-                                          Handle<BreakPoint> break_point) {
-  if (!script->has_wasm_breakpoint_infos()) return false;
-
-  Isolate* isolate = script->GetIsolate();
-  Handle<FixedArray> breakpoint_infos(script->wasm_breakpoint_infos(), isolate);
-
-  int pos = FindBreakpointInfoInsertPos(isolate, breakpoint_infos, position);
-
-  // Does a BreakPointInfo object already exist for this position?
-  if (pos == breakpoint_infos->length()) return false;
-
-  Handle<BreakPointInfo> info(BreakPointInfo::cast(breakpoint_infos->get(pos)),
-                              isolate);
-  BreakPointInfo::ClearBreakPoint(isolate, info, break_point);
-
-  // Check if there are no more breakpoints at this location.
-  if (info->GetBreakPointCount(isolate) == 0) {
-    // Update array by moving breakpoints up one position.
-    for (int i = pos; i < breakpoint_infos->length() - 1; i++) {
-      Object entry = breakpoint_infos->get(i + 1);
-      breakpoint_infos->set(i, entry);
-      if (entry.IsUndefined(isolate)) break;
-    }
-    // Make sure last array element is empty as a result.
-    breakpoint_infos->set_undefined(breakpoint_infos->length() - 1);
-  }
-  return true;
-}
-
-void WasmScript::SetBreakpointsOnNewInstance(
-    Handle<Script> script, Handle<WasmInstanceObject> instance) {
-  if (!script->has_wasm_breakpoint_infos()) return;
-  Isolate* isolate = script->GetIsolate();
-  Handle<WasmDebugInfo> debug_info =
-      WasmInstanceObject::GetOrCreateDebugInfo(instance);
-
-  Handle<FixedArray> breakpoint_infos(script->wasm_breakpoint_infos(), isolate);
-  // If the array exists, it should not be empty.
-  DCHECK_LT(0, breakpoint_infos->length());
-
-  for (int i = 0, e = breakpoint_infos->length(); i < e; ++i) {
-    Handle<Object> obj(breakpoint_infos->get(i), isolate);
-    if (obj->IsUndefined(isolate)) {
-      for (; i < e; ++i) {
-        DCHECK(breakpoint_infos->get(i).IsUndefined(isolate));
-      }
-      break;
-    }
-    Handle<BreakPointInfo> breakpoint_info = Handle<BreakPointInfo>::cast(obj);
-    int position = breakpoint_info->source_position();
-
-    // Find the function for this breakpoint, and set the breakpoint.
-    const wasm::WasmModule* module = script->wasm_native_module()->module();
-    int func_index = GetContainingWasmFunction(module, position);
-    DCHECK_LE(0, func_index);
-    const wasm::WasmFunction& func = module->functions[func_index];
-    int offset_in_func = position - func.code.offset();
-    WasmDebugInfo::SetBreakpoint(debug_info, func_index, offset_in_func);
-  }
 }
 
 // static

@@ -17,6 +17,7 @@
 #include "src/heap/marking-visitor-inl.h"
 #include "src/heap/marking-visitor.h"
 #include "src/heap/marking.h"
+#include "src/heap/memory-chunk.h"
 #include "src/heap/memory-measurement-inl.h"
 #include "src/heap/memory-measurement.h"
 #include "src/heap/objects-visiting-inl.h"
@@ -43,7 +44,7 @@ class ConcurrentMarkingState final
   ConcurrentBitmap<AccessMode::ATOMIC>* bitmap(const MemoryChunk* chunk) {
     DCHECK_EQ(reinterpret_cast<intptr_t>(&chunk->marking_bitmap_) -
                   reinterpret_cast<intptr_t>(chunk),
-              MemoryChunk::kMarkBitmapOffset);
+              BasicMemoryChunk::kMarkBitmapOffset);
     return chunk->marking_bitmap<AccessMode::ATOMIC>();
   }
 

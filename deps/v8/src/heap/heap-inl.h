@@ -23,6 +23,12 @@
 // leak heap internals to users of this interface!
 #include "src/execution/isolate-data.h"
 #include "src/execution/isolate.h"
+#include "src/heap/code-object-registry.h"
+#include "src/heap/memory-allocator.h"
+#include "src/heap/memory-chunk.h"
+#include "src/heap/new-spaces-inl.h"
+#include "src/heap/paged-spaces-inl.h"
+#include "src/heap/read-only-spaces.h"
 #include "src/heap/spaces-inl.h"
 #include "src/objects/allocation-site-inl.h"
 #include "src/objects/api-callbacks-inl.h"
@@ -376,7 +382,7 @@ void Heap::FinalizeExternalString(String string) {
       ExternalBackingStoreType::kExternalString,
       ext_string.ExternalPayloadSize());
 
-  ext_string.DisposeResource();
+  ext_string.DisposeResource(isolate());
 }
 
 Address Heap::NewSpaceTop() { return new_space_->top(); }

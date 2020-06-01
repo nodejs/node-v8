@@ -27,6 +27,7 @@ class AbstractCode;
 class FrameArray;
 class JSMessageObject;
 class LookupIterator;
+class PrimitiveHeapObject;
 class SharedFunctionInfo;
 class SourceInfo;
 class WasmInstanceObject;
@@ -67,13 +68,13 @@ class StackFrameBase {
   virtual Handle<Object> GetFunction() const = 0;
 
   virtual Handle<Object> GetFileName() = 0;
-  virtual Handle<Object> GetFunctionName() = 0;
+  virtual Handle<PrimitiveHeapObject> GetFunctionName() = 0;
   virtual Handle<Object> GetScriptNameOrSourceUrl() = 0;
-  virtual Handle<Object> GetMethodName() = 0;
-  virtual Handle<Object> GetTypeName() = 0;
-  virtual Handle<Object> GetEvalOrigin();
-  virtual Handle<Object> GetWasmModuleName();
-  virtual Handle<Object> GetWasmInstance();
+  virtual Handle<PrimitiveHeapObject> GetMethodName() = 0;
+  virtual Handle<PrimitiveHeapObject> GetTypeName() = 0;
+  virtual Handle<PrimitiveHeapObject> GetEvalOrigin();
+  virtual Handle<PrimitiveHeapObject> GetWasmModuleName();
+  virtual Handle<HeapObject> GetWasmInstance();
 
   // Returns the script ID if one is attached, -1 otherwise.
   int GetScriptId() const;
@@ -86,7 +87,8 @@ class StackFrameBase {
   // Return 0-based Wasm function index. Returns -1 for non-Wasm frames.
   virtual int GetWasmFunctionIndex();
 
-  // Returns index for Promise.all() async frames, or -1 for other frames.
+  // Returns the index of the rejected promise in the Promise combinator input,
+  // or -1 if this frame is not a Promise combinator frame.
   virtual int GetPromiseIndex() const = 0;
 
   virtual bool IsNative() = 0;
@@ -94,6 +96,7 @@ class StackFrameBase {
   virtual bool IsEval();
   virtual bool IsAsync() const = 0;
   virtual bool IsPromiseAll() const = 0;
+  virtual bool IsPromiseAny() const = 0;
   virtual bool IsConstructor() = 0;
   virtual bool IsStrict() const = 0;
 
@@ -121,10 +124,10 @@ class JSStackFrame : public StackFrameBase {
   Handle<Object> GetFunction() const override;
 
   Handle<Object> GetFileName() override;
-  Handle<Object> GetFunctionName() override;
+  Handle<PrimitiveHeapObject> GetFunctionName() override;
   Handle<Object> GetScriptNameOrSourceUrl() override;
-  Handle<Object> GetMethodName() override;
-  Handle<Object> GetTypeName() override;
+  Handle<PrimitiveHeapObject> GetMethodName() override;
+  Handle<PrimitiveHeapObject> GetTypeName() override;
 
   int GetPosition() const override;
   int GetLineNumber() override;
@@ -136,6 +139,7 @@ class JSStackFrame : public StackFrameBase {
   bool IsToplevel() override;
   bool IsAsync() const override { return is_async_; }
   bool IsPromiseAll() const override { return is_promise_all_; }
+  bool IsPromiseAny() const override { return is_promise_any_; }
   bool IsConstructor() override { return is_constructor_; }
   bool IsStrict() const override { return is_strict_; }
 
@@ -155,6 +159,7 @@ class JSStackFrame : public StackFrameBase {
   bool is_async_ : 1;
   bool is_constructor_ : 1;
   bool is_promise_all_ : 1;
+  bool is_promise_any_ : 1;
   bool is_strict_ : 1;
 
   friend class FrameArrayIterator;
@@ -167,13 +172,13 @@ class WasmStackFrame : public StackFrameBase {
   Handle<Object> GetReceiver() const override;
   Handle<Object> GetFunction() const override;
 
-  Handle<Object> GetFileName() override { return Null(); }
-  Handle<Object> GetFunctionName() override;
+  Handle<Object> GetFileName() override;
+  Handle<PrimitiveHeapObject> GetFunctionName() override;
   Handle<Object> GetScriptNameOrSourceUrl() override;
-  Handle<Object> GetMethodName() override { return Null(); }
-  Handle<Object> GetTypeName() override { return Null(); }
-  Handle<Object> GetWasmModuleName() override;
-  Handle<Object> GetWasmInstance() override;
+  Handle<PrimitiveHeapObject> GetMethodName() override { return Null(); }
+  Handle<PrimitiveHeapObject> GetTypeName() override { return Null(); }
+  Handle<PrimitiveHeapObject> GetWasmModuleName() override;
+  Handle<HeapObject> GetWasmInstance() override;
 
   int GetPosition() const override;
   int GetLineNumber() override { return 0; }
@@ -186,12 +191,13 @@ class WasmStackFrame : public StackFrameBase {
   bool IsToplevel() override { return false; }
   bool IsAsync() const override { return false; }
   bool IsPromiseAll() const override { return false; }
+  bool IsPromiseAny() const override { return false; }
   bool IsConstructor() override { return false; }
   bool IsStrict() const override { return false; }
   bool IsInterpreted() const { return code_ == nullptr; }
 
  protected:
-  Handle<Object> Null() const;
+  Handle<PrimitiveHeapObject> Null() const;
 
   bool HasScript() const override;
   Handle<Script> GetScript() const override;
@@ -269,6 +275,10 @@ class ErrorUtils : public AllStatic {
   // |kNone| is useful when you don't need the stack information at all, for
   // example when creating a deserialized error.
   enum class StackTraceCollection { kDetailed, kSimple, kNone };
+  static MaybeHandle<JSObject> Construct(Isolate* isolate,
+                                         Handle<JSFunction> target,
+                                         Handle<Object> new_target,
+                                         Handle<Object> message);
   static MaybeHandle<JSObject> Construct(
       Isolate* isolate, Handle<JSFunction> target, Handle<Object> new_target,
       Handle<Object> message, FrameSkipMode mode, Handle<Object> caller,
@@ -293,8 +303,8 @@ class ErrorUtils : public AllStatic {
                                                   Handle<Object> source);
   static Handle<Object> NewConstructedNonConstructable(Isolate* isolate,
                                                        Handle<Object> source);
-  static Object ThrowSpreadArgIsNullOrUndefinedError(Isolate* isolate,
-                                                     Handle<Object> object);
+  static Object ThrowSpreadArgError(Isolate* isolate, MessageTemplate id,
+                                    Handle<Object> object);
   static Object ThrowLoadFromNullOrUndefined(Isolate* isolate,
                                              Handle<Object> object);
   static Object ThrowLoadFromNullOrUndefined(Isolate* isolate,
@@ -313,7 +323,9 @@ class MessageFormatter {
                                                       Handle<String> arg2);
 
   static Handle<String> Format(Isolate* isolate, MessageTemplate index,
-                               Handle<Object> arg);
+                               Handle<Object> arg0,
+                               Handle<Object> arg1 = Handle<Object>(),
+                               Handle<Object> arg2 = Handle<Object>());
 };
 
 // A message handler is a convenience interface for accessing the list

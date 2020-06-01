@@ -17,6 +17,7 @@
 #include "src/objects/objects-inl.h"
 #include "src/objects/ordered-hash-table.h"
 #include "src/objects/source-text-module.h"
+#include "torque-generated/exported-class-definitions-tq.h"
 
 namespace v8 {
 namespace internal {
@@ -420,7 +421,8 @@ FieldAccess AccessBuilder::ForJSTypedArrayExternalPointer() {
                         JSTypedArray::kExternalPointerOffset,
                         MaybeHandle<Name>(),
                         MaybeHandle<Map>(),
-                        Type::ExternalPointer(),
+                        V8_HEAP_SANDBOX_BOOL ? Type::SandboxedExternalPointer()
+                                             : Type::ExternalPointer(),
                         MachineType::Pointer(),
                         kNoWriteBarrier,
                         LoadSensitivity::kCritical};
@@ -429,9 +431,13 @@ FieldAccess AccessBuilder::ForJSTypedArrayExternalPointer() {
 
 // static
 FieldAccess AccessBuilder::ForJSDataViewDataPointer() {
-  FieldAccess access = {kTaggedBase,           JSDataView::kDataPointerOffset,
-                        MaybeHandle<Name>(),   MaybeHandle<Map>(),
-                        Type::OtherInternal(), MachineType::Pointer(),
+  FieldAccess access = {kTaggedBase,
+                        JSDataView::kDataPointerOffset,
+                        MaybeHandle<Name>(),
+                        MaybeHandle<Map>(),
+                        V8_HEAP_SANDBOX_BOOL ? Type::SandboxedExternalPointer()
+                                             : Type::ExternalPointer(),
+                        MachineType::Pointer(),
                         kNoWriteBarrier};
   return access;
 }
@@ -521,6 +527,26 @@ FieldAccess AccessBuilder::ForFixedArrayLength() {
                         TypeCache::Get()->kFixedArrayLengthType,
                         MachineType::TaggedSigned(),
                         kNoWriteBarrier};
+  return access;
+}
+
+// static
+FieldAccess AccessBuilder::ForSloppyArgumentsElementsContext() {
+  FieldAccess access = {
+      kTaggedBase,         SloppyArgumentsElements::kContextOffset,
+      MaybeHandle<Name>(), MaybeHandle<Map>(),
+      Type::Any(),         MachineType::TaggedPointer(),
+      kPointerWriteBarrier};
+  return access;
+}
+
+// static
+FieldAccess AccessBuilder::ForSloppyArgumentsElementsArguments() {
+  FieldAccess access = {
+      kTaggedBase,         SloppyArgumentsElements::kArgumentsOffset,
+      MaybeHandle<Name>(), MaybeHandle<Map>(),
+      Type::Any(),         MachineType::TaggedPointer(),
+      kPointerWriteBarrier};
   return access;
 }
 
@@ -690,7 +716,8 @@ FieldAccess AccessBuilder::ForExternalStringResourceData() {
                         ExternalString::kResourceDataOffset,
                         Handle<Name>(),
                         MaybeHandle<Map>(),
-                        Type::ExternalPointer(),
+                        V8_HEAP_SANDBOX_BOOL ? Type::SandboxedExternalPointer()
+                                             : Type::ExternalPointer(),
                         MachineType::Pointer(),
                         kNoWriteBarrier};
   return access;
@@ -861,6 +888,14 @@ ElementAccess AccessBuilder::ForFixedArrayElement() {
 }
 
 // static
+ElementAccess AccessBuilder::ForSloppyArgumentsElementsMappedEntry() {
+  ElementAccess access = {
+      kTaggedBase, SloppyArgumentsElements::kMappedEntriesOffset, Type::Any(),
+      MachineType::AnyTagged(), kFullWriteBarrier};
+  return access;
+}
+
+// statics
 ElementAccess AccessBuilder::ForFixedArrayElement(
     ElementsKind kind, LoadSensitivity load_sensitivity) {
   ElementAccess access = {kTaggedBase,       FixedArray::kHeaderSize,

@@ -308,6 +308,10 @@ TNode<ExternalReference> CodeAssembler::ExternalConstant(
       raw_assembler()->ExternalConstant(address));
 }
 
+TNode<Float32T> CodeAssembler::Float32Constant(double value) {
+  return UncheckedCast<Float32T>(jsgraph()->Float32Constant(value));
+}
+
 TNode<Float64T> CodeAssembler::Float64Constant(double value) {
   return UncheckedCast<Float64T>(jsgraph()->Float64Constant(value));
 }
@@ -432,6 +436,20 @@ void CodeAssembler::Return(TNode<WordT> value) {
   DCHECK_EQ(
       MachineType::PointerRepresentation(),
       raw_assembler()->call_descriptor()->GetReturnType(0).representation());
+  return raw_assembler()->Return(value);
+}
+
+void CodeAssembler::Return(TNode<Float32T> value) {
+  DCHECK_EQ(1, raw_assembler()->call_descriptor()->ReturnCount());
+  DCHECK_EQ(MachineType::Float32(),
+            raw_assembler()->call_descriptor()->GetReturnType(0));
+  return raw_assembler()->Return(value);
+}
+
+void CodeAssembler::Return(TNode<Float64T> value) {
+  DCHECK_EQ(1, raw_assembler()->call_descriptor()->ReturnCount());
+  DCHECK_EQ(MachineType::Float64(),
+            raw_assembler()->call_descriptor()->GetReturnType(0));
   return raw_assembler()->Return(value);
 }
 
@@ -1009,11 +1027,7 @@ Node* CodeAssembler::CallJSStubImpl(const CallInterfaceDescriptor& descriptor,
     inputs.Add(new_target);
   }
   inputs.Add(arity);
-#ifdef V8_REVERSE_JSARGS
-  for (auto arg : base::Reversed(args)) inputs.Add(arg);
-#else
   for (auto arg : args) inputs.Add(arg);
-#endif
   if (descriptor.HasContextParameter()) {
     inputs.Add(context);
   }
@@ -1375,6 +1389,7 @@ void CodeAssemblerLabel::MergeVariables() {
     }
     // If the following asserts, then you've jumped to a label without a bound
     // variable along that path that expects to merge its value into a phi.
+    // This can also occur if a label is bound that is never jumped to.
     DCHECK(variable_phis_.find(var) == variable_phis_.end() ||
            count == merge_count_);
     USE(count);

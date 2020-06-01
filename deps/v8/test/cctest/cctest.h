@@ -141,6 +141,9 @@ class CcTest {
   static void CollectAllAvailableGarbage(i::Isolate* isolate = nullptr);
   static void PreciseCollectAllGarbage(i::Isolate* isolate = nullptr);
 
+  static i::Handle<i::String> MakeString(const char* str);
+  static i::Handle<i::String> MakeName(const char* str, int suffix);
+
   static v8::base::RandomNumberGenerator* random_number_generator();
 
   static v8::Local<v8::Object> global();
@@ -702,6 +705,12 @@ class TestPlatform : public v8::Platform {
   void CallDelayedOnWorkerThread(std::unique_ptr<v8::Task> task,
                                  double delay_in_seconds) override {
     old_platform_->CallDelayedOnWorkerThread(std::move(task), delay_in_seconds);
+  }
+
+  std::unique_ptr<v8::JobHandle> PostJob(
+      v8::TaskPriority priority,
+      std::unique_ptr<v8::JobTask> job_task) override {
+    return old_platform_->PostJob(priority, std::move(job_task));
   }
 
   double MonotonicallyIncreasingTime() override {

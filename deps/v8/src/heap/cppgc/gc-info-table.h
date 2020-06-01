@@ -7,7 +7,7 @@
 
 #include <stdint.h>
 
-#include "include/cppgc/gc-info.h"
+#include "include/cppgc/internal/gc-info.h"
 #include "include/cppgc/platform.h"
 #include "include/v8config.h"
 #include "src/base/logging.h"
@@ -22,7 +22,10 @@ namespace internal {
 // inherit from GarbageCollected.
 struct GCInfo final {
   FinalizationCallback finalize;
+  TraceCallback trace;
   bool has_v_table;
+  // Keep sizeof(GCInfo) a power of 2.
+  size_t padding = 0;
 };
 
 class V8_EXPORT GCInfoTable final {

@@ -65,8 +65,9 @@ TNode<JSArrayBuffer> TypedArrayBuiltinsAssembler::AllocateEmptyOnHeapBuffer(
 
   StoreObjectFieldNoWriteBarrier(buffer, JSArrayBuffer::kByteLengthOffset,
                                  byte_length);
-  StoreObjectFieldNoWriteBarrier(buffer, JSArrayBuffer::kBackingStoreOffset,
-                                 IntPtrConstant(0));
+  StoreJSArrayBufferBackingStore(
+      buffer,
+      EncodeExternalPointer(ReinterpretCast<RawPtrT>(IntPtrConstant(0))));
   if (V8_ARRAY_BUFFER_EXTENSION_BOOL) {
     StoreObjectFieldNoWriteBarrier(buffer, JSArrayBuffer::kExtensionOffset,
                                    IntPtrConstant(0));
@@ -239,7 +240,7 @@ TNode<JSArrayBuffer> TypedArrayBuiltinsAssembler::GetBuffer(
 
   TNode<JSArrayBuffer> buffer = LoadJSArrayBufferViewBuffer(array);
   GotoIf(IsDetachedBuffer(buffer), &call_runtime);
-  TNode<RawPtrT> backing_store = LoadJSArrayBufferBackingStore(buffer);
+  TNode<RawPtrT> backing_store = LoadJSArrayBufferBackingStorePtr(buffer);
   GotoIf(WordEqual(backing_store, IntPtrConstant(0)), &call_runtime);
   var_result = buffer;
   Goto(&done);
@@ -397,8 +398,8 @@ void TypedArrayBuiltinsAssembler::SetJSTypedArrayOnHeapDataPtr(
   }
 
   StoreObjectField(holder, JSTypedArray::kBasePointerOffset, base);
-  StoreObjectFieldNoWriteBarrier<UintPtrT>(
-      holder, JSTypedArray::kExternalPointerOffset, offset);
+  StoreJSTypedArrayExternalPointer(
+      holder, EncodeExternalPointer(ReinterpretCast<RawPtrT>(offset)));
 }
 
 void TypedArrayBuiltinsAssembler::SetJSTypedArrayOffHeapDataPtr(
@@ -407,8 +408,7 @@ void TypedArrayBuiltinsAssembler::SetJSTypedArrayOffHeapDataPtr(
                                  SmiConstant(0));
 
   base = RawPtrAdd(base, Signed(offset));
-  StoreObjectFieldNoWriteBarrier<RawPtrT>(
-      holder, JSTypedArray::kExternalPointerOffset, base);
+  StoreJSTypedArrayExternalPointer(holder, EncodeExternalPointer(base));
 }
 
 void TypedArrayBuiltinsAssembler::StoreJSTypedArrayElementFromNumeric(
@@ -505,49 +505,5 @@ TF_BUILTIN(TypedArrayPrototypeToStringTag, TypedArrayBuiltinsAssembler) {
   BIND(&return_undefined);
   Return(UndefinedConstant());
 }
-
-void TypedArrayBuiltinsAssembler::GenerateTypedArrayPrototypeIterationMethod(
-    TNode<Context> context, TNode<Object> receiver, const char* method_name,
-    IterationKind kind) {
-  Label throw_bad_receiver(this, Label::kDeferred);
-
-  GotoIf(TaggedIsSmi(receiver), &throw_bad_receiver);
-  GotoIfNot(IsJSTypedArray(CAST(receiver)), &throw_bad_receiver);
-
-  // Check if the {receiver}'s JSArrayBuffer was detached.
-  ThrowIfArrayBufferViewBufferIsDetached(context, CAST(receiver), method_name);
-
-  Return(CreateArrayIterator(context, receiver, kind));
-
-  BIND(&throw_bad_receiver);
-  ThrowTypeError(context, MessageTemplate::kNotTypedArray, method_name);
-}
-
-// ES #sec-%typedarray%.prototype.values
-TF_BUILTIN(TypedArrayPrototypeValues, TypedArrayBuiltinsAssembler) {
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  GenerateTypedArrayPrototypeIterationMethod(context, receiver,
-                                             "%TypedArray%.prototype.values()",
-                                             IterationKind::kValues);
-}
-
-// ES #sec-%typedarray%.prototype.entries
-TF_BUILTIN(TypedArrayPrototypeEntries, TypedArrayBuiltinsAssembler) {
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  GenerateTypedArrayPrototypeIterationMethod(context, receiver,
-                                             "%TypedArray%.prototype.entries()",
-                                             IterationKind::kEntries);
-}
-
-// ES #sec-%typedarray%.prototype.keys
-TF_BUILTIN(TypedArrayPrototypeKeys, TypedArrayBuiltinsAssembler) {
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  GenerateTypedArrayPrototypeIterationMethod(
-      context, receiver, "%TypedArray%.prototype.keys()", IterationKind::kKeys);
-}
-
 }  // namespace internal
 }  // namespace v8

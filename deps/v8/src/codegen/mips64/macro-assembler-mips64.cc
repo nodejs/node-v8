@@ -16,7 +16,7 @@
 #include "src/codegen/register-configuration.h"
 #include "src/debug/debug.h"
 #include "src/execution/frames-inl.h"
-#include "src/heap/heap-inl.h"  // For MemoryChunk.
+#include "src/heap/memory-chunk.h"
 #include "src/init/bootstrapper.h"
 #include "src/logging/counters.h"
 #include "src/objects/heap-number.h"
@@ -2729,7 +2729,7 @@ void TurboAssembler::BranchMSA(Label* target, MSABranchDF df,
 void TurboAssembler::BranchShortMSA(MSABranchDF df, Label* target,
                                     MSABranchCondition cond, MSARegister wt,
                                     BranchDelaySlot bd) {
-  if (kArchVariant == kMips64r6) {
+  if (IsEnabled(MIPS_SIMD)) {
     BlockTrampolinePoolScope block_trampoline_pool(this);
     if (target) {
       switch (cond) {
@@ -2775,6 +2775,8 @@ void TurboAssembler::BranchShortMSA(MSABranchDF df, Label* target,
           UNREACHABLE();
       }
     }
+  } else {
+    UNREACHABLE();
   }
   if (bd == PROTECT) {
     nop();
@@ -5751,7 +5753,7 @@ void TurboAssembler::CallCFunctionHelper(Register function,
 void TurboAssembler::CheckPageFlag(Register object, Register scratch, int mask,
                                    Condition cc, Label* condition_met) {
   And(scratch, object, Operand(~kPageAlignmentMask));
-  Ld(scratch, MemOperand(scratch, MemoryChunk::kFlagsOffset));
+  Ld(scratch, MemOperand(scratch, BasicMemoryChunk::kFlagsOffset));
   And(scratch, scratch, Operand(mask));
   Branch(condition_met, cc, scratch, Operand(zero_reg));
 }

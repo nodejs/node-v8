@@ -181,9 +181,13 @@ class StatsCounter;
   V(wasm_f64_trunc, "wasm::f64_trunc_wrapper")                                \
   V(wasm_float32_to_int64, "wasm::float32_to_int64_wrapper")                  \
   V(wasm_float32_to_uint64, "wasm::float32_to_uint64_wrapper")                \
+  V(wasm_float32_to_int64_sat, "wasm::float32_to_int64_sat_wrapper")          \
+  V(wasm_float32_to_uint64_sat, "wasm::float32_to_uint64_sat_wrapper")        \
   V(wasm_float64_pow, "wasm::float64_pow")                                    \
   V(wasm_float64_to_int64, "wasm::float64_to_int64_wrapper")                  \
   V(wasm_float64_to_uint64, "wasm::float64_to_uint64_wrapper")                \
+  V(wasm_float64_to_int64_sat, "wasm::float64_to_int64_sat_wrapper")          \
+  V(wasm_float64_to_uint64_sat, "wasm::float64_to_uint64_sat_wrapper")        \
   V(wasm_int64_div, "wasm::int64_div")                                        \
   V(wasm_int64_mod, "wasm::int64_mod")                                        \
   V(wasm_int64_to_float32, "wasm::int64_to_float32_wrapper")                  \
@@ -215,6 +219,8 @@ class StatsCounter;
   V(atomic_pair_exchange_function, "atomic_pair_exchange_function")           \
   V(atomic_pair_compare_exchange_function,                                    \
     "atomic_pair_compare_exchange_function")                                  \
+  V(js_finalization_registry_remove_cell_from_unregister_token_map,           \
+    "JSFinalizationRegistry::RemoveCellFromUnregisterTokenMap")               \
   EXTERNAL_REFERENCE_LIST_INTL(V)
 
 #ifdef V8_INTL_SUPPORT

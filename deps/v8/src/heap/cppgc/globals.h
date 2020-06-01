@@ -8,11 +8,17 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "include/cppgc/internal/gc-info.h"
+
 namespace cppgc {
 namespace internal {
 
 using Address = uint8_t*;
 using ConstAddress = const uint8_t*;
+
+constexpr size_t kKB = 1024;
+constexpr size_t kMB = kKB * 1024;
+constexpr size_t kGB = kMB * 1024;
 
 // See 6.7.6 (http://eel.is/c++draft/basic.align) for alignment restrictions. We
 // do not fully support all alignment restrictions (following
@@ -31,7 +37,19 @@ constexpr size_t kPageSize = 1 << kPageSizeLog2;
 constexpr size_t kPageOffsetMask = kPageSize - 1;
 constexpr size_t kPageBaseMask = ~kPageOffsetMask;
 
+// Guard pages are always put into memory. Whether they are actually protected
+// depends on the allocator provided to the garbage collector.
+constexpr size_t kGuardPageSize = 4096;
+
 constexpr size_t kLargeObjectSizeThreshold = kPageSize / 2;
+
+constexpr GCInfoIndex kFreeListGCInfoIndex = 0;
+constexpr size_t kFreeListEntrySize = 2 * sizeof(uintptr_t);
+
+#if defined(CPPGC_CAGED_HEAP)
+constexpr size_t kCagedHeapReservationSize = static_cast<size_t>(4) * kGB;
+constexpr size_t kCagedHeapReservationAlignment = kCagedHeapReservationSize;
+#endif
 
 }  // namespace internal
 }  // namespace cppgc

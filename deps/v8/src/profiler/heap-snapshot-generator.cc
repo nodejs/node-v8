@@ -1129,7 +1129,7 @@ void V8HeapExplorer::ExtractScriptReferences(HeapEntry* entry, Script script) {
   SetInternalReference(entry, "source", script.source(), Script::kSourceOffset);
   SetInternalReference(entry, "name", script.name(), Script::kNameOffset);
   SetInternalReference(entry, "context_data", script.context_data(),
-                       Script::kContextOffset);
+                       Script::kContextDataOffset);
   TagObject(script.line_ends(), "(script line ends)");
   SetInternalReference(entry, "line_ends", script.line_ends(),
                        Script::kLineEndsOffset);
@@ -1487,7 +1487,11 @@ bool V8HeapExplorer::IterateAndExtractReferences(
   // its custom name to a generic builtin.
   RootsReferencesExtractor extractor(this);
   ReadOnlyRoots(heap_).Iterate(&extractor);
-  heap_->IterateRoots(&extractor, VISIT_ONLY_STRONG);
+  heap_->IterateRoots(&extractor, base::EnumSet<SkipRoot>{SkipRoot::kWeak});
+  // TODO(ulan): The heap snapshot generator incorrectly considers the weak
+  // string tables as strong retainers. Move IterateWeakRoots after
+  // SetVisitingWeakRoots.
+  heap_->IterateWeakRoots(&extractor, {});
   extractor.SetVisitingWeakRoots();
   heap_->IterateWeakGlobalHandles(&extractor);
 

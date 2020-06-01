@@ -18,6 +18,8 @@
 #include "src/objects/module-inl.h"
 #include "src/objects/smi.h"
 #include "src/runtime/runtime-utils.h"
+#include "torque-generated/exported-class-definitions-tq-inl.h"
+#include "torque-generated/exported-class-definitions-tq.h"
 
 namespace v8 {
 namespace internal {
@@ -408,20 +410,19 @@ Handle<JSObject> NewSloppyArguments(Isolate* isolate, Handle<JSFunction> callee,
   if (argument_count > 0) {
     if (parameter_count > 0) {
       int mapped_count = Min(argument_count, parameter_count);
-      Handle<FixedArray> parameter_map = isolate->factory()->NewFixedArray(
-          mapped_count + 2, AllocationType::kYoung);
-      parameter_map->set_map(
-          ReadOnlyRoots(isolate).sloppy_arguments_elements_map());
-      result->set_map(isolate->native_context()->fast_aliased_arguments_map());
-      result->set_elements(*parameter_map);
 
       // Store the context and the arguments array at the beginning of the
       // parameter map.
       Handle<Context> context(isolate->context(), isolate);
       Handle<FixedArray> arguments = isolate->factory()->NewFixedArray(
           argument_count, AllocationType::kYoung);
-      parameter_map->set(0, *context);
-      parameter_map->set(1, *arguments);
+
+      Handle<SloppyArgumentsElements> parameter_map =
+          isolate->factory()->NewSloppyArgumentsElements(
+              mapped_count, context, arguments, AllocationType::kYoung);
+
+      result->set_map(isolate->native_context()->fast_aliased_arguments_map());
+      result->set_elements(*parameter_map);
 
       // Loop over the actual parameters backwards.
       int index = argument_count - 1;
@@ -438,7 +439,8 @@ Handle<JSObject> NewSloppyArguments(Isolate* isolate, Handle<JSFunction> callee,
       // arguments object.
       for (int i = 0; i < mapped_count; i++) {
         arguments->set(i, parameters[i]);
-        parameter_map->set_the_hole(i + 2);
+        parameter_map->set_mapped_entries(
+            i, *isolate->factory()->the_hole_value());
       }
 
       // Walk all context slots to find context allocated parameters. Mark each
@@ -449,7 +451,7 @@ Handle<JSObject> NewSloppyArguments(Isolate* isolate, Handle<JSFunction> callee,
         if (parameter >= mapped_count) continue;
         arguments->set_the_hole(parameter);
         Smi slot = Smi::FromInt(scope_info->ContextHeaderLength() + i);
-        parameter_map->set(parameter + 2, slot);
+        parameter_map->set_mapped_entries(parameter, slot);
       }
     } else {
       // If there is no aliasing, the arguments object elements are not
@@ -487,8 +489,7 @@ class ParameterArguments {
 
 }  // namespace
 
-
-RUNTIME_FUNCTION(Runtime_NewSloppyArguments_Generic) {
+RUNTIME_FUNCTION(Runtime_NewSloppyArguments) {
   HandleScope scope(isolate);
   DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSFunction, callee, 0);
@@ -500,7 +501,6 @@ RUNTIME_FUNCTION(Runtime_NewSloppyArguments_Generic) {
   HandleArguments argument_getter(arguments.get());
   return *NewSloppyArguments(isolate, callee, argument_getter, argument_count);
 }
-
 
 RUNTIME_FUNCTION(Runtime_NewStrictArguments) {
   HandleScope scope(isolate);
@@ -550,37 +550,6 @@ RUNTIME_FUNCTION(Runtime_NewRestParameter) {
     }
   }
   return *result;
-}
-
-
-RUNTIME_FUNCTION(Runtime_NewSloppyArguments) {
-  HandleScope scope(isolate);
-  DCHECK_EQ(1, args.length());
-  CONVERT_ARG_HANDLE_CHECKED(JSFunction, callee, 0);
-  StackFrameIterator iterator(isolate);
-
-  // Stub/interpreter handler frame
-  iterator.Advance();
-  DCHECK(iterator.frame()->type() == StackFrame::STUB);
-
-  // Function frame
-  iterator.Advance();
-  JavaScriptFrame* function_frame = JavaScriptFrame::cast(iterator.frame());
-  DCHECK(function_frame->is_java_script());
-  int argc = function_frame->ComputeParametersCount();
-  Address fp = function_frame->fp();
-  if (function_frame->has_adapted_arguments()) {
-    iterator.Advance();
-    ArgumentsAdaptorFrame* adaptor_frame =
-        ArgumentsAdaptorFrame::cast(iterator.frame());
-    argc = adaptor_frame->ComputeParametersCount();
-    fp = adaptor_frame->fp();
-  }
-
-  Address parameters =
-      fp + argc * kSystemPointerSize + StandardFrameConstants::kCallerSPOffset;
-  ParameterArguments argument_getter(parameters);
-  return *NewSloppyArguments(isolate, callee, argument_getter, argc);
 }
 
 RUNTIME_FUNCTION(Runtime_NewArgumentsElements) {

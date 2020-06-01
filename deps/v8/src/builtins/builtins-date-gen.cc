@@ -50,11 +50,14 @@ void DateBuiltinsAssembler::Generate_DatePrototype_GetField(
       BIND(&stamp_mismatch);
     }
 
+    TNode<ExternalReference> isolate_ptr =
+        ExternalConstant(ExternalReference::isolate_address(isolate()));
     TNode<Smi> field_index_smi = SmiConstant(field_index);
     TNode<ExternalReference> function =
         ExternalConstant(ExternalReference::get_date_field_function());
     TNode<Object> result = CAST(CallCFunction(
         function, MachineType::AnyTagged(),
+        std::make_pair(MachineType::Pointer(), isolate_ptr),
         std::make_pair(MachineType::AnyTagged(), date_receiver),
         std::make_pair(MachineType::AnyTagged(), field_index_smi)));
     Return(result);
@@ -194,7 +197,7 @@ TF_BUILTIN(DatePrototypeToPrimitive, CodeStubAssembler) {
       hint_is_invalid(this, Label::kDeferred);
 
   // Fast cases for internalized strings.
-  TNode<String> number_string = numberStringConstant();
+  TNode<String> number_string = NumberStringConstant();
   GotoIf(TaggedEqual(hint, number_string), &hint_is_number);
   TNode<String> default_string = DefaultStringConstant();
   GotoIf(TaggedEqual(hint, default_string), &hint_is_string);

@@ -608,18 +608,23 @@ void EmitLoad(InstructionSelector* selector, Node* node, InstructionCode opcode,
 void InstructionSelector::VisitLoadTransform(Node* node) {
   LoadTransformParameters params = LoadTransformParametersOf(node->op());
   InstructionCode opcode = kArchNop;
+  bool require_add = false;
   switch (params.transformation) {
     case LoadTransformation::kS8x16LoadSplat:
       opcode = kArm64S8x16LoadSplat;
+      require_add = true;
       break;
     case LoadTransformation::kS16x8LoadSplat:
       opcode = kArm64S16x8LoadSplat;
+      require_add = true;
       break;
     case LoadTransformation::kS32x4LoadSplat:
       opcode = kArm64S32x4LoadSplat;
+      require_add = true;
       break;
     case LoadTransformation::kS64x2LoadSplat:
       opcode = kArm64S64x2LoadSplat;
+      require_add = true;
       break;
     case LoadTransformation::kI16x8Load8x8S:
       opcode = kArm64I16x8Load8x8S;
@@ -655,13 +660,17 @@ void InstructionSelector::VisitLoadTransform(Node* node) {
   inputs[1] = g.UseRegister(index);
   outputs[0] = g.DefineAsRegister(node);
 
-  // ld1r uses post-index, so construct address first.
-  // TODO(v8:9886) If index can be immediate, use vldr without this add.
-  InstructionOperand addr = g.TempRegister();
-  Emit(kArm64Add, 1, &addr, 2, inputs);
-  inputs[0] = addr;
-  inputs[1] = g.TempImmediate(0);
-  opcode |= AddressingModeField::encode(kMode_MRI);
+  if (require_add) {
+    // ld1r uses post-index, so construct address first.
+    // TODO(v8:9886) If index can be immediate, use vldr without this add.
+    InstructionOperand addr = g.TempRegister();
+    Emit(kArm64Add, 1, &addr, 2, inputs);
+    inputs[0] = addr;
+    inputs[1] = g.TempImmediate(0);
+    opcode |= AddressingModeField::encode(kMode_MRI);
+  } else {
+    opcode |= AddressingModeField::encode(kMode_MRR);
+  }
   Emit(opcode, 1, outputs, 2, inputs);
 }
 
@@ -1300,6 +1309,10 @@ void InstructionSelector::VisitWord64Sar(Node* node) {
   if (TryEmitExtendingLoad(this, node)) return;
   VisitRRO(this, kArm64Asr, node, kShift64Imm);
 }
+
+void InstructionSelector::VisitWord32Rol(Node* node) { UNREACHABLE(); }
+
+void InstructionSelector::VisitWord64Rol(Node* node) { UNREACHABLE(); }
 
 void InstructionSelector::VisitWord32Ror(Node* node) {
   VisitRRO(this, kArm64Ror32, node, kShift32Imm);
@@ -3180,14 +3193,14 @@ void InstructionSelector::VisitInt64AbsWithOverflow(Node* node) {
   V(I8x16Neg, kArm64I8x16Neg)                             \
   V(I8x16Abs, kArm64I8x16Abs)                             \
   V(S128Not, kArm64S128Not)                               \
-  V(S1x2AnyTrue, kArm64S1x2AnyTrue)                       \
-  V(S1x2AllTrue, kArm64S1x2AllTrue)                       \
-  V(S1x4AnyTrue, kArm64S1x4AnyTrue)                       \
-  V(S1x4AllTrue, kArm64S1x4AllTrue)                       \
-  V(S1x8AnyTrue, kArm64S1x8AnyTrue)                       \
-  V(S1x8AllTrue, kArm64S1x8AllTrue)                       \
-  V(S1x16AnyTrue, kArm64S1x16AnyTrue)                     \
-  V(S1x16AllTrue, kArm64S1x16AllTrue)
+  V(V64x2AnyTrue, kArm64V64x2AnyTrue)                     \
+  V(V64x2AllTrue, kArm64V64x2AllTrue)                     \
+  V(V32x4AnyTrue, kArm64V32x4AnyTrue)                     \
+  V(V32x4AllTrue, kArm64V32x4AllTrue)                     \
+  V(V16x8AnyTrue, kArm64V16x8AnyTrue)                     \
+  V(V16x8AllTrue, kArm64V16x8AllTrue)                     \
+  V(V8x16AnyTrue, kArm64V8x16AnyTrue)                     \
+  V(V8x16AllTrue, kArm64V8x16AllTrue)
 
 #define SIMD_SHIFT_OP_LIST(V) \
   V(I64x2Shl, 64)             \
@@ -3233,9 +3246,7 @@ void InstructionSelector::VisitInt64AbsWithOverflow(Node* node) {
   V(I64x2GeS, kArm64I64x2GeS)                           \
   V(I64x2GtU, kArm64I64x2GtU)                           \
   V(I64x2GeU, kArm64I64x2GeU)                           \
-  V(I32x4Add, kArm64I32x4Add)                           \
   V(I32x4AddHoriz, kArm64I32x4AddHoriz)                 \
-  V(I32x4Sub, kArm64I32x4Sub)                           \
   V(I32x4Mul, kArm64I32x4Mul)                           \
   V(I32x4MinS, kArm64I32x4MinS)                         \
   V(I32x4MaxS, kArm64I32x4MaxS)                         \
@@ -3248,10 +3259,8 @@ void InstructionSelector::VisitInt64AbsWithOverflow(Node* node) {
   V(I32x4GtU, kArm64I32x4GtU)                           \
   V(I32x4GeU, kArm64I32x4GeU)                           \
   V(I16x8SConvertI32x4, kArm64I16x8SConvertI32x4)       \
-  V(I16x8Add, kArm64I16x8Add)                           \
   V(I16x8AddSaturateS, kArm64I16x8AddSaturateS)         \
   V(I16x8AddHoriz, kArm64I16x8AddHoriz)                 \
-  V(I16x8Sub, kArm64I16x8Sub)                           \
   V(I16x8SubSaturateS, kArm64I16x8SubSaturateS)         \
   V(I16x8Mul, kArm64I16x8Mul)                           \
   V(I16x8MinS, kArm64I16x8MinS)                         \
@@ -3269,9 +3278,7 @@ void InstructionSelector::VisitInt64AbsWithOverflow(Node* node) {
   V(I16x8GeU, kArm64I16x8GeU)                           \
   V(I16x8RoundingAverageU, kArm64I16x8RoundingAverageU) \
   V(I8x16SConvertI16x8, kArm64I8x16SConvertI16x8)       \
-  V(I8x16Add, kArm64I8x16Add)                           \
   V(I8x16AddSaturateS, kArm64I8x16AddSaturateS)         \
-  V(I8x16Sub, kArm64I8x16Sub)                           \
   V(I8x16SubSaturateS, kArm64I8x16SubSaturateS)         \
   V(I8x16Mul, kArm64I8x16Mul)                           \
   V(I8x16MinS, kArm64I8x16MinS)                         \
@@ -3358,6 +3365,52 @@ void InstructionSelector::VisitI64x2Mul(Node* node) {
        g.UseRegister(node->InputAt(0)), g.UseRegister(node->InputAt(1)),
        arraysize(temps), temps);
 }
+
+#define VISIT_SIMD_ADD(Type)                                                   \
+  void InstructionSelector::Visit##Type##Add(Node* node) {                     \
+    Arm64OperandGenerator g(this);                                             \
+    Node* left = node->InputAt(0);                                             \
+    Node* right = node->InputAt(1);                                            \
+    /* Select Mla(z, x, y) for Add(Mul(x, y), z). */                           \
+    if (left->opcode() == IrOpcode::k##Type##Mul && CanCover(node, left)) {    \
+      Emit(kArm64##Type##Mla, g.DefineSameAsFirst(node), g.UseRegister(right), \
+           g.UseRegister(left->InputAt(0)), g.UseRegister(left->InputAt(1)));  \
+      return;                                                                  \
+    }                                                                          \
+    /* Select Mla(z, x, y) for Add(z, Mul(x, y)). */                           \
+    if (right->opcode() == IrOpcode::k##Type##Mul && CanCover(node, right)) {  \
+      Emit(kArm64##Type##Mla, g.DefineSameAsFirst(node), g.UseRegister(left),  \
+           g.UseRegister(right->InputAt(0)),                                   \
+           g.UseRegister(right->InputAt(1)));                                  \
+      return;                                                                  \
+    }                                                                          \
+    VisitRRR(this, kArm64##Type##Add, node);                                   \
+  }
+
+VISIT_SIMD_ADD(I32x4)
+VISIT_SIMD_ADD(I16x8)
+VISIT_SIMD_ADD(I8x16)
+#undef VISIT_SIMD_ADD
+
+#define VISIT_SIMD_SUB(Type)                                                  \
+  void InstructionSelector::Visit##Type##Sub(Node* node) {                    \
+    Arm64OperandGenerator g(this);                                            \
+    Node* left = node->InputAt(0);                                            \
+    Node* right = node->InputAt(1);                                           \
+    /* Select Mls(z, x, y) for Sub(z, Mul(x, y)). */                          \
+    if (right->opcode() == IrOpcode::k##Type##Mul && CanCover(node, right)) { \
+      Emit(kArm64##Type##Mls, g.DefineSameAsFirst(node), g.UseRegister(left), \
+           g.UseRegister(right->InputAt(0)),                                  \
+           g.UseRegister(right->InputAt(1)));                                 \
+      return;                                                                 \
+    }                                                                         \
+    VisitRRR(this, kArm64##Type##Sub, node);                                  \
+  }
+
+VISIT_SIMD_SUB(I32x4)
+VISIT_SIMD_SUB(I16x8)
+VISIT_SIMD_SUB(I8x16)
+#undef VISIT_SIMD_SUB
 
 void InstructionSelector::VisitS128Select(Node* node) {
   Arm64OperandGenerator g(this);
@@ -3567,6 +3620,34 @@ void InstructionSelector::VisitSignExtendWord16ToInt64(Node* node) {
 
 void InstructionSelector::VisitSignExtendWord32ToInt64(Node* node) {
   VisitRR(this, kArm64Sxtw, node);
+}
+
+namespace {
+void VisitPminOrPmax(InstructionSelector* selector, ArchOpcode opcode,
+                     Node* node) {
+  Arm64OperandGenerator g(selector);
+  // Need all unique registers because we first compare the two inputs, then we
+  // need the inputs to remain unchanged for the bitselect later.
+  selector->Emit(opcode, g.DefineAsRegister(node),
+                 g.UseUniqueRegister(node->InputAt(0)),
+                 g.UseUniqueRegister(node->InputAt(1)));
+}
+}  // namespace
+
+void InstructionSelector::VisitF32x4Pmin(Node* node) {
+  VisitPminOrPmax(this, kArm64F32x4Pmin, node);
+}
+
+void InstructionSelector::VisitF32x4Pmax(Node* node) {
+  VisitPminOrPmax(this, kArm64F32x4Pmax, node);
+}
+
+void InstructionSelector::VisitF64x2Pmin(Node* node) {
+  VisitPminOrPmax(this, kArm64F64x2Pmin, node);
+}
+
+void InstructionSelector::VisitF64x2Pmax(Node* node) {
+  VisitPminOrPmax(this, kArm64F64x2Pmax, node);
 }
 
 // static

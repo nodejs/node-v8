@@ -4,7 +4,6 @@
 
 #include "src/objects/lookup.h"
 
-#include "include/v8config.h"
 #include "src/deoptimizer/deoptimizer.h"
 #include "src/execution/isolate-inl.h"
 #include "src/execution/protectors-inl.h"
@@ -15,6 +14,8 @@
 #include "src/objects/hash-table-inl.h"
 #include "src/objects/heap-number-inl.h"
 #include "src/objects/struct-inl.h"
+#include "torque-generated/exported-class-definitions-tq-inl.h"
+#include "torque-generated/exported-class-definitions-tq.h"
 
 namespace v8 {
 namespace internal {
@@ -193,21 +194,11 @@ void LookupIterator::InternalUpdateProtector(Isolate* isolate,
   if (!receiver_generic->IsHeapObject()) return;
   Handle<HeapObject> receiver = Handle<HeapObject>::cast(receiver_generic);
 
-  // Getting the native_context from the isolate as a fallback. If possible, we
-  // use the receiver's creation context instead.
-  Handle<NativeContext> native_context = isolate->native_context();
-
   ReadOnlyRoots roots(isolate);
   if (*name == roots.constructor_string()) {
-    // Fetching the context in here since the operation is rather expensive.
-    if (receiver->IsJSReceiver()) {
-      native_context = Handle<JSReceiver>::cast(receiver)->GetCreationContext();
-    }
-
     if (!Protectors::IsArraySpeciesLookupChainIntact(isolate) &&
         !Protectors::IsPromiseSpeciesLookupChainIntact(isolate) &&
-        !Protectors::IsRegExpSpeciesLookupChainProtectorIntact(
-            native_context) &&
+        !Protectors::IsRegExpSpeciesLookupChainIntact(isolate) &&
         !Protectors::IsTypedArraySpeciesLookupChainIntact(isolate)) {
       return;
     }
@@ -223,12 +214,8 @@ void LookupIterator::InternalUpdateProtector(Isolate* isolate,
       Protectors::InvalidatePromiseSpeciesLookupChain(isolate);
       return;
     } else if (receiver->IsJSRegExp(isolate)) {
-      if (!Protectors::IsRegExpSpeciesLookupChainProtectorIntact(
-              native_context)) {
-        return;
-      }
-      Protectors::InvalidateRegExpSpeciesLookupChainProtector(isolate,
-                                                              native_context);
+      if (!Protectors::IsRegExpSpeciesLookupChainIntact(isolate)) return;
+      Protectors::InvalidateRegExpSpeciesLookupChain(isolate);
       return;
     } else if (receiver->IsJSTypedArray(isolate)) {
       if (!Protectors::IsTypedArraySpeciesLookupChainIntact(isolate)) return;
@@ -254,12 +241,8 @@ void LookupIterator::InternalUpdateProtector(Isolate* isolate,
         Protectors::InvalidatePromiseSpeciesLookupChain(isolate);
       } else if (isolate->IsInAnyContext(*receiver,
                                          Context::REGEXP_PROTOTYPE_INDEX)) {
-        if (!Protectors::IsRegExpSpeciesLookupChainProtectorIntact(
-                native_context)) {
-          return;
-        }
-        Protectors::InvalidateRegExpSpeciesLookupChainProtector(isolate,
-                                                                native_context);
+        if (!Protectors::IsRegExpSpeciesLookupChainIntact(isolate)) return;
+        Protectors::InvalidateRegExpSpeciesLookupChain(isolate);
       } else if (isolate->IsInAnyContext(
                      receiver->map(isolate).prototype(isolate),
                      Context::TYPED_ARRAY_PROTOTYPE_INDEX)) {
@@ -295,15 +278,9 @@ void LookupIterator::InternalUpdateProtector(Isolate* isolate,
       Protectors::InvalidateStringIteratorLookupChain(isolate);
     }
   } else if (*name == roots.species_symbol()) {
-    // Fetching the context in here since the operation is rather expensive.
-    if (receiver->IsJSReceiver()) {
-      native_context = Handle<JSReceiver>::cast(receiver)->GetCreationContext();
-    }
-
     if (!Protectors::IsArraySpeciesLookupChainIntact(isolate) &&
         !Protectors::IsPromiseSpeciesLookupChainIntact(isolate) &&
-        !Protectors::IsRegExpSpeciesLookupChainProtectorIntact(
-            native_context) &&
+        !Protectors::IsRegExpSpeciesLookupChainIntact(isolate) &&
         !Protectors::IsTypedArraySpeciesLookupChainIntact(isolate)) {
       return;
     }
@@ -320,12 +297,8 @@ void LookupIterator::InternalUpdateProtector(Isolate* isolate,
       Protectors::InvalidatePromiseSpeciesLookupChain(isolate);
     } else if (isolate->IsInAnyContext(*receiver,
                                        Context::REGEXP_FUNCTION_INDEX)) {
-      if (!Protectors::IsRegExpSpeciesLookupChainProtectorIntact(
-              native_context)) {
-        return;
-      }
-      Protectors::InvalidateRegExpSpeciesLookupChainProtector(isolate,
-                                                              native_context);
+      if (!Protectors::IsRegExpSpeciesLookupChainIntact(isolate)) return;
+      Protectors::InvalidateRegExpSpeciesLookupChain(isolate);
     } else if (IsTypedArrayFunctionInAnyContext(isolate, *receiver)) {
       if (!Protectors::IsTypedArraySpeciesLookupChainIntact(isolate)) return;
       Protectors::InvalidateTypedArraySpeciesLookupChain(isolate);
@@ -792,13 +765,14 @@ void LookupIterator::TransitionToAccessorPair(Handle<Object> pair,
     receiver->RequireSlowElements(*dictionary);
 
     if (receiver->HasSlowArgumentsElements(isolate_)) {
-      FixedArray parameter_map = FixedArray::cast(receiver->elements(isolate_));
-      uint32_t length = parameter_map.length() - 2;
+      SloppyArgumentsElements parameter_map =
+          SloppyArgumentsElements::cast(receiver->elements(isolate_));
+      uint32_t length = parameter_map.length();
       if (number_.is_found() && number_.as_uint32() < length) {
-        parameter_map.set(number_.as_int() + 2,
-                          ReadOnlyRoots(isolate_).the_hole_value());
+        parameter_map.set_mapped_entries(
+            number_.as_int(), ReadOnlyRoots(isolate_).the_hole_value());
       }
-      FixedArray::cast(receiver->elements(isolate_)).set(1, *dictionary);
+      parameter_map.set_arguments(*dictionary);
     } else {
       receiver->set_elements(*dictionary);
     }
@@ -943,12 +917,7 @@ Handle<Map> LookupIterator::GetFieldOwnerMap() const {
                 isolate_);
 }
 
-#if defined(__clang__) && defined(V8_OS_WIN)
-// Force function alignment to work around CPU bug: https://crbug.com/968683
-__attribute__((__aligned__(32)))
-#endif
-FieldIndex
-LookupIterator::GetFieldIndex() const {
+FieldIndex LookupIterator::GetFieldIndex() const {
   DCHECK(has_property_);
   DCHECK(holder_->HasFastProperties(isolate_));
   DCHECK_EQ(kField, property_details_.location());

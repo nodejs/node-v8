@@ -16,7 +16,7 @@
 #include "src/codegen/register-configuration.h"
 #include "src/debug/debug.h"
 #include "src/execution/frames-inl.h"
-#include "src/heap/heap-inl.h"  // For MemoryChunk.
+#include "src/heap/memory-chunk.h"
 #include "src/init/bootstrapper.h"
 #include "src/logging/counters.h"
 #include "src/objects/smi.h"
@@ -2024,10 +2024,10 @@ void TurboAssembler::CheckPageFlag(
     // Reverse the byte_offset if emulating on little endian platform
     byte_offset = kSystemPointerSize - byte_offset - 1;
 #endif
-    tm(MemOperand(scratch, MemoryChunk::kFlagsOffset + byte_offset),
+    tm(MemOperand(scratch, BasicMemoryChunk::kFlagsOffset + byte_offset),
        Operand(shifted_mask));
   } else {
-    LoadP(scratch, MemOperand(scratch, MemoryChunk::kFlagsOffset));
+    LoadP(scratch, MemOperand(scratch, BasicMemoryChunk::kFlagsOffset));
     AndP(r0, scratch, Operand(mask));
   }
   // Should be okay to remove rc

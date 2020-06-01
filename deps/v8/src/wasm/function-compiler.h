@@ -31,6 +31,7 @@ struct WasmFunction;
 
 class WasmInstructionBuffer final {
  public:
+  WasmInstructionBuffer() = delete;
   ~WasmInstructionBuffer();
   std::unique_ptr<AssemblerBuffer> CreateView();
   std::unique_ptr<uint8_t[]> ReleaseBuffer();
@@ -44,7 +45,6 @@ class WasmInstructionBuffer final {
   void operator delete(void* ptr) { ::operator delete(ptr); }
 
  private:
-  WasmInstructionBuffer() = delete;
   DISALLOW_COPY_AND_ASSIGN(WasmInstructionBuffer);
 };
 
@@ -55,7 +55,6 @@ struct WasmCompilationResult {
   enum Kind : int8_t {
     kFunction,
     kWasmToJsWrapper,
-    kInterpreterEntry,
   };
 
   bool succeeded() const { return code_desc.buffer != nullptr; }
@@ -72,14 +71,15 @@ struct WasmCompilationResult {
   ExecutionTier requested_tier;
   ExecutionTier result_tier;
   Kind kind = kFunction;
+  ForDebugging for_debugging = kNoDebugging;
 };
 
 class V8_EXPORT_PRIVATE WasmCompilationUnit final {
  public:
   static ExecutionTier GetBaselineExecutionTier(const WasmModule*);
 
-  WasmCompilationUnit(int index, ExecutionTier tier)
-      : func_index_(index), tier_(tier) {}
+  WasmCompilationUnit(int index, ExecutionTier tier, ForDebugging for_debugging)
+      : func_index_(index), tier_(tier), for_debugging_(for_debugging) {}
 
   WasmCompilationResult ExecuteCompilation(
       WasmEngine*, CompilationEnv*, const std::shared_ptr<WireBytesStorage>&,
@@ -103,6 +103,7 @@ class V8_EXPORT_PRIVATE WasmCompilationUnit final {
 
   int func_index_;
   ExecutionTier tier_;
+  ForDebugging for_debugging_;
 };
 
 // {WasmCompilationUnit} should be trivially copyable and small enough so we can

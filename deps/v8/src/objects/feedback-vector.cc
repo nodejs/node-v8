@@ -238,7 +238,13 @@ Handle<FeedbackVector> FeedbackVector::New(
     Handle<ClosureFeedbackCellArray> closure_feedback_cell_array) {
   Factory* factory = isolate->factory();
 
-  const int slot_count = shared->feedback_metadata().slot_count();
+  // Hold on to bytecode here. The allocation of a new feedback vector could
+  // trigger a GC and flush the bytecode and feedback metadata.
+  IsCompiledScope is_compiled_scope(*shared, isolate);
+  CHECK(is_compiled_scope.is_compiled());
+  Handle<FeedbackMetadata> feedback_metadata(shared->feedback_metadata(),
+                                             isolate);
+  const int slot_count = feedback_metadata->slot_count();
 
   Handle<FeedbackVector> vector =
       factory->NewFeedbackVector(shared, closure_feedback_cell_array);
@@ -260,7 +266,7 @@ Handle<FeedbackVector> FeedbackVector::New(
             *uninitialized_sentinel);
   for (int i = 0; i < slot_count;) {
     FeedbackSlot slot(i);
-    FeedbackSlotKind kind = shared->feedback_metadata().GetKind(slot);
+    FeedbackSlotKind kind = feedback_metadata->GetKind(slot);
     int index = FeedbackVector::GetIndex(slot);
     int entry_size = FeedbackMetadata::GetSlotSize(kind);
 
@@ -983,7 +989,7 @@ int FeedbackNexus::ExtractMaps(MapHandles* maps) const {
 
 int FeedbackNexus::ExtractMapsAndHandlers(
     std::vector<std::pair<Handle<Map>, MaybeObjectHandle>>* maps_and_handlers,
-    bool drop_deprecated) const {
+    bool try_update_deprecated) const {
   DCHECK(IsLoadICKind(kind()) ||
          IsStoreICKind(kind()) | IsKeyedLoadICKind(kind()) ||
          IsKeyedStoreICKind(kind()) || IsStoreOwnICKind(kind()) ||
@@ -1015,10 +1021,13 @@ int FeedbackNexus::ExtractMapsAndHandlers(
         MaybeObject handler = array.Get(i + 1);
         if (!handler->IsCleared()) {
           DCHECK(IC::IsHandler(handler));
-          Map map = Map::cast(heap_object);
-          if (drop_deprecated && map.is_deprecated()) continue;
+          Handle<Map> map(Map::cast(heap_object), isolate);
+          if (try_update_deprecated &&
+              !Map::TryUpdate(isolate, map).ToHandle(&map)) {
+            continue;
+          }
           maps_and_handlers->push_back(
-              MapAndHandler(handle(map, isolate), handle(handler, isolate)));
+              MapAndHandler(map, handle(handler, isolate)));
           found++;
         }
       }
@@ -1028,10 +1037,13 @@ int FeedbackNexus::ExtractMapsAndHandlers(
     MaybeObject handler = GetFeedbackExtra();
     if (!handler->IsCleared()) {
       DCHECK(IC::IsHandler(handler));
-      Map map = Map::cast(heap_object);
-      if (drop_deprecated && map.is_deprecated()) return 0;
+      Handle<Map> map = handle(Map::cast(heap_object), isolate);
+      if (try_update_deprecated &&
+          !Map::TryUpdate(isolate, map).ToHandle(&map)) {
+        return 0;
+      }
       maps_and_handlers->push_back(
-          MapAndHandler(handle(map, isolate), handle(handler, isolate)));
+          MapAndHandler(map, handle(handler, isolate)));
       return 1;
     }
   }

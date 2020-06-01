@@ -40,7 +40,7 @@
 #include "test/cctest/trace-extension.h"
 
 #ifdef V8_USE_PERFETTO
-#include "perfetto/tracing.h"
+#include "src/tracing/trace-event.h"
 #endif  // V8_USE_PERFETTO
 
 #if V8_OS_WIN
@@ -148,6 +148,18 @@ void CcTest::PreciseCollectAllGarbage(i::Isolate* isolate) {
   i::Isolate* iso = isolate ? isolate : i_isolate();
   iso->heap()->PreciseCollectAllGarbage(i::Heap::kNoGCFlags,
                                         i::GarbageCollectionReason::kTesting);
+}
+
+i::Handle<i::String> CcTest::MakeString(const char* str) {
+  i::Isolate* isolate = CcTest::i_isolate();
+  i::Factory* factory = isolate->factory();
+  return factory->InternalizeUtf8String(str);
+}
+
+i::Handle<i::String> CcTest::MakeName(const char* str, int suffix) {
+  i::EmbeddedVector<char, 128> buffer;
+  SNPrintF(buffer, "%s%d", str, suffix);
+  return CcTest::MakeString(buffer.begin());
 }
 
 v8::base::RandomNumberGenerator* CcTest::random_number_generator() {

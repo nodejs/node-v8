@@ -564,6 +564,12 @@ void EffectControlLinearizer::Run() {
   // TODO(rmcilroy) We should not depend on having rpo_order on schedule, and
   // instead just do our own RPO walk here.
   for (BasicBlock* block : *(schedule()->rpo_order())) {
+    if (block != schedule()->start() && block->PredecessorCount() == 0) {
+      // Block has been removed from the schedule by a preceeding unreachable
+      // node, just skip it.
+      continue;
+    }
+
     gasm()->Reset(block);
 
     BasicBlock::iterator instr = block->begin();
@@ -2370,25 +2376,21 @@ Node* EffectControlLinearizer::LowerCheckedUint32Bounds(Node* node,
   const CheckBoundsParameters& params = CheckBoundsParametersOf(node->op());
 
   Node* check = __ Uint32LessThan(index, limit);
-  switch (params.mode()) {
-    case CheckBoundsParameters::kDeoptOnOutOfBounds:
-      __ DeoptimizeIfNot(DeoptimizeReason::kOutOfBounds,
-                         params.check_parameters().feedback(), check,
-                         frame_state, IsSafetyCheck::kCriticalSafetyCheck);
-      break;
-    case CheckBoundsParameters::kAbortOnOutOfBounds: {
-      auto if_abort = __ MakeDeferredLabel();
-      auto done = __ MakeLabel();
+  if (!(params.flags() & CheckBoundsFlag::kAbortOnOutOfBounds)) {
+    __ DeoptimizeIfNot(DeoptimizeReason::kOutOfBounds,
+                       params.check_parameters().feedback(), check, frame_state,
+                       IsSafetyCheck::kCriticalSafetyCheck);
+  } else {
+    auto if_abort = __ MakeDeferredLabel();
+    auto done = __ MakeLabel();
 
-      __ Branch(check, &done, &if_abort);
+    __ Branch(check, &done, &if_abort);
 
-      __ Bind(&if_abort);
-      __ Unreachable();
-      __ Goto(&done);
+    __ Bind(&if_abort);
+    __ Unreachable();
+    __ Goto(&done);
 
-      __ Bind(&done);
-      break;
-    }
+    __ Bind(&done);
   }
 
   return index;
@@ -2421,25 +2423,21 @@ Node* EffectControlLinearizer::LowerCheckedUint64Bounds(Node* node,
   const CheckBoundsParameters& params = CheckBoundsParametersOf(node->op());
 
   Node* check = __ Uint64LessThan(index, limit);
-  switch (params.mode()) {
-    case CheckBoundsParameters::kDeoptOnOutOfBounds:
-      __ DeoptimizeIfNot(DeoptimizeReason::kOutOfBounds,
-                         params.check_parameters().feedback(), check,
-                         frame_state, IsSafetyCheck::kCriticalSafetyCheck);
-      break;
-    case CheckBoundsParameters::kAbortOnOutOfBounds: {
-      auto if_abort = __ MakeDeferredLabel();
-      auto done = __ MakeLabel();
+  if (!(params.flags() & CheckBoundsFlag::kAbortOnOutOfBounds)) {
+    __ DeoptimizeIfNot(DeoptimizeReason::kOutOfBounds,
+                       params.check_parameters().feedback(), check, frame_state,
+                       IsSafetyCheck::kCriticalSafetyCheck);
+  } else {
+    auto if_abort = __ MakeDeferredLabel();
+    auto done = __ MakeLabel();
 
-      __ Branch(check, &done, &if_abort);
+    __ Branch(check, &done, &if_abort);
 
-      __ Bind(&if_abort);
-      __ Unreachable();
-      __ Goto(&done);
+    __ Bind(&if_abort);
+    __ Unreachable();
+    __ Goto(&done);
 
-      __ Bind(&done);
-      break;
-    }
+    __ Bind(&done);
   }
   return index;
 }
@@ -2700,6 +2698,20 @@ Node* EffectControlLinearizer::BuildCheckedHeapNumberOrOddballToFloat64(
     case CheckTaggedInputMode::kNumber: {
       __ DeoptimizeIfNot(DeoptimizeReason::kNotAHeapNumber, feedback,
                          check_number, frame_state);
+      break;
+    }
+    case CheckTaggedInputMode::kNumberOrBoolean: {
+      auto check_done = __ MakeLabel();
+
+      __ GotoIf(check_number, &check_done);
+      __ DeoptimizeIfNot(DeoptimizeReason::kNotANumberOrBoolean, feedback,
+                         __ TaggedEqual(value_map, __ BooleanMapConstant()),
+                         frame_state);
+      STATIC_ASSERT_FIELD_OFFSETS_EQUAL(HeapNumber::kValueOffset,
+                                        Oddball::kToNumberRawOffset);
+      __ Goto(&check_done);
+
+      __ Bind(&check_done);
       break;
     }
     case CheckTaggedInputMode::kNumberOrOddball: {
@@ -3758,7 +3770,7 @@ Node* EffectControlLinearizer::LowerDeadValue(Node* node) {
     Node* unreachable = __ Unreachable();
     NodeProperties::ReplaceValueInput(node, unreachable, 0);
   }
-  return node;
+  return gasm()->AddNode(node);
 }
 
 Node* EffectControlLinearizer::LowerStringToNumber(Node* node) {
@@ -4552,18 +4564,20 @@ Node* EffectControlLinearizer::ChangeUint32ToSmi(Node* value) {
 }
 
 Node* EffectControlLinearizer::ChangeSmiToIntPtr(Node* value) {
-  // Do shift on 32bit values if Smis are stored in the lower word.
   if (machine()->Is64() && SmiValuesAre31Bits()) {
-    return __ ChangeInt32ToInt64(
-        __ Word32Sar(__ TruncateInt64ToInt32(value), SmiShiftBitsConstant()));
+    // First sign-extend the upper half, then shift away the Smi tag.
+    return __ WordSarShiftOutZeros(
+        __ ChangeInt32ToInt64(__ TruncateInt64ToInt32(value)),
+        SmiShiftBitsConstant());
   }
-  return __ WordSar(value, SmiShiftBitsConstant());
+  return __ WordSarShiftOutZeros(value, SmiShiftBitsConstant());
 }
 
 Node* EffectControlLinearizer::ChangeSmiToInt32(Node* value) {
   // Do shift on 32bit values if Smis are stored in the lower word.
   if (machine()->Is64() && SmiValuesAre31Bits()) {
-    return __ Word32Sar(__ TruncateInt64ToInt32(value), SmiShiftBitsConstant());
+    return __ Word32SarShiftOutZeros(__ TruncateInt64ToInt32(value),
+                                     SmiShiftBitsConstant());
   }
   if (machine()->Is64()) {
     return __ TruncateInt64ToInt32(ChangeSmiToIntPtr(value));

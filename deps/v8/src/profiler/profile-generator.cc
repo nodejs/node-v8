@@ -6,6 +6,7 @@
 
 #include <algorithm>
 
+#include "src/codegen/source-position.h"
 #include "src/objects/shared-function-info-inl.h"
 #include "src/profiler/cpu-profiler.h"
 #include "src/profiler/profile-generator-inl.h"
@@ -871,7 +872,7 @@ ProfileGenerator::ProfileGenerator(CpuProfilesCollection* profiles,
                                    CodeMap* code_map)
     : profiles_(profiles), code_map_(code_map) {}
 
-void ProfileGenerator::RecordTickSample(const TickSample& sample) {
+void ProfileGenerator::SymbolizeTickSample(const TickSample& sample) {
   ProfileStackTrace stack_trace;
   // Conservatively reserve space for stack frames + pc + function + vm-state.
   // There could in fact be more of them because of inlined entries.

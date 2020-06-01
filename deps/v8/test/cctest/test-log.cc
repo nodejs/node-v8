@@ -565,7 +565,7 @@ UNINITIALIZED_TEST(LogAll) {
   isolate->Dispose();
 }
 
-#if !defined(V8_TARGET_ARCH_ARM) && !defined(V8_TARGET_ARCH_S390X)
+#ifndef V8_TARGET_ARCH_ARM
 UNINITIALIZED_TEST(LogInterpretedFramesNativeStack) {
   SETUP_FLAGS();
   i::FLAG_interpreted_frames_native_stack = true;
@@ -650,7 +650,7 @@ UNINITIALIZED_TEST(LogInterpretedFramesNativeStackWithSerialization) {
   } while (!has_cache);
   delete cache;
 }
-#endif  // !V8_TARGET_ARCH_ARM && !V8_TARGET_ARCH_S390X
+#endif  // V8_TARGET_ARCH_ARM
 
 UNINITIALIZED_TEST(ExternalCodeEventListener) {
   i::FLAG_log = false;
@@ -721,8 +721,10 @@ UNINITIALIZED_TEST(ExternalCodeEventListenerInnerFunctions) {
     v8::Local<v8::UnboundScript> script =
         v8::ScriptCompiler::CompileUnboundScript(isolate1, &source)
             .ToLocalChecked();
-    CHECK_EQ(code_event_handler.CountLines("Script", "f1"), 1);
-    CHECK_EQ(code_event_handler.CountLines("Script", "f2"), 1);
+    CHECK_EQ(code_event_handler.CountLines("Script", "f1"),
+             i::FLAG_stress_background_compile ? 2 : 1);
+    CHECK_EQ(code_event_handler.CountLines("Script", "f2"),
+             i::FLAG_stress_background_compile ? 2 : 1);
     cache = v8::ScriptCompiler::CreateCodeCache(script);
   }
   isolate1->Dispose();
@@ -753,7 +755,7 @@ UNINITIALIZED_TEST(ExternalCodeEventListenerInnerFunctions) {
   isolate2->Dispose();
 }
 
-#if !defined(V8_TARGET_ARCH_ARM) && !defined(V8_TARGET_ARCH_S390X)
+#ifndef V8_TARGET_ARCH_ARM
 UNINITIALIZED_TEST(ExternalCodeEventListenerWithInterpretedFramesNativeStack) {
   i::FLAG_log = false;
   i::FLAG_prof = false;
@@ -803,7 +805,7 @@ UNINITIALIZED_TEST(ExternalCodeEventListenerWithInterpretedFramesNativeStack) {
   }
   isolate->Dispose();
 }
-#endif  // !V8_TARGET_ARCH_ARM && !V8_TARGET_ARCH_S390X
+#endif  // V8_TARGET_ARCH_ARM
 
 UNINITIALIZED_TEST(TraceMaps) {
   SETUP_FLAGS();

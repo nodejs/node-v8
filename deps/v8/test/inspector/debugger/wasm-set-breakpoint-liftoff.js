@@ -2,8 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --debug-in-liftoff
-
 const {session, contextGroup, Protocol} =
     InspectorTest.start('Tests stepping through wasm scripts.');
 session.setupScriptMap();
@@ -85,7 +83,7 @@ Protocol.Debugger.onPaused(async msg => {
       var properties = await Protocol.Runtime.getProperties(
           {'objectId': scope.object.objectId});
       for (var value of properties.result.result) {
-        var value_str = await getScopeValues(value.value);
+        var value_str = await getScopeValues(value.name, value.value);
         InspectorTest.log('   ' + value.name + ': ' + value_str);
       }
     }
@@ -105,15 +103,43 @@ Protocol.Debugger.onPaused(async msg => {
   Protocol.Debugger.resume();
 });
 
-async function getScopeValues(value) {
+function getWasmValue(value) {
+  return typeof (value.value) === 'undefined' ? value.unserializableValue :
+                                                value.value;
+}
+
+async function getScopeValues(name, value) {
   if (value.type == 'object') {
+    if (name == 'instance') return dumpInstanceProperties(value);
+
     let msg = await Protocol.Runtime.getProperties({objectId: value.objectId});
     const printProperty = function(elem) {
-      return `"${elem.name}": ${elem.value.value} (${elem.value.type})`;
+      return `"${elem.name}": ${getWasmValue(elem.value)} (${elem.value.subtype})`;
     }
     return msg.result.result.map(printProperty).join(', ');
   }
-  return value.value + ' (' + value.type + ')';
+  return getWasmValue(value) + ' (' + value.subtype + ')';
+}
+
+async function dumpInstanceProperties(instanceObj) {
+  function invokeGetter(property) {
+    return this[JSON.parse(property)];
+  }
+
+  const exportsName = 'exports';
+  let exportsObj = await Protocol.Runtime.callFunctionOn(
+      {objectId: instanceObj.objectId,
+       functionDeclaration: invokeGetter.toString(),
+       arguments: [{value: JSON.stringify(exportsName)}]
+  });
+  let exports = await Protocol.Runtime.getProperties(
+      {objectId: exportsObj.result.result.objectId});
+
+  const printExports = function(value) {
+    return `"${value.name}" (${value.value.className})`;
+  }
+  const formattedExports = exports.result.result.map(printExports).join(', ');
+  return `${exportsName}: ${formattedExports}`
 }
 
 (async function test() {

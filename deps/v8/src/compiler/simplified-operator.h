@@ -220,19 +220,24 @@ std::ostream& operator<<(std::ostream&, CheckParameters const&);
 
 CheckParameters const& CheckParametersOf(Operator const*) V8_WARN_UNUSED_RESULT;
 
+enum class CheckBoundsFlag : uint8_t {
+  kConvertStringAndMinusZero = 1 << 0,  // instead of deopting on such inputs
+  kAbortOnOutOfBounds = 1 << 1,         // instead of deopting if input is OOB
+};
+using CheckBoundsFlags = base::Flags<CheckBoundsFlag>;
+DEFINE_OPERATORS_FOR_FLAGS(CheckBoundsFlags)
+
 class CheckBoundsParameters final {
  public:
-  enum Mode { kAbortOnOutOfBounds, kDeoptOnOutOfBounds };
+  CheckBoundsParameters(const FeedbackSource& feedback, CheckBoundsFlags flags)
+      : check_parameters_(feedback), flags_(flags) {}
 
-  CheckBoundsParameters(const FeedbackSource& feedback, Mode mode)
-      : check_parameters_(feedback), mode_(mode) {}
-
-  Mode mode() const { return mode_; }
+  CheckBoundsFlags flags() const { return flags_; }
   const CheckParameters& check_parameters() const { return check_parameters_; }
 
  private:
   CheckParameters check_parameters_;
-  Mode mode_;
+  CheckBoundsFlags flags_;
 };
 
 bool operator==(CheckBoundsParameters const&, CheckBoundsParameters const&);
@@ -307,6 +312,7 @@ Handle<FeedbackCell> FeedbackCellOf(const Operator* op);
 
 enum class CheckTaggedInputMode : uint8_t {
   kNumber,
+  kNumberOrBoolean,
   kNumberOrOddball,
 };
 
@@ -377,10 +383,9 @@ size_t hash_value(const CheckMinusZeroParameters& params);
 bool operator==(CheckMinusZeroParameters const&,
                 CheckMinusZeroParameters const&);
 
-// Flags for map checks.
 enum class CheckMapsFlag : uint8_t {
   kNone = 0u,
-  kTryMigrateInstance = 1u << 0,  // Try instance migration.
+  kTryMigrateInstance = 1u << 0,
 };
 using CheckMapsFlags = base::Flags<CheckMapsFlag>;
 
@@ -503,6 +508,7 @@ enum class NumberOperationHint : uint8_t {
   kSignedSmallInputs,  // Inputs were Smi, output was Number.
   kSigned32,           // Inputs were Signed32, output was Number.
   kNumber,             // Inputs were Number, output was Number.
+  kNumberOrBoolean,    // Inputs were Number or Boolean, output was Number.
   kNumberOrOddball,    // Inputs were Number or Oddball, output was Number.
 };
 
@@ -784,12 +790,11 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* MapGuard(ZoneHandleSet<Map> maps);
 
   const Operator* CheckBounds(const FeedbackSource& feedback,
-                              CheckBoundsParameters::Mode mode =
-                                  CheckBoundsParameters::kDeoptOnOutOfBounds);
+                              CheckBoundsFlags flags = {});
   const Operator* CheckedUint32Bounds(const FeedbackSource& feedback,
-                                      CheckBoundsParameters::Mode mode);
+                                      CheckBoundsFlags flags);
   const Operator* CheckedUint64Bounds(const FeedbackSource& feedback,
-                                      CheckBoundsParameters::Mode mode);
+                                      CheckBoundsFlags flags);
 
   const Operator* CheckClosure(const Handle<FeedbackCell>& feedback_cell);
   const Operator* CheckEqualsInternalizedString();

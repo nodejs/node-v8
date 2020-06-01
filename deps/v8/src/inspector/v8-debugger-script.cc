@@ -122,6 +122,21 @@ class ActualScript : public V8DebuggerScript {
     return v8::Just(v8::debug::WasmScript::Cast(*script)->Bytecode());
   }
   Language getLanguage() const override { return m_language; }
+  v8::Maybe<v8::debug::WasmScript::DebugSymbolsType> getDebugSymbolsType()
+      const override {
+    auto script = this->script();
+    if (!script->IsWasm())
+      return v8::Nothing<v8::debug::WasmScript::DebugSymbolsType>();
+    return v8::Just(v8::debug::WasmScript::Cast(*script)->GetDebugSymbolType());
+  }
+  v8::Maybe<String16> getExternalDebugSymbolsURL() const override {
+    auto script = this->script();
+    if (!script->IsWasm()) return v8::Nothing<String16>();
+    v8::MemorySpan<const char> external_url =
+        v8::debug::WasmScript::Cast(*script)->ExternalSymbolsURL();
+    if (external_url.size() == 0) return v8::Nothing<String16>();
+    return v8::Just(String16(external_url.data(), external_url.size()));
+  }
   int startLine() const override { return m_startLine; }
   int startColumn() const override { return m_startColumn; }
   int endLine() const override { return m_endLine; }
@@ -133,9 +148,14 @@ class ActualScript : public V8DebuggerScript {
   }
   bool isSourceLoadedLazily() const override { return false; }
   int length() const override {
+    auto script = this->script();
+    if (script->IsWasm()) {
+      return static_cast<int>(
+          v8::debug::WasmScript::Cast(*script)->Bytecode().size());
+    }
     v8::HandleScope scope(m_isolate);
     v8::Local<v8::String> v8Source;
-    return script()->Source().ToLocal(&v8Source) ? v8Source->Length() : 0;
+    return script->Source().ToLocal(&v8Source) ? v8Source->Length() : 0;
   }
 
   const String16& sourceMappingURL() const override {
@@ -275,6 +295,12 @@ class ActualScript : public V8DebuggerScript {
       } else {
         m_endColumn = source_length + m_startColumn;
       }
+    } else if (script->IsWasm()) {
+      DCHECK_EQ(0, m_startLine);
+      DCHECK_EQ(0, m_startColumn);
+      m_endLine = 0;
+      m_endColumn = static_cast<int>(
+          v8::debug::WasmScript::Cast(*script)->Bytecode().size());
     } else {
       m_endLine = m_startLine;
       m_endColumn = m_startColumn;

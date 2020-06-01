@@ -27,6 +27,7 @@
 #include "src/objects/js-promise-inl.h"
 #include "src/runtime/runtime-utils.h"
 #include "src/runtime/runtime.h"
+#include "src/snapshot/embedded/embedded-data.h"
 #include "src/snapshot/snapshot.h"
 #include "src/wasm/wasm-objects-inl.h"
 
@@ -240,7 +241,7 @@ MaybeHandle<JSArray> Runtime::GetInternalProperties(Isolate* isolate,
 
     Handle<FixedArray> result = factory->NewFixedArray(2 * 3);
     Handle<String> generator_status =
-        factory->NewStringFromAsciiChecked("[[GeneratorStatus]]");
+        factory->NewStringFromAsciiChecked("[[GeneratorState]]");
     result->set(0, *generator_status);
     Handle<String> status_str = factory->NewStringFromAsciiChecked(status);
     result->set(1, *status_str);
@@ -260,7 +261,7 @@ MaybeHandle<JSArray> Runtime::GetInternalProperties(Isolate* isolate,
     const char* status = JSPromise::Status(promise->status());
     Handle<FixedArray> result = factory->NewFixedArray(2 * 2);
     Handle<String> promise_status =
-        factory->NewStringFromAsciiChecked("[[PromiseStatus]]");
+        factory->NewStringFromAsciiChecked("[[PromiseState]]");
     result->set(0, *promise_status);
     Handle<String> status_str = factory->NewStringFromAsciiChecked(status);
     result->set(1, *status_str);
@@ -270,7 +271,7 @@ MaybeHandle<JSArray> Runtime::GetInternalProperties(Isolate* isolate,
                                  : promise->result(),
                              isolate);
     Handle<String> promise_value =
-        factory->NewStringFromAsciiChecked("[[PromiseValue]]");
+        factory->NewStringFromAsciiChecked("[[PromiseResult]]");
     result->set(2, *promise_value);
     result->set(3, *value_obj);
     return factory->NewJSArrayWithElements(result);
