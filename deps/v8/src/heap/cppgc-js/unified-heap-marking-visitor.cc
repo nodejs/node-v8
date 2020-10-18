@@ -13,7 +13,7 @@ namespace v8 {
 namespace internal {
 
 UnifiedHeapMarkingVisitorBase::UnifiedHeapMarkingVisitorBase(
-    HeapBase& heap, MarkingStateBase& marking_state,
+    HeapBase& heap, cppgc::internal::MarkingStateBase& marking_state,
     UnifiedHeapMarkingState& unified_heap_marking_state)
     : JSVisitor(cppgc::internal::VisitorFactory::CreateKey()),
       marking_state_(marking_state),
@@ -78,7 +78,7 @@ void MutatorUnifiedHeapMarkingVisitor::VisitWeakRoot(const void* object,
 }
 
 ConcurrentUnifiedHeapMarkingVisitor::ConcurrentUnifiedHeapMarkingVisitor(
-    HeapBase& heap, ConcurrentMarkingState& marking_state,
+    HeapBase& heap, cppgc::internal::ConcurrentMarkingState& marking_state,
     UnifiedHeapMarkingState& unified_heap_marking_state)
     : UnifiedHeapMarkingVisitorBase(heap, marking_state,
                                     unified_heap_marking_state) {}
@@ -88,7 +88,7 @@ bool ConcurrentUnifiedHeapMarkingVisitor::DeferTraceToMutatorThreadIfConcurrent(
     size_t deferred_size) {
   marking_state_.concurrent_marking_bailout_worklist().Push(
       {parameter, callback, deferred_size});
-  static_cast<ConcurrentMarkingState&>(marking_state_)
+  static_cast<cppgc::internal::ConcurrentMarkingState&>(marking_state_)
       .AccountDeferredMarkedBytes(deferred_size);
   return true;
 }
