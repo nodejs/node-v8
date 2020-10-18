@@ -79,7 +79,7 @@ class UnifiedHeapConcurrentMarker
             heap, marking_worklists, incremental_marking_schedule, platform),
         unified_heap_marking_state_(unified_heap_marking_state) {}
 
-  std::unique_ptr<cppgc::Visitor> CreateConcurrentMarkingVisitor(
+  virtual std::unique_ptr<cppgc::Visitor> CreateConcurrentMarkingVisitor(
       ConcurrentMarkingState&) const final;
 
  private:
