@@ -175,9 +175,15 @@ class JobDelegate {
    * Returns a task_id unique among threads currently running this job, such
    * that GetTaskId() < worker count. To achieve this, the same task_id may be
    * reused by a different thread after a worker_task returns.
+   */
+  virtual uint8_t GetTaskId() = 0;
+
+  /**
+   * Returns true if the current task is called from the thread currently
+   * running JobHandle::Join().
    * TODO(etiennep): Make pure virtual once custom embedders implement it.
    */
-  virtual uint8_t GetTaskId() { return 0; }
+  virtual bool IsJoiningThread() const { return false; }
 };
 
 /**
@@ -210,17 +216,34 @@ class JobHandle {
    */
   virtual void Cancel() = 0;
 
+  /*
+   * Forces all existing workers to yield ASAP but doesn’t wait for them.
+   * Warning, this is dangerous if the Job's callback is bound to or has access
+   * to state which may be deleted after this call.
+   * TODO(etiennep): Cleanup once implemented by all embedders.
+   */
+  virtual void CancelAndDetach() { Cancel(); }
+
   /**
    * Returns true if there's no work pending and no worker running.
-   * TODO(etiennep): Make pure virtual once custom embedders implement it.
    */
-  virtual bool IsCompleted() { return true; }
+  virtual bool IsCompleted() = 0;
 
   /**
    * Returns true if associated with a Job and other methods may be called.
    * Returns false after Join() or Cancel() was called.
    */
   virtual bool IsRunning() = 0;
+
+  /**
+   * Returns true if job priority can be changed.
+   */
+  virtual bool UpdatePriorityEnabled() const { return false; }
+
+  /**
+   *  Update this Job's priority.
+   */
+  virtual void UpdatePriority(TaskPriority new_priority) {}
 };
 
 /**
@@ -233,23 +256,17 @@ class JobTask {
   virtual void Run(JobDelegate* delegate) = 0;
 
   /**
-   * Controls the maximum number of threads calling Run() concurrently. Run() is
-   * only invoked if the number of threads previously running Run() was less
-   * than the value returned. Since GetMaxConcurrency() is a leaf function, it
-   * must not call back any JobHandle methods.
+   * Controls the maximum number of threads calling Run() concurrently, given
+   * the number of threads currently assigned to this job and executing Run().
+   * Run() is only invoked if the number of threads previously running Run() was
+   * less than the value returned. Since GetMaxConcurrency() is a leaf function,
+   * it must not call back any JobHandle methods.
    */
-  virtual size_t GetMaxConcurrency() const = 0;
+  virtual size_t GetMaxConcurrency(size_t worker_count) const = 0;
 
-  /*
-   * Meant to replace the version above, given the number of threads currently
-   * assigned to this job and executing Run(). This is useful when the result
-   * must include local work items not visible globaly by other workers.
-   * TODO(etiennep): Replace the version above by this once custom embedders are
-   * migrated.
-   */
-  size_t GetMaxConcurrency(size_t worker_count) const {
-    return GetMaxConcurrency();
-  }
+  // TODO(1114823): Clean up once all overrides are removed.
+  V8_DEPRECATED("Use the version that takes |worker_count|.")
+  virtual size_t GetMaxConcurrency() const { return 0; }
 };
 
 /**
@@ -384,7 +401,13 @@ class PageAllocator {
     kReadWrite,
     // TODO(hpayer): Remove this flag. Memory should never be rwx.
     kReadWriteExecute,
-    kReadExecute
+    kReadExecute,
+    // Set this when reserving memory that will later require kReadWriteExecute
+    // permissions. The resulting behavior is platform-specific, currently
+    // this is used to set the MAP_JIT flag on Apple Silicon.
+    // TODO(jkummerow): Remove this when Wasm has a platform-independent
+    // w^x implementation.
+    kNoAccessWillJitLater
   };
 
   /**

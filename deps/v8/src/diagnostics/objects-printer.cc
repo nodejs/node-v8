@@ -13,6 +13,7 @@
 #include "src/interpreter/bytecodes.h"
 #include "src/objects/arguments-inl.h"
 #include "src/objects/cell-inl.h"
+#include "src/objects/code-kind.h"
 #include "src/objects/data-handler-inl.h"
 #include "src/objects/debug-objects-inl.h"
 #include "src/objects/embedder-data-array-inl.h"
@@ -69,9 +70,9 @@
 #include "src/wasm/wasm-code-manager.h"
 #include "src/wasm/wasm-engine.h"
 #include "src/wasm/wasm-objects-inl.h"
-#include "torque-generated/class-definitions-tq-inl.h"
-#include "torque-generated/exported-class-definitions-tq-inl.h"
-#include "torque-generated/internal-class-definitions-tq-inl.h"
+#include "torque-generated/class-definitions-inl.h"
+#include "torque-generated/exported-class-definitions-inl.h"
+#include "torque-generated/internal-class-definitions-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -220,6 +221,10 @@ void HeapObject::HeapObjectPrint(std::ostream& os) {  // NOLINT
       TORQUE_INSTANCE_CHECKERS_MULTIPLE_FULLY_DEFINED(MAKE_TORQUE_CASE)
 #undef MAKE_TORQUE_CASE
 
+    case DESCRIPTOR_ARRAY_TYPE:
+    case STRONG_DESCRIPTOR_ARRAY_TYPE:
+      DescriptorArray::cast(*this).DescriptorArrayPrint(os);
+      break;
     case FOREIGN_TYPE:
       Foreign::cast(*this).ForeignPrint(os);
       break;
@@ -284,7 +289,7 @@ void FreeSpace::FreeSpacePrint(std::ostream& os) {  // NOLINT
 
 bool JSObject::PrintProperties(std::ostream& os) {  // NOLINT
   if (HasFastProperties()) {
-    DescriptorArray descs = map().instance_descriptors();
+    DescriptorArray descs = map().instance_descriptors(kRelaxedLoad);
     int nof_inobject_properties = map().GetInObjectProperties();
     for (InternalIndex i : map().IterateOwnDescriptors()) {
       os << "\n    ";
@@ -307,11 +312,16 @@ bool JSObject::PrintProperties(std::ostream& os) {  // NOLINT
       }
       os << " ";
       details.PrintAsFastTo(os, PropertyDetails::kForProperties);
-      if (details.location() != kField) continue;
-      int field_index = details.field_index();
-      if (nof_inobject_properties <= field_index) {
-        field_index -= nof_inobject_properties;
-        os << " properties[" << field_index << "]";
+      if (details.location() == kField) {
+        int field_index = details.field_index();
+        if (field_index < nof_inobject_properties) {
+          os << ", location: in-object";
+        } else {
+          field_index -= nof_inobject_properties;
+          os << ", location: properties[" << field_index << "]";
+        }
+      } else {
+        os << ", location: descriptor";
       }
     }
     return map().NumberOfOwnDescriptors() > 0;
@@ -468,7 +478,7 @@ void PrintSloppyArgumentElements(std::ostream& os, ElementsKind kind,
   }
 }
 
-void PrintEmbedderData(const Isolate* isolate, std::ostream& os,
+void PrintEmbedderData(IsolateRoot isolate, std::ostream& os,
                        EmbedderDataSlot slot) {
   DisallowHeapAllocation no_gc;
   Object value = slot.load_tagged();
@@ -568,9 +578,10 @@ static void JSObjectPrintBody(std::ostream& os,
   if (!properties_or_hash.IsSmi()) {
     os << Brief(properties_or_hash);
   }
-  os << " {";
+  os << "\n - All own properties (excluding elements): {";
   if (obj.PrintProperties(os)) os << "\n ";
   os << "}\n";
+
   if (print_elements) {
     size_t length = obj.IsJSTypedArray() ? JSTypedArray::cast(obj).length()
                                          : obj.elements().length();
@@ -578,7 +589,7 @@ static void JSObjectPrintBody(std::ostream& os,
   }
   int embedder_fields = obj.GetEmbedderFieldCount();
   if (embedder_fields > 0) {
-    const Isolate* isolate = GetIsolateForPtrCompr(obj);
+    IsolateRoot isolate = GetIsolateForPtrCompr(obj);
     os << " - embedder fields = {";
     for (int i = 0; i < embedder_fields; i++) {
       os << "\n    ";
@@ -772,7 +783,7 @@ void PrintWeakArrayElements(std::ostream& os, T* array) {
 }  // namespace
 
 void EmbedderDataArray::EmbedderDataArrayPrint(std::ostream& os) {
-  const Isolate* isolate = GetIsolateForPtrCompr(*this);
+  IsolateRoot isolate = GetIsolateForPtrCompr(*this);
   PrintHeader(os, "EmbedderDataArray");
   os << "\n - length: " << length();
   EmbedderDataSlot start(*this, 0);
@@ -874,7 +885,8 @@ void FeedbackCell::FeedbackCellPrint(std::ostream& os) {  // NOLINT
   } else {
     os << "\n - Invalid FeedbackCell map";
   }
-  os << " - value: " << Brief(value());
+  os << "\n - value: " << Brief(value());
+  os << "\n - interrupt_budget: " << interrupt_budget();
   os << "\n";
 }
 
@@ -950,8 +962,9 @@ void FeedbackVector::FeedbackVectorPrint(std::ostream& os) {  // NOLINT
     int entry_size = iter.entry_size();
     if (entry_size > 0) os << " {";
     for (int i = 0; i < entry_size; i++) {
-      int index = GetIndex(slot) + i;
-      os << "\n     [" << index << "]: " << Brief(get(index));
+      FeedbackSlot slot_with_offset = slot.WithOffset(i);
+      os << "\n     [" << slot_with_offset.ToInt()
+         << "]: " << Brief(Get(slot_with_offset));
     }
     if (entry_size > 0) os << "\n  }";
   }
@@ -1283,7 +1296,10 @@ void JSFunction::JSFunctionPrint(std::ostream& os) {  // NOLINT
   os << "\n - kind: " << shared().kind();
   os << "\n - context: " << Brief(context());
   os << "\n - code: " << Brief(code());
-  if (ActiveTierIsIgnition()) {
+  if (code().kind() == CodeKind::DEOPT_ENTRIES_OR_FOR_TESTING) {
+    os << "\n - FunctionTester function";
+
+  } else if (ActiveTierIsIgnition()) {
     os << "\n - interpreted";
     if (shared().HasBytecodeArray()) {
       os << "\n - bytecode: " << shared().GetBytecodeArray();
@@ -1367,7 +1383,7 @@ void SharedFunctionInfo::SharedFunctionInfoPrint(std::ostream& os) {  // NOLINT
   }
   os << "\n - expected_nof_properties: " << expected_nof_properties();
   os << "\n - language_mode: " << language_mode();
-  os << "\n - data: " << Brief(function_data());
+  os << "\n - data: " << Brief(function_data(kAcquireLoad));
   os << "\n - code (from data): ";
     os << Brief(GetCode());
   PrintSourceCode(os);
@@ -1911,7 +1927,7 @@ void FunctionTemplateInfo::FunctionTemplateInfoPrint(
   os << "\n - tag: " << tag();
   os << "\n - serial_number: " << serial_number();
   os << "\n - property_list: " << Brief(property_list());
-  os << "\n - call_code: " << Brief(call_code());
+  os << "\n - call_code: " << Brief(call_code(kAcquireLoad));
   os << "\n - property_accessors: " << Brief(property_accessors());
   os << "\n - signature: " << Brief(signature());
   os << "\n - cached_property_name: " << Brief(cached_property_name());
@@ -2205,7 +2221,6 @@ void ScopeInfo::ScopeInfoPrint(std::ostream& os) {  // NOLINT
 void StackTraceFrame::StackTraceFramePrint(std::ostream& os) {  // NOLINT
   PrintHeader(os, "StackTraceFrame");
   os << "\n - frame_index: " << frame_index();
-  os << "\n - id: " << id();
   os << "\n - frame_info: " << Brief(frame_info());
   os << "\n";
 }
@@ -2392,7 +2407,7 @@ int Name::NameShortPrint(Vector<char> str) {
 void Map::PrintMapDetails(std::ostream& os) {
   DisallowHeapAllocation no_gc;
   this->MapPrint(os);
-  instance_descriptors().PrintDescriptors(os);
+  instance_descriptors(kRelaxedLoad).PrintDescriptors(os);
 }
 
 void Map::MapPrint(std::ostream& os) {  // NOLINT
@@ -2446,10 +2461,10 @@ void Map::MapPrint(std::ostream& os) {  // NOLINT
   os << "\n - prototype_validity cell: " << Brief(prototype_validity_cell());
   os << "\n - instance descriptors " << (owns_descriptors() ? "(own) " : "")
      << "#" << NumberOfOwnDescriptors() << ": "
-     << Brief(instance_descriptors());
+     << Brief(instance_descriptors(kRelaxedLoad));
   if (FLAG_unbox_double_fields) {
     os << "\n - layout descriptor: ";
-    layout_descriptor().ShortPrint(os);
+    layout_descriptor(kAcquireLoad).ShortPrint(os);
   }
 
   // Read-only maps can't have transitions, which is fortunate because we need
@@ -2562,7 +2577,7 @@ void TransitionsAccessor::PrintOneTransition(std::ostream& os, Name key,
     DCHECK(!IsSpecialTransition(roots, key));
     os << "(transition to ";
     InternalIndex descriptor = target.LastAdded();
-    DescriptorArray descriptors = target.instance_descriptors();
+    DescriptorArray descriptors = target.instance_descriptors(kRelaxedLoad);
     descriptors.PrintDescriptorDetails(os, descriptor,
                                        PropertyDetails::kForTransitions);
     os << ")";
@@ -2640,7 +2655,7 @@ void TransitionsAccessor::PrintTransitionTree(std::ostream& os, int level,
       DCHECK(!IsSpecialTransition(ReadOnlyRoots(isolate_), key));
       os << "to ";
       InternalIndex descriptor = target.LastAdded();
-      DescriptorArray descriptors = target.instance_descriptors();
+      DescriptorArray descriptors = target.instance_descriptors(kRelaxedLoad);
       descriptors.PrintDescriptorDetails(os, descriptor,
                                          PropertyDetails::kForTransitions);
     }

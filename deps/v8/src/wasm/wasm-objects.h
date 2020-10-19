@@ -16,7 +16,7 @@
 #include "src/objects/objects.h"
 #include "src/wasm/struct-types.h"
 #include "src/wasm/value-type.h"
-#include "torque-generated/class-definitions-tq.h"
+#include "torque-generated/class-definitions.h"
 
 // Has to be the last include (doesn't have include guards)
 #include "src/objects/object-macros.h"
@@ -24,16 +24,11 @@
 namespace v8 {
 namespace internal {
 namespace wasm {
-struct CompilationEnv;
 class InterpretedFrame;
-struct InterpretedFrameDeleter;
 class NativeModule;
-class SignatureMap;
 class WasmCode;
 struct WasmException;
-class WasmFeatures;
 struct WasmGlobal;
-class WasmInterpreter;
 struct WasmModule;
 class WasmValue;
 class WireBytesRef;
@@ -113,6 +108,7 @@ class ImportedFunctionEntry {
 
   WasmInstanceObject instance();
   JSReceiver callable();
+  Object maybe_callable();
   Object object_ref();
   Address target();
 
@@ -196,6 +192,11 @@ class V8_EXPORT_PRIVATE WasmTableObject : public JSObject {
  public:
   DECL_CAST(WasmTableObject)
 
+  // The instance in which this WasmTableObject is defined.
+  // This field is undefined if the global is defined outside any Wasm module,
+  // i.e., through the JS API (WebAssembly.Table).
+  // Because it might be undefined, we declare it as a HeapObject.
+  DECL_ACCESSORS(instance, HeapObject)
   // The entries array is at least as big as {current_length()}, but might be
   // bigger to make future growth more efficient.
   DECL_ACCESSORS(entries, FixedArray)
@@ -217,9 +218,10 @@ class V8_EXPORT_PRIVATE WasmTableObject : public JSObject {
   static int Grow(Isolate* isolate, Handle<WasmTableObject> table,
                   uint32_t count, Handle<Object> init_value);
 
-  static Handle<WasmTableObject> New(Isolate* isolate, wasm::ValueType type,
-                                     uint32_t initial, bool has_maximum,
-                                     uint32_t maximum,
+  static Handle<WasmTableObject> New(Isolate* isolate,
+                                     Handle<WasmInstanceObject> instance,
+                                     wasm::ValueType type, uint32_t initial,
+                                     bool has_maximum, uint32_t maximum,
                                      Handle<FixedArray>* entries);
 
   static void AddDispatchTable(Isolate* isolate, Handle<WasmTableObject> table,
@@ -270,9 +272,16 @@ class V8_EXPORT_PRIVATE WasmTableObject : public JSObject {
   // through the out parameters {is_valid}, {is_null}, {instance},
   // {function_index}, and {maybe_js_function}.
   static void GetFunctionTableEntry(
-      Isolate* isolate, Handle<WasmTableObject> table, int entry_index,
-      bool* is_valid, bool* is_null, MaybeHandle<WasmInstanceObject>* instance,
+      Isolate* isolate, const wasm::WasmModule* module,
+      Handle<WasmTableObject> table, int entry_index, bool* is_valid,
+      bool* is_null, MaybeHandle<WasmInstanceObject>* instance,
       int* function_index, MaybeHandle<WasmJSFunction>* maybe_js_function);
+
+ private:
+  static void SetFunctionTableEntry(Isolate* isolate,
+                                    Handle<WasmTableObject> table,
+                                    Handle<FixedArray> entries, int entry_index,
+                                    Handle<Object> entry);
 
   OBJECT_CONSTRUCTORS(WasmTableObject, JSObject);
 };
@@ -320,6 +329,11 @@ class WasmGlobalObject : public JSObject {
  public:
   DECL_CAST(WasmGlobalObject)
 
+  // The instance in which this WasmGlobalObject is defined.
+  // This field is undefined if the global is defined outside any Wasm module,
+  // i.e., through the JS API (WebAssembly.Global).
+  // Because it might be undefined, we declare it as a HeapObject.
+  DECL_ACCESSORS(instance, HeapObject)
   DECL_ACCESSORS(untagged_buffer, JSArrayBuffer)
   DECL_ACCESSORS(tagged_buffer, FixedArray)
   DECL_INT32_ACCESSORS(offset)
@@ -337,7 +351,8 @@ class WasmGlobalObject : public JSObject {
                                 TORQUE_GENERATED_WASM_GLOBAL_OBJECT_FIELDS)
 
   V8_EXPORT_PRIVATE static MaybeHandle<WasmGlobalObject> New(
-      Isolate* isolate, MaybeHandle<JSArrayBuffer> maybe_untagged_buffer,
+      Isolate* isolate, Handle<WasmInstanceObject> instance,
+      MaybeHandle<JSArrayBuffer> maybe_untagged_buffer,
       MaybeHandle<FixedArray> maybe_tagged_buffer, wasm::ValueType type,
       int32_t offset, bool is_mutable);
 
@@ -604,7 +619,7 @@ class WasmExceptionObject : public JSObject {
 
   // Checks whether the given {sig} has the same parameter types as the
   // serialized signature stored within this exception object.
-  bool IsSignatureEqual(const wasm::FunctionSig* sig);
+  bool MatchesSignature(const wasm::FunctionSig* sig);
 
   static Handle<WasmExceptionObject> New(Isolate* isolate,
                                          const wasm::FunctionSig* sig,
@@ -651,6 +666,9 @@ class WasmExportedFunction : public JSFunction {
 
   V8_EXPORT_PRIVATE const wasm::FunctionSig* sig();
 
+  bool MatchesSignature(const wasm::WasmModule* other_module,
+                        const wasm::FunctionSig* other_sig);
+
   DECL_CAST(WasmExportedFunction)
   OBJECT_CONSTRUCTORS(WasmExportedFunction, JSFunction);
 };
@@ -688,7 +706,7 @@ class WasmCapiFunction : public JSFunction {
   PodArray<wasm::ValueType> GetSerializedSignature() const;
   // Checks whether the given {sig} has the same parameter types as the
   // serialized signature stored within this C-API function object.
-  bool IsSignatureEqual(const wasm::FunctionSig* sig) const;
+  bool MatchesSignature(const wasm::FunctionSig* sig) const;
 
   DECL_CAST(WasmCapiFunction)
   OBJECT_CONSTRUCTORS(WasmCapiFunction, JSFunction);
@@ -765,10 +783,11 @@ class WasmExportedFunctionData : public Struct {
   DECL_ACCESSORS(instance, WasmInstanceObject)
   DECL_INT_ACCESSORS(jump_table_offset)
   DECL_INT_ACCESSORS(function_index)
+  DECL_ACCESSORS(signature, Foreign)
+  DECL_INT_ACCESSORS(call_count)
   DECL_ACCESSORS(c_wrapper_code, Object)
   DECL_ACCESSORS(wasm_call_target, Object)
   DECL_INT_ACCESSORS(packed_args_size)
-  DECL_INT_ACCESSORS(signature_type)
 
   DECL_CAST(WasmExportedFunctionData)
 
@@ -794,6 +813,7 @@ class WasmJSFunctionData : public Struct {
   DECL_ACCESSORS(serialized_signature, PodArray<wasm::ValueType>)
   DECL_ACCESSORS(callable, JSReceiver)
   DECL_ACCESSORS(wrapper_code, Code)
+  DECL_ACCESSORS(wasm_to_js_wrapper_code, Code)
 
   DECL_CAST(WasmJSFunctionData)
 
@@ -956,6 +976,9 @@ Handle<Map> AllocateSubRtt(Isolate* isolate,
                            Handle<WasmInstanceObject> instance, uint32_t type,
                            Handle<Map> parent);
 
+bool TypecheckJSObject(Isolate* isolate, const WasmModule* module,
+                       Handle<Object> value, ValueType expected,
+                       const char** error_message);
 }  // namespace wasm
 
 }  // namespace internal

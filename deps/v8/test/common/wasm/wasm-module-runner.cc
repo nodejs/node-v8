@@ -14,6 +14,7 @@
 #include "src/wasm/wasm-js.h"
 #include "src/wasm/wasm-module.h"
 #include "src/wasm/wasm-objects.h"
+#include "src/wasm/wasm-opcodes.h"
 #include "src/wasm/wasm-result.h"
 #include "test/common/wasm/wasm-interpreter.h"
 
@@ -41,12 +42,11 @@ MaybeHandle<WasmInstanceObject> CompileAndInstantiateForTesting(
       isolate, thrower, module.ToHandleChecked(), {}, {});
 }
 
-std::unique_ptr<WasmValue[]> MakeDefaultArguments(Isolate* isolate,
-                                                  const FunctionSig* sig) {
+OwnedVector<WasmValue> MakeDefaultInterpreterArguments(Isolate* isolate,
+                                                       const FunctionSig* sig) {
   size_t param_count = sig->parameter_count();
-  auto arguments = std::make_unique<WasmValue[]>(param_count);
+  auto arguments = OwnedVector<WasmValue>::New(param_count);
 
-  // Fill the parameters up with default values.
   for (size_t i = 0; i < param_count; ++i) {
     switch (sig->GetParam(i).kind()) {
       case ValueType::kI32:
@@ -61,6 +61,9 @@ std::unique_ptr<WasmValue[]> MakeDefaultArguments(Isolate* isolate,
       case ValueType::kF64:
         arguments[i] = WasmValue(0.0);
         break;
+      case ValueType::kS128:
+        arguments[i] = WasmValue(Simd128{});
+        break;
       case ValueType::kOptRef:
         arguments[i] =
             WasmValue(Handle<Object>::cast(isolate->factory()->null_value()));
@@ -71,7 +74,40 @@ std::unique_ptr<WasmValue[]> MakeDefaultArguments(Isolate* isolate,
       case ValueType::kI16:
       case ValueType::kStmt:
       case ValueType::kBottom:
+        UNREACHABLE();
+    }
+  }
+
+  return arguments;
+}
+
+OwnedVector<Handle<Object>> MakeDefaultArguments(Isolate* isolate,
+                                                 const FunctionSig* sig) {
+  size_t param_count = sig->parameter_count();
+  auto arguments = OwnedVector<Handle<Object>>::New(param_count);
+
+  for (size_t i = 0; i < param_count; ++i) {
+    switch (sig->GetParam(i).kind()) {
+      case ValueType::kI32:
+      case ValueType::kF32:
+      case ValueType::kF64:
       case ValueType::kS128:
+        // Argument here for kS128 does not matter as we should error out before
+        // hitting this case.
+        arguments[i] = handle(Smi::zero(), isolate);
+        break;
+      case ValueType::kI64:
+        arguments[i] = BigInt::FromInt64(isolate, 0);
+        break;
+      case ValueType::kOptRef:
+        arguments[i] = isolate->factory()->null_value();
+        break;
+      case ValueType::kRef:
+      case ValueType::kRtt:
+      case ValueType::kI8:
+      case ValueType::kI16:
+      case ValueType::kStmt:
+      case ValueType::kBottom:
         UNREACHABLE();
     }
   }
@@ -101,6 +137,13 @@ WasmInterpretationResult InterpretWasmModule(
   Zone zone(isolate->allocator(), ZONE_NAME);
   v8::internal::HandleScope scope(isolate);
   const WasmFunction* func = &instance->module()->functions[function_index];
+
+  CHECK(func->exported);
+  // This would normally be handled by export wrappers.
+  if (!IsJSCompatibleSignature(func->sig, instance->module(),
+                               WasmFeatures::FromIsolate(isolate))) {
+    return WasmInterpretationResult::Trapped(false);
+  }
 
   WasmInterpreter interpreter{
       isolate, instance->module(),
@@ -199,6 +242,9 @@ int32_t CallWasmFunctionForTesting(Isolate* isolate,
   }
   if (result->IsHeapNumber()) {
     return static_cast<int32_t>(HeapNumber::cast(*result).value());
+  }
+  if (result->IsBigInt()) {
+    return static_cast<int32_t>(BigInt::cast(*result).AsInt64());
   }
   return -1;
 }

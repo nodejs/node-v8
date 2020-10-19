@@ -5,6 +5,7 @@
 #ifndef INCLUDE_CPPGC_VISITOR_H_
 #define INCLUDE_CPPGC_VISITOR_H_
 
+#include "cppgc/ephemeron-pair.h"
 #include "cppgc/garbage-collected.h"
 #include "cppgc/internal/logging.h"
 #include "cppgc/internal/pointer-policies.h"
@@ -16,6 +17,9 @@
 namespace cppgc {
 
 namespace internal {
+template <typename T, typename WeaknessPolicy, typename LocationPolicy,
+          typename CheckingPolicy>
+class BasicCrossThreadPersistent;
 template <typename T, typename WeaknessPolicy, typename LocationPolicy,
           typename CheckingPolicy>
 class BasicPersistent;
@@ -44,7 +48,7 @@ using WeakCallback = void (*)(const LivenessBroker&, const void*);
  * };
  * \endcode
  */
-class Visitor {
+class V8_EXPORT Visitor {
  public:
   class Key {
    private:
@@ -86,8 +90,7 @@ class Visitor {
       return;
     }
 
-    // TODO(chromium:1056170): DCHECK (or similar) for deleted values as they
-    // should come in at a different path.
+    CPPGC_DCHECK(value != kSentinelPointer);
     VisitWeak(value, TraceTrait<T>::GetTraceDescriptor(value),
               &HandleWeak<WeakMember<T>>, &weak_member);
   }
@@ -122,6 +125,42 @@ class Visitor {
   }
 
   /**
+   * Trace method for EphemeronPair.
+   *
+   * \param ephemeron_pair EphemeronPair reference weakly retaining a key object
+   * and strongly retaining a value object in case the key object is alive.
+   */
+  template <typename K, typename V>
+  void Trace(const EphemeronPair<K, V>& ephemeron_pair) {
+    TraceEphemeron(ephemeron_pair.key, ephemeron_pair.value.GetRawAtomic());
+  }
+
+  /**
+   * Trace method for ephemerons. Used for tracing raw ephemeron in which the
+   * key and value are kept separately.
+   *
+   * \param key WeakMember reference weakly retaining a key object.
+   * \param value Member reference weakly retaining a value object.
+   */
+  template <typename K, typename V>
+  void TraceEphemeron(const WeakMember<K>& key, const V* value) {
+    TraceDescriptor value_desc = TraceTrait<V>::GetTraceDescriptor(value);
+    VisitEphemeron(key, value_desc);
+  }
+
+  /**
+   * Trace method that strongifies a WeakMember.
+   *
+   * \param weak_member WeakMember reference retaining an object.
+   */
+  template <typename T>
+  void TraceStrongly(const WeakMember<T>& weak_member) {
+    const T* value = weak_member.GetRawAtomic();
+    CPPGC_DCHECK(value != kSentinelPointer);
+    Trace(value);
+  }
+
+  /**
    * Registers a weak callback that is invoked during garbage collection.
    *
    * \param callback to be invoked.
@@ -129,13 +168,33 @@ class Visitor {
    */
   virtual void RegisterWeakCallback(WeakCallback callback, const void* data) {}
 
+  /**
+   * Defers tracing an object from a concurrent thread to the mutator thread.
+   * Should be called by Trace methods of types that are not safe to trace
+   * concurrently.
+   *
+   * \param parameter tells the trace callback which object was deferred.
+   * \param callback to be invoked for tracing on the mutator thread.
+   * \param deferred_size size of deferred object.
+   *
+   * \returns false if the object does not need to be deferred (i.e. currently
+   * traced on the mutator thread) and true otherwise (i.e. currently traced on
+   * a concurrent thread).
+   */
+  virtual V8_WARN_UNUSED_RESULT bool DeferTraceToMutatorThreadIfConcurrent(
+      const void* parameter, TraceCallback callback, size_t deferred_size) {
+    // By default tracing is not deferred.
+    return false;
+  }
+
  protected:
   virtual void Visit(const void* self, TraceDescriptor) {}
   virtual void VisitWeak(const void* self, TraceDescriptor, WeakCallback,
                          const void* weak_member) {}
-  virtual void VisitRoot(const void*, TraceDescriptor) {}
+  virtual void VisitRoot(const void*, TraceDescriptor, const SourceLocation&) {}
   virtual void VisitWeakRoot(const void* self, TraceDescriptor, WeakCallback,
-                             const void* weak_root) {}
+                             const void* weak_root, const SourceLocation&) {}
+  virtual void VisitEphemeron(const void* key, TraceDescriptor value_desc) {}
 
  private:
   template <typename T, void (T::*method)(const LivenessBroker&)>
@@ -169,7 +228,8 @@ class Visitor {
     if (!p.Get()) {
       return;
     }
-    VisitRoot(p.Get(), TraceTrait<PointeeType>::GetTraceDescriptor(p.Get()));
+    VisitRoot(p.Get(), TraceTrait<PointeeType>::GetTraceDescriptor(p.Get()),
+              loc);
   }
 
   template <
@@ -183,7 +243,7 @@ class Visitor {
                   "Persistent's pointee type must be GarbageCollected or "
                   "GarbageCollectedMixin");
     VisitWeakRoot(p.Get(), TraceTrait<PointeeType>::GetTraceDescriptor(p.Get()),
-                  &HandleWeak<WeakPersistent>, &p);
+                  &HandleWeak<WeakPersistent>, &p, loc);
   }
 
   template <typename T>
@@ -198,9 +258,12 @@ class Visitor {
   }
 
 #if V8_ENABLE_CHECKS
-  V8_EXPORT void CheckObjectNotInConstruction(const void* address);
+  void CheckObjectNotInConstruction(const void* address);
 #endif  // V8_ENABLE_CHECKS
 
+  template <typename T, typename WeaknessPolicy, typename LocationPolicy,
+            typename CheckingPolicy>
+  friend class internal::BasicCrossThreadPersistent;
   template <typename T, typename WeaknessPolicy, typename LocationPolicy,
             typename CheckingPolicy>
   friend class internal::BasicPersistent;

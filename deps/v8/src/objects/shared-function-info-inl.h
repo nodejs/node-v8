@@ -97,10 +97,10 @@ NEVER_READ_ONLY_SPACE_IMPL(SharedFunctionInfo)
 CAST_ACCESSOR(SharedFunctionInfo)
 DEFINE_DEOPT_ELEMENT_ACCESSORS(SharedFunctionInfo, Object)
 
-SYNCHRONIZED_ACCESSORS(SharedFunctionInfo, function_data, Object,
-                       kFunctionDataOffset)
-ACCESSORS(SharedFunctionInfo, name_or_scope_info, Object,
-          kNameOrScopeInfoOffset)
+RELEASE_ACQUIRE_ACCESSORS(SharedFunctionInfo, function_data, Object,
+                          kFunctionDataOffset)
+RELEASE_ACQUIRE_ACCESSORS(SharedFunctionInfo, name_or_scope_info, Object,
+                          kNameOrScopeInfoOffset)
 ACCESSORS(SharedFunctionInfo, script_or_debug_info, HeapObject,
           kScriptOrDebugInfoOffset)
 
@@ -121,7 +121,7 @@ RELAXED_INT32_ACCESSORS(SharedFunctionInfo, flags, kFlagsOffset)
 UINT8_ACCESSORS(SharedFunctionInfo, flags2, kFlags2Offset)
 
 bool SharedFunctionInfo::HasSharedName() const {
-  Object value = name_or_scope_info();
+  Object value = name_or_scope_info(kAcquireLoad);
   if (value.IsScopeInfo()) {
     return ScopeInfo::cast(value).HasSharedFunctionName();
   }
@@ -130,7 +130,7 @@ bool SharedFunctionInfo::HasSharedName() const {
 
 String SharedFunctionInfo::Name() const {
   if (!HasSharedName()) return GetReadOnlyRoots().empty_string();
-  Object value = name_or_scope_info();
+  Object value = name_or_scope_info(kAcquireLoad);
   if (value.IsScopeInfo()) {
     if (ScopeInfo::cast(value).HasFunctionName()) {
       return String::cast(ScopeInfo::cast(value).FunctionName());
@@ -141,13 +141,13 @@ String SharedFunctionInfo::Name() const {
 }
 
 void SharedFunctionInfo::SetName(String name) {
-  Object maybe_scope_info = name_or_scope_info();
+  Object maybe_scope_info = name_or_scope_info(kAcquireLoad);
   if (maybe_scope_info.IsScopeInfo()) {
     ScopeInfo::cast(maybe_scope_info).SetFunctionName(name);
   } else {
     DCHECK(maybe_scope_info.IsString() ||
            maybe_scope_info == kNoSharedNameSentinel);
-    set_name_or_scope_info(name);
+    set_name_or_scope_info(name, kReleaseStore);
   }
   UpdateFunctionMapIndex();
 }
@@ -185,6 +185,9 @@ BIT_FIELD_ACCESSORS(SharedFunctionInfo, flags2, class_scope_has_private_brand,
 BIT_FIELD_ACCESSORS(SharedFunctionInfo, flags2,
                     has_static_private_methods_or_accessors,
                     SharedFunctionInfo::HasStaticPrivateMethodsOrAccessorsBit)
+
+BIT_FIELD_ACCESSORS(SharedFunctionInfo, flags2, has_optimized_at_least_once,
+                    SharedFunctionInfo::HasOptimizedAtLeastOnceBit)
 
 BIT_FIELD_ACCESSORS(SharedFunctionInfo, flags2, may_have_cached_code,
                     SharedFunctionInfo::MayHaveCachedCodeBit)
@@ -331,17 +334,17 @@ void SharedFunctionInfo::DontAdaptArguments() {
 bool SharedFunctionInfo::IsInterpreted() const { return HasBytecodeArray(); }
 
 ScopeInfo SharedFunctionInfo::scope_info() const {
-  Object maybe_scope_info = name_or_scope_info();
+  Object maybe_scope_info = name_or_scope_info(kAcquireLoad);
   if (maybe_scope_info.IsScopeInfo()) {
     return ScopeInfo::cast(maybe_scope_info);
   }
   return GetReadOnlyRoots().empty_scope_info();
 }
 
-void SharedFunctionInfo::set_scope_info(ScopeInfo scope_info,
-                                        WriteBarrierMode mode) {
+void SharedFunctionInfo::SetScopeInfo(ScopeInfo scope_info,
+                                      WriteBarrierMode mode) {
   // Move the existing name onto the ScopeInfo.
-  Object name = name_or_scope_info();
+  Object name = name_or_scope_info(kAcquireLoad);
   if (name.IsScopeInfo()) {
     name = ScopeInfo::cast(name).FunctionName();
   }
@@ -351,7 +354,7 @@ void SharedFunctionInfo::set_scope_info(ScopeInfo scope_info,
   if (HasInferredName() && inferred_name().length() != 0) {
     scope_info.SetInferredFunctionName(inferred_name());
   }
-  set_raw_scope_info(scope_info, mode);
+  set_name_or_scope_info(scope_info, kReleaseStore, mode);
 }
 
 void SharedFunctionInfo::set_raw_scope_info(ScopeInfo scope_info,
@@ -412,7 +415,7 @@ void SharedFunctionInfo::set_feedback_metadata(FeedbackMetadata value,
 }
 
 bool SharedFunctionInfo::is_compiled() const {
-  Object data = function_data();
+  Object data = function_data(kAcquireLoad);
   return data != Smi::FromEnum(Builtins::kCompileLazy) &&
          !data.IsUncompiledData();
 }
@@ -447,56 +450,60 @@ bool SharedFunctionInfo::has_simple_parameters() {
 }
 
 bool SharedFunctionInfo::IsApiFunction() const {
-  return function_data().IsFunctionTemplateInfo();
+  return function_data(kAcquireLoad).IsFunctionTemplateInfo();
 }
 
 FunctionTemplateInfo SharedFunctionInfo::get_api_func_data() const {
   DCHECK(IsApiFunction());
-  return FunctionTemplateInfo::cast(function_data());
+  return FunctionTemplateInfo::cast(function_data(kAcquireLoad));
 }
 
 bool SharedFunctionInfo::HasBytecodeArray() const {
-  return function_data().IsBytecodeArray() ||
-         function_data().IsInterpreterData();
+  Object data = function_data(kAcquireLoad);
+  return data.IsBytecodeArray() || data.IsInterpreterData();
 }
 
 BytecodeArray SharedFunctionInfo::GetBytecodeArray() const {
   DCHECK(HasBytecodeArray());
   if (HasDebugInfo() && GetDebugInfo().HasInstrumentedBytecodeArray()) {
     return GetDebugInfo().OriginalBytecodeArray();
-  } else if (function_data().IsBytecodeArray()) {
-    return BytecodeArray::cast(function_data());
+  }
+
+  Object data = function_data(kAcquireLoad);
+  if (data.IsBytecodeArray()) {
+    return BytecodeArray::cast(data);
   } else {
-    DCHECK(function_data().IsInterpreterData());
-    return InterpreterData::cast(function_data()).bytecode_array();
+    DCHECK(data.IsInterpreterData());
+    return InterpreterData::cast(data).bytecode_array();
   }
 }
 
 BytecodeArray SharedFunctionInfo::GetDebugBytecodeArray() const {
-  DCHECK(HasBytecodeArray());
   DCHECK(HasDebugInfo() && GetDebugInfo().HasInstrumentedBytecodeArray());
-  if (function_data().IsBytecodeArray()) {
-    return BytecodeArray::cast(function_data());
+
+  Object data = function_data(kAcquireLoad);
+  if (data.IsBytecodeArray()) {
+    return BytecodeArray::cast(data);
   } else {
-    DCHECK(function_data().IsInterpreterData());
-    return InterpreterData::cast(function_data()).bytecode_array();
+    DCHECK(data.IsInterpreterData());
+    return InterpreterData::cast(data).bytecode_array();
   }
 }
 
 void SharedFunctionInfo::SetDebugBytecodeArray(BytecodeArray bytecode) {
-  DCHECK(HasBytecodeArray());
-  if (function_data().IsBytecodeArray()) {
-    set_function_data(bytecode);
+  Object data = function_data(kAcquireLoad);
+  if (data.IsBytecodeArray()) {
+    set_function_data(bytecode, kReleaseStore);
   } else {
-    DCHECK(function_data().IsInterpreterData());
+    DCHECK(data.IsInterpreterData());
     interpreter_data().set_bytecode_array(bytecode);
   }
 }
 
 void SharedFunctionInfo::set_bytecode_array(BytecodeArray bytecode) {
-  DCHECK(function_data() == Smi::FromEnum(Builtins::kCompileLazy) ||
+  DCHECK(function_data(kAcquireLoad) == Smi::FromEnum(Builtins::kCompileLazy) ||
          HasUncompiledData());
-  set_function_data(bytecode);
+  set_function_data(bytecode, kReleaseStore);
 }
 
 bool SharedFunctionInfo::ShouldFlushBytecode(BytecodeFlushMode mode) {
@@ -510,7 +517,7 @@ bool SharedFunctionInfo::ShouldFlushBytecode(BytecodeFlushMode mode) {
   // Get a snapshot of the function data field, and if it is a bytecode array,
   // check if it is old. Note, this is done this way since this function can be
   // called by the concurrent marker.
-  Object data = function_data();
+  Object data = function_data(kAcquireLoad);
   if (!data.IsBytecodeArray()) return false;
 
   if (mode == BytecodeFlushMode::kStressFlushBytecode) return true;
@@ -526,86 +533,87 @@ Code SharedFunctionInfo::InterpreterTrampoline() const {
 }
 
 bool SharedFunctionInfo::HasInterpreterData() const {
-  return function_data().IsInterpreterData();
+  return function_data(kAcquireLoad).IsInterpreterData();
 }
 
 InterpreterData SharedFunctionInfo::interpreter_data() const {
   DCHECK(HasInterpreterData());
-  return InterpreterData::cast(function_data());
+  return InterpreterData::cast(function_data(kAcquireLoad));
 }
 
 void SharedFunctionInfo::set_interpreter_data(
     InterpreterData interpreter_data) {
   DCHECK(FLAG_interpreted_frames_native_stack);
-  set_function_data(interpreter_data);
+  set_function_data(interpreter_data, kReleaseStore);
 }
 
 bool SharedFunctionInfo::HasAsmWasmData() const {
-  return function_data().IsAsmWasmData();
+  return function_data(kAcquireLoad).IsAsmWasmData();
 }
 
 AsmWasmData SharedFunctionInfo::asm_wasm_data() const {
   DCHECK(HasAsmWasmData());
-  return AsmWasmData::cast(function_data());
+  return AsmWasmData::cast(function_data(kAcquireLoad));
 }
 
 void SharedFunctionInfo::set_asm_wasm_data(AsmWasmData data) {
-  DCHECK(function_data() == Smi::FromEnum(Builtins::kCompileLazy) ||
+  DCHECK(function_data(kAcquireLoad) == Smi::FromEnum(Builtins::kCompileLazy) ||
          HasUncompiledData() || HasAsmWasmData());
-  set_function_data(data);
+  set_function_data(data, kReleaseStore);
 }
 
 bool SharedFunctionInfo::HasBuiltinId() const {
-  return function_data().IsSmi();
+  return function_data(kAcquireLoad).IsSmi();
 }
 
 int SharedFunctionInfo::builtin_id() const {
   DCHECK(HasBuiltinId());
-  int id = Smi::ToInt(function_data());
+  int id = Smi::ToInt(function_data(kAcquireLoad));
   DCHECK(Builtins::IsBuiltinId(id));
   return id;
 }
 
 void SharedFunctionInfo::set_builtin_id(int builtin_id) {
   DCHECK(Builtins::IsBuiltinId(builtin_id));
-  set_function_data(Smi::FromInt(builtin_id), SKIP_WRITE_BARRIER);
+  set_function_data(Smi::FromInt(builtin_id), kReleaseStore,
+                    SKIP_WRITE_BARRIER);
 }
 
 bool SharedFunctionInfo::HasUncompiledData() const {
-  return function_data().IsUncompiledData();
+  return function_data(kAcquireLoad).IsUncompiledData();
 }
 
 UncompiledData SharedFunctionInfo::uncompiled_data() const {
   DCHECK(HasUncompiledData());
-  return UncompiledData::cast(function_data());
+  return UncompiledData::cast(function_data(kAcquireLoad));
 }
 
 void SharedFunctionInfo::set_uncompiled_data(UncompiledData uncompiled_data) {
-  DCHECK(function_data() == Smi::FromEnum(Builtins::kCompileLazy) ||
+  DCHECK(function_data(kAcquireLoad) == Smi::FromEnum(Builtins::kCompileLazy) ||
          HasUncompiledData());
   DCHECK(uncompiled_data.IsUncompiledData());
-  set_function_data(uncompiled_data);
+  set_function_data(uncompiled_data, kReleaseStore);
 }
 
 bool SharedFunctionInfo::HasUncompiledDataWithPreparseData() const {
-  return function_data().IsUncompiledDataWithPreparseData();
+  return function_data(kAcquireLoad).IsUncompiledDataWithPreparseData();
 }
 
 UncompiledDataWithPreparseData
 SharedFunctionInfo::uncompiled_data_with_preparse_data() const {
   DCHECK(HasUncompiledDataWithPreparseData());
-  return UncompiledDataWithPreparseData::cast(function_data());
+  return UncompiledDataWithPreparseData::cast(function_data(kAcquireLoad));
 }
 
 void SharedFunctionInfo::set_uncompiled_data_with_preparse_data(
     UncompiledDataWithPreparseData uncompiled_data_with_preparse_data) {
-  DCHECK(function_data() == Smi::FromEnum(Builtins::kCompileLazy));
+  DCHECK(function_data(kAcquireLoad) == Smi::FromEnum(Builtins::kCompileLazy));
   DCHECK(uncompiled_data_with_preparse_data.IsUncompiledDataWithPreparseData());
-  set_function_data(uncompiled_data_with_preparse_data);
+  set_function_data(uncompiled_data_with_preparse_data, kReleaseStore);
 }
 
 bool SharedFunctionInfo::HasUncompiledDataWithoutPreparseData() const {
-  return function_data().IsUncompiledDataWithoutPreparseData();
+  return function_data(kAcquireLoad).IsUncompiledDataWithoutPreparseData();
 }
 
 void SharedFunctionInfo::ClearPreparseData() {
@@ -667,15 +675,15 @@ void UncompiledDataWithPreparseData::Init(LocalIsolate* isolate,
 }
 
 bool SharedFunctionInfo::HasWasmExportedFunctionData() const {
-  return function_data().IsWasmExportedFunctionData();
+  return function_data(kAcquireLoad).IsWasmExportedFunctionData();
 }
 
 bool SharedFunctionInfo::HasWasmJSFunctionData() const {
-  return function_data().IsWasmJSFunctionData();
+  return function_data(kAcquireLoad).IsWasmJSFunctionData();
 }
 
 bool SharedFunctionInfo::HasWasmCapiFunctionData() const {
-  return function_data().IsWasmCapiFunctionData();
+  return function_data(kAcquireLoad).IsWasmCapiFunctionData();
 }
 
 HeapObject SharedFunctionInfo::script() const {
@@ -715,7 +723,7 @@ void SharedFunctionInfo::SetDebugInfo(DebugInfo debug_info) {
 }
 
 bool SharedFunctionInfo::HasInferredName() {
-  Object scope_info = name_or_scope_info();
+  Object scope_info = name_or_scope_info(kAcquireLoad);
   if (scope_info.IsScopeInfo()) {
     return ScopeInfo::cast(scope_info).HasInferredFunctionName();
   }
@@ -723,7 +731,7 @@ bool SharedFunctionInfo::HasInferredName() {
 }
 
 String SharedFunctionInfo::inferred_name() {
-  Object maybe_scope_info = name_or_scope_info();
+  Object maybe_scope_info = name_or_scope_info(kAcquireLoad);
   if (maybe_scope_info.IsScopeInfo()) {
     ScopeInfo scope_info = ScopeInfo::cast(maybe_scope_info);
     if (scope_info.HasInferredFunctionName()) {

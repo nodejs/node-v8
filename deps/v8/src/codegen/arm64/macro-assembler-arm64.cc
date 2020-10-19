@@ -1778,8 +1778,7 @@ void TurboAssembler::Jump(Handle<Code> code, RelocInfo::Mode rmode,
 
   if (options().inline_offheap_trampolines) {
     int builtin_index = Builtins::kNoBuiltinId;
-    if (isolate()->builtins()->IsBuiltinHandle(code, &builtin_index) &&
-        Builtins::IsIsolateIndependent(builtin_index)) {
+    if (isolate()->builtins()->IsBuiltinHandle(code, &builtin_index)) {
       // Inline the trampoline.
       RecordCommentForOffHeapTrampoline(builtin_index);
       CHECK_NE(builtin_index, Builtins::kNoBuiltinId);
@@ -1833,8 +1832,7 @@ void TurboAssembler::Call(Handle<Code> code, RelocInfo::Mode rmode) {
 
   if (options().inline_offheap_trampolines) {
     int builtin_index = Builtins::kNoBuiltinId;
-    if (isolate()->builtins()->IsBuiltinHandle(code, &builtin_index) &&
-        Builtins::IsIsolateIndependent(builtin_index)) {
+    if (isolate()->builtins()->IsBuiltinHandle(code, &builtin_index)) {
       // Inline the trampoline.
       CallBuiltin(builtin_index);
       return;
@@ -2186,11 +2184,7 @@ void MacroAssembler::InvokeFunctionCode(Register function, Register new_target,
 }
 
 Operand MacroAssembler::ReceiverOperand(Register arg_count) {
-#ifdef V8_REVERSE_JSARGS
   return Operand(0);
-#else
-  return Operand(arg_count, LSL, kXRegSizeLog2);
-#endif
 }
 
 void MacroAssembler::InvokeFunctionWithNewTarget(
@@ -2312,8 +2306,10 @@ void TurboAssembler::TruncateDoubleToI(Isolate* isolate, Zone* zone,
 }
 
 void TurboAssembler::Prologue() {
-  Push<TurboAssembler::kSignLR>(lr, fp, cp, x1);
-  Add(fp, sp, StandardFrameConstants::kFixedFrameSizeFromFp);
+  Push<TurboAssembler::kSignLR>(lr, fp);
+  mov(fp, sp);
+  STATIC_ASSERT(kExtraSlotClaimedByPrologue == 1);
+  Push(cp, kJSFunctionRegister, kJavaScriptCallArgCountRegister, padreg);
 }
 
 void TurboAssembler::EnterFrame(StackFrame::Type type) {

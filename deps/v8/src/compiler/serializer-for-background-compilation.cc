@@ -198,6 +198,7 @@ namespace compiler {
   V(LdaLookupSlot)                    \
   V(LdaLookupSlotInsideTypeof)        \
   V(LdaNamedProperty)                 \
+  V(LdaNamedPropertyFromSuper)        \
   V(LdaNamedPropertyNoFeedback)       \
   V(LdaNull)                          \
   V(Ldar)                             \
@@ -1108,7 +1109,8 @@ bool SerializerForBackgroundCompilation::BailoutOnUninitialized(
     // OSR entry point. TODO(neis): Support OSR?
     return false;
   }
-  if (FLAG_turboprop && feedback.slot_kind() == FeedbackSlotKind::kCall) {
+  if (broker()->is_turboprop() &&
+      feedback.slot_kind() == FeedbackSlotKind::kCall) {
     return false;
   }
   if (feedback.IsInsufficient()) {
@@ -2244,7 +2246,8 @@ void SerializerForBackgroundCompilation::ProcessApiCall(
           Builtins::kCallFunctionTemplate_CheckAccessAndCompatibleReceiver));
 
   FunctionTemplateInfoRef target_template_info(
-      broker(), handle(target->function_data(), broker()->isolate()));
+      broker(),
+      handle(target->function_data(kAcquireLoad), broker()->isolate()));
   if (!target_template_info.has_call_code()) return;
   target_template_info.SerializeCallCode();
 
@@ -3258,6 +3261,13 @@ void SerializerForBackgroundCompilation::VisitLdaNamedProperty(
                iterator->GetConstantForIndexOperand(1, broker()->isolate()));
   FeedbackSlot slot = iterator->GetSlotOperand(2);
   ProcessNamedPropertyAccess(receiver, name, slot, AccessMode::kLoad);
+}
+
+void SerializerForBackgroundCompilation::VisitLdaNamedPropertyFromSuper(
+    BytecodeArrayIterator* iterator) {
+  NameRef(broker(),
+          iterator->GetConstantForIndexOperand(1, broker()->isolate()));
+  // TODO(marja, v8:9237): Process feedback once it's added to the byte code.
 }
 
 // TODO(neis): Do feedback-independent serialization also for *NoFeedback

@@ -36,7 +36,7 @@ class V8_EXPORT_PRIVATE LocalIsolate final : private HiddenLocalFactory {
  public:
   using HandleScopeType = LocalHandleScope;
 
-  explicit LocalIsolate(Isolate* isolate);
+  explicit LocalIsolate(Isolate* isolate, ThreadKind kind);
   ~LocalIsolate();
 
   // Kinda sketchy.
@@ -52,8 +52,6 @@ class V8_EXPORT_PRIVATE LocalIsolate final : private HiddenLocalFactory {
   inline Object root(RootIndex index);
 
   StringTable* string_table() { return isolate_->string_table(); }
-
-  const Isolate* GetIsolateForPtrCompr() const { return isolate_; }
 
   v8::internal::LocalFactory* factory() {
     // Upcast to the privately inherited base-class using c-style casts to avoid

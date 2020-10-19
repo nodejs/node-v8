@@ -137,6 +137,7 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
   // Emit load / store property operations.
   builder.LoadNamedProperty(reg, name, load_slot.ToInt())
       .LoadNamedPropertyNoFeedback(reg, name)
+      .LoadNamedPropertyFromSuper(reg, name, load_slot.ToInt())
       .LoadKeyedProperty(reg, keyed_load_slot.ToInt())
       .StoreNamedProperty(reg, name, sloppy_store_slot.ToInt(),
                           LanguageMode::kSloppy)
@@ -531,11 +532,7 @@ TEST_F(BytecodeArrayBuilderTest, Parameters) {
 
   Register receiver(builder.Receiver());
   Register param8(builder.Parameter(8));
-#ifdef V8_REVERSE_JSARGS
   CHECK_EQ(receiver.index() - param8.index(), 9);
-#else
-  CHECK_EQ(param8.index() - receiver.index(), 9);
-#endif
 }
 
 TEST_F(BytecodeArrayBuilderTest, Constants) {

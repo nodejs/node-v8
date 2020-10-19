@@ -6,10 +6,10 @@
 #define V8_OBJECTS_HEAP_OBJECT_H_
 
 #include "src/common/globals.h"
-#include "src/roots/roots.h"
-
+#include "src/objects/instance-type.h"
 #include "src/objects/objects.h"
 #include "src/objects/tagged-field.h"
+#include "src/roots/roots.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -45,8 +45,8 @@ class HeapObject : public Object {
 
   // Compare-and-swaps map word using release store, returns true if the map
   // word was actually swapped.
-  inline bool synchronized_compare_and_swap_map_word(MapWord old_map_word,
-                                                     MapWord new_map_word);
+  inline bool release_compare_and_swap_map_word(MapWord old_map_word,
+                                                MapWord new_map_word);
 
   // Initialize the map immediately after the object is allocated.
   // Do not use this outside Heap.
@@ -62,19 +62,17 @@ class HeapObject : public Object {
   DECL_GETTER(synchronized_map_word, MapWord)
   inline void synchronized_set_map_word(MapWord map_word);
 
-  // TODO(v8:7464): Once RO_SPACE is shared between isolates, this method can be
-  // removed as ReadOnlyRoots will be accessible from a global variable. For now
-  // this method exists to help remove GetIsolate/GetHeap from HeapObject, in a
+  // This method exists to help remove GetIsolate/GetHeap from HeapObject, in a
   // way that doesn't require passing Isolate/Heap down huge call chains or to
   // places where it might not be safe to access it.
   inline ReadOnlyRoots GetReadOnlyRoots() const;
   // This version is intended to be used for the isolate values produced by
   // i::GetIsolateForPtrCompr(HeapObject) function which may return nullptr.
-  inline ReadOnlyRoots GetReadOnlyRoots(const Isolate* isolate) const;
+  inline ReadOnlyRoots GetReadOnlyRoots(IsolateRoot isolate) const;
 
 #define IS_TYPE_FUNCTION_DECL(Type) \
   V8_INLINE bool Is##Type() const;  \
-  V8_INLINE bool Is##Type(const Isolate* isolate) const;
+  V8_INLINE bool Is##Type(IsolateRoot isolate) const;
   HEAP_OBJECT_TYPE_LIST(IS_TYPE_FUNCTION_DECL)
   IS_TYPE_FUNCTION_DECL(HashTableBase)
   IS_TYPE_FUNCTION_DECL(SmallOrderedHashTable)
@@ -95,7 +93,7 @@ class HeapObject : public Object {
 
 #define DECL_STRUCT_PREDICATE(NAME, Name, name) \
   V8_INLINE bool Is##Name() const;              \
-  V8_INLINE bool Is##Name(const Isolate* isolate) const;
+  V8_INLINE bool Is##Name(IsolateRoot isolate) const;
   STRUCT_LIST(DECL_STRUCT_PREDICATE)
 #undef DECL_STRUCT_PREDICATE
 
@@ -183,6 +181,7 @@ class HeapObject : public Object {
   // Whether the object needs rehashing. That is the case if the object's
   // content depends on FLAG_hash_seed. When the object is deserialized into
   // a heap with a different hash seed, these objects need to adapt.
+  bool NeedsRehashing(InstanceType instance_type) const;
   bool NeedsRehashing() const;
 
   // Rehashing support is not implemented for all objects that need rehashing.

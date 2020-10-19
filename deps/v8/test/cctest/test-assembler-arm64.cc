@@ -166,7 +166,9 @@ static void InitializeVM() {
   {                                                                     \
     CodeDesc desc;                                                      \
     __ GetCode(masm.isolate(), &desc);                                  \
-    code = Factory::CodeBuilder(isolate, desc, CodeKind::STUB).Build(); \
+    code = Factory::CodeBuilder(isolate, desc,                          \
+                                CodeKind::DEOPT_ENTRIES_OR_FOR_TESTING) \
+               .Build();                                                \
     if (FLAG_print_code) code->Print();                                 \
   }
 
@@ -211,7 +213,9 @@ static void InitializeVM() {
   {                                                                     \
     CodeDesc desc;                                                      \
     __ GetCode(masm.isolate(), &desc);                                  \
-    code = Factory::CodeBuilder(isolate, desc, CodeKind::STUB).Build(); \
+    code = Factory::CodeBuilder(isolate, desc,                          \
+                                CodeKind::DEOPT_ENTRIES_OR_FOR_TESTING) \
+               .Build();                                                \
     if (FLAG_print_code) code->Print();                                 \
   }
 
@@ -11720,9 +11724,9 @@ TEST(system_msr) {
   const uint64_t fpcr_core = 0x07C00000;
 
   // All FPCR fields (including fields which may be read-as-zero):
-  //  Stride, Len
+  //  Stride, FZ16, Len
   //  IDE, IXE, UFE, OFE, DZE, IOE
-  const uint64_t fpcr_all = fpcr_core | 0x00379F00;
+  const uint64_t fpcr_all = fpcr_core | 0x003F9F00;
 
   SETUP();
 
@@ -14880,7 +14884,8 @@ TEST(pool_size) {
 
   CodeDesc desc;
   masm.GetCode(isolate, &desc);
-  code = Factory::CodeBuilder(isolate, desc, CodeKind::STUB)
+  code = Factory::CodeBuilder(isolate, desc,
+                              CodeKind::DEOPT_ENTRIES_OR_FOR_TESTING)
              .set_self_reference(masm.CodeObject())
              .Build();
 

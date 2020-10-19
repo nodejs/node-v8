@@ -209,8 +209,7 @@ auto seal(const typename implement<C>::type* x) -> const C* {
 
 // Configuration
 
-struct ConfigImpl {
-};
+struct ConfigImpl {};
 
 template <>
 struct implement<Config> {
@@ -888,8 +887,8 @@ own<Instance> GetInstance(StoreImpl* store,
 
 own<Frame> CreateFrameFromInternal(i::Handle<i::FixedArray> frames, int index,
                                    i::Isolate* isolate, StoreImpl* store) {
-  i::Handle<i::StackTraceFrame> frame(i::StackTraceFrame::cast(frames->get(0)),
-                                      isolate);
+  i::Handle<i::StackTraceFrame> frame(
+      i::StackTraceFrame::cast(frames->get(index)), isolate);
   i::Handle<i::WasmInstanceObject> instance =
       i::StackTraceFrame::GetWasmInstance(frame);
   uint32_t func_index = i::StackTraceFrame::GetWasmFunctionIndex(frame);
@@ -1380,12 +1379,13 @@ i::Address CallTargetFromCache(i::Object cached_call_target) {
 
 void PrepareFunctionData(i::Isolate* isolate,
                          i::Handle<i::WasmExportedFunctionData> function_data,
-                         const i::wasm::FunctionSig* sig) {
+                         const i::wasm::FunctionSig* sig,
+                         const i::wasm::WasmModule* module) {
   // If the data is already populated, return immediately.
   if (!function_data->c_wrapper_code().IsSmi()) return;
   // Compile wrapper code.
   i::Handle<i::Code> wrapper_code =
-      i::compiler::CompileCWasmEntry(isolate, sig);
+      i::compiler::CompileCWasmEntry(isolate, sig, module);
   function_data->set_c_wrapper_code(*wrapper_code);
   // Compute packed args size.
   function_data->set_packed_args_size(
@@ -1510,7 +1510,8 @@ auto Func::call(const Val args[], Val results[]) const -> own<Trap> {
   auto store = func->store();
   auto isolate = store->i_isolate();
   i::HandleScope handle_scope(isolate);
-  i::Object raw_function_data = func->v8_object()->shared().function_data();
+  i::Object raw_function_data =
+      func->v8_object()->shared().function_data(v8::kAcquireLoad);
 
   // WasmCapiFunctions can be called directly.
   if (raw_function_data.IsWasmCapiFunctionData()) {
@@ -1526,7 +1527,7 @@ auto Func::call(const Val args[], Val results[]) const -> own<Trap> {
   // Caching {sig} would give a ~10% reduction in overhead.
   const i::wasm::FunctionSig* sig =
       instance->module()->functions[function_index].sig;
-  PrepareFunctionData(isolate, function_data, sig);
+  PrepareFunctionData(isolate, function_data, sig, instance->module());
   i::Handle<i::Code> wrapper_code = i::Handle<i::Code>(
       i::Code::cast(function_data->c_wrapper_code()), isolate);
   i::Address call_target =
@@ -1543,7 +1544,7 @@ auto Func::call(const Val args[], Val results[]) const -> own<Trap> {
     if (object_ref->IsTuple2()) {
       i::JSFunction jsfunc =
           i::JSFunction::cast(i::Tuple2::cast(*object_ref).value2());
-      i::Object data = jsfunc.shared().function_data();
+      i::Object data = jsfunc.shared().function_data(v8::kAcquireLoad);
       if (data.IsWasmCapiFunctionData()) {
         return CallWasmCapiFunction(i::WasmCapiFunctionData::cast(data), args,
                                     results);
@@ -1686,7 +1687,8 @@ auto Global::make(Store* store_abs, const GlobalType* type, const Val& val)
   bool is_mutable = (type->mutability() == VAR);
   const int32_t offset = 0;
   i::Handle<i::WasmGlobalObject> obj =
-      i::WasmGlobalObject::New(isolate, i::MaybeHandle<i::JSArrayBuffer>(),
+      i::WasmGlobalObject::New(isolate, i::Handle<i::WasmInstanceObject>(),
+                               i::MaybeHandle<i::JSArrayBuffer>(),
                                i::MaybeHandle<i::FixedArray>(), i_type, offset,
                                is_mutable)
           .ToHandleChecked();
@@ -1808,7 +1810,8 @@ auto Table::make(Store* store_abs, const TableType* type, const Ref* ref)
 
   i::Handle<i::FixedArray> backing_store;
   i::Handle<i::WasmTableObject> table_obj = i::WasmTableObject::New(
-      isolate, i_type, minimum, has_maximum, maximum, &backing_store);
+      isolate, i::Handle<i::WasmInstanceObject>(), i_type, minimum, has_maximum,
+      maximum, &backing_store);
 
   if (ref) {
     i::Handle<i::JSReceiver> init = impl(ref)->v8_object();
@@ -1899,8 +1902,8 @@ auto Memory::make(Store* store_abs, const MemoryType* type) -> own<Memory> {
 
   const Limits& limits = type->limits();
   uint32_t minimum = limits.min;
-  // The max_initial_mem_pages limit is only spec'ed for JS embeddings,
-  // so we'll directly use the maximum pages limit here.
+  // The max_mem_pages limit is only spec'ed for JS embeddings, so we'll
+  // directly use the maximum pages limit here.
   if (minimum > i::wasm::kSpecMaxMemoryPages) return nullptr;
   uint32_t maximum = limits.max;
   if (maximum != Limits(0).max) {

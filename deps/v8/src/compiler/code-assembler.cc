@@ -64,11 +64,8 @@ CodeAssemblerState::CodeAssemblerState(Isolate* isolate, Zone* zone,
                                        int32_t builtin_index)
     : CodeAssemblerState(
           isolate, zone,
-          Linkage::GetJSCallDescriptor(
-              zone, false, parameter_count,
-              (kind == CodeKind::BUILTIN ? CallDescriptor::kPushArgumentCount
-                                         : CallDescriptor::kNoFlags) |
-                  CallDescriptor::kCanUseRoots),
+          Linkage::GetJSCallDescriptor(zone, false, parameter_count,
+                                       CallDescriptor::kCanUseRoots),
           kind, name, poisoning_level, builtin_index) {}
 
 CodeAssemblerState::CodeAssemblerState(Isolate* isolate, Zone* zone,
@@ -380,7 +377,7 @@ bool CodeAssembler::IsNullConstant(TNode<Object> node) {
   return m.Is(isolate()->factory()->null_value());
 }
 
-Node* CodeAssembler::Parameter(int index) {
+Node* CodeAssembler::UntypedParameter(int index) {
   if (index == kTargetParameterIndex) return raw_assembler()->TargetParameter();
   return raw_assembler()->Parameter(index);
 }
@@ -393,8 +390,8 @@ bool CodeAssembler::IsJSFunctionCall() const {
 TNode<Context> CodeAssembler::GetJSContextParameter() {
   auto call_descriptor = raw_assembler()->call_descriptor();
   DCHECK(call_descriptor->IsJSFunctionCall());
-  return CAST(Parameter(Linkage::GetJSCallContextParamIndex(
-      static_cast<int>(call_descriptor->JSParameterCount()))));
+  return Parameter<Context>(Linkage::GetJSCallContextParamIndex(
+      static_cast<int>(call_descriptor->JSParameterCount())));
 }
 
 void CodeAssembler::Return(TNode<Object> value) {
@@ -805,19 +802,21 @@ Node* CodeAssembler::AtomicStore(MachineRepresentation rep, Node* base,
   return raw_assembler()->AtomicStore(rep, base, offset, value, value_high);
 }
 
-#define ATOMIC_FUNCTION(name)                                       \
-  Node* CodeAssembler::Atomic##name(MachineType type, Node* base,   \
-                                    Node* offset, Node* value,      \
-                                    Node* value_high) {             \
-    return raw_assembler()->Atomic##name(type, base, offset, value, \
-                                         value_high);               \
+#define ATOMIC_FUNCTION(name)                                        \
+  Node* CodeAssembler::Atomic##name(                                 \
+      MachineType type, TNode<RawPtrT> base, TNode<UintPtrT> offset, \
+      Node* value, base::Optional<TNode<UintPtrT>> value_high) {     \
+    Node* value_high_node = nullptr;                                 \
+    if (value_high) value_high_node = *value_high;                   \
+    return raw_assembler()->Atomic##name(type, base, offset, value,  \
+                                         value_high_node);           \
   }
-ATOMIC_FUNCTION(Exchange)
 ATOMIC_FUNCTION(Add)
 ATOMIC_FUNCTION(Sub)
 ATOMIC_FUNCTION(And)
 ATOMIC_FUNCTION(Or)
 ATOMIC_FUNCTION(Xor)
+ATOMIC_FUNCTION(Exchange)
 #undef ATOMIC_FUNCTION
 
 Node* CodeAssembler::AtomicCompareExchange(MachineType type, Node* base,

@@ -10,7 +10,9 @@
 #include "src/common/globals.h"
 #include "src/handles/local-handles.h"
 #include "src/heap/heap-inl.h"
+#include "src/heap/heap-write-barrier.h"
 #include "src/heap/local-heap-inl.h"
+#include "src/heap/marking-barrier.h"
 #include "src/heap/safepoint.h"
 
 namespace v8 {
@@ -22,18 +24,29 @@ thread_local LocalHeap* current_local_heap = nullptr;
 
 LocalHeap* LocalHeap::Current() { return current_local_heap; }
 
-LocalHeap::LocalHeap(Heap* heap,
+LocalHeap::LocalHeap(Heap* heap, ThreadKind kind,
                      std::unique_ptr<PersistentHandles> persistent_handles)
     : heap_(heap),
-      state_(ThreadState::Running),
+      is_main_thread_(kind == ThreadKind::kMain),
+      state_(ThreadState::Parked),
       safepoint_requested_(false),
       allocation_failed_(false),
       prev_(nullptr),
       next_(nullptr),
       handles_(new LocalHandles),
       persistent_handles_(std::move(persistent_handles)),
+      marking_barrier_(new MarkingBarrier(this)),
       old_space_allocator_(this, heap->old_space()) {
-  heap_->safepoint()->AddLocalHeap(this);
+  heap_->safepoint()->AddLocalHeap(this, [this] {
+    if (FLAG_local_heaps) {
+      WriteBarrier::SetForThread(marking_barrier_.get());
+      if (heap_->incremental_marking()->IsMarking()) {
+        marking_barrier_->Activate(
+            heap_->incremental_marking()->IsCompacting());
+      }
+    }
+  });
+
   if (persistent_handles_) {
     persistent_handles_->Attach(this);
   }
@@ -42,13 +55,17 @@ LocalHeap::LocalHeap(Heap* heap,
 }
 
 LocalHeap::~LocalHeap() {
-  // Give up LAB before parking thread
-  old_space_allocator_.FreeLinearAllocationArea();
-
   // Park thread since removing the local heap could block.
   EnsureParkedBeforeDestruction();
 
-  heap_->safepoint()->RemoveLocalHeap(this);
+  heap_->safepoint()->RemoveLocalHeap(this, [this] {
+    old_space_allocator_.FreeLinearAllocationArea();
+
+    if (FLAG_local_heaps) {
+      marking_barrier_->Publish();
+      WriteBarrier::ClearForThread(marking_barrier_.get());
+    }
+  });
 
   DCHECK_EQ(current_local_heap, this);
   current_local_heap = nullptr;
@@ -60,6 +77,13 @@ void LocalHeap::EnsurePersistentHandles() {
         heap_->isolate()->NewPersistentHandles().release());
     persistent_handles_->Attach(this);
   }
+}
+
+void LocalHeap::AttachPersistentHandles(
+    std::unique_ptr<PersistentHandles> persistent_handles) {
+  DCHECK_NULL(persistent_handles_);
+  persistent_handles_ = std::move(persistent_handles);
+  persistent_handles_->Attach(this);
 }
 
 std::unique_ptr<PersistentHandles> LocalHeap::DetachPersistentHandles() {
@@ -101,6 +125,7 @@ void LocalHeap::Unpark() {
 }
 
 void LocalHeap::EnsureParkedBeforeDestruction() {
+  if (IsParked()) return;
   base::MutexGuard guard(&state_mutex_);
   state_ = ThreadState::Parked;
   state_change_.NotifyAll();
@@ -144,7 +169,7 @@ Address LocalHeap::PerformCollectionAndAllocateAgain(
   for (int i = 0; i < kMaxNumberOfRetries; i++) {
     {
       ParkedScope scope(this);
-      heap_->RequestAndWaitForCollection();
+      heap_->RequestCollectionBackground(this);
     }
 
     AllocationResult result = AllocateRaw(object_size, type, origin, alignment);

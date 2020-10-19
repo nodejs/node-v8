@@ -449,41 +449,42 @@ void EmitWordLoadPoisoningIfNeeded(CodeGenerator* codegen, Instruction* instr,
     DCHECK_EQ(LeaveRC, i.OutputRCBit());                                       \
   } while (0)
 
-#define ASSEMBLE_FLOAT_MAX()                                           \
-  do {                                                                 \
-    DoubleRegister left_reg = i.InputDoubleRegister(0);                \
-    DoubleRegister right_reg = i.InputDoubleRegister(1);               \
-    DoubleRegister result_reg = i.OutputDoubleRegister();              \
-    Label check_nan_left, check_zero, return_left, return_right, done; \
-    __ fcmpu(left_reg, right_reg);                                     \
-    __ bunordered(&check_nan_left);                                    \
-    __ beq(&check_zero);                                               \
-    __ bge(&return_left);                                              \
-    __ b(&return_right);                                               \
-                                                                       \
-    __ bind(&check_zero);                                              \
-    __ fcmpu(left_reg, kDoubleRegZero);                                \
-    /* left == right != 0. */                                          \
-    __ bne(&return_left);                                              \
-    /* At this point, both left and right are either 0 or -0. */       \
-    __ fadd(result_reg, left_reg, right_reg);                          \
-    __ b(&done);                                                       \
-                                                                       \
-    __ bind(&check_nan_left);                                          \
-    __ fcmpu(left_reg, left_reg);                                      \
-    /* left == NaN. */                                                 \
-    __ bunordered(&return_left);                                       \
-    __ bind(&return_right);                                            \
-    if (right_reg != result_reg) {                                     \
-      __ fmr(result_reg, right_reg);                                   \
-    }                                                                  \
-    __ b(&done);                                                       \
-                                                                       \
-    __ bind(&return_left);                                             \
-    if (left_reg != result_reg) {                                      \
-      __ fmr(result_reg, left_reg);                                    \
-    }                                                                  \
-    __ bind(&done);                                                    \
+#define ASSEMBLE_FLOAT_MAX()                                            \
+  do {                                                                  \
+    DoubleRegister left_reg = i.InputDoubleRegister(0);                 \
+    DoubleRegister right_reg = i.InputDoubleRegister(1);                \
+    DoubleRegister result_reg = i.OutputDoubleRegister();               \
+    Label check_zero, return_left, return_right, return_nan, done;      \
+    __ fcmpu(left_reg, right_reg);                                      \
+    __ bunordered(&return_nan);                                         \
+    __ beq(&check_zero);                                                \
+    __ bge(&return_left);                                               \
+    __ b(&return_right);                                                \
+                                                                        \
+    __ bind(&check_zero);                                               \
+    __ fcmpu(left_reg, kDoubleRegZero);                                 \
+    /* left == right != 0. */                                           \
+    __ bne(&return_left);                                               \
+    /* At this point, both left and right are either 0 or -0. */        \
+    __ fadd(result_reg, left_reg, right_reg);                           \
+    __ b(&done);                                                        \
+                                                                        \
+    __ bind(&return_nan);                                               \
+    /* If left or right are NaN, fadd propagates the appropriate one.*/ \
+    __ fadd(result_reg, left_reg, right_reg);                           \
+    __ b(&done);                                                        \
+                                                                        \
+    __ bind(&return_right);                                             \
+    if (right_reg != result_reg) {                                      \
+      __ fmr(result_reg, right_reg);                                    \
+    }                                                                   \
+    __ b(&done);                                                        \
+                                                                        \
+    __ bind(&return_left);                                              \
+    if (left_reg != result_reg) {                                       \
+      __ fmr(result_reg, left_reg);                                     \
+    }                                                                   \
+    __ bind(&done);                                                     \
   } while (0)
 
 #define ASSEMBLE_FLOAT_MIN()                                              \
@@ -491,9 +492,9 @@ void EmitWordLoadPoisoningIfNeeded(CodeGenerator* codegen, Instruction* instr,
     DoubleRegister left_reg = i.InputDoubleRegister(0);                   \
     DoubleRegister right_reg = i.InputDoubleRegister(1);                  \
     DoubleRegister result_reg = i.OutputDoubleRegister();                 \
-    Label check_nan_left, check_zero, return_left, return_right, done;    \
+    Label check_zero, return_left, return_right, return_nan, done;        \
     __ fcmpu(left_reg, right_reg);                                        \
-    __ bunordered(&check_nan_left);                                       \
+    __ bunordered(&return_nan);                                           \
     __ beq(&check_zero);                                                  \
     __ ble(&return_left);                                                 \
     __ b(&return_right);                                                  \
@@ -515,10 +516,10 @@ void EmitWordLoadPoisoningIfNeeded(CodeGenerator* codegen, Instruction* instr,
     __ fneg(result_reg, result_reg);                                      \
     __ b(&done);                                                          \
                                                                           \
-    __ bind(&check_nan_left);                                             \
-    __ fcmpu(left_reg, left_reg);                                         \
-    /* left == NaN. */                                                    \
-    __ bunordered(&return_left);                                          \
+    __ bind(&return_nan);                                                 \
+    /* If left or right are NaN, fadd propagates the appropriate one.*/   \
+    __ fadd(result_reg, left_reg, right_reg);                             \
+    __ b(&done);                                                          \
                                                                           \
     __ bind(&return_right);                                               \
     if (right_reg != result_reg) {                                        \
@@ -3228,7 +3229,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
                  i.InputSimd128Register(1));
       break;
     }
-    case kPPC_S8x16Shuffle: {
+    case kPPC_I8x16Shuffle: {
       Simd128Register dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
                       src1 = i.InputSimd128Register(1);
@@ -3247,47 +3248,47 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ vperm(dst, src0, src1, kScratchDoubleReg);
       break;
     }
-    case kPPC_I16x8AddSaturateS: {
+    case kPPC_I16x8AddSatS: {
       __ vaddshs(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  i.InputSimd128Register(1));
       break;
     }
-    case kPPC_I16x8SubSaturateS: {
+    case kPPC_I16x8SubSatS: {
       __ vsubshs(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  i.InputSimd128Register(1));
       break;
     }
-    case kPPC_I16x8AddSaturateU: {
+    case kPPC_I16x8AddSatU: {
       __ vadduhs(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  i.InputSimd128Register(1));
       break;
     }
-    case kPPC_I16x8SubSaturateU: {
+    case kPPC_I16x8SubSatU: {
       __ vsubuhs(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  i.InputSimd128Register(1));
       break;
     }
-    case kPPC_I8x16AddSaturateS: {
+    case kPPC_I8x16AddSatS: {
       __ vaddsbs(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  i.InputSimd128Register(1));
       break;
     }
-    case kPPC_I8x16SubSaturateS: {
+    case kPPC_I8x16SubSatS: {
       __ vsubsbs(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  i.InputSimd128Register(1));
       break;
     }
-    case kPPC_I8x16AddSaturateU: {
+    case kPPC_I8x16AddSatU: {
       __ vaddubs(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  i.InputSimd128Register(1));
       break;
     }
-    case kPPC_I8x16SubSaturateU: {
+    case kPPC_I8x16SubSatU: {
       __ vsububs(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  i.InputSimd128Register(1));
       break;
     }
-    case kPPC_S8x16Swizzle: {
+    case kPPC_I8x16Swizzle: {
       // Reverse the input to match IBM lane numbering.
       Simd128Register tempFPReg1 = i.ToSimd128Register(instr->TempAt(0));
       __ addi(sp, sp, Operand(-16));
@@ -3353,6 +3354,118 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kPPC_I8x16RoundingAverageU: {
       __ vavgub(i.OutputSimd128Register(), i.InputSimd128Register(0),
                 i.InputSimd128Register(1));
+      break;
+    }
+    case kPPC_S128AndNot: {
+      Simd128Register dst = i.OutputSimd128Register();
+      Simd128Register src = i.InputSimd128Register(0);
+      __ vandc(dst, src, i.InputSimd128Register(1));
+      break;
+    }
+    case kPPC_F64x2Div: {
+      __ xvdivdp(i.OutputSimd128Register(), i.InputSimd128Register(0),
+                 i.InputSimd128Register(1));
+      break;
+    }
+#define F64X2_MIN_MAX_NAN(result)                                       \
+  Simd128Register tempFPReg1 = i.ToSimd128Register(instr->TempAt(0));   \
+  __ xvcmpeqdp(tempFPReg1, i.InputSimd128Register(0),                   \
+               i.InputSimd128Register(0));                              \
+  __ vsel(result, i.InputSimd128Register(0), result, tempFPReg1);       \
+  __ xvcmpeqdp(tempFPReg1, i.InputSimd128Register(1),                   \
+               i.InputSimd128Register(1));                              \
+  __ vsel(i.OutputSimd128Register(), i.InputSimd128Register(1), result, \
+          tempFPReg1);
+    case kPPC_F64x2Min: {
+      __ xvmindp(kScratchDoubleReg, i.InputSimd128Register(0),
+                 i.InputSimd128Register(1));
+      // We need to check if an input is NAN and preserve it.
+      F64X2_MIN_MAX_NAN(kScratchDoubleReg)
+      break;
+    }
+    case kPPC_F64x2Max: {
+      __ xvmaxdp(kScratchDoubleReg, i.InputSimd128Register(0),
+                 i.InputSimd128Register(1));
+      // We need to check if an input is NAN and preserve it.
+      F64X2_MIN_MAX_NAN(kScratchDoubleReg)
+      break;
+    }
+#undef F64X2_MIN_MAX_NAN
+    case kPPC_F32x4Div: {
+      __ xvdivsp(i.OutputSimd128Register(), i.InputSimd128Register(0),
+                 i.InputSimd128Register(1));
+      break;
+    }
+    case kPPC_F32x4Min: {
+      __ vminfp(i.OutputSimd128Register(), i.InputSimd128Register(0),
+                i.InputSimd128Register(1));
+      break;
+    }
+    case kPPC_F32x4Max: {
+      __ vmaxfp(i.OutputSimd128Register(), i.InputSimd128Register(0),
+                i.InputSimd128Register(1));
+      break;
+    }
+    case kPPC_F64x2Ceil: {
+      __ xvrdpip(i.OutputSimd128Register(), i.InputSimd128Register(0));
+      break;
+    }
+    case kPPC_F64x2Floor: {
+      __ xvrdpim(i.OutputSimd128Register(), i.InputSimd128Register(0));
+      break;
+    }
+    case kPPC_F64x2Trunc: {
+      __ xvrdpiz(i.OutputSimd128Register(), i.InputSimd128Register(0));
+      break;
+    }
+    case kPPC_F64x2NearestInt: {
+      __ xvrdpi(i.OutputSimd128Register(), i.InputSimd128Register(0));
+      break;
+    }
+    case kPPC_F32x4Ceil: {
+      __ xvrspip(i.OutputSimd128Register(), i.InputSimd128Register(0));
+      break;
+    }
+    case kPPC_F32x4Floor: {
+      __ xvrspim(i.OutputSimd128Register(), i.InputSimd128Register(0));
+      break;
+    }
+    case kPPC_F32x4Trunc: {
+      __ xvrspiz(i.OutputSimd128Register(), i.InputSimd128Register(0));
+      break;
+    }
+    case kPPC_F32x4NearestInt: {
+      __ xvrspi(i.OutputSimd128Register(), i.InputSimd128Register(0));
+      break;
+    }
+    case kPPC_I32x4BitMask: {
+      __ mov(kScratchReg,
+             Operand(0x8080808000204060));  // Select 0 for the high bits.
+      __ mtvsrd(kScratchDoubleReg, kScratchReg);
+      __ vbpermq(kScratchDoubleReg, i.InputSimd128Register(0),
+                 kScratchDoubleReg);
+      __ vextractub(kScratchDoubleReg, kScratchDoubleReg, Operand(6));
+      __ mfvsrd(i.OutputRegister(), kScratchDoubleReg);
+      break;
+    }
+    case kPPC_I16x8BitMask: {
+      __ mov(kScratchReg, Operand(0x10203040506070));
+      __ mtvsrd(kScratchDoubleReg, kScratchReg);
+      __ vbpermq(kScratchDoubleReg, i.InputSimd128Register(0),
+                 kScratchDoubleReg);
+      __ vextractub(kScratchDoubleReg, kScratchDoubleReg, Operand(6));
+      __ mfvsrd(i.OutputRegister(), kScratchDoubleReg);
+      break;
+    }
+    case kPPC_I8x16BitMask: {
+      Register temp = i.ToRegister(instr->TempAt(0));
+      __ mov(temp, Operand(0x8101820283038));
+      __ mov(ip, Operand(0x4048505860687078));
+      __ mtvsrdd(kScratchDoubleReg, temp, ip);
+      __ vbpermq(kScratchDoubleReg, i.InputSimd128Register(0),
+                 kScratchDoubleReg);
+      __ vextractuh(kScratchDoubleReg, kScratchDoubleReg, Operand(6));
+      __ mfvsrd(i.OutputRegister(), kScratchDoubleReg);
       break;
     }
     case kPPC_StoreCompressTagged: {
@@ -3631,9 +3744,6 @@ void CodeGenerator::AssembleConstructFrame() {
       }
     } else if (call_descriptor->IsJSFunctionCall()) {
       __ Prologue();
-      if (call_descriptor->PushArgumentCount()) {
-        __ Push(kJavaScriptCallArgCountRegister);
-      }
     } else {
       StackFrame::Type type = info()->GetOutputStackFrameType();
       // TODO(mbrandy): Detect cases where ip is the entrypoint (for

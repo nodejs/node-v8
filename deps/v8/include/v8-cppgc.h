@@ -14,6 +14,7 @@ namespace v8 {
 class Isolate;
 template <typename T>
 class JSMember;
+class JSVisitor;
 
 namespace internal {
 
@@ -49,12 +50,25 @@ class V8_EXPORT JSMemberBase {
   inline JSMemberBase& CopyImpl(const JSMemberBase& other);
   inline JSMemberBase& MoveImpl(JSMemberBase&& other);
 
+  void SetSlotThreadSafe(void* value) {
+    reinterpret_cast<std::atomic<void*>*>(&val_)->store(
+        value, std::memory_order_relaxed);
+  }
+  bool IsEmptyThreadSafe() const {
+    return reinterpret_cast<std::atomic<const void*> const*>(&val_)->load(
+               std::memory_order_relaxed) == nullptr;
+  }
+
   // val_ points to a GlobalHandles node.
   internal::Address* val_ = nullptr;
 
   template <typename T>
   friend class v8::JSMember;
+  friend class v8::JSVisitor;
   friend class v8::internal::JSMemberBaseExtractor;
+
+  template <typename U>
+  friend bool operator==(const internal::JSMemberBase&, const Local<U>&);
 };
 
 JSMemberBase& JSMemberBase::CopyImpl(const JSMemberBase& other) {
@@ -79,7 +93,22 @@ JSMemberBase& JSMemberBase::MoveImpl(JSMemberBase&& other) {
 void JSMemberBase::Reset() {
   if (IsEmpty()) return;
   Delete(val_);
-  val_ = nullptr;
+  SetSlotThreadSafe(nullptr);
+}
+
+template <typename U>
+inline bool operator==(const v8::internal::JSMemberBase& lhs,
+                       const v8::Local<U>& rhs) {
+  v8::internal::Address* a = reinterpret_cast<v8::internal::Address*>(lhs.val_);
+  v8::internal::Address* b = reinterpret_cast<v8::internal::Address*>(*rhs);
+  if (a == nullptr) return b == nullptr;
+  if (b == nullptr) return false;
+  return *a == *b;
+}
+
+template <typename U>
+inline bool operator!=(const v8::internal::JSMemberBase& lhs, const U& rhs) {
+  return !(lhs == rhs);
 }
 
 }  // namespace internal
@@ -144,7 +173,8 @@ class V8_EXPORT JSMember : public internal::JSMemberBase {
             typename = std::enable_if_t<std::is_base_of<T, U>::value>>
   void Set(v8::Isolate* isolate, Local<U> that) {
     Reset();
-    val_ = New(isolate, reinterpret_cast<internal::Address*>(*that), &val_);
+    SetSlotThreadSafe(
+        New(isolate, reinterpret_cast<internal::Address*>(*that), &val_));
   }
 };
 
@@ -198,9 +228,8 @@ class JSVisitor : public cppgc::Visitor {
  public:
   explicit JSVisitor(cppgc::Visitor::Key key) : cppgc::Visitor(key) {}
 
-  template <typename T>
-  void Trace(const JSMember<T>& ref) {
-    if (ref.IsEmpty()) return;
+  void Trace(const internal::JSMemberBase& ref) {
+    if (ref.IsEmptyThreadSafe()) return;
     Visit(ref);
   }
 

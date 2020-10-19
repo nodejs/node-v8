@@ -195,7 +195,8 @@ Handle<BytecodeArray> FactoryBase<Impl>::NewBytecodeArray(
   instance->set_bytecode_age(BytecodeArray::kNoAgeBytecodeAge);
   instance->set_constant_pool(*constant_pool);
   instance->set_handler_table(read_only_roots().empty_byte_array());
-  instance->set_source_position_table(read_only_roots().undefined_value());
+  instance->set_source_position_table(read_only_roots().undefined_value(),
+                                      kReleaseStore);
   CopyBytes(reinterpret_cast<byte*>(instance->GetFirstBytecodeAddress()),
             raw_bytecodes, length);
   instance->clear_padding();
@@ -311,9 +312,9 @@ Handle<SharedFunctionInfo> FactoryBase<Impl>::NewSharedFunctionInfo(
   bool has_shared_name = maybe_name.ToHandle(&shared_name);
   if (has_shared_name) {
     DCHECK(shared_name->IsFlat());
-    shared->set_name_or_scope_info(*shared_name);
+    shared->set_name_or_scope_info(*shared_name, kReleaseStore);
   } else {
-    DCHECK_EQ(shared->name_or_scope_info(),
+    DCHECK_EQ(shared->name_or_scope_info(kAcquireLoad),
               SharedFunctionInfo::kNoSharedNameSentinel);
   }
 
@@ -324,7 +325,7 @@ Handle<SharedFunctionInfo> FactoryBase<Impl>::NewSharedFunctionInfo(
     DCHECK(!Builtins::IsBuiltinId(maybe_builtin_index));
     DCHECK_IMPLIES(function_data->IsCode(),
                    !Code::cast(*function_data).is_builtin());
-    shared->set_function_data(*function_data);
+    shared->set_function_data(*function_data, kReleaseStore);
   } else if (Builtins::IsBuiltinId(maybe_builtin_index)) {
     shared->set_builtin_id(maybe_builtin_index);
   } else {
@@ -776,7 +777,9 @@ template <typename Impl>
 HeapObject FactoryBase<Impl>::AllocateRawArray(int size,
                                                AllocationType allocation) {
   HeapObject result = AllocateRaw(size, allocation);
-  if (size > kMaxRegularHeapObjectSize && FLAG_use_marking_progress_bar) {
+  if (!V8_ENABLE_THIRD_PARTY_HEAP_BOOL &&
+      (size > Heap::MaxRegularHeapObjectSize(allocation)) &&
+      FLAG_use_marking_progress_bar) {
     BasicMemoryChunk* chunk = BasicMemoryChunk::FromHeapObject(result);
     chunk->SetFlag<AccessMode::ATOMIC>(MemoryChunk::HAS_PROGRESS_BAR);
   }

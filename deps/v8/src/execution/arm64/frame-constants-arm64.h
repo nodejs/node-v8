@@ -15,6 +15,7 @@ namespace internal {
 
 // The layout of an EntryFrame is as follows:
 //
+//         BOTTOM OF THE STACK   HIGHEST ADDRESS
 //  slot      Entry frame
 //       +---------------------+-----------------------
 // -20   | saved register d15  |
@@ -45,6 +46,7 @@ namespace internal {
 //       |- - - - - - - - - - -|
 //   5   |      padding        |  <-- stack ptr
 //  -----+---------------------+-----------------------
+//          TOP OF THE STACK     LOWEST ADDRESS
 //
 class EntryFrameConstants : public AllStatic {
  public:
@@ -110,7 +112,7 @@ class WasmDebugBreakFrameConstants : public TypedFrameConstants {
       -RoundUp<16>(TypedFrameConstants::kFixedFrameSizeFromFp) -
       kSystemPointerSize * kNumPushedGpRegisters;
   static constexpr int kLastPushedFpRegisterOffset =
-      kLastPushedGpRegisterOffset - kDoubleSize * kNumPushedFpRegisters;
+      kLastPushedGpRegisterOffset - kSimd128Size * kNumPushedFpRegisters;
 
   // Offsets are fp-relative.
   static int GetPushedGpRegisterOffset(int reg_code) {
@@ -124,7 +126,7 @@ class WasmDebugBreakFrameConstants : public TypedFrameConstants {
     DCHECK_NE(0, kPushedFpRegs & (1 << reg_code));
     uint32_t lower_regs = kPushedFpRegs & ((uint32_t{1} << reg_code) - 1);
     return kLastPushedFpRegisterOffset +
-           base::bits::CountPopulation(lower_regs) * kDoubleSize;
+           base::bits::CountPopulation(lower_regs) * kSimd128Size;
   }
 };
 

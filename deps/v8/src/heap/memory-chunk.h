@@ -59,7 +59,6 @@ class MemoryChunk : public BasicMemoryChunk {
 
   // Only works if the object is in the first kPageSize of the MemoryChunk.
   static MemoryChunk* FromHeapObject(HeapObject o) {
-    DCHECK(!V8_ENABLE_THIRD_PARTY_HEAP_BOOL);
     return cast(BasicMemoryChunk::FromHeapObject(o));
   }
 
@@ -227,6 +226,10 @@ class MemoryChunk : public BasicMemoryChunk {
   // read-only space chunks.
   void ReleaseAllocatedMemoryNeededForWritableChunk();
 
+#ifdef V8_ENABLE_CONSERVATIVE_STACK_SCANNING
+  ObjectStartBitmap* object_start_bitmap() { return &object_start_bitmap_; }
+#endif
+
  protected:
   static MemoryChunk* Initialize(BasicMemoryChunk* basic_chunk, Heap* heap,
                                  Executability executable);
@@ -300,6 +303,10 @@ class MemoryChunk : public BasicMemoryChunk {
   CodeObjectRegistry* code_object_registry_;
 
   PossiblyEmptyBuckets possibly_empty_buckets_;
+
+#ifdef V8_ENABLE_CONSERVATIVE_STACK_SCANNING
+  ObjectStartBitmap object_start_bitmap_;
+#endif
 
  private:
   friend class ConcurrentMarkingState;

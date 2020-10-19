@@ -126,18 +126,17 @@ void MainMarkingVisitor<MarkingState>::RecordRelocSlot(Code host,
 
 template <typename MarkingState>
 void MainMarkingVisitor<MarkingState>::MarkDescriptorArrayFromWriteBarrier(
-    HeapObject host, DescriptorArray descriptors,
-    int number_of_own_descriptors) {
+    DescriptorArray descriptors, int number_of_own_descriptors) {
   // This is necessary because the Scavenger records slots only for the
   // promoted black objects and the marking visitor of DescriptorArray skips
   // the descriptors marked by the visitor.VisitDescriptors() below.
-  this->MarkDescriptorArrayBlack(host, descriptors);
+  this->MarkDescriptorArrayBlack(descriptors);
   this->VisitDescriptors(descriptors, number_of_own_descriptors);
 }
 
 template <LiveObjectIterationMode mode>
-LiveObjectRange<mode>::iterator::iterator(MemoryChunk* chunk, Bitmap* bitmap,
-                                          Address start)
+LiveObjectRange<mode>::iterator::iterator(const MemoryChunk* chunk,
+                                          Bitmap* bitmap, Address start)
     : chunk_(chunk),
       one_word_filler_map_(
           ReadOnlyRoots(chunk->heap()).one_pointer_filler_map()),

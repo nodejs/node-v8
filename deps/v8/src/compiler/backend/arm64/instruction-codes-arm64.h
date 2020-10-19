@@ -24,6 +24,7 @@ namespace compiler {
   V(Arm64Cmp32)                             \
   V(Arm64Cmn)                               \
   V(Arm64Cmn32)                             \
+  V(Arm64Cnt)                               \
   V(Arm64Tst)                               \
   V(Arm64Tst32)                             \
   V(Arm64Or)                                \
@@ -168,6 +169,10 @@ namespace compiler {
   V(Arm64StrCompressTagged)                 \
   V(Arm64DmbIsh)                            \
   V(Arm64DsbIsb)                            \
+  V(Arm64Sxtl)                              \
+  V(Arm64Sxtl2)                             \
+  V(Arm64Uxtl)                              \
+  V(Arm64Uxtl2)                             \
   V(Arm64F64x2Splat)                        \
   V(Arm64F64x2ExtractLane)                  \
   V(Arm64F64x2ReplaceLane)                  \
@@ -188,10 +193,6 @@ namespace compiler {
   V(Arm64F64x2Qfms)                         \
   V(Arm64F64x2Pmin)                         \
   V(Arm64F64x2Pmax)                         \
-  V(Arm64F64x2RoundUp)                      \
-  V(Arm64F64x2RoundDown)                    \
-  V(Arm64F64x2RoundTruncate)                \
-  V(Arm64F64x2RoundTiesEven)                \
   V(Arm64F32x4Splat)                        \
   V(Arm64F32x4ExtractLane)                  \
   V(Arm64F32x4ReplaceLane)                  \
@@ -217,10 +218,6 @@ namespace compiler {
   V(Arm64F32x4Qfms)                         \
   V(Arm64F32x4Pmin)                         \
   V(Arm64F32x4Pmax)                         \
-  V(Arm64F32x4RoundUp)                      \
-  V(Arm64F32x4RoundDown)                    \
-  V(Arm64F32x4RoundTruncate)                \
-  V(Arm64F32x4RoundTiesEven)                \
   V(Arm64I64x2Splat)                        \
   V(Arm64I64x2ExtractLane)                  \
   V(Arm64I64x2ReplaceLane)                  \
@@ -231,18 +228,11 @@ namespace compiler {
   V(Arm64I64x2Sub)                          \
   V(Arm64I64x2Mul)                          \
   V(Arm64I64x2Eq)                           \
-  V(Arm64I64x2Ne)                           \
-  V(Arm64I64x2GtS)                          \
-  V(Arm64I64x2GeS)                          \
   V(Arm64I64x2ShrU)                         \
-  V(Arm64I64x2GtU)                          \
-  V(Arm64I64x2GeU)                          \
   V(Arm64I32x4Splat)                        \
   V(Arm64I32x4ExtractLane)                  \
   V(Arm64I32x4ReplaceLane)                  \
   V(Arm64I32x4SConvertF32x4)                \
-  V(Arm64I32x4SConvertI16x8Low)             \
-  V(Arm64I32x4SConvertI16x8High)            \
   V(Arm64I32x4Neg)                          \
   V(Arm64I32x4Shl)                          \
   V(Arm64I32x4ShrS)                         \
@@ -259,8 +249,6 @@ namespace compiler {
   V(Arm64I32x4GtS)                          \
   V(Arm64I32x4GeS)                          \
   V(Arm64I32x4UConvertF32x4)                \
-  V(Arm64I32x4UConvertI16x8Low)             \
-  V(Arm64I32x4UConvertI16x8High)            \
   V(Arm64I32x4ShrU)                         \
   V(Arm64I32x4MinU)                         \
   V(Arm64I32x4MaxU)                         \
@@ -273,17 +261,15 @@ namespace compiler {
   V(Arm64I16x8ExtractLaneU)                 \
   V(Arm64I16x8ExtractLaneS)                 \
   V(Arm64I16x8ReplaceLane)                  \
-  V(Arm64I16x8SConvertI8x16Low)             \
-  V(Arm64I16x8SConvertI8x16High)            \
   V(Arm64I16x8Neg)                          \
   V(Arm64I16x8Shl)                          \
   V(Arm64I16x8ShrS)                         \
   V(Arm64I16x8SConvertI32x4)                \
   V(Arm64I16x8Add)                          \
-  V(Arm64I16x8AddSaturateS)                 \
+  V(Arm64I16x8AddSatS)                      \
   V(Arm64I16x8AddHoriz)                     \
   V(Arm64I16x8Sub)                          \
-  V(Arm64I16x8SubSaturateS)                 \
+  V(Arm64I16x8SubSatS)                      \
   V(Arm64I16x8Mul)                          \
   V(Arm64I16x8Mla)                          \
   V(Arm64I16x8Mls)                          \
@@ -293,17 +279,16 @@ namespace compiler {
   V(Arm64I16x8Ne)                           \
   V(Arm64I16x8GtS)                          \
   V(Arm64I16x8GeS)                          \
-  V(Arm64I16x8UConvertI8x16Low)             \
-  V(Arm64I16x8UConvertI8x16High)            \
   V(Arm64I16x8ShrU)                         \
   V(Arm64I16x8UConvertI32x4)                \
-  V(Arm64I16x8AddSaturateU)                 \
-  V(Arm64I16x8SubSaturateU)                 \
+  V(Arm64I16x8AddSatU)                      \
+  V(Arm64I16x8SubSatU)                      \
   V(Arm64I16x8MinU)                         \
   V(Arm64I16x8MaxU)                         \
   V(Arm64I16x8GtU)                          \
   V(Arm64I16x8GeU)                          \
   V(Arm64I16x8RoundingAverageU)             \
+  V(Arm64I16x8Q15MulRSatS)                  \
   V(Arm64I16x8Abs)                          \
   V(Arm64I16x8BitMask)                      \
   V(Arm64I8x16Splat)                        \
@@ -315,9 +300,9 @@ namespace compiler {
   V(Arm64I8x16ShrS)                         \
   V(Arm64I8x16SConvertI16x8)                \
   V(Arm64I8x16Add)                          \
-  V(Arm64I8x16AddSaturateS)                 \
+  V(Arm64I8x16AddSatS)                      \
   V(Arm64I8x16Sub)                          \
-  V(Arm64I8x16SubSaturateS)                 \
+  V(Arm64I8x16SubSatS)                      \
   V(Arm64I8x16Mul)                          \
   V(Arm64I8x16Mla)                          \
   V(Arm64I8x16Mls)                          \
@@ -329,8 +314,8 @@ namespace compiler {
   V(Arm64I8x16GeS)                          \
   V(Arm64I8x16ShrU)                         \
   V(Arm64I8x16UConvertI16x8)                \
-  V(Arm64I8x16AddSaturateU)                 \
-  V(Arm64I8x16SubSaturateU)                 \
+  V(Arm64I8x16AddSatU)                      \
+  V(Arm64I8x16SubSatU)                      \
   V(Arm64I8x16MinU)                         \
   V(Arm64I8x16MaxU)                         \
   V(Arm64I8x16GtU)                          \
@@ -367,32 +352,27 @@ namespace compiler {
   V(Arm64S8x16TransposeLeft)                \
   V(Arm64S8x16TransposeRight)               \
   V(Arm64S8x16Concat)                       \
-  V(Arm64S8x16Swizzle)                      \
-  V(Arm64S8x16Shuffle)                      \
+  V(Arm64I8x16Swizzle)                      \
+  V(Arm64I8x16Shuffle)                      \
   V(Arm64S32x2Reverse)                      \
   V(Arm64S16x4Reverse)                      \
   V(Arm64S16x2Reverse)                      \
   V(Arm64S8x8Reverse)                       \
   V(Arm64S8x4Reverse)                       \
   V(Arm64S8x2Reverse)                       \
-  V(Arm64V64x2AnyTrue)                      \
-  V(Arm64V64x2AllTrue)                      \
-  V(Arm64V32x4AnyTrue)                      \
+  V(Arm64V128AnyTrue)                       \
   V(Arm64V32x4AllTrue)                      \
-  V(Arm64V16x8AnyTrue)                      \
   V(Arm64V16x8AllTrue)                      \
-  V(Arm64V8x16AnyTrue)                      \
   V(Arm64V8x16AllTrue)                      \
-  V(Arm64S8x16LoadSplat)                    \
-  V(Arm64S16x8LoadSplat)                    \
-  V(Arm64S32x4LoadSplat)                    \
-  V(Arm64S64x2LoadSplat)                    \
-  V(Arm64I16x8Load8x8S)                     \
-  V(Arm64I16x8Load8x8U)                     \
-  V(Arm64I32x4Load16x4S)                    \
-  V(Arm64I32x4Load16x4U)                    \
-  V(Arm64I64x2Load32x2S)                    \
-  V(Arm64I64x2Load32x2U)                    \
+  V(Arm64LoadSplat)                         \
+  V(Arm64S128Load8x8S)                      \
+  V(Arm64S128Load8x8U)                      \
+  V(Arm64S128Load16x4S)                     \
+  V(Arm64S128Load16x4U)                     \
+  V(Arm64S128Load32x2S)                     \
+  V(Arm64S128Load32x2U)                     \
+  V(Arm64S128LoadMem32Zero)                 \
+  V(Arm64S128LoadMem64Zero)                 \
   V(Arm64Word64AtomicLoadUint8)             \
   V(Arm64Word64AtomicLoadUint16)            \
   V(Arm64Word64AtomicLoadUint32)            \

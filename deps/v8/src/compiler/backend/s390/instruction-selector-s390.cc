@@ -272,7 +272,7 @@ bool S390OpcodeOnlySupport12BitDisp(InstructionCode op) {
 
 ArchOpcode SelectLoadOpcode(Node* node) {
   LoadRepresentation load_rep = LoadRepresentationOf(node->op());
-  ArchOpcode opcode = kArchNop;
+  ArchOpcode opcode;
   switch (load_rep.representation()) {
     case MachineRepresentation::kFloat32:
       opcode = kS390_LoadFloat32;
@@ -747,7 +747,7 @@ static void VisitGeneralStore(
     code |= MiscField::encode(static_cast<int>(record_write_mode));
     selector->Emit(code, 0, nullptr, input_count, inputs, temp_count, temps);
   } else {
-    ArchOpcode opcode = kArchNop;
+    ArchOpcode opcode;
     NodeMatcher m(value);
     switch (rep) {
       case MachineRepresentation::kFloat32:
@@ -799,7 +799,6 @@ static void VisitGeneralStore(
         break;
       case MachineRepresentation::kNone:
         UNREACHABLE();
-        return;
     }
     InstructionOperand inputs[4];
     size_t input_count = 0;
@@ -2201,6 +2200,10 @@ void InstructionSelector::VisitFloat64LessThanOrEqual(Node* node) {
   VisitFloat64Compare(this, node, &cont);
 }
 
+bool InstructionSelector::ZeroExtendsWord32ToWord64NoPhis(Node* node) {
+  UNIMPLEMENTED();
+}
+
 void InstructionSelector::EmitPrepareArguments(
     ZoneVector<PushParameter>* arguments, const CallDescriptor* call_descriptor,
     Node* node) {
@@ -2298,7 +2301,7 @@ void VisitAtomicExchange(InstructionSelector* selector, Node* node,
 }
 
 void InstructionSelector::VisitWord32AtomicExchange(Node* node) {
-  ArchOpcode opcode = kArchNop;
+  ArchOpcode opcode;
   MachineType type = AtomicOpType(node->op());
   if (type == MachineType::Int8()) {
     opcode = kWord32AtomicExchangeInt8;
@@ -2312,13 +2315,12 @@ void InstructionSelector::VisitWord32AtomicExchange(Node* node) {
     opcode = kWord32AtomicExchangeWord32;
   } else {
     UNREACHABLE();
-    return;
   }
   VisitAtomicExchange(this, node, opcode);
 }
 
 void InstructionSelector::VisitWord64AtomicExchange(Node* node) {
-  ArchOpcode opcode = kArchNop;
+  ArchOpcode opcode;
   MachineType type = AtomicOpType(node->op());
   if (type == MachineType::Uint8()) {
     opcode = kS390_Word64AtomicExchangeUint8;
@@ -2330,7 +2332,6 @@ void InstructionSelector::VisitWord64AtomicExchange(Node* node) {
     opcode = kS390_Word64AtomicExchangeUint64;
   } else {
     UNREACHABLE();
-    return;
   }
   VisitAtomicExchange(this, node, opcode);
 }
@@ -2368,7 +2369,7 @@ void VisitAtomicCompareExchange(InstructionSelector* selector, Node* node,
 
 void InstructionSelector::VisitWord32AtomicCompareExchange(Node* node) {
   MachineType type = AtomicOpType(node->op());
-  ArchOpcode opcode = kArchNop;
+  ArchOpcode opcode;
   if (type == MachineType::Int8()) {
     opcode = kWord32AtomicCompareExchangeInt8;
   } else if (type == MachineType::Uint8()) {
@@ -2381,14 +2382,13 @@ void InstructionSelector::VisitWord32AtomicCompareExchange(Node* node) {
     opcode = kWord32AtomicCompareExchangeWord32;
   } else {
     UNREACHABLE();
-    return;
   }
   VisitAtomicCompareExchange(this, node, opcode);
 }
 
 void InstructionSelector::VisitWord64AtomicCompareExchange(Node* node) {
   MachineType type = AtomicOpType(node->op());
-  ArchOpcode opcode = kArchNop;
+  ArchOpcode opcode;
   if (type == MachineType::Uint8()) {
     opcode = kS390_Word64AtomicCompareExchangeUint8;
   } else if (type == MachineType::Uint16()) {
@@ -2399,7 +2399,6 @@ void InstructionSelector::VisitWord64AtomicCompareExchange(Node* node) {
     opcode = kS390_Word64AtomicCompareExchangeUint64;
   } else {
     UNREACHABLE();
-    return;
   }
   VisitAtomicCompareExchange(this, node, opcode);
 }
@@ -2443,7 +2442,7 @@ void InstructionSelector::VisitWord32AtomicBinaryOperation(
     Node* node, ArchOpcode int8_op, ArchOpcode uint8_op, ArchOpcode int16_op,
     ArchOpcode uint16_op, ArchOpcode word32_op) {
   MachineType type = AtomicOpType(node->op());
-  ArchOpcode opcode = kArchNop;
+  ArchOpcode opcode;
 
   if (type == MachineType::Int8()) {
     opcode = int8_op;
@@ -2457,7 +2456,6 @@ void InstructionSelector::VisitWord32AtomicBinaryOperation(
     opcode = word32_op;
   } else {
     UNREACHABLE();
-    return;
   }
   VisitAtomicBinop(this, node, opcode);
 }
@@ -2480,7 +2478,7 @@ void InstructionSelector::VisitWord64AtomicBinaryOperation(
     Node* node, ArchOpcode uint8_op, ArchOpcode uint16_op, ArchOpcode word32_op,
     ArchOpcode word64_op) {
   MachineType type = AtomicOpType(node->op());
-  ArchOpcode opcode = kArchNop;
+  ArchOpcode opcode;
 
   if (type == MachineType::Uint8()) {
     opcode = uint8_op;
@@ -2492,7 +2490,6 @@ void InstructionSelector::VisitWord64AtomicBinaryOperation(
     opcode = word64_op;
   } else {
     UNREACHABLE();
-    return;
   }
   VisitAtomicBinop(this, node, opcode);
 }
@@ -2555,15 +2552,6 @@ void InstructionSelector::VisitWord64AtomicStore(Node* node) {
   V(I64x2Sub)              \
   V(I64x2Mul)              \
   V(I64x2Eq)               \
-  V(I64x2Ne)               \
-  V(I64x2GtS)              \
-  V(I64x2GeS)              \
-  V(I64x2GtU)              \
-  V(I64x2GeU)              \
-  V(I64x2MinS)             \
-  V(I64x2MinU)             \
-  V(I64x2MaxS)             \
-  V(I64x2MaxU)             \
   V(I32x4Add)              \
   V(I32x4AddHoriz)         \
   V(I32x4Sub)              \
@@ -2578,6 +2566,7 @@ void InstructionSelector::VisitWord64AtomicStore(Node* node) {
   V(I32x4GeS)              \
   V(I32x4GtU)              \
   V(I32x4GeU)              \
+  V(I32x4DotI16x8S)        \
   V(I16x8Add)              \
   V(I16x8AddHoriz)         \
   V(I16x8Sub)              \
@@ -2594,10 +2583,10 @@ void InstructionSelector::VisitWord64AtomicStore(Node* node) {
   V(I16x8GeU)              \
   V(I16x8SConvertI32x4)    \
   V(I16x8UConvertI32x4)    \
-  V(I16x8AddSaturateS)     \
-  V(I16x8SubSaturateS)     \
-  V(I16x8AddSaturateU)     \
-  V(I16x8SubSaturateU)     \
+  V(I16x8AddSatS)          \
+  V(I16x8SubSatS)          \
+  V(I16x8AddSatU)          \
+  V(I16x8SubSatU)          \
   V(I16x8RoundingAverageU) \
   V(I8x16Add)              \
   V(I8x16Sub)              \
@@ -2614,10 +2603,10 @@ void InstructionSelector::VisitWord64AtomicStore(Node* node) {
   V(I8x16GeU)              \
   V(I8x16SConvertI16x8)    \
   V(I8x16UConvertI16x8)    \
-  V(I8x16AddSaturateS)     \
-  V(I8x16SubSaturateS)     \
-  V(I8x16AddSaturateU)     \
-  V(I8x16SubSaturateU)     \
+  V(I8x16AddSatS)          \
+  V(I8x16SubSatS)          \
+  V(I8x16AddSatU)          \
+  V(I8x16SubSatU)          \
   V(I8x16RoundingAverageU) \
   V(S128And)               \
   V(S128Or)                \
@@ -2673,11 +2662,9 @@ void InstructionSelector::VisitWord64AtomicStore(Node* node) {
   V(I8x16ShrU)
 
 #define SIMD_BOOL_LIST(V) \
-  V(V64x2AnyTrue)         \
   V(V32x4AnyTrue)         \
   V(V16x8AnyTrue)         \
   V(V8x16AnyTrue)         \
-  V(V64x2AllTrue)         \
   V(V32x4AllTrue)         \
   V(V16x8AllTrue)         \
   V(V8x16AllTrue)
@@ -2820,7 +2807,7 @@ SIMD_VISIT_PMIN_MAX(F32x4Pmax)
 #undef SIMD_VISIT_PMIN_MAX
 #undef SIMD_TYPES
 
-void InstructionSelector::VisitS8x16Shuffle(Node* node) {
+void InstructionSelector::VisitI8x16Shuffle(Node* node) {
   uint8_t shuffle[kSimd128Size];
   uint8_t* shuffle_p = &shuffle[0];
   bool is_swizzle;
@@ -2841,7 +2828,7 @@ void InstructionSelector::VisitS8x16Shuffle(Node* node) {
   }
   shuffle_p = &shuffle_remapped[0];
 #endif
-  Emit(kS390_S8x16Shuffle, g.DefineAsRegister(node),
+  Emit(kS390_I8x16Shuffle, g.DefineAsRegister(node),
        g.UseUniqueRegister(input0), g.UseUniqueRegister(input1),
        g.UseImmediate(wasm::SimdShuffle::Pack4Lanes(shuffle_p)),
        g.UseImmediate(wasm::SimdShuffle::Pack4Lanes(shuffle_p + 4)),
@@ -2849,11 +2836,12 @@ void InstructionSelector::VisitS8x16Shuffle(Node* node) {
        g.UseImmediate(wasm::SimdShuffle::Pack4Lanes(shuffle_p + 12)));
 }
 
-void InstructionSelector::VisitS8x16Swizzle(Node* node) {
+void InstructionSelector::VisitI8x16Swizzle(Node* node) {
   S390OperandGenerator g(this);
-  Emit(kS390_S8x16Swizzle, g.DefineAsRegister(node),
+  InstructionOperand temps[] = {g.TempSimd128Register()};
+  Emit(kS390_I8x16Swizzle, g.DefineAsRegister(node),
        g.UseUniqueRegister(node->InputAt(0)),
-       g.UseUniqueRegister(node->InputAt(1)));
+       g.UseUniqueRegister(node->InputAt(1)), arraysize(temps), temps);
 }
 
 void InstructionSelector::VisitS128Const(Node* node) {

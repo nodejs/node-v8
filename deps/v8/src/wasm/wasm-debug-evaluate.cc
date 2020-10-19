@@ -81,7 +81,7 @@ static bool CheckRangeOutOfBounds(uint32_t offset, uint32_t size,
 
 class DebugEvaluatorProxy {
  public:
-  explicit DebugEvaluatorProxy(Isolate* isolate, StandardFrame* frame)
+  explicit DebugEvaluatorProxy(Isolate* isolate, CommonFrame* frame)
       : isolate_(isolate), frame_(frame) {}
 
   static void GetMemoryTrampoline(
@@ -283,7 +283,7 @@ class DebugEvaluatorProxy {
   }
 
   Isolate* isolate_;
-  StandardFrame* frame_;
+  CommonFrame* frame_;
   Handle<WasmInstanceObject> evaluator_;
   Handle<WasmInstanceObject> debuggee_;
 };
@@ -356,7 +356,7 @@ static bool VerifyEvaluatorInterface(const WasmModule* raw_module,
 
 Maybe<std::string> DebugEvaluateImpl(
     Vector<const byte> snippet, Handle<WasmInstanceObject> debuggee_instance,
-    StandardFrame* frame) {
+    CommonFrame* frame) {
   Isolate* isolate = debuggee_instance->GetIsolate();
   HandleScope handle_scope(isolate);
   WasmEngine* engine = isolate->wasm_engine();
@@ -405,8 +405,8 @@ Maybe<std::string> DebugEvaluateImpl(
       Handle<WasmExportedFunction>::cast(entry_point_obj);
 
   // TODO(wasm): Cache this code.
-  Handle<Code> wasm_entry =
-      compiler::CompileCWasmEntry(isolate, entry_point->sig());
+  Handle<Code> wasm_entry = compiler::CompileCWasmEntry(
+      isolate, entry_point->sig(), debuggee_instance->module());
 
   CWasmArgumentsPacker packer(4 /* uint32_t return value, no parameters. */);
   Execution::CallWasm(isolate, wasm_entry, entry_point->GetWasmCallTarget(),
@@ -433,7 +433,7 @@ Maybe<std::string> DebugEvaluateImpl(
 
 MaybeHandle<String> DebugEvaluate(Vector<const byte> snippet,
                                   Handle<WasmInstanceObject> debuggee_instance,
-                                  StandardFrame* frame) {
+                                  CommonFrame* frame) {
   Maybe<std::string> result =
       DebugEvaluateImpl(snippet, debuggee_instance, frame);
   if (result.IsNothing()) return {};

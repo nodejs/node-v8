@@ -109,11 +109,13 @@ class Code : public HeapObject {
 
   // [source_position_table]: ByteArray for the source positions table.
   DECL_ACCESSORS(source_position_table, Object)
+
+  // If source positions have not been collected or an exception has been thrown
+  // this will return empty_byte_array.
   inline ByteArray SourcePositionTable() const;
-  inline ByteArray SourcePositionTableIfCollected() const;
 
   // [code_data_container]: A container indirection for all mutable fields.
-  DECL_ACCESSORS(code_data_container, CodeDataContainer)
+  DECL_RELEASE_ACQUIRE_ACCESSORS(code_data_container, CodeDataContainer)
 
   // [next_code_link]: Link for lists of optimized or deoptimized code.
   // Note that this field is stored in the {CodeDataContainer} to be mutable.
@@ -151,8 +153,8 @@ class Code : public HeapObject {
   inline void set_can_have_weak_objects(bool value);
 
   // [builtin_index]: For builtins, tells which builtin index the code object
-  // has. The builtin index is a non-negative integer for builtins, and -1
-  // otherwise.
+  // has. The builtin index is a non-negative integer for builtins, and
+  // Builtins::kNoBuiltinId (-1) otherwise.
   inline int builtin_index() const;
   inline void set_builtin_index(int id);
   inline bool is_builtin() const;
@@ -301,9 +303,6 @@ class Code : public HeapObject {
   // Returns the address right after the relocation info (read backwards!).
   inline byte* relocation_end() const;
 
-  // [has_unwinding_info]: Whether this code object has unwinding information.
-  // If it doesn't, unwinding_information_start() will point to invalid data.
-  //
   // The body of all code objects has the following layout.
   //
   //  +--------------------------+  <-- raw_instruction_start()
@@ -334,7 +333,9 @@ class Code : public HeapObject {
   //
   // and unwinding_info_end() points to the first memory location after the end
   // of the code object.
-  //
+
+  // [has_unwinding_info]: Whether this code object has unwinding information.
+  // If it doesn't, unwinding_information_start() will point to invalid data.
   inline bool has_unwinding_info() const;
 
   // [unwinding_info_size]: Size of the unwinding information.
@@ -387,7 +388,6 @@ class Code : public HeapObject {
   DECL_PRINTER(Code)
   DECL_VERIFIER(Code)
 
-  void PrintDeoptLocation(FILE* out, const char* str, Address pc);
   bool CanDeoptAt(Address pc);
 
   void SetMarkedForDeoptimization(const char* reason);
@@ -773,17 +773,14 @@ class BytecodeArray : public FixedArrayBase {
   // * ByteArray (when source positions have been collected for the bytecode)
   // * exception (when an error occurred while explicitly collecting source
   // positions for pre-existing bytecode).
-  DECL_ACCESSORS(source_position_table, Object)
+  DECL_RELEASE_ACQUIRE_ACCESSORS(source_position_table, Object)
 
-  // This must only be called if source position collection has already been
-  // attempted. (If it failed because of an exception then it will return
-  // empty_byte_array).
-  inline ByteArray SourcePositionTable() const;
-  // If source positions have not been collected or an exception has been thrown
-  // this will return empty_byte_array.
-  inline ByteArray SourcePositionTableIfCollected() const;
   inline bool HasSourcePositionTable() const;
   inline bool DidSourcePositionGenerationFail() const;
+
+  // If source positions have not been collected or an exception has been thrown
+  // this will return empty_byte_array.
+  inline ByteArray SourcePositionTable() const;
 
   // Indicates that an attempt was made to collect source positions, but that it
   // failed most likely due to stack exhaustion. When in this state

@@ -13,6 +13,7 @@
 #include "src/objects/foreign-inl.h"
 #include "src/objects/heap-number-inl.h"
 #include "src/objects/js-array-buffer-inl.h"
+#include "src/objects/js-function-inl.h"
 #include "src/objects/js-objects-inl.h"
 #include "src/objects/managed.h"
 #include "src/objects/oddball-inl.h"
@@ -108,6 +109,7 @@ bool WasmModuleObject::is_asm_js() {
 }
 
 // WasmTableObject
+ACCESSORS(WasmTableObject, instance, HeapObject, kInstanceOffset)
 ACCESSORS(WasmTableObject, entries, FixedArray, kEntriesOffset)
 SMI_ACCESSORS(WasmTableObject, current_length, kCurrentLengthOffset)
 ACCESSORS(WasmTableObject, maximum_length, Object, kMaximumLengthOffset)
@@ -120,6 +122,7 @@ SMI_ACCESSORS(WasmMemoryObject, maximum_pages, kMaximumPagesOffset)
 OPTIONAL_ACCESSORS(WasmMemoryObject, instances, WeakArrayList, kInstancesOffset)
 
 // WasmGlobalObject
+ACCESSORS(WasmGlobalObject, instance, HeapObject, kInstanceOffset)
 ACCESSORS(WasmGlobalObject, untagged_buffer, JSArrayBuffer,
           kUntaggedBufferOffset)
 ACCESSORS(WasmGlobalObject, tagged_buffer, FixedArray, kTaggedBufferOffset)
@@ -130,7 +133,7 @@ SMI_ACCESSORS(WasmGlobalObject, raw_type, kRawTypeOffset)
 SMI_ACCESSORS(WasmGlobalObject, is_mutable, kIsMutableOffset)
 
 wasm::ValueType WasmGlobalObject::type() const {
-  return wasm::ValueType::FromRawBitField(raw_type());
+  return wasm::ValueType::FromRawBitField(static_cast<uint32_t>(raw_type()));
 }
 void WasmGlobalObject::set_type(wasm::ValueType value) {
   set_raw_type(static_cast<int>(value.raw_bit_field()));
@@ -326,11 +329,12 @@ ACCESSORS(WasmExportedFunctionData, instance, WasmInstanceObject,
 SMI_ACCESSORS(WasmExportedFunctionData, jump_table_offset,
               kJumpTableOffsetOffset)
 SMI_ACCESSORS(WasmExportedFunctionData, function_index, kFunctionIndexOffset)
+ACCESSORS(WasmExportedFunctionData, signature, Foreign, kSignatureOffset)
+SMI_ACCESSORS(WasmExportedFunctionData, call_count, kCallCountOffset)
 ACCESSORS(WasmExportedFunctionData, c_wrapper_code, Object, kCWrapperCodeOffset)
 ACCESSORS(WasmExportedFunctionData, wasm_call_target, Object,
           kWasmCallTargetOffset)
 SMI_ACCESSORS(WasmExportedFunctionData, packed_args_size, kPackedArgsSizeOffset)
-SMI_ACCESSORS(WasmExportedFunctionData, signature_type, kSignatureTypeOffset)
 
 // WasmJSFunction
 WasmJSFunction::WasmJSFunction(Address ptr) : JSFunction(ptr) {
@@ -349,6 +353,8 @@ ACCESSORS(WasmJSFunctionData, serialized_signature, PodArray<wasm::ValueType>,
           kSerializedSignatureOffset)
 ACCESSORS(WasmJSFunctionData, callable, JSReceiver, kCallableOffset)
 ACCESSORS(WasmJSFunctionData, wrapper_code, Code, kWrapperCodeOffset)
+ACCESSORS(WasmJSFunctionData, wasm_to_js_wrapper_code, Code,
+          kWasmToJsWrapperCodeOffset)
 
 // WasmCapiFunction
 WasmCapiFunction::WasmCapiFunction(Address ptr) : JSFunction(ptr) {
@@ -448,6 +454,11 @@ int WasmArray::SizeFor(Map map, int length) {
 }
 
 void WasmTypeInfo::clear_foreign_address(Isolate* isolate) {
+#ifdef V8_HEAP_SANDBOX
+  // Due to the type-specific pointer tags for external pointers, we need to
+  // allocate an entry in the table here even though it will just store nullptr.
+  AllocateExternalPointerEntries(isolate);
+#endif
   set_foreign_address(isolate, 0);
 }
 

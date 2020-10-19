@@ -9,7 +9,7 @@
 #include "src/objects/instance-type.h"
 #include "src/objects/objects.h"
 #include "src/objects/smi.h"
-#include "torque-generated/class-definitions-tq.h"
+#include "torque-generated/class-definitions.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -100,7 +100,7 @@ class FixedArray
  public:
   // Setter and getter for elements.
   inline Object get(int index) const;
-  inline Object get(const Isolate* isolate, int index) const;
+  inline Object get(IsolateRoot isolate, int index) const;
 
   static inline Handle<Object> get(FixedArray array, int index,
                                    Isolate* isolate);
@@ -112,7 +112,7 @@ class FixedArray
 
   // Synchronized setters and getters.
   inline Object synchronized_get(int index) const;
-  inline Object synchronized_get(const Isolate* isolate, int index) const;
+  inline Object synchronized_get(IsolateRoot isolate, int index) const;
   // Currently only Smis are written with release semantics, hence we can avoid
   // a write barrier.
   inline void synchronized_set(int index, Smi value);
@@ -122,18 +122,7 @@ class FixedArray
   inline bool is_the_hole(Isolate* isolate, int index);
 
   // Setter that doesn't need write barrier.
-#if defined(_WIN32) && !defined(_WIN64)
-  inline void set(int index, Smi value) {
-    DCHECK_NE(map(), GetReadOnlyRoots().fixed_cow_array_map());
-    DCHECK_LT(static_cast<unsigned>(index), static_cast<unsigned>(length()));
-    DCHECK(Object(value).IsSmi());
-    int offset = OffsetOfElementAt(index);
-    RELAXED_WRITE_FIELD(*this, offset, value);
-  }
-#else
   inline void set(int index, Smi value);
-#endif
-
   // Setter with explicit barrier mode.
   inline void set(int index, Object value, WriteBarrierMode mode);
 
@@ -278,7 +267,7 @@ class WeakFixedArray
     : public TorqueGeneratedWeakFixedArray<WeakFixedArray, HeapObject> {
  public:
   inline MaybeObject Get(int index) const;
-  inline MaybeObject Get(const Isolate* isolate, int index) const;
+  inline MaybeObject Get(IsolateRoot isolate, int index) const;
 
   inline void Set(
       int index, MaybeObject value,
@@ -307,7 +296,6 @@ class WeakFixedArray
 
   int AllocatedSize();
 
- protected:
   static int OffsetOfElementAt(int index) {
     STATIC_ASSERT(kObjectsOffset == SizeFor(0));
     return SizeFor(index);
@@ -354,7 +342,7 @@ class WeakArrayList
   V8_EXPORT_PRIVATE void Compact(Isolate* isolate);
 
   inline MaybeObject Get(int index) const;
-  inline MaybeObject Get(const Isolate* isolate, int index) const;
+  inline MaybeObject Get(IsolateRoot isolate, int index) const;
 
   // Set the element at index to obj. The underlying array must be large enough.
   // If you need to grow the WeakArrayList, use the static AddToEnd() method
@@ -455,7 +443,7 @@ class ArrayList : public TorqueGeneratedArrayList<ArrayList, FixedArray> {
   // storage capacity, i.e., length().
   inline void SetLength(int length);
   inline Object Get(int index) const;
-  inline Object Get(const Isolate* isolate, int index) const;
+  inline Object Get(IsolateRoot isolate, int index) const;
   inline ObjectSlot Slot(int index);
 
   // Set the element at index to obj. The underlying array must be large enough.
@@ -601,7 +589,7 @@ class TemplateList
   static Handle<TemplateList> New(Isolate* isolate, int size);
   inline int length() const;
   inline Object get(int index) const;
-  inline Object get(const Isolate* isolate, int index) const;
+  inline Object get(IsolateRoot isolate, int index) const;
   inline void set(int index, Object value);
   static Handle<TemplateList> Add(Isolate* isolate, Handle<TemplateList> list,
                                   Handle<Object> value);

@@ -44,9 +44,22 @@ class Simd128 {
   FOREACH_SIMD_TYPE(DEFINE_SIMD_TYPE_SPECIFIC_METHODS)
 #undef DEFINE_SIMD_TYPE_SPECIFIC_METHODS
 
+  const uint8_t* bytes() { return val_; }
+
+  template <typename T>
+  inline T to();
+
  private:
   uint8_t val_[16] = {0};
 };
+
+#define DECLARE_CAST(cType, sType, name, size) \
+  template <>                                  \
+  inline sType Simd128::to() {                 \
+    return to_##name();                        \
+  }
+FOREACH_SIMD_TYPE(DECLARE_CAST)
+#undef DECLARE_CAST
 
 // Macro for defining WasmValue methods for different types.
 // Elements:
@@ -103,6 +116,12 @@ class WasmValue {
 
   template <typename T>
   inline T to_unchecked() const;
+
+  static WasmValue ForUintPtr(uintptr_t value) {
+    using type =
+        std::conditional<kSystemPointerSize == 8, uint64_t, uint32_t>::type;
+    return WasmValue{type{value}};
+  }
 
  private:
   ValueType type_;

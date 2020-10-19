@@ -687,6 +687,8 @@ TEST(DisasmIa320) {
       __ vsqrtps(xmm1, Operand(ebx, ecx, times_4, 10000));
       __ vrsqrtps(xmm1, xmm0);
       __ vrsqrtps(xmm1, Operand(ebx, ecx, times_4, 10000));
+      __ vmovups(xmm0, xmm1);
+      __ vmovups(xmm0, Operand(edx, 4));
       __ vmovaps(xmm0, xmm1);
       __ vmovapd(xmm0, xmm1);
       __ vmovapd(xmm0, Operand(ebx, ecx, times_4, 10000));
@@ -986,8 +988,9 @@ TEST(DisasmIa320) {
 
   CodeDesc desc;
   assm.GetCode(isolate, &desc);
-  Handle<Code> code =
-      Factory::CodeBuilder(isolate, desc, CodeKind::STUB).Build();
+  Handle<Code> code = Factory::CodeBuilder(
+                          isolate, desc, CodeKind::DEOPT_ENTRIES_OR_FOR_TESTING)
+                          .Build();
   USE(code);
 #ifdef OBJECT_PRINT
   StdoutStream os;

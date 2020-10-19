@@ -400,6 +400,11 @@ TEST(DisasmX64) {
     __ movdqa(Operand(rsp, 12), xmm0);
     __ movdqu(xmm0, Operand(rsp, 12));
     __ movdqu(Operand(rsp, 12), xmm0);
+    __ movdqu(xmm1, xmm0);
+    __ movlps(xmm8, Operand(rbx, rcx, times_4, 10000));
+    __ movlps(Operand(rbx, rcx, times_4, 10000), xmm9);
+    __ movhps(xmm8, Operand(rbx, rcx, times_4, 10000));
+    __ movhps(Operand(rbx, rcx, times_4, 10000), xmm9);
     __ shufps(xmm0, xmm9, 0x0);
 
     __ ucomiss(xmm0, xmm1);
@@ -649,6 +654,11 @@ TEST(DisasmX64) {
 
       __ vmovdqu(xmm9, Operand(rbx, rcx, times_4, 10000));
       __ vmovdqu(Operand(rbx, rcx, times_4, 10000), xmm0);
+
+      __ vmovlps(xmm8, xmm9, Operand(rbx, rcx, times_4, 10000));
+      __ vmovlps(Operand(rbx, rcx, times_4, 10000), xmm9);
+      __ vmovhps(xmm8, xmm9, Operand(rbx, rcx, times_4, 10000));
+      __ vmovhps(Operand(rbx, rcx, times_4, 10000), xmm12);
 
       __ vroundps(xmm9, xmm2, kRoundUp);
       __ vroundpd(xmm9, xmm2, kRoundToNearest);
@@ -983,8 +993,9 @@ TEST(DisasmX64) {
 
   CodeDesc desc;
   assm.GetCode(isolate, &desc);
-  Handle<Code> code =
-      Factory::CodeBuilder(isolate, desc, CodeKind::STUB).Build();
+  Handle<Code> code = Factory::CodeBuilder(
+                          isolate, desc, CodeKind::DEOPT_ENTRIES_OR_FOR_TESTING)
+                          .Build();
   USE(code);
 #ifdef OBJECT_PRINT
   StdoutStream os;

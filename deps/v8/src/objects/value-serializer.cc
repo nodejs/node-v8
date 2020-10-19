@@ -384,7 +384,7 @@ void ValueSerializer::TransferArrayBuffer(uint32_t transfer_id,
                                           Handle<JSArrayBuffer> array_buffer) {
   DCHECK(!array_buffer_transfer_map_.Find(array_buffer));
   DCHECK(!array_buffer->is_shared());
-  array_buffer_transfer_map_.Set(array_buffer, transfer_id);
+  array_buffer_transfer_map_.Insert(array_buffer, transfer_id);
 }
 
 Maybe<bool> ValueSerializer::WriteObject(Handle<Object> object) {
@@ -500,16 +500,16 @@ void ValueSerializer::WriteString(Handle<String> string) {
 
 Maybe<bool> ValueSerializer::WriteJSReceiver(Handle<JSReceiver> receiver) {
   // If the object has already been serialized, just write its ID.
-  uint32_t* id_map_entry = id_map_.Get(receiver);
-  if (uint32_t id = *id_map_entry) {
+  auto find_result = id_map_.FindOrInsert(receiver);
+  if (find_result.already_exists) {
     WriteTag(SerializationTag::kObjectReference);
-    WriteVarint(id - 1);
+    WriteVarint(*find_result.entry - 1);
     return ThrowIfOutOfMemory();
   }
 
   // Otherwise, allocate an ID for it.
   uint32_t id = next_id_++;
-  *id_map_entry = id + 1;
+  *find_result.entry = id + 1;
 
   // Eliminate callable and exotic objects, which should not be serialized.
   InstanceType instance_type = receiver->map().instance_type();
@@ -588,9 +588,11 @@ Maybe<bool> ValueSerializer::WriteJSObject(Handle<JSObject> object) {
   uint32_t properties_written = 0;
   bool map_changed = false;
   for (InternalIndex i : map->IterateOwnDescriptors()) {
-    Handle<Name> key(map->instance_descriptors().GetKey(i), isolate_);
+    Handle<Name> key(map->instance_descriptors(kRelaxedLoad).GetKey(i),
+                     isolate_);
     if (!key->IsString()) continue;
-    PropertyDetails details = map->instance_descriptors().GetDetails(i);
+    PropertyDetails details =
+        map->instance_descriptors(kRelaxedLoad).GetDetails(i);
     if (details.IsDontEnum()) continue;
 
     Handle<Object> value;
@@ -1642,7 +1644,6 @@ MaybeHandle<JSRegExp> ValueDeserializer::ReadJSRegExp() {
   }
 
   // Ensure the deserialized flags are valid.
-  // TODO(adamk): Can we remove this check now that dotAll is always-on?
   uint32_t flags_mask = static_cast<uint32_t>(-1) << JSRegExp::kFlagCount;
   if ((raw_flags & flags_mask) ||
       !JSRegExp::New(isolate_, pattern, static_cast<JSRegExp::Flags>(raw_flags))
@@ -1976,7 +1977,8 @@ static void CommitProperties(Handle<JSObject> object, Handle<Map> map,
   DCHECK(!object->map().is_dictionary_map());
 
   DisallowHeapAllocation no_gc;
-  DescriptorArray descriptors = object->map().instance_descriptors();
+  DescriptorArray descriptors =
+      object->map().instance_descriptors(kRelaxedLoad);
   for (InternalIndex i : InternalIndex::Range(properties.size())) {
     // Initializing store.
     object->WriteToField(i, descriptors.GetDetails(i),
@@ -1998,7 +2000,8 @@ Maybe<uint32_t> ValueDeserializer::ReadJSObjectProperties(
     bool transitioning = true;
     Handle<Map> map(object->map(), isolate_);
     DCHECK(!map->is_dictionary_map());
-    DCHECK_EQ(0, map->instance_descriptors().number_of_descriptors());
+    DCHECK_EQ(0,
+              map->instance_descriptors(kRelaxedLoad).number_of_descriptors());
     std::vector<Handle<Object>> properties;
     properties.reserve(8);
 
@@ -2049,11 +2052,11 @@ Maybe<uint32_t> ValueDeserializer::ReadJSObjectProperties(
       if (transitioning) {
         InternalIndex descriptor(properties.size());
         PropertyDetails details =
-            target->instance_descriptors().GetDetails(descriptor);
+            target->instance_descriptors(kRelaxedLoad).GetDetails(descriptor);
         Representation expected_representation = details.representation();
         if (value->FitsRepresentation(expected_representation)) {
           if (expected_representation.IsHeapObject() &&
-              !target->instance_descriptors()
+              !target->instance_descriptors(kRelaxedLoad)
                    .GetFieldType(descriptor)
                    .NowContains(value)) {
             Handle<FieldType> value_type =
@@ -2062,7 +2065,7 @@ Maybe<uint32_t> ValueDeserializer::ReadJSObjectProperties(
                                  details.constness(), expected_representation,
                                  value_type);
           }
-          DCHECK(target->instance_descriptors()
+          DCHECK(target->instance_descriptors(kRelaxedLoad)
                      .GetFieldType(descriptor)
                      .NowContains(value));
           properties.push_back(value);

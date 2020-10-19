@@ -8,6 +8,7 @@
 #include "src/codegen/macro-assembler-inl.h"
 #include "src/execution/simulator.h"
 #include "src/utils/utils.h"
+#include "src/wasm/code-space-access.h"
 #include "src/wasm/jump-table-assembler.h"
 #include "test/cctest/cctest.h"
 #include "test/common/assembler-tester.h"
@@ -32,16 +33,25 @@ constexpr int kJumpTableSlotCount = 128;
 constexpr uint32_t kJumpTableSize =
     JumpTableAssembler::SizeForNumberOfSlots(kJumpTableSlotCount);
 
-// Must be a safe commit page size.
-constexpr size_t kThunkBufferSize = 4 * KB;
+// This must be a safe commit page size so we pick the largest OS page size that
+// V8 is known to support. Arm64 linux can support up to 64k at runtime.
+constexpr size_t kThunkBufferSize = 64 * KB;
 
 #if V8_TARGET_ARCH_ARM64 || V8_TARGET_ARCH_X64
+// We need the branches (from CompileJumpTableThunk) to be within near-call
+// range of the jump table slots. The address hint to AllocateAssemblerBuffer
+// is not reliable enough to guarantee that we can always achieve this with
+// separate allocations, so we generate all code in a single
+// kMaxCodeMemory-sized chunk.
+constexpr size_t kAssemblerBufferSize = WasmCodeAllocator::kMaxCodeSpaceSize;
 constexpr uint32_t kAvailableBufferSlots =
-    (kMaxWasmCodeSpaceSize - kJumpTableSize) / kThunkBufferSize;
+    (WasmCodeAllocator::kMaxCodeSpaceSize - kJumpTableSize) / kThunkBufferSize;
 constexpr uint32_t kBufferSlotStartOffset =
     RoundUp<kThunkBufferSize>(kJumpTableSize);
 #else
+constexpr size_t kAssemblerBufferSize = kJumpTableSize;
 constexpr uint32_t kAvailableBufferSlots = 0;
+constexpr uint32_t kBufferSlotStartOffset = 0;
 #endif
 
 Address AllocateJumpTableThunk(
@@ -154,6 +164,7 @@ class JumpTableRunner : public v8::base::Thread {
 
   void Run() override {
     TRACE("Runner #%d is starting ...\n", runner_id_);
+    SwitchMemoryPermissionsToExecutable();
     GeneratedCode<void>::FromAddress(CcTest::i_isolate(), slot_address_).Call();
     TRACE("Runner #%d is stopping ...\n", runner_id_);
     USE(runner_id_);
@@ -176,6 +187,7 @@ class JumpTablePatcher : public v8::base::Thread {
 
   void Run() override {
     TRACE("Patcher %p is starting ...\n", this);
+    SwitchMemoryPermissionsToWritable();
     Address slot_address =
         slot_start_ + JumpTableAssembler::JumpSlotIndexToOffset(slot_index_);
     // First, emit code to the two thunks.
@@ -219,22 +231,13 @@ TEST(JumpTablePatchingStress) {
   constexpr int kNumberOfRunnerThreads = 5;
   constexpr int kNumberOfPatcherThreads = 3;
 
-#if V8_TARGET_ARCH_ARM64 || V8_TARGET_ARCH_X64
-  // We need the branches (from CompileJumpTableThunk) to be within near-call
-  // range of the jump table slots. The address hint to AllocateAssemblerBuffer
-  // is not reliable enough to guarantee that we can always achieve this with
-  // separate allocations, so for Arm64 we generate all code in a single
-  // kMaxMasmCodeMemory-sized chunk.
-  STATIC_ASSERT(kMaxWasmCodeSpaceSize >= kJumpTableSize);
-  auto buffer = AllocateAssemblerBuffer(kMaxWasmCodeSpaceSize);
+  STATIC_ASSERT(kAssemblerBufferSize >= kJumpTableSize);
+  auto buffer = AllocateAssemblerBuffer(kAssemblerBufferSize);
   byte* thunk_slot_buffer = buffer->start() + kBufferSlotStartOffset;
-#else
-  auto buffer = AllocateAssemblerBuffer(kJumpTableSize);
-  byte* thunk_slot_buffer = nullptr;
-#endif
 
   std::bitset<kAvailableBufferSlots> used_thunk_slots;
   buffer->MakeWritableAndExecutable();
+  SwitchMemoryPermissionsToWritable();
 
   // Iterate through jump-table slots to hammer at different alignments within
   // the jump-table, thereby increasing stress for variable-length ISAs.

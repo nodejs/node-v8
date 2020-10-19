@@ -341,7 +341,7 @@ class V8_EXPORT_PRIVATE PagedSpace
   // Expands the space by allocating a fixed number of pages. Returns false if
   // it cannot allocate requested number of pages from OS, or if the hard heap
   // size limit has been hit.
-  Page* Expand();
+  virtual Page* Expand();
   Page* ExpandBackground(LocalHeap* local_heap);
   Page* AllocatePage();
 
@@ -417,9 +417,15 @@ class V8_EXPORT_PRIVATE LocalSpace : public PagedSpace {
     DCHECK_NE(local_space_kind, LocalSpaceKind::kNone);
   }
 
+  const std::vector<Page*>& GetNewPages() { return new_pages_; }
+
  protected:
+  Page* Expand() override;
   // The space is temporary and not included in any snapshots.
   bool snapshotable() override { return false; }
+  // Pages that were allocated in this local space and need to be merged
+  // to the main space.
+  std::vector<Page*> new_pages_;
 };
 
 // -----------------------------------------------------------------------------
@@ -506,7 +512,8 @@ class MapSpace : public PagedSpace {
  public:
   // Creates a map space object.
   explicit MapSpace(Heap* heap)
-      : PagedSpace(heap, MAP_SPACE, NOT_EXECUTABLE, new FreeListMap()) {}
+      : PagedSpace(heap, MAP_SPACE, NOT_EXECUTABLE,
+                   FreeList::CreateFreeList()) {}
 
   int RoundSizeDownToObjectAlignment(int size) override {
     if (base::bits::IsPowerOfTwo(Map::kSize)) {

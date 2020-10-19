@@ -385,10 +385,6 @@ builtin ThrowWasmTrapFloatUnrepresentable(): JSAny {
   tail WasmTrap(SmiConstant(MessageTemplate::kWasmTrapFloatUnrepresentable));
 }
 
-builtin ThrowWasmTrapFuncInvalid(): JSAny {
-  tail WasmTrap(SmiConstant(MessageTemplate::kWasmTrapFuncInvalid));
-}
-
 builtin ThrowWasmTrapFuncSigMismatch(): JSAny {
   tail WasmTrap(SmiConstant(MessageTemplate::kWasmTrapFuncSigMismatch));
 }
@@ -423,5 +419,9 @@ builtin ThrowWasmTrapIllegalCast(): JSAny {
 
 builtin ThrowWasmTrapArrayOutOfBounds(): JSAny {
   tail WasmTrap(SmiConstant(MessageTemplate::kWasmTrapArrayOutOfBounds));
+}
+
+builtin ThrowWasmTrapWasmJSFunction(): JSAny {
+  tail WasmTrap(SmiConstant(MessageTemplate::kWasmTrapWasmJSFunction));
 }
 }

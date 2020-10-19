@@ -85,6 +85,9 @@ struct FieldAccess {
   ConstFieldInfo const_field_info;      // the constness of this access, and the
                                     // field owner map, if the access is const
   bool is_store_in_literal;  // originates from a kStoreInLiteral access
+#ifdef V8_HEAP_SANDBOX
+  ExternalPointerTag external_pointer_tag = kExternalPointerNullTag;
+#endif
 
   FieldAccess()
       : base_is_tagged(kTaggedBase),
@@ -101,7 +104,12 @@ struct FieldAccess {
               WriteBarrierKind write_barrier_kind,
               LoadSensitivity load_sensitivity = LoadSensitivity::kUnsafe,
               ConstFieldInfo const_field_info = ConstFieldInfo::None(),
-              bool is_store_in_literal = false)
+              bool is_store_in_literal = false
+#ifdef V8_HEAP_SANDBOX
+              ,
+              ExternalPointerTag external_pointer_tag = kExternalPointerNullTag
+#endif
+              )
       : base_is_tagged(base_is_tagged),
         offset(offset),
         name(name),
@@ -111,7 +119,12 @@ struct FieldAccess {
         write_barrier_kind(write_barrier_kind),
         load_sensitivity(load_sensitivity),
         const_field_info(const_field_info),
-        is_store_in_literal(is_store_in_literal) {
+        is_store_in_literal(is_store_in_literal)
+#ifdef V8_HEAP_SANDBOX
+        ,
+        external_pointer_tag(external_pointer_tag)
+#endif
+  {
     DCHECK_GE(offset, 0);
   }
 
@@ -432,19 +445,26 @@ class DynamicCheckMapsParameters final {
   enum ICState { kMonomorphic, kPolymorphic };
 
   DynamicCheckMapsParameters(CheckMapsFlags flags, Handle<Object> handler,
-                             const FeedbackSource& feedback, ICState state)
-      : flags_(flags), handler_(handler), feedback_(feedback), state_(state) {}
+                             MaybeHandle<Map> maybe_map,
+                             const FeedbackSource& feedback)
+      : flags_(flags),
+        handler_(handler),
+        maybe_map_(maybe_map),
+        feedback_(feedback) {}
 
   CheckMapsFlags flags() const { return flags_; }
   Handle<Object> handler() const { return handler_; }
+  MaybeHandle<Map> map() const { return maybe_map_; }
   FeedbackSource const& feedback() const { return feedback_; }
-  ICState const& state() const { return state_; }
+  ICState state() const {
+    return maybe_map_.is_null() ? ICState::kPolymorphic : ICState::kMonomorphic;
+  }
 
  private:
   CheckMapsFlags const flags_;
   Handle<Object> const handler_;
+  MaybeHandle<Map> const maybe_map_;
   FeedbackSource const feedback_;
-  ICState const state_;
 };
 
 bool operator==(DynamicCheckMapsParameters const&,
@@ -803,6 +823,11 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   // delta parameter represents the executed bytecodes since the last update.
   const Operator* UpdateInterruptBudget(int delta);
 
+  // Takes the current feedback vector as input 0, and generates a check of the
+  // vector's marker. Depending on the marker's value, we either do nothing,
+  // trigger optimized compilation, or install a finished code object.
+  const Operator* TierUpCheck();
+
   const Operator* ToBoolean();
 
   const Operator* StringConcat();
@@ -875,10 +900,9 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* CheckInternalizedString();
   const Operator* CheckMaps(CheckMapsFlags, ZoneHandleSet<Map>,
                             const FeedbackSource& = FeedbackSource());
-  const Operator* DynamicCheckMaps(
-      CheckMapsFlags flags, Handle<Object> handler,
-      const FeedbackSource& feedback,
-      DynamicCheckMapsParameters::ICState ic_state);
+  const Operator* DynamicCheckMaps(CheckMapsFlags flags, Handle<Object> handler,
+                                   MaybeHandle<Map> map,
+                                   const FeedbackSource& feedback);
   const Operator* CheckNotTaggedHole();
   const Operator* CheckNumber(const FeedbackSource& feedback);
   const Operator* CheckReceiver();
@@ -1157,6 +1181,18 @@ class FastApiCallNode final : public SimplifiedNodeWrapperBase {
     return TNode<Object>::UncheckedCast(
         NodeProperties::GetValueInput(node(), SlowCallArgumentIndex(i)));
   }
+};
+
+class TierUpCheckNode final : public SimplifiedNodeWrapperBase {
+ public:
+  explicit constexpr TierUpCheckNode(Node* node)
+      : SimplifiedNodeWrapperBase(node) {
+    CONSTEXPR_DCHECK(node->opcode() == IrOpcode::kTierUpCheck);
+  }
+
+#define INPUTS(V) V(FeedbackVector, feedback_vector, 0, FeedbackVector)
+  INPUTS(DEFINE_INPUT_ACCESSORS)
+#undef INPUTS
 };
 
 class UpdateInterruptBudgetNode final : public SimplifiedNodeWrapperBase {

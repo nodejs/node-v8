@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "src/base/overflowing-math.h"
+#include "src/base/safe_conversions.h"
 #include "src/codegen/assembler-inl.h"
 #include "src/objects/objects-inl.h"
 #include "src/wasm/wasm-arguments.h"
@@ -39,7 +40,8 @@ class CWasmEntryArgTester {
     std::vector<uint8_t> code{wasm_function_bytes};
     runner_.Build(code.data(), code.data() + code.size());
     wasm_code_ = runner_.builder().GetFunctionCode(0);
-    c_wasm_entry_ = compiler::CompileCWasmEntry(isolate_, sig_);
+    c_wasm_entry_ = compiler::CompileCWasmEntry(
+        isolate_, sig_, wasm_code_->native_module()->module());
   }
 
   template <typename... Rest>
@@ -114,7 +116,11 @@ TEST(TestCWasmEntryArgPassing_int64_double) {
        WASM_I64_SCONVERT_F64(WASM_GET_LOCAL(0))},
       [](double d) { return static_cast<int64_t>(d); });
 
-  FOR_INT64_INPUTS(i) { tester.CheckCall(i); }
+  FOR_FLOAT64_INPUTS(d) {
+    if (base::IsValueInRangeForNumericType<int64_t>(d)) {
+      tester.CheckCall(d);
+    }
+  }
 }
 
 // Pass float, return double.

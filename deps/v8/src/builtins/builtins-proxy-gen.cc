@@ -3,15 +3,14 @@
 // found in the LICENSE file.
 
 #include "src/builtins/builtins-proxy-gen.h"
+
 #include "src/builtins/builtins-utils-gen.h"
 #include "src/builtins/builtins-utils.h"
 #include "src/builtins/builtins.h"
-
 #include "src/logging/counters.h"
 #include "src/objects/js-proxy.h"
 #include "src/objects/objects-inl.h"
-
-#include "torque-generated/exported-macros-assembler-tq.h"
+#include "torque-generated/exported-macros-assembler.h"
 
 namespace v8 {
 namespace internal {
@@ -84,11 +83,10 @@ TNode<JSFunction> ProxiesCodeStubAssembler::AllocateProxyRevokeFunction(
 }
 
 TF_BUILTIN(CallProxy, ProxiesCodeStubAssembler) {
-  TNode<Int32T> argc =
-      UncheckedCast<Int32T>(Parameter(Descriptor::kActualArgumentsCount));
+  auto argc = UncheckedParameter<Int32T>(Descriptor::kActualArgumentsCount);
   TNode<IntPtrT> argc_ptr = ChangeInt32ToIntPtr(argc);
-  TNode<JSProxy> proxy = CAST(Parameter(Descriptor::kFunction));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto proxy = Parameter<JSProxy>(Descriptor::kFunction);
+  auto context = Parameter<Context>(Descriptor::kContext);
 
   CSA_ASSERT(this, IsCallable(proxy));
 
@@ -140,12 +138,11 @@ TF_BUILTIN(CallProxy, ProxiesCodeStubAssembler) {
 }
 
 TF_BUILTIN(ConstructProxy, ProxiesCodeStubAssembler) {
-  TNode<Int32T> argc =
-      UncheckedCast<Int32T>(Parameter(Descriptor::kActualArgumentsCount));
+  auto argc = UncheckedParameter<Int32T>(Descriptor::kActualArgumentsCount);
   TNode<IntPtrT> argc_ptr = ChangeInt32ToIntPtr(argc);
-  TNode<JSProxy> proxy = CAST(Parameter(Descriptor::kTarget));
-  TNode<Object> new_target = CAST(Parameter(Descriptor::kNewTarget));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto proxy = Parameter<JSProxy>(Descriptor::kTarget);
+  auto new_target = Parameter<Object>(Descriptor::kNewTarget);
+  auto context = Parameter<Context>(Descriptor::kContext);
 
   CSA_ASSERT(this, IsCallable(proxy));
 

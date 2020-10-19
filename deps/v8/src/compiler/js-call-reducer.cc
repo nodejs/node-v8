@@ -51,10 +51,15 @@ class JSCallReducerAssembler : public JSGraphAssembler {
   static constexpr bool kMarkLoopExits = true;
 
  public:
-  JSCallReducerAssembler(JSGraph* jsgraph, Zone* zone, Node* node)
-      : JSGraphAssembler(jsgraph, zone, nullptr, kMarkLoopExits),
+  JSCallReducerAssembler(JSCallReducer* reducer, Node* node)
+      : JSGraphAssembler(
+            reducer->JSGraphForGraphAssembler(),
+            reducer->ZoneForGraphAssembler(),
+            [reducer](Node* n) { reducer->RevisitForGraphAssembler(n); },
+            nullptr, kMarkLoopExits),
         node_(node),
-        outermost_catch_scope_(CatchScope::Outermost(zone)),
+        outermost_catch_scope_(
+            CatchScope::Outermost(reducer->ZoneForGraphAssembler())),
         catch_scope_(&outermost_catch_scope_) {
     InitializeEffectControl(NodeProperties::GetEffectInput(node),
                             NodeProperties::GetControlInput(node));
@@ -143,11 +148,11 @@ class JSCallReducerAssembler : public JSGraphAssembler {
 
       gasm_->Bind(&if_true);
       if (then_body_) then_body_();
-      gasm_->Goto(&merge);
+      if (gasm_->HasActiveBlock()) gasm_->Goto(&merge);
 
       gasm_->Bind(&if_false);
       if (else_body_) else_body_();
-      gasm_->Goto(&merge);
+      if (gasm_->HasActiveBlock()) gasm_->Goto(&merge);
 
       gasm_->Bind(&merge);
     }
@@ -209,11 +214,13 @@ class JSCallReducerAssembler : public JSGraphAssembler {
 
       gasm_->Bind(&if_true);
       TNode<T> then_result = then_body_();
-      gasm_->Goto(&merge, then_result);
+      if (gasm_->HasActiveBlock()) gasm_->Goto(&merge, then_result);
 
       gasm_->Bind(&if_false);
       TNode<T> else_result = else_body_();
-      gasm_->Goto(&merge, else_result);
+      if (gasm_->HasActiveBlock()) {
+        gasm_->Goto(&merge, else_result);
+      }
 
       gasm_->Bind(&merge);
       return merge.PhiAt<T>(0);
@@ -658,9 +665,8 @@ enum class ArrayIndexOfIncludesVariant { kIncludes, kIndexOf };
 // builtins.
 class IteratingArrayBuiltinReducerAssembler : public JSCallReducerAssembler {
  public:
-  IteratingArrayBuiltinReducerAssembler(JSGraph* jsgraph, Zone* zone,
-                                        Node* node)
-      : JSCallReducerAssembler(jsgraph, zone, node) {
+  IteratingArrayBuiltinReducerAssembler(JSCallReducer* reducer, Node* node)
+      : JSCallReducerAssembler(reducer, node) {
     DCHECK(FLAG_turbo_inline_array_builtins);
   }
 
@@ -784,9 +790,9 @@ class IteratingArrayBuiltinReducerAssembler : public JSCallReducerAssembler {
 
 class PromiseBuiltinReducerAssembler : public JSCallReducerAssembler {
  public:
-  PromiseBuiltinReducerAssembler(JSGraph* jsgraph, Zone* zone, Node* node,
+  PromiseBuiltinReducerAssembler(JSCallReducer* reducer, Node* node,
                                  JSHeapBroker* broker)
-      : JSCallReducerAssembler(jsgraph, zone, node), broker_(broker) {
+      : JSCallReducerAssembler(reducer, node), broker_(broker) {
     DCHECK_EQ(IrOpcode::kJSConstruct, node->opcode());
   }
 
@@ -876,12 +882,12 @@ class PromiseBuiltinReducerAssembler : public JSCallReducerAssembler {
 class FastApiCallReducerAssembler : public JSCallReducerAssembler {
  public:
   FastApiCallReducerAssembler(
-      JSGraph* jsgraph, Zone* zone, Node* node, Address c_function,
+      JSCallReducer* reducer, Node* node, Address c_function,
       const CFunctionInfo* c_signature,
       const FunctionTemplateInfoRef function_template_info, Node* receiver,
       Node* holder, const SharedFunctionInfoRef shared, Node* target,
       const int arity, Node* effect)
-      : JSCallReducerAssembler(jsgraph, zone, node),
+      : JSCallReducerAssembler(reducer, node),
         c_function_(c_function),
         c_signature_(c_signature),
         function_template_info_(function_template_info),
@@ -1420,7 +1426,6 @@ TNode<Object> IteratingArrayBuiltinReducerAssembler::ReduceArrayPrototypeReduce(
       Bind(&continue_label);
     });
     Unreachable();  // The loop is exited either by deopt or a jump to below.
-    InitializeEffectControl(nullptr, nullptr);
 
     // TODO(jgruber): This manual fiddling with blocks could be avoided by
     // implementing a `break` mechanic for loop builders.
@@ -2244,7 +2249,7 @@ Reduction JSCallReducer::ReduceMathUnary(Node* node, const Operator* op) {
     return Replace(value);
   }
 
-  JSCallReducerAssembler a(jsgraph(), temp_zone(), node);
+  JSCallReducerAssembler a(this, node);
   Node* subgraph = a.ReduceMathUnary(op);
   return ReplaceWithSubgraph(&a, subgraph);
 }
@@ -2261,7 +2266,7 @@ Reduction JSCallReducer::ReduceMathBinary(Node* node, const Operator* op) {
     return Replace(value);
   }
 
-  JSCallReducerAssembler a(jsgraph(), temp_zone(), node);
+  JSCallReducerAssembler a(this, node);
   Node* subgraph = a.ReduceMathBinary(op);
   return ReplaceWithSubgraph(&a, subgraph);
 }
@@ -2896,10 +2901,10 @@ Reduction JSCallReducer::ReduceObjectPrototypeHasOwnProperty(Node* node) {
   // Object.prototype.hasOwnProperty does an implicit ToObject anyway, and
   // these operations are not observable.
   if (name->opcode() == IrOpcode::kJSForInNext) {
-    ForInMode const mode = ForInModeOf(name->op());
-    if (mode != ForInMode::kGeneric) {
-      Node* object = NodeProperties::GetValueInput(name, 0);
-      Node* cache_type = NodeProperties::GetValueInput(name, 2);
+    JSForInNextNode n(name);
+    if (n.Parameters().mode() != ForInMode::kGeneric) {
+      Node* object = n.receiver();
+      Node* cache_type = n.cache_type();
       if (object->opcode() == IrOpcode::kJSToObject) {
         object = NodeProperties::GetValueInput(object, 0);
       }
@@ -3283,7 +3288,7 @@ Reduction JSCallReducer::ReduceArrayForEach(
   IteratingArrayBuiltinHelper h(node, broker(), jsgraph(), dependencies());
   if (!h.can_reduce()) return h.inference()->NoChange();
 
-  IteratingArrayBuiltinReducerAssembler a(jsgraph(), temp_zone(), node);
+  IteratingArrayBuiltinReducerAssembler a(this, node);
   a.InitializeEffectControl(h.effect(), h.control());
   TNode<Object> subgraph = a.ReduceArrayPrototypeForEach(
       h.inference(), h.has_stability_dependency(), h.elements_kind(), shared);
@@ -3296,7 +3301,7 @@ Reduction JSCallReducer::ReduceArrayReduce(
   IteratingArrayBuiltinHelper h(node, broker(), jsgraph(), dependencies());
   if (!h.can_reduce()) return h.inference()->NoChange();
 
-  IteratingArrayBuiltinReducerAssembler a(jsgraph(), temp_zone(), node);
+  IteratingArrayBuiltinReducerAssembler a(this, node);
   a.InitializeEffectControl(h.effect(), h.control());
   TNode<Object> subgraph = a.ReduceArrayPrototypeReduce(
       h.inference(), h.has_stability_dependency(), h.elements_kind(),
@@ -3310,7 +3315,7 @@ Reduction JSCallReducer::ReduceArrayReduceRight(
   IteratingArrayBuiltinHelper h(node, broker(), jsgraph(), dependencies());
   if (!h.can_reduce()) return h.inference()->NoChange();
 
-  IteratingArrayBuiltinReducerAssembler a(jsgraph(), temp_zone(), node);
+  IteratingArrayBuiltinReducerAssembler a(this, node);
   a.InitializeEffectControl(h.effect(), h.control());
   TNode<Object> subgraph = a.ReduceArrayPrototypeReduce(
       h.inference(), h.has_stability_dependency(), h.elements_kind(),
@@ -3329,7 +3334,7 @@ Reduction JSCallReducer::ReduceArrayMap(Node* node,
     return h.inference()->NoChange();
   }
 
-  IteratingArrayBuiltinReducerAssembler a(jsgraph(), temp_zone(), node);
+  IteratingArrayBuiltinReducerAssembler a(this, node);
   a.InitializeEffectControl(h.effect(), h.control());
 
   TNode<Object> subgraph =
@@ -3349,7 +3354,7 @@ Reduction JSCallReducer::ReduceArrayFilter(
     return h.inference()->NoChange();
   }
 
-  IteratingArrayBuiltinReducerAssembler a(jsgraph(), temp_zone(), node);
+  IteratingArrayBuiltinReducerAssembler a(this, node);
   a.InitializeEffectControl(h.effect(), h.control());
 
   TNode<Object> subgraph =
@@ -3364,7 +3369,7 @@ Reduction JSCallReducer::ReduceArrayFind(Node* node,
   IteratingArrayBuiltinHelper h(node, broker(), jsgraph(), dependencies());
   if (!h.can_reduce()) return h.inference()->NoChange();
 
-  IteratingArrayBuiltinReducerAssembler a(jsgraph(), temp_zone(), node);
+  IteratingArrayBuiltinReducerAssembler a(this, node);
   a.InitializeEffectControl(h.effect(), h.control());
 
   TNode<Object> subgraph = a.ReduceArrayPrototypeFind(
@@ -3379,7 +3384,7 @@ Reduction JSCallReducer::ReduceArrayFindIndex(
   IteratingArrayBuiltinHelper h(node, broker(), jsgraph(), dependencies());
   if (!h.can_reduce()) return h.inference()->NoChange();
 
-  IteratingArrayBuiltinReducerAssembler a(jsgraph(), temp_zone(), node);
+  IteratingArrayBuiltinReducerAssembler a(this, node);
   a.InitializeEffectControl(h.effect(), h.control());
 
   TNode<Object> subgraph = a.ReduceArrayPrototypeFind(
@@ -3394,7 +3399,7 @@ Reduction JSCallReducer::ReduceArrayEvery(Node* node,
   IteratingArrayBuiltinHelper h(node, broker(), jsgraph(), dependencies());
   if (!h.can_reduce()) return h.inference()->NoChange();
 
-  IteratingArrayBuiltinReducerAssembler a(jsgraph(), temp_zone(), node);
+  IteratingArrayBuiltinReducerAssembler a(this, node);
   a.InitializeEffectControl(h.effect(), h.control());
 
   TNode<Object> subgraph = a.ReduceArrayPrototypeEverySome(
@@ -3410,7 +3415,7 @@ Reduction JSCallReducer::ReduceArrayIncludes(Node* node) {
   IteratingArrayBuiltinHelper h(node, broker(), jsgraph(), dependencies());
   if (!h.can_reduce()) return h.inference()->NoChange();
 
-  IteratingArrayBuiltinReducerAssembler a(jsgraph(), temp_zone(), node);
+  IteratingArrayBuiltinReducerAssembler a(this, node);
   a.InitializeEffectControl(h.effect(), h.control());
 
   TNode<Object> subgraph = a.ReduceArrayPrototypeIndexOfIncludes(
@@ -3425,7 +3430,7 @@ Reduction JSCallReducer::ReduceArrayIndexOf(Node* node) {
   IteratingArrayBuiltinHelper h(node, broker(), jsgraph(), dependencies());
   if (!h.can_reduce()) return h.inference()->NoChange();
 
-  IteratingArrayBuiltinReducerAssembler a(jsgraph(), temp_zone(), node);
+  IteratingArrayBuiltinReducerAssembler a(this, node);
   a.InitializeEffectControl(h.effect(), h.control());
 
   TNode<Object> subgraph = a.ReduceArrayPrototypeIndexOfIncludes(
@@ -3439,7 +3444,7 @@ Reduction JSCallReducer::ReduceArraySome(Node* node,
   IteratingArrayBuiltinHelper h(node, broker(), jsgraph(), dependencies());
   if (!h.can_reduce()) return h.inference()->NoChange();
 
-  IteratingArrayBuiltinReducerAssembler a(jsgraph(), temp_zone(), node);
+  IteratingArrayBuiltinReducerAssembler a(this, node);
   a.InitializeEffectControl(h.effect(), h.control());
 
   TNode<Object> subgraph = a.ReduceArrayPrototypeEverySome(
@@ -3447,6 +3452,20 @@ Reduction JSCallReducer::ReduceArraySome(Node* node,
       native_context(), ArrayEverySomeVariant::kSome);
   return ReplaceWithSubgraph(&a, subgraph);
 }
+
+#ifndef V8_ENABLE_FP_PARAMS_IN_C_LINKAGE
+namespace {
+bool HasFPParamsInSignature(const CFunctionInfo* c_signature) {
+  for (unsigned int i = 0; i < c_signature->ArgumentCount(); ++i) {
+    if (c_signature->ArgumentInfo(i).GetType() == CTypeInfo::Type::kFloat32 ||
+        c_signature->ArgumentInfo(i).GetType() == CTypeInfo::Type::kFloat64) {
+      return true;
+    }
+  }
+  return false;
+}
+}  // namespace
+#endif
 
 Reduction JSCallReducer::ReduceCallApiFunction(
     Node* node, const SharedFunctionInfoRef& shared) {
@@ -3621,11 +3640,17 @@ Reduction JSCallReducer::ReduceCallApiFunction(
 
   Address c_function = function_template_info.c_function();
 
-  if (FLAG_turbo_fast_api_calls && c_function != kNullAddress) {
-    const CFunctionInfo* c_signature = function_template_info.c_signature();
-    FastApiCallReducerAssembler a(jsgraph(), graph()->zone(), node, c_function,
-                                  c_signature, function_template_info, receiver,
-                                  holder, shared, target, argc, effect);
+  bool optimize_to_fast_call =
+      FLAG_turbo_fast_api_calls && c_function != kNullAddress;
+  const CFunctionInfo* c_signature = function_template_info.c_signature();
+#ifndef V8_ENABLE_FP_PARAMS_IN_C_LINKAGE
+  optimize_to_fast_call =
+      optimize_to_fast_call && !HasFPParamsInSignature(c_signature);
+#endif
+  if (optimize_to_fast_call) {
+    FastApiCallReducerAssembler a(this, node, c_function, c_signature,
+                                  function_template_info, receiver, holder,
+                                  shared, target, argc, effect);
     Node* fast_call_subgraph = a.ReduceFastApiCall();
     ReplaceWithSubgraph(&a, fast_call_subgraph);
 
@@ -4099,7 +4124,7 @@ Reduction JSCallReducer::ReduceJSCall(Node* node) {
   if (feedback_target.has_value() && feedback_target->map().is_callable()) {
     Node* target_function = jsgraph()->Constant(*feedback_target);
 
-    if (FLAG_turboprop) {
+    if (broker()->is_turboprop()) {
       if (!feedback_target->IsJSFunction()) return NoChange();
       if (!IsBuiltinOrApiFunction(feedback_target->AsJSFunction())) {
         return NoChange();
@@ -4133,7 +4158,7 @@ Reduction JSCallReducer::ReduceJSCall(Node* node) {
         return NoChange();
       }
 
-      if (FLAG_turboprop &&
+      if (broker()->is_turboprop() &&
           !feedback_vector.shared_function_info().HasBuiltinId()) {
         return NoChange();
       }
@@ -4804,7 +4829,7 @@ Reduction JSCallReducer::ReduceStringPrototypeSubstring(Node* node) {
     return NoChange();
   }
 
-  JSCallReducerAssembler a(jsgraph(), temp_zone(), node);
+  JSCallReducerAssembler a(this, node);
   Node* subgraph = a.ReduceStringPrototypeSubstring();
   return ReplaceWithSubgraph(&a, subgraph);
 }
@@ -4818,7 +4843,7 @@ Reduction JSCallReducer::ReduceStringPrototypeSlice(Node* node) {
     return NoChange();
   }
 
-  JSCallReducerAssembler a(jsgraph(), temp_zone(), node);
+  JSCallReducerAssembler a(this, node);
   Node* subgraph = a.ReduceStringPrototypeSlice();
   return ReplaceWithSubgraph(&a, subgraph);
 }
@@ -4960,7 +4985,7 @@ Reduction JSCallReducer::ReduceForInsufficientFeedback(
   // TODO(mythria): May be add additional flags to specify if we need to deopt
   // on calls / construct rather than checking for TurboProp here. We may need
   // it for NativeContextIndependent code too.
-  if (FLAG_turboprop) return NoChange();
+  if (broker()->is_turboprop()) return NoChange();
 
   Node* effect = NodeProperties::GetEffectInput(node);
   Node* control = NodeProperties::GetControlInput(node);
@@ -6316,7 +6341,7 @@ Reduction JSCallReducer::ReducePromiseConstructor(Node* node) {
   if (broker()->is_native_context_independent()) return NoChange();
 
   DisallowHeapAccessIf no_heap_access(should_disallow_heap_access());
-  PromiseBuiltinReducerAssembler a(jsgraph(), temp_zone(), node, broker());
+  PromiseBuiltinReducerAssembler a(this, node, broker());
 
   // We only inline when we have the executor.
   if (a.ConstructArity() < 1) return NoChange();
@@ -7322,11 +7347,11 @@ Reduction JSCallReducer::ReduceDataViewAccess(Node* node, DataViewAccess access,
     // We only deal with DataViews here whose [[ByteLength]] is at least
     // {element_size}, as for all other DataViews it'll be out-of-bounds.
     JSDataViewRef dataview = m.Ref(broker()).AsJSDataView();
-    if (dataview.byte_length() < element_size) return NoChange();
+    size_t length = dataview.byte_length();
+    if (length < element_size) return NoChange();
 
-    // Check that the {offset} is within range of the {byte_length}.
-    Node* byte_length =
-        jsgraph()->Constant(dataview.byte_length() - (element_size - 1));
+    // Check that the {offset} is within range of the {length}.
+    Node* byte_length = jsgraph()->Constant(length - (element_size - 1));
     offset = effect = graph()->NewNode(simplified()->CheckBounds(p.feedback()),
                                        offset, byte_length, effect, control);
   } else {

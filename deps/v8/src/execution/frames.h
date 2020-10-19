@@ -11,6 +11,39 @@
 #include "src/objects/code.h"
 #include "src/objects/objects.h"
 
+//
+// Frame inheritance hierarchy (please keep in sync with frame-constants.h):
+// - CommonFrame
+//   - JavaScriptFrame (aka StandardFrame)
+//     - InterpretedFrame
+//     - OptimizedFrame
+//     - ArgumentsAdaptorFrame (technically a TypedFrame)
+//     - JavaScriptBuiltinContinuationFrame (*)
+//       - JavaScriptBuiltinContinuationWithCatchFrame
+//   - TypedFrame
+//     - NativeFrame
+//     - EntryFrame
+//       - ConstructEntryFrame
+//     - ExitFrame
+//       - BuiltinExitFrame
+//     - StubFrame
+//       - JsToWasmFrame
+//       - CWasmEntryFrame
+//     - BuiltinFrame
+//     - Internal
+//       - ConstructFrame
+//       - BuiltinContinuationFrame
+//     - WasmFrame
+//       - WasmExitFrame
+//     - WasmDebugBreakFrame
+//     - WasmCompileLazyFrame
+//
+// (*) This is actually a BuiltinContinuationFrame with JS arguments.
+//
+
+// TODO(victorgomes): Create a class to access JS arguments and change
+// BuiltinContinuationFrame to be of type TypedFrame.
+
 namespace v8 {
 namespace internal {
 namespace wasm {
@@ -196,7 +229,6 @@ class StackFrame {
   }
   bool is_construct() const { return type() == CONSTRUCT; }
   bool is_builtin_exit() const { return type() == BUILTIN_EXIT; }
-  virtual bool is_standard() const { return false; }
 
   bool is_java_script() const {
     Type type = this->type();
@@ -205,6 +237,7 @@ class StackFrame {
            (type == JAVA_SCRIPT_BUILTIN_CONTINUATION_WITH_CATCH);
   }
   bool is_wasm_to_js() const { return type() == WASM_TO_JS; }
+  bool is_js_to_wasm() const { return type() == JS_TO_WASM; }
 
   // Accessors.
   Address sp() const { return state_.sp; }
@@ -311,145 +344,7 @@ class StackFrame {
   friend class SafeStackFrameIterator;
 };
 
-class NativeFrame : public StackFrame {
- public:
-  Type type() const override { return NATIVE; }
-
-  Code unchecked_code() const override;
-
-  // Garbage collection support.
-  void Iterate(RootVisitor* v) const override {}
-
- protected:
-  inline explicit NativeFrame(StackFrameIteratorBase* iterator);
-
-  Address GetCallerStackPointer() const override;
-
- private:
-  void ComputeCallerState(State* state) const override;
-
-  friend class StackFrameIteratorBase;
-};
-
-// Entry frames are used to enter JavaScript execution from C.
-class EntryFrame : public StackFrame {
- public:
-  Type type() const override { return ENTRY; }
-
-  Code unchecked_code() const override;
-
-  // Garbage collection support.
-  void Iterate(RootVisitor* v) const override;
-
-  static EntryFrame* cast(StackFrame* frame) {
-    DCHECK(frame->is_entry());
-    return static_cast<EntryFrame*>(frame);
-  }
-
- protected:
-  inline explicit EntryFrame(StackFrameIteratorBase* iterator);
-
-  // The caller stack pointer for entry frames is always zero. The
-  // real information about the caller frame is available through the
-  // link to the top exit frame.
-  Address GetCallerStackPointer() const override { return 0; }
-
- private:
-  void ComputeCallerState(State* state) const override;
-  Type GetCallerState(State* state) const override;
-
-  friend class StackFrameIteratorBase;
-};
-
-class ConstructEntryFrame : public EntryFrame {
- public:
-  Type type() const override { return CONSTRUCT_ENTRY; }
-
-  Code unchecked_code() const override;
-
-  static ConstructEntryFrame* cast(StackFrame* frame) {
-    DCHECK(frame->is_construct_entry());
-    return static_cast<ConstructEntryFrame*>(frame);
-  }
-
- protected:
-  inline explicit ConstructEntryFrame(StackFrameIteratorBase* iterator);
-
- private:
-  friend class StackFrameIteratorBase;
-};
-
-// Exit frames are used to exit JavaScript execution and go to C.
-class ExitFrame : public StackFrame {
- public:
-  Type type() const override { return EXIT; }
-
-  Code unchecked_code() const override;
-
-  // Garbage collection support.
-  void Iterate(RootVisitor* v) const override;
-
-  static ExitFrame* cast(StackFrame* frame) {
-    DCHECK(frame->is_exit());
-    return static_cast<ExitFrame*>(frame);
-  }
-
-  // Compute the state and type of an exit frame given a frame
-  // pointer. Used when constructing the first stack frame seen by an
-  // iterator and the frames following entry frames.
-  static Type GetStateForFramePointer(Address fp, State* state);
-  static Address ComputeStackPointer(Address fp);
-  static StackFrame::Type ComputeFrameType(Address fp);
-  static void FillState(Address fp, Address sp, State* state);
-
- protected:
-  inline explicit ExitFrame(StackFrameIteratorBase* iterator);
-
-  Address GetCallerStackPointer() const override;
-
- private:
-  void ComputeCallerState(State* state) const override;
-
-  friend class StackFrameIteratorBase;
-};
-
-// Builtin exit frames are a special case of exit frames, which are used
-// whenever C++ builtins (e.g., Math.acos) are called. Their main purpose is
-// to allow such builtins to appear in stack traces.
-class BuiltinExitFrame : public ExitFrame {
- public:
-  Type type() const override { return BUILTIN_EXIT; }
-
-  static BuiltinExitFrame* cast(StackFrame* frame) {
-    DCHECK(frame->is_builtin_exit());
-    return static_cast<BuiltinExitFrame*>(frame);
-  }
-
-  JSFunction function() const;
-  Object receiver() const;
-
-  bool IsConstructor() const;
-
-  void Print(StringStream* accumulator, PrintMode mode,
-             int index) const override;
-
- protected:
-  inline explicit BuiltinExitFrame(StackFrameIteratorBase* iterator);
-
- private:
-  Object GetParameter(int i) const;
-  int ComputeParametersCount() const;
-
-  inline Object receiver_slot_object() const;
-  inline Object argc_slot_object() const;
-  inline Object target_slot_object() const;
-  inline Object new_target_slot_object() const;
-
-  friend class StackFrameIteratorBase;
-  friend class FrameArrayBuilder;
-};
-
-class StandardFrame;
+class CommonFrame;
 
 class V8_EXPORT_PRIVATE FrameSummary {
  public:
@@ -540,10 +435,10 @@ class V8_EXPORT_PRIVATE FrameSummary {
 
   ~FrameSummary();
 
-  static FrameSummary GetTop(const StandardFrame* frame);
-  static FrameSummary GetBottom(const StandardFrame* frame);
-  static FrameSummary GetSingle(const StandardFrame* frame);
-  static FrameSummary Get(const StandardFrame* frame, int index);
+  static FrameSummary GetTop(const CommonFrame* frame);
+  static FrameSummary GetBottom(const CommonFrame* frame);
+  static FrameSummary GetSingle(const CommonFrame* frame);
+  static FrameSummary Get(const CommonFrame* frame, int index);
 
   void EnsureSourcePositionsAvailable();
   bool AreSourcePositionsAvailable() const;
@@ -577,14 +472,9 @@ class V8_EXPORT_PRIVATE FrameSummary {
 #undef FRAME_SUMMARY_FIELD
 };
 
-class StandardFrame : public StackFrame {
+class CommonFrame : public StackFrame {
  public:
-  // Testers.
-  bool is_standard() const override { return true; }
-
   // Accessors.
-  virtual Object receiver() const;
-  virtual Script script() const;
   virtual Object context() const;
   virtual int position() const;
 
@@ -593,25 +483,20 @@ class StandardFrame : public StackFrame {
   inline void SetExpression(int index, Object value);
   int ComputeExpressionsCount() const;
 
-  // Access the parameters.
-  virtual Object GetParameter(int index) const;
-  virtual int ComputeParametersCount() const;
-
-  // Check if this frame is a constructor frame invoked through 'new'.
-  virtual bool IsConstructor() const;
+  Address GetCallerStackPointer() const override;
 
   // Build a list with summaries for this frame including all inlined frames.
   // The functions are ordered bottom-to-top (i.e. summaries.last() is the
   // top-most activation; caller comes before callee).
   virtual void Summarize(std::vector<FrameSummary>* frames) const;
 
-  static StandardFrame* cast(StackFrame* frame) {
-    DCHECK(frame->is_standard());
-    return static_cast<StandardFrame*>(frame);
+  static CommonFrame* cast(StackFrame* frame) {
+    // It is always safe to cast to common.
+    return static_cast<CommonFrame*>(frame);
   }
 
  protected:
-  inline explicit StandardFrame(StackFrameIteratorBase* iterator);
+  inline explicit CommonFrame(StackFrameIteratorBase* iterator);
 
   void ComputeCallerState(State* state) const override;
 
@@ -650,7 +535,16 @@ class StandardFrame : public StackFrame {
   friend class SafeStackFrameIterator;
 };
 
-class JavaScriptFrame : public StandardFrame {
+class TypedFrame : public CommonFrame {
+ public:
+  Code unchecked_code() const override { return Code(); }
+  void Iterate(RootVisitor* v) const override { IterateCompiledFrame(v); }
+
+ protected:
+  inline explicit TypedFrame(StackFrameIteratorBase* iterator);
+};
+
+class JavaScriptFrame : public CommonFrame {
  public:
   Type type() const override = 0;
 
@@ -659,23 +553,26 @@ class JavaScriptFrame : public StandardFrame {
   // Accessors.
   virtual JSFunction function() const;
   Object unchecked_function() const;
-  Object receiver() const override;
+  Object receiver() const;
   Object context() const override;
-  Script script() const override;
+  Script script() const;
 
   inline void set_receiver(Object value);
 
   // Access the parameters.
   inline Address GetParameterSlot(int index) const;
-  Object GetParameter(int index) const override;
-  int ComputeParametersCount() const override;
+  Object GetParameter(int index) const;
+  virtual int ComputeParametersCount() const;
+#ifdef V8_NO_ARGUMENTS_ADAPTOR
+  int GetActualArgumentCount() const;
+#endif
   Handle<FixedArray> GetParameters() const;
 
   // Debugger access.
   void SetParameterValue(int index, Object value) const;
 
   // Check if this frame is a constructor frame invoked through 'new'.
-  bool IsConstructor() const override;
+  bool IsConstructor() const;
 
   // Determines whether this frame includes inlined activations. To get details
   // about the inlined frames use {GetFunctions} and {Summarize}.
@@ -742,12 +639,138 @@ class JavaScriptFrame : public StandardFrame {
   friend class StackFrameIteratorBase;
 };
 
-class StubFrame : public StandardFrame {
+class NativeFrame : public TypedFrame {
+ public:
+  Type type() const override { return NATIVE; }
+
+  // Garbage collection support.
+  void Iterate(RootVisitor* v) const override {}
+
+ protected:
+  inline explicit NativeFrame(StackFrameIteratorBase* iterator);
+
+ private:
+  void ComputeCallerState(State* state) const override;
+
+  friend class StackFrameIteratorBase;
+};
+
+// Entry frames are used to enter JavaScript execution from C.
+class EntryFrame : public TypedFrame {
+ public:
+  Type type() const override { return ENTRY; }
+
+  Code unchecked_code() const override;
+
+  // Garbage collection support.
+  void Iterate(RootVisitor* v) const override;
+
+  static EntryFrame* cast(StackFrame* frame) {
+    DCHECK(frame->is_entry());
+    return static_cast<EntryFrame*>(frame);
+  }
+
+ protected:
+  inline explicit EntryFrame(StackFrameIteratorBase* iterator);
+
+  // The caller stack pointer for entry frames is always zero. The
+  // real information about the caller frame is available through the
+  // link to the top exit frame.
+  Address GetCallerStackPointer() const override { return 0; }
+
+ private:
+  void ComputeCallerState(State* state) const override;
+  Type GetCallerState(State* state) const override;
+
+  friend class StackFrameIteratorBase;
+};
+
+class ConstructEntryFrame : public EntryFrame {
+ public:
+  Type type() const override { return CONSTRUCT_ENTRY; }
+
+  Code unchecked_code() const override;
+
+  static ConstructEntryFrame* cast(StackFrame* frame) {
+    DCHECK(frame->is_construct_entry());
+    return static_cast<ConstructEntryFrame*>(frame);
+  }
+
+ protected:
+  inline explicit ConstructEntryFrame(StackFrameIteratorBase* iterator);
+
+ private:
+  friend class StackFrameIteratorBase;
+};
+
+// Exit frames are used to exit JavaScript execution and go to C.
+class ExitFrame : public TypedFrame {
+ public:
+  Type type() const override { return EXIT; }
+
+  // Garbage collection support.
+  void Iterate(RootVisitor* v) const override;
+
+  static ExitFrame* cast(StackFrame* frame) {
+    DCHECK(frame->is_exit());
+    return static_cast<ExitFrame*>(frame);
+  }
+
+  // Compute the state and type of an exit frame given a frame
+  // pointer. Used when constructing the first stack frame seen by an
+  // iterator and the frames following entry frames.
+  static Type GetStateForFramePointer(Address fp, State* state);
+  static Address ComputeStackPointer(Address fp);
+  static StackFrame::Type ComputeFrameType(Address fp);
+  static void FillState(Address fp, Address sp, State* state);
+
+ protected:
+  inline explicit ExitFrame(StackFrameIteratorBase* iterator);
+
+ private:
+  void ComputeCallerState(State* state) const override;
+
+  friend class StackFrameIteratorBase;
+};
+
+// Builtin exit frames are a special case of exit frames, which are used
+// whenever C++ builtins (e.g., Math.acos) are called. Their main purpose is
+// to allow such builtins to appear in stack traces.
+class BuiltinExitFrame : public ExitFrame {
+ public:
+  Type type() const override { return BUILTIN_EXIT; }
+
+  static BuiltinExitFrame* cast(StackFrame* frame) {
+    DCHECK(frame->is_builtin_exit());
+    return static_cast<BuiltinExitFrame*>(frame);
+  }
+
+  JSFunction function() const;
+  Object receiver() const;
+  bool IsConstructor() const;
+
+  void Print(StringStream* accumulator, PrintMode mode,
+             int index) const override;
+
+ protected:
+  inline explicit BuiltinExitFrame(StackFrameIteratorBase* iterator);
+
+ private:
+  Object GetParameter(int i) const;
+  int ComputeParametersCount() const;
+
+  inline Object receiver_slot_object() const;
+  inline Object argc_slot_object() const;
+  inline Object target_slot_object() const;
+  inline Object new_target_slot_object() const;
+
+  friend class StackFrameIteratorBase;
+  friend class FrameArrayBuilder;
+};
+
+class StubFrame : public TypedFrame {
  public:
   Type type() const override { return STUB; }
-
-  // GC support.
-  void Iterate(RootVisitor* v) const override;
 
   // Determine the code for the frame.
   Code unchecked_code() const override;
@@ -759,8 +782,7 @@ class StubFrame : public StandardFrame {
  protected:
   inline explicit StubFrame(StackFrameIteratorBase* iterator);
 
-  Address GetCallerStackPointer() const override;
-
+ private:
   friend class StackFrameIteratorBase;
 };
 
@@ -784,11 +806,6 @@ class OptimizedFrame : public JavaScriptFrame {
 
   DeoptimizationData GetDeoptimizationData(int* deopt_index) const;
 
-#ifndef V8_REVERSE_JSARGS
-  // When the arguments are reversed in the stack, receiver() is
-  // inherited from JavaScriptFrame.
-  Object receiver() const override;
-#endif
   int ComputeParametersCount() const override;
 
   static int StackSlotOffsetRelativeToFp(int slot_index);
@@ -853,6 +870,10 @@ class InterpretedFrame : public JavaScriptFrame {
 // Arguments adaptor frames are automatically inserted below
 // JavaScript frames when the actual number of parameters does not
 // match the formal number of parameters.
+// NOTE: this inheritance is wrong, an ArgumentsAdaptorFrame should be
+// of type TypedFrame, but due to FrameInspector::javascript_frame(),
+// it needs to be seen as JavaScriptFrame.
+// This frame will however be deleted soon.
 class ArgumentsAdaptorFrame : public JavaScriptFrame {
  public:
   Type type() const override { return ARGUMENTS_ADAPTOR; }
@@ -880,7 +901,7 @@ class ArgumentsAdaptorFrame : public JavaScriptFrame {
 
 // Builtin frames are built for builtins with JavaScript linkage, such as
 // various standard library functions (i.e. Math.asin, Math.floor, etc.).
-class BuiltinFrame final : public JavaScriptFrame {
+class BuiltinFrame final : public TypedFrame {
  public:
   Type type() const final { return BUILTIN; }
 
@@ -888,23 +909,18 @@ class BuiltinFrame final : public JavaScriptFrame {
     DCHECK(frame->is_builtin());
     return static_cast<BuiltinFrame*>(frame);
   }
-  int ComputeParametersCount() const final;
+  int ComputeParametersCount() const;
 
  protected:
   inline explicit BuiltinFrame(StackFrameIteratorBase* iterator);
-
-  void PrintFrameKind(StringStream* accumulator) const override;
 
  private:
   friend class StackFrameIteratorBase;
 };
 
-class WasmFrame : public StandardFrame {
+class WasmFrame : public TypedFrame {
  public:
   Type type() const override { return WASM; }
-
-  // GC support.
-  void Iterate(RootVisitor* v) const override;
 
   // Printing support.
   void Print(StringStream* accumulator, PrintMode mode,
@@ -921,7 +937,7 @@ class WasmFrame : public StandardFrame {
   V8_EXPORT_PRIVATE wasm::NativeModule* native_module() const;
   wasm::WasmCode* wasm_code() const;
   uint32_t function_index() const;
-  Script script() const override;
+  Script script() const;
   // Byte position in the module, or asm.js source position.
   int position() const override;
   Object context() const override;
@@ -940,8 +956,6 @@ class WasmFrame : public StandardFrame {
  protected:
   inline explicit WasmFrame(StackFrameIteratorBase* iterator);
 
-  Address GetCallerStackPointer() const override;
-
  private:
   friend class StackFrameIteratorBase;
   WasmModuleObject module_object() const;
@@ -959,14 +973,12 @@ class WasmExitFrame : public WasmFrame {
   friend class StackFrameIteratorBase;
 };
 
-class WasmDebugBreakFrame final : public StandardFrame {
+class WasmDebugBreakFrame final : public TypedFrame {
  public:
   Type type() const override { return WASM_DEBUG_BREAK; }
 
   // GC support.
   void Iterate(RootVisitor* v) const override;
-
-  Code unchecked_code() const override;
 
   void Print(StringStream* accumulator, PrintMode mode,
              int index) const override;
@@ -978,8 +990,6 @@ class WasmDebugBreakFrame final : public StandardFrame {
 
  protected:
   inline explicit WasmDebugBreakFrame(StackFrameIteratorBase*);
-
-  Address GetCallerStackPointer() const override;
 
  private:
   friend class StackFrameIteratorBase;
@@ -1021,11 +1031,10 @@ class CWasmEntryFrame : public StubFrame {
   Type GetCallerState(State* state) const override;
 };
 
-class WasmCompileLazyFrame : public StandardFrame {
+class WasmCompileLazyFrame : public TypedFrame {
  public:
   Type type() const override { return WASM_COMPILE_LAZY; }
 
-  Code unchecked_code() const override;
   WasmInstanceObject wasm_instance() const;
   FullObjectSlot wasm_instance_slot() const;
 
@@ -1040,13 +1049,11 @@ class WasmCompileLazyFrame : public StandardFrame {
  protected:
   inline explicit WasmCompileLazyFrame(StackFrameIteratorBase* iterator);
 
-  Address GetCallerStackPointer() const override;
-
  private:
   friend class StackFrameIteratorBase;
 };
 
-class InternalFrame : public StandardFrame {
+class InternalFrame : public TypedFrame {
  public:
   Type type() const override { return INTERNAL; }
 
@@ -1063,8 +1070,6 @@ class InternalFrame : public StandardFrame {
 
  protected:
   inline explicit InternalFrame(StackFrameIteratorBase* iterator);
-
-  Address GetCallerStackPointer() const override;
 
  private:
   friend class StackFrameIteratorBase;
@@ -1230,8 +1235,9 @@ class V8_EXPORT_PRIVATE StackTraceFrameIterator {
   bool done() const { return iterator_.done(); }
   void Advance();
   void AdvanceOneFrame() { iterator_.Advance(); }
+  int FrameFunctionCount() const;
 
-  inline StandardFrame* frame() const;
+  inline CommonFrame* frame() const;
 
   inline bool is_javascript() const;
   inline bool is_wasm() const;

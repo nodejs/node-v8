@@ -23,14 +23,14 @@ class V8_EXPORT_PRIVATE ContextSerializer : public Serializer {
   ~ContextSerializer() override;
 
   // Serialize the objects reachable from a single object pointer.
-  void Serialize(Context* o, const DisallowHeapAllocation& no_gc);
+  void Serialize(Context* o, const DisallowGarbageCollection& no_gc);
 
   bool can_be_rehashed() const { return can_be_rehashed_; }
 
  private:
-  void SerializeObject(HeapObject o) override;
+  void SerializeObjectImpl(Handle<HeapObject> o) override;
   bool ShouldBeInTheStartupObjectCache(HeapObject o);
-  bool SerializeJSObjectWithEmbedderFields(Object obj);
+  bool SerializeJSObjectWithEmbedderFields(Handle<HeapObject> obj);
   void CheckRehashability(HeapObject obj);
 
   StartupSerializer* startup_serializer_;

@@ -27,7 +27,7 @@ class CodeEntry;
 class CodeMap;
 class CpuProfilesCollection;
 class Isolate;
-class ProfileGenerator;
+class Symbolizer;
 
 #define CODE_EVENTS_TYPE_LIST(V)                 \
   V(CODE_CREATION, CodeCreateEventRecord)        \
@@ -36,14 +36,10 @@ class ProfileGenerator;
   V(CODE_DEOPT, CodeDeoptEventRecord)            \
   V(REPORT_BUILTIN, ReportBuiltinEventRecord)
 
-#define VM_EVENTS_TYPE_LIST(V) \
-  CODE_EVENTS_TYPE_LIST(V)     \
-  V(NATIVE_CONTEXT_MOVE, NativeContextMoveEventRecord)
-
 class CodeEventRecord {
  public:
 #define DECLARE_TYPE(type, ignore) type,
-  enum Type { NONE = 0, VM_EVENTS_TYPE_LIST(DECLARE_TYPE) };
+  enum Type { NONE = 0, CODE_EVENTS_TYPE_LIST(DECLARE_TYPE) };
 #undef DECLARE_TYPE
 
   Type type;
@@ -96,16 +92,10 @@ class CodeDeoptEventRecord : public CodeEventRecord {
 class ReportBuiltinEventRecord : public CodeEventRecord {
  public:
   Address instruction_start;
+  unsigned instruction_size;
   Builtins::Name builtin_id;
 
   V8_INLINE void UpdateCodeMap(CodeMap* code_map);
-};
-
-// Signals that a native context's address has changed.
-class NativeContextMoveEventRecord : public CodeEventRecord {
- public:
-  Address from_address;
-  Address to_address;
 };
 
 // A record type for sending samples from the main thread/signal handler to the
@@ -132,7 +122,7 @@ class CodeEventsContainer {
   union  {
     CodeEventRecord generic;
 #define DECLARE_CLASS(ignore, type) type type##_;
-    VM_EVENTS_TYPE_LIST(DECLARE_CLASS)
+    CODE_EVENTS_TYPE_LIST(DECLARE_CLASS)
 #undef DECLARE_CLASS
   };
 };
@@ -175,7 +165,7 @@ class V8_EXPORT_PRIVATE ProfilerEventsProcessor : public base::Thread,
   virtual void SetSamplingInterval(base::TimeDelta) {}
 
  protected:
-  ProfilerEventsProcessor(Isolate* isolate, ProfileGenerator* generator,
+  ProfilerEventsProcessor(Isolate* isolate, Symbolizer* symbolizer,
                           ProfilerCodeObserver* code_observer);
 
   // Called from events processing thread (Run() method.)
@@ -188,7 +178,7 @@ class V8_EXPORT_PRIVATE ProfilerEventsProcessor : public base::Thread,
   };
   virtual SampleProcessingResult ProcessOneSample() = 0;
 
-  ProfileGenerator* generator_;
+  Symbolizer* symbolizer_;
   ProfilerCodeObserver* code_observer_;
   std::atomic_bool running_{true};
   base::ConditionVariable running_cond_;
@@ -203,8 +193,9 @@ class V8_EXPORT_PRIVATE ProfilerEventsProcessor : public base::Thread,
 class V8_EXPORT_PRIVATE SamplingEventsProcessor
     : public ProfilerEventsProcessor {
  public:
-  SamplingEventsProcessor(Isolate* isolate, ProfileGenerator* generator,
+  SamplingEventsProcessor(Isolate* isolate, Symbolizer* symbolizer,
                           ProfilerCodeObserver* code_observer,
+                          CpuProfilesCollection* profiles,
                           base::TimeDelta period, bool use_precise_sampling);
   ~SamplingEventsProcessor() override;
 
@@ -231,6 +222,7 @@ class V8_EXPORT_PRIVATE SamplingEventsProcessor
 
  private:
   SampleProcessingResult ProcessOneSample() override;
+  void SymbolizeAndAddToProfiles(const TickSampleEventRecord* record);
 
   static const size_t kTickSampleBufferSize = 512 * KB;
   static const size_t kTickSampleQueueLength =
@@ -238,6 +230,7 @@ class V8_EXPORT_PRIVATE SamplingEventsProcessor
   SamplingCircularQueue<TickSampleEventRecord,
                         kTickSampleQueueLength> ticks_buffer_;
   std::unique_ptr<sampler::Sampler> sampler_;
+  CpuProfilesCollection* profiles_;
   base::TimeDelta period_;           // Samples & code events processing period.
   const bool use_precise_sampling_;  // Whether or not busy-waiting is used for
                                      // low sampling intervals on Windows.
@@ -304,7 +297,7 @@ class V8_EXPORT_PRIVATE CpuProfiler {
 
   CpuProfiler(Isolate* isolate, CpuProfilingNamingMode naming_mode,
               CpuProfilingLoggingMode logging_mode,
-              CpuProfilesCollection* profiles, ProfileGenerator* test_generator,
+              CpuProfilesCollection* profiles, Symbolizer* test_symbolizer,
               ProfilerEventsProcessor* test_processor);
 
   ~CpuProfiler();
@@ -331,7 +324,7 @@ class V8_EXPORT_PRIVATE CpuProfiler {
 
   bool is_profiling() const { return is_profiling_; }
 
-  ProfileGenerator* generator() const { return generator_.get(); }
+  Symbolizer* symbolizer() const { return symbolizer_.get(); }
   ProfilerEventsProcessor* processor() const { return processor_.get(); }
   Isolate* isolate() const { return isolate_; }
 
@@ -362,7 +355,7 @@ class V8_EXPORT_PRIVATE CpuProfiler {
   // to a multiple of, or used as the default if unspecified.
   base::TimeDelta base_sampling_interval_;
   std::unique_ptr<CpuProfilesCollection> profiles_;
-  std::unique_ptr<ProfileGenerator> generator_;
+  std::unique_ptr<Symbolizer> symbolizer_;
   std::unique_ptr<ProfilerEventsProcessor> processor_;
   std::unique_ptr<ProfilerListener> profiler_listener_;
   std::unique_ptr<ProfilingScope> profiling_scope_;

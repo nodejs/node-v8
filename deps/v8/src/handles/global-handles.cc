@@ -381,7 +381,7 @@ namespace {
 
 void ExtractInternalFields(JSObject jsobject, void** embedder_fields, int len) {
   int field_count = jsobject.GetEmbedderFieldCount();
-  const Isolate* isolate = GetIsolateForPtrCompr(jsobject);
+  IsolateRoot isolate = GetIsolateForPtrCompr(jsobject);
   for (int i = 0; i < len; ++i) {
     if (field_count == i) break;
     void* pointer;
@@ -1073,7 +1073,7 @@ void GlobalHandles::MoveTracedGlobal(Address** from, Address** to) {
       }
     }
     DestroyTraced(*from);
-    *from = nullptr;
+    SetSlotThreadSafe(from, nullptr);
   } else {
     // Pure heap move.
     DestroyTraced(*to);
@@ -1086,7 +1086,7 @@ void GlobalHandles::MoveTracedGlobal(Address** from, Address** to) {
     if (to_node->has_destructor()) {
       to_node->set_parameter(to);
     }
-    *from = nullptr;
+    SetSlotThreadSafe(from, nullptr);
   }
   TracedNode::Verify(global_handles, to);
 }

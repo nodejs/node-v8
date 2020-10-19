@@ -74,11 +74,11 @@ constexpr uint32_t kNullCatch = static_cast<uint32_t>(-1);
 
 class WasmGraphBuildingInterface {
  public:
-  static constexpr Decoder::ValidateFlag validate = Decoder::kValidate;
+  static constexpr Decoder::ValidateFlag validate = Decoder::kFullValidation;
   using FullDecoder = WasmFullDecoder<validate, WasmGraphBuildingInterface>;
   using CheckForNull = compiler::WasmGraphBuilder::CheckForNull;
 
-  struct Value : public ValueBase {
+  struct Value : public ValueBase<validate> {
     TFNode* node = nullptr;
 
     template <typename... Args>
@@ -97,7 +97,7 @@ class WasmGraphBuildingInterface {
     explicit TryInfo(SsaEnv* c) : catch_env(c) {}
   };
 
-  struct Control : public ControlBase<Value> {
+  struct Control : public ControlBase<Value, validate> {
     SsaEnv* end_env = nullptr;    // end environment for the construct.
     SsaEnv* false_env = nullptr;  // false environment (only for if).
     TryInfo* try_info = nullptr;  // information about try statements.
@@ -268,7 +268,7 @@ class WasmGraphBuildingInterface {
     result->node = builder_->Simd128Constant(imm.value);
   }
 
-  void RefNull(FullDecoder* decoder, Value* result) {
+  void RefNull(FullDecoder* decoder, ValueType type, Value* result) {
     result->node = builder_->RefNull();
   }
 
@@ -436,11 +436,25 @@ class WasmGraphBuildingInterface {
               index.node, imm.offset, imm.alignment, decoder->position());
   }
 
+  void LoadLane(FullDecoder* decoder, LoadType type, const Value& value,
+                const Value& index, const MemoryAccessImmediate<validate>& imm,
+                const uint8_t laneidx, Value* result) {
+    result->node = BUILD(LoadLane, type.mem_type(), value.node, index.node,
+                         imm.offset, laneidx, decoder->position());
+  }
+
   void StoreMem(FullDecoder* decoder, StoreType type,
                 const MemoryAccessImmediate<validate>& imm, const Value& index,
                 const Value& value) {
     BUILD(StoreMem, type.mem_rep(), index.node, imm.offset, imm.alignment,
           value.node, decoder->position(), type.value_type());
+  }
+
+  void StoreLane(FullDecoder* decoder, StoreType type,
+                 const MemoryAccessImmediate<validate>& imm, const Value& index,
+                 const Value& value, const uint8_t laneidx) {
+    BUILD(StoreLane, type.mem_rep(), index.node, imm.offset, imm.alignment,
+          value.node, laneidx, decoder->position(), type.value_type());
   }
 
   void CurrentMemoryPages(FullDecoder* decoder, Value* result) {
@@ -941,6 +955,7 @@ class WasmGraphBuildingInterface {
   }
 
   TFNode* DefaultValue(ValueType type) {
+    DCHECK(type.is_defaultable());
     switch (type.kind()) {
       case ValueType::kI8:
       case ValueType::kI16:
@@ -1199,7 +1214,7 @@ DecodeResult BuildTFGraph(AccountingAllocator* allocator,
                           WasmFeatures* detected, const FunctionBody& body,
                           compiler::NodeOriginTable* node_origins) {
   Zone zone(allocator, ZONE_NAME);
-  WasmFullDecoder<Decoder::kValidate, WasmGraphBuildingInterface> decoder(
+  WasmFullDecoder<Decoder::kFullValidation, WasmGraphBuildingInterface> decoder(
       &zone, module, enabled, detected, body, builder);
   if (node_origins) {
     builder->AddBytecodePositionDecorator(node_origins, &decoder);

@@ -81,12 +81,13 @@ bool Accessors::IsJSObjectFieldAccessor(Isolate* isolate, Handle<Map> map,
 }
 
 V8_WARN_UNUSED_RESULT MaybeHandle<Object>
-Accessors::ReplaceAccessorWithDataProperty(Handle<Object> receiver,
+Accessors::ReplaceAccessorWithDataProperty(Isolate* isolate,
+                                           Handle<Object> receiver,
                                            Handle<JSObject> holder,
                                            Handle<Name> name,
                                            Handle<Object> value) {
-  LookupIterator it(holder->GetIsolate(), receiver, name, holder,
-                    LookupIterator::OWN_SKIP_INTERCEPTOR);
+  LookupIterator it(isolate, receiver, LookupIterator::Key(isolate, name),
+                    holder, LookupIterator::OWN_SKIP_INTERCEPTOR);
   // Skip any access checks we might hit. This accessor should never hit in a
   // situation where the caller does not have access.
   if (it.state() == LookupIterator::ACCESS_CHECK) {
@@ -114,8 +115,8 @@ void Accessors::ReconfigureToDataProperty(
       Handle<JSObject>::cast(Utils::OpenHandle(*info.Holder()));
   Handle<Name> name = Utils::OpenHandle(*key);
   Handle<Object> value = Utils::OpenHandle(*val);
-  MaybeHandle<Object> result =
-      Accessors::ReplaceAccessorWithDataProperty(receiver, holder, name, value);
+  MaybeHandle<Object> result = Accessors::ReplaceAccessorWithDataProperty(
+      isolate, receiver, holder, name, value);
   if (result.is_null()) {
     isolate->OptionalRescheduleException(false);
   } else {
@@ -462,16 +463,20 @@ Handle<JSObject> GetFrameArguments(Isolate* isolate,
     return ArgumentsForInlinedFunction(frame, function_index);
   }
 
+#ifdef V8_NO_ARGUMENTS_ADAPTOR
+  const int length = frame->GetActualArgumentCount();
+#else
   // Find the frame that holds the actual arguments passed to the function.
   if (it->frame()->has_adapted_arguments()) {
     it->AdvanceOneFrame();
     DCHECK(it->frame()->is_arguments_adaptor());
   }
   frame = it->frame();
-
-  // Get the number of arguments and construct an arguments object
-  // mirror for the right frame and the underlying function.
   const int length = frame->ComputeParametersCount();
+#endif
+
+  // Construct an arguments object mirror for the right frame and the underlying
+  // function.
   Handle<JSFunction> function(frame->function(), isolate);
   Handle<JSObject> arguments =
       isolate->factory()->NewArgumentsObject(function, length);

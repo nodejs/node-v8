@@ -13,6 +13,7 @@
 #include "src/base/atomic-utils.h"
 #include "src/base/atomicops.h"
 #include "src/base/platform/platform.h"
+#include "src/common/assert-scope.h"
 #include "src/heap/heap-write-barrier.h"
 #include "src/heap/heap.h"
 #include "src/heap/third-party/heap-api.h"
@@ -169,8 +170,9 @@ AllocationResult Heap::AllocateRaw(int size_in_bytes, AllocationType type,
                                    AllocationAlignment alignment) {
   DCHECK(AllowHandleAllocation::IsAllowed());
   DCHECK(AllowHeapAllocation::IsAllowed());
-  DCHECK_IMPLIES(type == AllocationType::kCode,
-                 alignment == AllocationAlignment::kCodeAligned);
+  DCHECK(AllowGarbageCollection::IsAllowed());
+  DCHECK_IMPLIES(type == AllocationType::kCode || type == AllocationType::kMap,
+                 alignment == AllocationAlignment::kWordAligned);
   DCHECK_EQ(gc_state(), NOT_IN_GC);
 #ifdef V8_ENABLE_ALLOCATION_TIMEOUT
   if (FLAG_random_gc_interval > 0 || FLAG_gc_interval >= 0) {
@@ -183,7 +185,9 @@ AllocationResult Heap::AllocateRaw(int size_in_bytes, AllocationType type,
   IncrementObjectCounters();
 #endif
 
-  bool large_object = size_in_bytes > kMaxRegularHeapObjectSize;
+  size_t large_object_threshold = MaxRegularHeapObjectSize(type);
+  bool large_object =
+      static_cast<size_t>(size_in_bytes) > large_object_threshold;
 
   HeapObject object;
   AllocationResult allocation;
@@ -216,15 +220,15 @@ AllocationResult Heap::AllocateRaw(int size_in_bytes, AllocationType type,
         allocation = old_space_->AllocateRaw(size_in_bytes, alignment, origin);
       }
     } else if (AllocationType::kCode == type) {
-      if (size_in_bytes <= code_space()->AreaSize() && !large_object) {
-        allocation = code_space_->AllocateRawUnaligned(size_in_bytes);
-      } else {
+      DCHECK(AllowCodeAllocation::IsAllowed());
+      if (large_object) {
         allocation = code_lo_space_->AllocateRaw(size_in_bytes);
+      } else {
+        allocation = code_space_->AllocateRawUnaligned(size_in_bytes);
       }
     } else if (AllocationType::kMap == type) {
       allocation = map_space_->AllocateRawUnaligned(size_in_bytes);
     } else if (AllocationType::kReadOnly == type) {
-      DCHECK(isolate_->serializer_enabled());
       DCHECK(!large_object);
       DCHECK(CanAllocateInReadOnlySpace());
       DCHECK_EQ(AllocationOrigin::kRuntime, origin);
@@ -246,6 +250,15 @@ AllocationResult Heap::AllocateRaw(int size_in_bytes, AllocationType type,
             ->RegisterNewlyAllocatedCodeObject(object.address());
       }
     }
+
+#ifdef V8_ENABLE_CONSERVATIVE_STACK_SCANNING
+    if (AllocationType::kReadOnly != type) {
+      DCHECK_TAG_ALIGNED(object.address());
+      Page::FromHeapObject(object)->object_start_bitmap()->SetBit(
+          object.address());
+    }
+#endif
+
     OnAllocationEvent(object, size_in_bytes);
   }
 
@@ -258,27 +271,25 @@ HeapObject Heap::AllocateRawWith(int size, AllocationType allocation,
                                  AllocationAlignment alignment) {
   DCHECK(AllowHandleAllocation::IsAllowed());
   DCHECK(AllowHeapAllocation::IsAllowed());
-  if (V8_ENABLE_THIRD_PARTY_HEAP_BOOL) {
-    AllocationResult result = AllocateRaw(size, allocation, origin, alignment);
-    DCHECK(!result.IsRetry());
-    return result.ToObjectChecked();
-  }
+  DCHECK(AllowGarbageCollection::IsAllowed());
   DCHECK_EQ(gc_state(), NOT_IN_GC);
   Heap* heap = isolate()->heap();
-  Address* top = heap->NewSpaceAllocationTopAddress();
-  Address* limit = heap->NewSpaceAllocationLimitAddress();
-  if (allocation == AllocationType::kYoung &&
+  if (!V8_ENABLE_THIRD_PARTY_HEAP_BOOL &&
+      allocation == AllocationType::kYoung &&
       alignment == AllocationAlignment::kWordAligned &&
-      size <= kMaxRegularHeapObjectSize &&
-      (*limit - *top >= static_cast<unsigned>(size)) &&
-      V8_LIKELY(!FLAG_single_generation && FLAG_inline_new &&
-                FLAG_gc_interval == 0)) {
-    DCHECK(IsAligned(size, kTaggedSize));
-    HeapObject obj = HeapObject::FromAddress(*top);
-    *top += size;
-    heap->CreateFillerObjectAt(obj.address(), size, ClearRecordedSlots::kNo);
-    MSAN_ALLOCATED_UNINITIALIZED_MEMORY(obj.address(), size);
-    return obj;
+      size <= MaxRegularHeapObjectSize(allocation)) {
+    Address* top = heap->NewSpaceAllocationTopAddress();
+    Address* limit = heap->NewSpaceAllocationLimitAddress();
+    if ((*limit - *top >= static_cast<unsigned>(size)) &&
+        V8_LIKELY(!FLAG_single_generation && FLAG_inline_new &&
+                  FLAG_gc_interval == 0)) {
+      DCHECK(IsAligned(size, kTaggedSize));
+      HeapObject obj = HeapObject::FromAddress(*top);
+      *top += size;
+      heap->CreateFillerObjectAt(obj.address(), size, ClearRecordedSlots::kNo);
+      MSAN_ALLOCATED_UNINITIALIZED_MEMORY(obj.address(), size);
+      return obj;
+    }
   }
   switch (mode) {
     case kLightRetry:

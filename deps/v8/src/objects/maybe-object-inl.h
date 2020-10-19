@@ -56,7 +56,20 @@ HeapObjectReference HeapObjectReference::Weak(Object object) {
 }
 
 // static
-HeapObjectReference HeapObjectReference::ClearedValue(const Isolate* isolate) {
+HeapObjectReference HeapObjectReference::From(Object object,
+                                              HeapObjectReferenceType type) {
+  DCHECK(!object.IsSmi());
+  DCHECK(!HasWeakHeapObjectTag(object));
+  switch (type) {
+    case HeapObjectReferenceType::STRONG:
+      return HeapObjectReference::Strong(object);
+    case HeapObjectReferenceType::WEAK:
+      return HeapObjectReference::Weak(object);
+  }
+}
+
+// static
+HeapObjectReference HeapObjectReference::ClearedValue(IsolateRoot isolate) {
   // Construct cleared weak ref value.
 #ifdef V8_COMPRESS_POINTERS
   // This is necessary to make pointer decompression computation also

@@ -19,7 +19,13 @@ namespace internal {
 class V8_EXPORT_PRIVATE CppHeap final : public cppgc::internal::HeapBase,
                                         public v8::EmbedderHeapTracer {
  public:
-  CppHeap(v8::Isolate* isolate, size_t custom_spaces);
+  CppHeap(v8::Isolate* isolate,
+          const std::vector<std::unique_ptr<cppgc::CustomSpaceBase>>&
+              custom_spaces);
+  ~CppHeap() final;
+
+  CppHeap(const CppHeap&) = delete;
+  CppHeap& operator=(const CppHeap&) = delete;
 
   HeapBase& AsBase() { return *this; }
   const HeapBase& AsBase() const { return *this; }
@@ -33,6 +39,12 @@ class V8_EXPORT_PRIVATE CppHeap final : public cppgc::internal::HeapBase,
   void EnterFinalPause(EmbedderStackState stack_state) final;
 
  private:
+  void FinalizeIncrementalGarbageCollectionIfNeeded(
+      cppgc::Heap::StackState) final {
+    // For unified heap, CppHeap shouldn't finalize independently (i.e.
+    // finalization is not needed) thus this method is left empty.
+  }
+
   Isolate& isolate_;
   bool marking_done_ = false;
 };

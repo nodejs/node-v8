@@ -40,6 +40,19 @@ bool CanInlinePropertyAccess(Handle<Map> map) {
          !map->is_access_check_needed();
 }
 
+#ifdef DEBUG
+bool HasFieldRepresentationDependenciesOnMap(
+    ZoneVector<CompilationDependency const*>& dependencies,
+    Handle<Map> const& field_owner_map) {
+  for (auto dep : dependencies) {
+    if (dep->IsFieldRepresentationDependencyOnMap(field_owner_map)) {
+      return true;
+    }
+  }
+  return false;
+}
+#endif
+
 }  // namespace
 
 
@@ -84,6 +97,9 @@ PropertyAccessInfo PropertyAccessInfo::DataField(
     FieldIndex field_index, Representation field_representation,
     Type field_type, Handle<Map> field_owner_map, MaybeHandle<Map> field_map,
     MaybeHandle<JSObject> holder, MaybeHandle<Map> transition_map) {
+  DCHECK_IMPLIES(
+      field_representation.IsDouble(),
+      HasFieldRepresentationDependenciesOnMap(dependencies, field_owner_map));
   return PropertyAccessInfo(kDataField, holder, transition_map, field_index,
                             field_representation, field_type, field_owner_map,
                             field_map, {{receiver_map}, zone},
@@ -348,7 +364,8 @@ PropertyAccessInfo AccessInfoFactory::ComputeDataFieldAccessInfo(
     Handle<Map> receiver_map, Handle<Map> map, MaybeHandle<JSObject> holder,
     InternalIndex descriptor, AccessMode access_mode) const {
   DCHECK(descriptor.is_found());
-  Handle<DescriptorArray> descriptors(map->instance_descriptors(), isolate());
+  Handle<DescriptorArray> descriptors(map->instance_descriptors(kRelaxedLoad),
+                                      isolate());
   PropertyDetails const details = descriptors->GetDetails(descriptor);
   int index = descriptors->GetFieldIndex(descriptor);
   Representation details_representation = details.representation();
@@ -413,7 +430,7 @@ PropertyAccessInfo AccessInfoFactory::ComputeDataFieldAccessInfo(
   PropertyConstness constness;
   if (details.IsReadOnly() && !details.IsConfigurable()) {
     constness = PropertyConstness::kConst;
-  } else if (FLAG_turboprop && !map->is_prototype_map()) {
+  } else if (broker()->is_turboprop() && !map->is_prototype_map()) {
     // The constness feedback is too unstable for the aggresive compilation
     // of turboprop.
     constness = PropertyConstness::kMutable;
@@ -443,7 +460,8 @@ PropertyAccessInfo AccessInfoFactory::ComputeAccessorDescriptorAccessInfo(
     MaybeHandle<JSObject> holder, InternalIndex descriptor,
     AccessMode access_mode) const {
   DCHECK(descriptor.is_found());
-  Handle<DescriptorArray> descriptors(map->instance_descriptors(), isolate());
+  Handle<DescriptorArray> descriptors(map->instance_descriptors(kRelaxedLoad),
+                                      isolate());
   SLOW_DCHECK(descriptor == descriptors->Search(*name, *map));
   if (map->instance_type() == JS_MODULE_NAMESPACE_TYPE) {
     DCHECK(map->is_prototype_map());
@@ -541,8 +559,8 @@ PropertyAccessInfo AccessInfoFactory::ComputePropertyAccessInfo(
   MaybeHandle<JSObject> holder;
   while (true) {
     // Lookup the named property on the {map}.
-    Handle<DescriptorArray> descriptors(
-        map->synchronized_instance_descriptors(), isolate());
+    Handle<DescriptorArray> descriptors(map->instance_descriptors(kAcquireLoad),
+                                        isolate());
     InternalIndex const number =
         descriptors->Search(*name, *map, broker()->is_concurrent_inlining());
     if (number.is_found()) {
@@ -814,7 +832,7 @@ PropertyAccessInfo AccessInfoFactory::LookupTransition(
   Handle<Map> transition_map(transition, isolate());
   InternalIndex const number = transition_map->LastAdded();
   Handle<DescriptorArray> descriptors(
-      transition_map->synchronized_instance_descriptors(), isolate());
+      transition_map->instance_descriptors(kAcquireLoad), isolate());
   PropertyDetails const details = descriptors->GetDetails(number);
   // Don't bother optimizing stores to read-only properties.
   if (details.IsReadOnly()) {

@@ -8,9 +8,11 @@
 #include <initializer_list>
 #include <map>
 #include <memory>
+#include <sstream>
 
 // Clients of this interface shouldn't depend on lots of compiler internals.
 // Do not include anything from src/compiler here!
+#include "include/cppgc/source-location.h"
 #include "src/base/macros.h"
 #include "src/base/type-traits.h"
 #include "src/builtins/builtins.h"
@@ -566,7 +568,30 @@ class V8_EXPORT_PRIVATE CodeAssembler {
 
   static constexpr int kTargetParameterIndex = -1;
 
-  Node* Parameter(int value);
+  template <class T>
+  TNode<T> Parameter(
+      int value, cppgc::SourceLocation loc = cppgc::SourceLocation::Current()) {
+    static_assert(
+        std::is_convertible<TNode<T>, TNode<Object>>::value,
+        "Parameter is only for tagged types. Use UncheckedParameter instead.");
+    std::stringstream message;
+    message << "Parameter " << value;
+    if (loc.FileName()) {
+      message << " at " << loc.FileName() << ":" << loc.Line();
+    }
+    size_t buf_size = message.str().size() + 1;
+    char* message_dup = zone()->NewArray<char>(buf_size);
+    snprintf(message_dup, buf_size, "%s", message.str().c_str());
+
+    return Cast(UntypedParameter(value), message_dup);
+  }
+
+  template <class T>
+  TNode<T> UncheckedParameter(int value) {
+    return UncheckedCast<T>(UntypedParameter(value));
+  }
+
+  Node* UntypedParameter(int value);
 
   TNode<Context> GetJSContextParameter();
   void Return(TNode<Object> value);
@@ -758,31 +783,31 @@ class V8_EXPORT_PRIVATE CodeAssembler {
   Node* AtomicStore(MachineRepresentation rep, Node* base, Node* offset,
                     Node* value, Node* value_high = nullptr);
 
+  Node* AtomicAdd(MachineType type, TNode<RawPtrT> base, TNode<UintPtrT> offset,
+                  Node* value, base::Optional<TNode<UintPtrT>> value_high);
+
+  Node* AtomicSub(MachineType type, TNode<RawPtrT> base, TNode<UintPtrT> offset,
+                  Node* value, base::Optional<TNode<UintPtrT>> value_high);
+
+  Node* AtomicAnd(MachineType type, TNode<RawPtrT> base, TNode<UintPtrT> offset,
+                  Node* value, base::Optional<TNode<UintPtrT>> value_high);
+
+  Node* AtomicOr(MachineType type, TNode<RawPtrT> base, TNode<UintPtrT> offset,
+                 Node* value, base::Optional<TNode<UintPtrT>> value_high);
+
+  Node* AtomicXor(MachineType type, TNode<RawPtrT> base, TNode<UintPtrT> offset,
+                  Node* value, base::Optional<TNode<UintPtrT>> value_high);
+
   // Exchange value at raw memory location
-  Node* AtomicExchange(MachineType type, Node* base, Node* offset, Node* value,
-                       Node* value_high = nullptr);
+  Node* AtomicExchange(MachineType type, TNode<RawPtrT> base,
+                       TNode<UintPtrT> offset, Node* value,
+                       base::Optional<TNode<UintPtrT>> value_high);
 
   // Compare and Exchange value at raw memory location
   Node* AtomicCompareExchange(MachineType type, Node* base, Node* offset,
                               Node* old_value, Node* new_value,
                               Node* old_value_high = nullptr,
                               Node* new_value_high = nullptr);
-
-  Node* AtomicAdd(MachineType type, Node* base, Node* offset, Node* value,
-                  Node* value_high = nullptr);
-
-  Node* AtomicSub(MachineType type, Node* base, Node* offset, Node* value,
-                  Node* value_high = nullptr);
-
-  Node* AtomicAnd(MachineType type, Node* base, Node* offset, Node* value,
-                  Node* value_high = nullptr);
-
-  Node* AtomicOr(MachineType type, Node* base, Node* offset, Node* value,
-                 Node* value_high = nullptr);
-
-  Node* AtomicXor(MachineType type, Node* base, Node* offset, Node* value,
-                  Node* value_high = nullptr);
-
   // Store a value to the root array.
   Node* StoreRoot(RootIndex root_index, Node* value);
 

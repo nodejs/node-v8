@@ -27,7 +27,7 @@
 #include "src/objects/shared-function-info.h"
 #include "src/objects/source-text-module.h"
 #include "src/utils/ostreams.h"
-#include "torque-generated/exported-macros-assembler-tq.h"
+#include "torque-generated/exported-macros-assembler.h"
 
 namespace v8 {
 namespace internal {
@@ -539,9 +539,10 @@ IGNITION_HANDLER(LdaNamedProperty, InterpreterAssembler) {
   }
 }
 
-// LdaPropertyNofeedback <object> <slot>
+// LdaNamedPropertyNoFeedback <object> <name_index>
 //
-// Calls the GetProperty builtin for <object> and the key in the accumulator.
+// Calls the GetProperty builtin for <object> and the name at
+// constant pool entry <name_index>.
 IGNITION_HANDLER(LdaNamedPropertyNoFeedback, InterpreterAssembler) {
   TNode<Object> object = LoadRegisterAtOperandIndex(0);
   TNode<Name> name = CAST(LoadConstantPoolEntryAtOperandIndex(1));
@@ -552,7 +553,28 @@ IGNITION_HANDLER(LdaNamedPropertyNoFeedback, InterpreterAssembler) {
   Dispatch();
 }
 
-// KeyedLoadIC <object> <slot>
+// LdaNamedPropertyFromSuper <receiver> <name_index> <slot>
+//
+// Calls the LoadSuperIC at FeedBackVector slot <slot> for <receiver>, home
+// object's prototype (home object in the accumulator) and the name at constant
+// pool entry <name_index>.
+IGNITION_HANDLER(LdaNamedPropertyFromSuper, InterpreterAssembler) {
+  TNode<Object> receiver = LoadRegisterAtOperandIndex(0);
+  TNode<HeapObject> home_object = CAST(GetAccumulator());
+  TNode<Object> home_object_prototype = LoadMapPrototype(LoadMap(home_object));
+  TNode<Object> name = LoadConstantPoolEntryAtOperandIndex(1);
+  TNode<TaggedIndex> slot = BytecodeOperandIdxTaggedIndex(2);
+  TNode<HeapObject> feedback_vector = LoadFeedbackVector();
+  TNode<Context> context = GetContext();
+
+  TNode<Object> result =
+      CallBuiltin(Builtins::kLoadSuperIC, context, receiver,
+                  home_object_prototype, name, slot, feedback_vector);
+  SetAccumulator(result);
+  Dispatch();
+}
+
+// LdaKeyedProperty <object> <slot>
 //
 // Calls the KeyedLoadIC at FeedBackVector slot <slot> for <object> and the key
 // in the accumulator.
@@ -684,7 +706,7 @@ IGNITION_HANDLER(StaInArrayLiteral, InterpreterAssembler) {
   Dispatch();
 }
 
-// StaDataPropertyInLiteral <object> <name> <flags>
+// StaDataPropertyInLiteral <object> <name> <flags> <slot>
 //
 // Define a property <name> with value from the accumulator in <object>.
 // Property attributes and whether set_function_name are stored in
@@ -1385,32 +1407,17 @@ class InterpreterJSCallAssembler : public InterpreterAssembler {
             LoadRegisterAtOperandIndex(kFirstArgumentOperandIndex));
         break;
       case 2:
-#ifdef V8_REVERSE_JSARGS
         CallJSAndDispatch(
             function, context, Int32Constant(arg_count), receiver_mode,
             LoadRegisterAtOperandIndex(kFirstArgumentOperandIndex + 1),
             LoadRegisterAtOperandIndex(kFirstArgumentOperandIndex));
-#else
-        CallJSAndDispatch(
-            function, context, Int32Constant(arg_count), receiver_mode,
-            LoadRegisterAtOperandIndex(kFirstArgumentOperandIndex),
-            LoadRegisterAtOperandIndex(kFirstArgumentOperandIndex + 1));
-#endif
         break;
       case 3:
-#ifdef V8_REVERSE_JSARGS
         CallJSAndDispatch(
             function, context, Int32Constant(arg_count), receiver_mode,
             LoadRegisterAtOperandIndex(kFirstArgumentOperandIndex + 2),
             LoadRegisterAtOperandIndex(kFirstArgumentOperandIndex + 1),
             LoadRegisterAtOperandIndex(kFirstArgumentOperandIndex));
-#else
-        CallJSAndDispatch(
-            function, context, Int32Constant(arg_count), receiver_mode,
-            LoadRegisterAtOperandIndex(kFirstArgumentOperandIndex),
-            LoadRegisterAtOperandIndex(kFirstArgumentOperandIndex + 1),
-            LoadRegisterAtOperandIndex(kFirstArgumentOperandIndex + 2));
-#endif
         break;
       default:
         UNREACHABLE();
@@ -2819,57 +2826,14 @@ IGNITION_HANDLER(ForInPrepare, InterpreterAssembler) {
   TNode<UintPtrT> vector_index = BytecodeOperandIdx(1);
   TNode<HeapObject> maybe_feedback_vector = LoadFeedbackVector();
 
-  // Check if we're using an enum cache.
-  Label if_fast(this), if_slow(this);
-  Branch(IsMap(enumerator), &if_fast, &if_slow);
+  TNode<HeapObject> cache_type = enumerator;  // Just to clarify the rename.
+  TNode<FixedArray> cache_array;
+  TNode<Smi> cache_length;
+  ForInPrepare(enumerator, vector_index, maybe_feedback_vector, &cache_array,
+               &cache_length);
 
-  BIND(&if_fast);
-  {
-    // Load the enumeration length and cache from the {enumerator}.
-    TNode<Map> map_enumerator = CAST(enumerator);
-    TNode<WordT> enum_length = LoadMapEnumLength(map_enumerator);
-    CSA_ASSERT(this, WordNotEqual(enum_length,
-                                  IntPtrConstant(kInvalidEnumCacheSentinel)));
-    TNode<DescriptorArray> descriptors = LoadMapDescriptors(map_enumerator);
-    TNode<EnumCache> enum_cache = LoadObjectField<EnumCache>(
-        descriptors, DescriptorArray::kEnumCacheOffset);
-    TNode<FixedArray> enum_keys =
-        LoadObjectField<FixedArray>(enum_cache, EnumCache::kKeysOffset);
-
-    // Check if we have enum indices available.
-    TNode<FixedArray> enum_indices =
-        LoadObjectField<FixedArray>(enum_cache, EnumCache::kIndicesOffset);
-    TNode<IntPtrT> enum_indices_length =
-        LoadAndUntagFixedArrayBaseLength(enum_indices);
-    TNode<Smi> feedback = SelectSmiConstant(
-        IntPtrLessThanOrEqual(enum_length, enum_indices_length),
-        ForInFeedback::kEnumCacheKeysAndIndices, ForInFeedback::kEnumCacheKeys);
-    UpdateFeedback(feedback, maybe_feedback_vector, vector_index);
-
-    // Construct the cache info triple.
-    TNode<Map> cache_type = map_enumerator;
-    TNode<FixedArray> cache_array = enum_keys;
-    TNode<Smi> cache_length = SmiTag(Signed(enum_length));
-    StoreRegisterTripleAtOperandIndex(cache_type, cache_array, cache_length, 0);
-    Dispatch();
-  }
-
-  BIND(&if_slow);
-  {
-    // The {enumerator} is a FixedArray with all the keys to iterate.
-    TNode<FixedArray> array_enumerator = CAST(enumerator);
-
-    // Record the fact that we hit the for-in slow-path.
-    UpdateFeedback(SmiConstant(ForInFeedback::kAny), maybe_feedback_vector,
-                   vector_index);
-
-    // Construct the cache info triple.
-    TNode<FixedArray> cache_type = array_enumerator;
-    TNode<FixedArray> cache_array = array_enumerator;
-    TNode<Smi> cache_length = LoadFixedArrayBaseLength(array_enumerator);
-    StoreRegisterTripleAtOperandIndex(cache_type, cache_array, cache_length, 0);
-    Dispatch();
-  }
+  StoreRegisterTripleAtOperandIndex(cache_type, cache_array, cache_length, 0);
+  Dispatch();
 }
 
 // ForInNext <receiver> <index> <cache_info_pair>
@@ -2899,14 +2863,9 @@ IGNITION_HANDLER(ForInNext, InterpreterAssembler) {
   }
   BIND(&if_slow);
   {
-    // Record the fact that we hit the for-in slow-path.
-    UpdateFeedback(SmiConstant(ForInFeedback::kAny), maybe_feedback_vector,
-                   vector_index);
-
-    // Need to filter the {key} for the {receiver}.
-    TNode<Context> context = GetContext();
     TNode<Object> result =
-        CallBuiltin(Builtins::kForInFilter, context, key, receiver);
+        ForInNextSlow(GetContext(), vector_index, receiver, key, cache_type,
+                      maybe_feedback_vector);
     SetAccumulator(result);
     Dispatch();
   }

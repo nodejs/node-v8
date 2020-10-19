@@ -19,8 +19,8 @@
 #include "src/objects/struct.h"
 #include "src/roots/roots.h"
 #include "testing/gtest/include/gtest/gtest_prod.h"
-#include "torque-generated/bit-fields-tq.h"
-#include "torque-generated/field-offsets-tq.h"
+#include "torque-generated/bit-fields.h"
+#include "torque-generated/field-offsets.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -215,12 +215,14 @@ class SharedFunctionInfo : public HeapObject {
 
   static const int kNotFound = -1;
 
-  // [scope_info]: Scope info.
-  DECL_ACCESSORS(scope_info, ScopeInfo)
+  DECL_GETTER(scope_info, ScopeInfo)
 
   // Set scope_info without moving the existing name onto the ScopeInfo.
   inline void set_raw_scope_info(ScopeInfo scope_info,
                                  WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
+
+  inline void SetScopeInfo(ScopeInfo scope_info,
+                           WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
 
   inline bool is_script() const;
   inline bool needs_script_context() const;
@@ -304,7 +306,7 @@ class SharedFunctionInfo : public HeapObject {
   //  - a UncompiledDataWithPreparseData for lazy compilation
   //    [HasUncompiledDataWithPreparseData()]
   //  - a WasmExportedFunctionData for Wasm [HasWasmExportedFunctionData()]
-  DECL_ACCESSORS(function_data, Object)
+  DECL_RELEASE_ACQUIRE_ACCESSORS(function_data, Object)
 
   inline bool IsApiFunction() const;
   inline bool is_class_constructor() const;
@@ -337,7 +339,8 @@ class SharedFunctionInfo : public HeapObject {
       UncompiledDataWithPreparseData data);
   inline bool HasUncompiledDataWithoutPreparseData() const;
   inline bool HasWasmExportedFunctionData() const;
-  WasmExportedFunctionData wasm_exported_function_data() const;
+  V8_EXPORT_PRIVATE WasmExportedFunctionData
+  wasm_exported_function_data() const;
   inline bool HasWasmJSFunctionData() const;
   WasmJSFunctionData wasm_js_function_data() const;
   inline bool HasWasmCapiFunctionData() const;
@@ -407,6 +410,10 @@ class SharedFunctionInfo : public HeapObject {
   // private instance methdos.
   DECL_BOOLEAN_ACCESSORS(class_scope_has_private_brand)
   DECL_BOOLEAN_ACCESSORS(has_static_private_methods_or_accessors)
+
+  // True if this SFI has been (non-OSR) optimized in the past. This is used to
+  // guide native-context-independent codegen.
+  DECL_BOOLEAN_ACCESSORS(has_optimized_at_least_once)
 
   // True if a Code object associated with this SFI has been inserted into the
   // compilation cache. Note that the cache entry may be removed by aging,
@@ -661,7 +668,7 @@ class SharedFunctionInfo : public HeapObject {
 
   // [name_or_scope_info]: Function name string, kNoSharedNameSentinel or
   // ScopeInfo.
-  DECL_ACCESSORS(name_or_scope_info, Object)
+  DECL_RELEASE_ACQUIRE_ACCESSORS(name_or_scope_info, Object)
 
   // [outer scope info] The outer scope info, needed to lazily parse this
   // function.

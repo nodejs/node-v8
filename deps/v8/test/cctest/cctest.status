@@ -32,14 +32,15 @@
 
   ##############################################################################
 
-  # This test is so detailed in it's look at the literals array, I can't
-  # maintain it until the CL is done.
-  'test-heap-profiler/AllocationSitesAreVisible': [FAIL, ['lite_mode == True', SKIP]],
-
   # These tests always fail.  They are here to test test.py.  If
   # they don't fail then test.py has failed.
   'test-serialize/TestThatAlwaysFails': [FAIL],
   'test-api/SealHandleScope': [FAIL],
+
+  # These tests are expected to hit a CHECK (i.e. a FAIL result actually means
+  # the test passed).
+  'test-api/RegExpInterruptAndReenterIrregexp': [FAIL, CRASH],
+  'test-verifiers/Fail*': [FAIL, CRASH],
 
   # This test always fails.  It tests that LiveEdit causes abort when turned off.
   'test-debug/LiveEditDisabled': [FAIL],
@@ -112,6 +113,10 @@
   # https://crbug.com/v8/8919
   'test-platform/StackAlignment': [PASS, ['not is_clang', SKIP]],
 
+  # Test that misuse of PopAndReturn does not compile.
+  'test-code-stub-assembler/PopAndReturnFromJSBuiltinWithStackParameters' : [FAIL],
+  'test-code-stub-assembler/PopAndReturnFromTFCBuiltinWithStackParameters' : [FAIL],
+
   ############################################################################
   # Slow tests.
   'test-debug/CallFunctionInDebugger': [PASS, ['mode == debug', SLOW]],
@@ -127,14 +132,6 @@
   # These tests are supposed to fail in a DCHECK.
   'test-persistent-handles/NewPersistentHandleFailsWhenParked': [FAIL],
   'test-persistent-handles/NewPersistentHandleFailsWhenParkedExplicit': [FAIL],
-}],
-
-##############################################################################
-['(arch != ia32 and arch != x64)', {
-  # BUG(v8:9860). We can only safely read the native context for a frame on
-  # ia32 and x64.
-  'test-cpu-profiler/ContextFilterMovedNativeContext': [FAIL],
-  'test-cpu-profiler/ContextIsolation': [FAIL],
 }],
 
 ##############################################################################
@@ -175,6 +172,13 @@
   'test-cpu-profiler/MultipleIsolates': [PASS, ['not pointer_compression', SLOW]],
   'test-debug/DebugBreakStackTrace': [PASS, SLOW],
 }],  # 'arch == arm64 and simulator_run'
+
+['arch == arm64 and system == macos and not simulator_run', {
+  # printf, being a variadic function, has a different, stack-based ABI on
+  # Apple silicon. See:
+  # https://developer.apple.com/library/archive/documentation/Xcode/Conceptual/iPhoneOSABIReference/Articles/ARM64FunctionCallingConventions.html
+  'test-assembler-arm64/printf_no_preserve': [SKIP],
+}],  # arch == arm64 and system == macos and not simulator_run
 
 ##############################################################################
 ['variant == nooptimization and (arch == arm or arch == arm64) and simulator_run', {
@@ -465,10 +469,6 @@
 
 ##############################################################################
 # The stack unwinder API is only supported on x64, arm64 and arm.
-['arch != x64 and arch != arm64', {
-  'test-unwinder/*': [SKIP]
-}],
-
 ['arch != x64 and arch != arm64 and arch != arm', {
   'test-unwinder-code-pages/*': [SKIP]
 }],
@@ -489,6 +489,7 @@
   'test-jump-table-assembler/*': [SKIP],
   'test-gc/*': [SKIP],
   'test-grow-memory/*': [SKIP],
+  'test-liftoff-inspection/*': [SKIP],
   'test-run-wasm-64/*': [SKIP],
   'test-run-wasm-asmjs/*': [SKIP],
   'test-run-wasm-atomics64/*': [SKIP],
@@ -503,11 +504,13 @@
   'test-run-wasm-simd-liftoff/*': [SKIP],
   'test-run-wasm-simd-scalar-lowering/*': [SKIP],
   'test-run-wasm-simd/*': [SKIP],
+  'test-run-wasm-wrappers/*': [SKIP],
   'test-streaming-compilation/*': [SKIP],
   'test-wasm-breakpoints/*': [SKIP],
   'test-wasm-codegen/*': [SKIP],
   'test-wasm-debug-evaluate/*': [SKIP],
   'test-wasm-import-wrapper-cache/*': [SKIP],
+  'test-wasm-metrics/*': [SKIP],
   'test-wasm-serialization/*': [SKIP],
   'test-wasm-shared-engine/*': [SKIP],
   'test-wasm-stack/*': [SKIP],
@@ -561,8 +564,6 @@
   'test-run-variables/*': [SKIP],
   'test-serialize/*': [SKIP],
   'test-torque/*': [SKIP],
-  'test-unwinder/PCIsInV8_InCodeOrEmbeddedRange': [SKIP],
-  'test-unwinder/PCIsInV8_LargeCodeObject': [SKIP],
   'test-unwinder-code-pages/PCIsInV8_LargeCodeObject_CodePagesAPI': [SKIP],
 
   # Field representation tracking is disabled in jitless mode.
@@ -630,6 +631,9 @@
   'test-macro-assembler-arm/ExtractLane': [PASS, ['arch == arm and not simulator_run', SKIP]],
   'test-macro-assembler-arm/LoadAndStoreWithRepresentation': [PASS, ['arch == arm and not simulator_run', SKIP]],
   'test-macro-assembler-arm/ReplaceLane': [PASS, ['arch == arm and not simulator_run', SKIP]],
+
+  # Too slow on arm64 simulator on Mac.
+  'test-cpu-profiler/MultipleIsolates': [PASS, ['arch == arm64 and system == macos and simulator_run', SKIP]],
 }], # variant == jitless
 
 ##############################################################################
@@ -656,7 +660,7 @@
 }],
 
 ################################################################################
-['variant == nci or variant == nci_as_highest_tier', {
+['variant == nci or variant == nci_as_midtier', {
   # Optimizes and deopts differently than TurboFan.
   'test-api/FastApiCalls': [SKIP],
   'test-cpu-profiler/Deopt*': [SKIP],
@@ -673,6 +677,6 @@
 
   # NCI code currently does not use the feedback vector's optimized code cache.
   'test-compiler/OptimizedCodeSharing1': [SKIP],
-}],  # variant == nci or variant == nci_as_highest_tier
+}],  # variant == nci or variant == nci_as_midtier
 
 ]

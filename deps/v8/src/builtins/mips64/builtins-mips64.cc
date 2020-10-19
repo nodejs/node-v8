@@ -40,18 +40,24 @@ void Builtins::Generate_Adaptor(MacroAssembler* masm, Address address) {
 static void GenerateTailCallToReturnedCode(MacroAssembler* masm,
                                            Runtime::FunctionId function_id) {
   // ----------- S t a t e -------------
+  //  -- a0 : actual argument count
   //  -- a1 : target function (preserved for callee)
   //  -- a3 : new target (preserved for callee)
   // -----------------------------------
   {
     FrameScope scope(masm, StackFrame::INTERNAL);
-    // Push a copy of the function onto the stack.
-    // Push a copy of the target function and the new target.
-    __ Push(a1, a3, a1);
+    // Push a copy of the target function, the new target and the actual
+    // argument count.
+    // Push function as parameter to the runtime call.
+    __ SmiTag(kJavaScriptCallArgCountRegister);
+    __ Push(kJavaScriptCallTargetRegister, kJavaScriptCallNewTargetRegister,
+            kJavaScriptCallArgCountRegister, kJavaScriptCallTargetRegister);
 
     __ CallRuntime(function_id, 1);
-    // Restore target function and new target.
-    __ Pop(a1, a3);
+    // Restore target function, new target and actual argument count.
+    __ Pop(kJavaScriptCallTargetRegister, kJavaScriptCallNewTargetRegister,
+           kJavaScriptCallArgCountRegister);
+    __ SmiUntag(kJavaScriptCallArgCountRegister);
   }
 
   static_assert(kJavaScriptCallCodeStartRegister == a2, "ABI mismatch");
@@ -98,32 +104,14 @@ void Generate_JSBuiltinsConstructStubHelper(MacroAssembler* masm) {
     __ Push(cp, a0);
     __ SmiUntag(a0);
 
+    // Set up pointer to last argument (skip receiver).
+    __ Daddu(
+        t2, fp,
+        Operand(StandardFrameConstants::kCallerSPOffset + kSystemPointerSize));
+    // Copy arguments and receiver to the expression stack.
+    __ PushArray(t2, a0, t3, t0);
     // The receiver for the builtin/api call.
     __ PushRoot(RootIndex::kTheHoleValue);
-
-    // Set up pointer to last argument.
-    __ Daddu(t2, fp, Operand(StandardFrameConstants::kCallerSPOffset));
-
-    // Copy arguments and receiver to the expression stack.
-    Label loop, entry;
-    __ mov(t3, a0);
-    // ----------- S t a t e -------------
-    //  --                        a0: number of arguments (untagged)
-    //  --                        a3: new target
-    //  --                        t2: pointer to last argument
-    //  --                        t3: counter
-    //  --        sp[0*kPointerSize]: the hole (receiver)
-    //  --        sp[1*kPointerSize]: number of arguments (tagged)
-    //  --        sp[2*kPointerSize]: context
-    // -----------------------------------
-    __ jmp(&entry);
-    __ bind(&loop);
-    __ Dlsa(t0, t2, t3, kPointerSizeLog2);
-    __ Ld(t1, MemOperand(t0));
-    __ push(t1);
-    __ bind(&entry);
-    __ Daddu(t3, t3, Operand(-1));
-    __ Branch(&loop, greater_equal, t3, Operand(zero_reg));
 
     // Call the function.
     // a0: number of arguments (untagged)
@@ -134,13 +122,13 @@ void Generate_JSBuiltinsConstructStubHelper(MacroAssembler* masm) {
     // Restore context from the frame.
     __ Ld(cp, MemOperand(fp, ConstructFrameConstants::kContextOffset));
     // Restore smi-tagged arguments count from the frame.
-    __ Ld(a1, MemOperand(fp, ConstructFrameConstants::kLengthOffset));
+    __ Ld(t3, MemOperand(fp, ConstructFrameConstants::kLengthOffset));
     // Leave construct frame.
   }
 
   // Remove caller arguments from the stack and return.
-  __ SmiScale(a4, a1, kPointerSizeLog2);
-  __ Daddu(sp, sp, a4);
+  __ SmiScale(t3, t3, kPointerSizeLog2);
+  __ Daddu(sp, sp, t3);
   __ Daddu(sp, sp, kPointerSize);
   __ Ret();
 }
@@ -182,7 +170,7 @@ void Builtins::Generate_JSConstructStubGeneric(MacroAssembler* masm) {
     // Preserve the incoming parameters on the stack.
     __ SmiTag(a0);
     __ Push(cp, a0, a1);
-    __ PushRoot(RootIndex::kTheHoleValue);
+    __ PushRoot(RootIndex::kUndefinedValue);
     __ Push(a3);
 
     // ----------- S t a t e -------------
@@ -225,10 +213,19 @@ void Builtins::Generate_JSConstructStubGeneric(MacroAssembler* masm) {
 
     // Restore new target.
     __ Pop(a3);
-    // Push the allocated receiver to the stack. We need two copies
-    // because we may have to return the original one and the calling
-    // conventions dictate that the called function pops the receiver.
-    __ Push(v0, v0);
+
+    // Push the allocated receiver to the stack.
+    __ Push(v0);
+
+    // We need two copies because we may have to return the original one
+    // and the calling conventions dictate that the called function pops the
+    // receiver. The second copy is pushed after the arguments, we saved in a6
+    // since v0 will store the return value of callRuntime.
+    __ mov(a6, v0);
+
+    // Set up pointer to last argument.
+    __ Daddu(t2, fp, Operand(StandardFrameConstants::kCallerSPOffset +
+                             kSystemPointerSize));
 
     // ----------- S t a t e -------------
     //  --                 r3: new target
@@ -245,9 +242,6 @@ void Builtins::Generate_JSConstructStubGeneric(MacroAssembler* masm) {
     __ Ld(a0, MemOperand(fp, ConstructFrameConstants::kLengthOffset));
     __ SmiUntag(a0);
 
-    // Set up pointer to last argument.
-    __ Daddu(t2, fp, Operand(StandardFrameConstants::kCallerSPOffset));
-
     Label enough_stack_space, stack_overflow;
     Generate_StackOverflowCheck(masm, a0, t0, t1, &stack_overflow);
     __ Branch(&enough_stack_space);
@@ -262,28 +256,11 @@ void Builtins::Generate_JSConstructStubGeneric(MacroAssembler* masm) {
     __ bind(&enough_stack_space);
 
     // Copy arguments and receiver to the expression stack.
-    Label loop, entry;
-    __ mov(t3, a0);
-    // ----------- S t a t e -------------
-    //  --                        a0: number of arguments (untagged)
-    //  --                        a3: new target
-    //  --                        t2: pointer to last argument
-    //  --                        t3: counter
-    //  --        sp[0*kPointerSize]: implicit receiver
-    //  --        sp[1*kPointerSize]: implicit receiver
-    //  --        sp[2*kPointerSize]: padding
-    //  -- a1 and sp[3*kPointerSize]: constructor function
-    //  --        sp[4*kPointerSize]: number of arguments (tagged)
-    //  --        sp[5*kPointerSize]: context
-    // -----------------------------------
-    __ jmp(&entry);
-    __ bind(&loop);
-    __ Dlsa(t0, t2, t3, kPointerSizeLog2);
-    __ Ld(t1, MemOperand(t0));
-    __ push(t1);
-    __ bind(&entry);
-    __ Daddu(t3, t3, Operand(-1));
-    __ Branch(&loop, greater_equal, t3, Operand(zero_reg));
+    __ PushArray(t2, a0, t0, t1);
+    // We need two copies because we may have to return the original one
+    // and the calling conventions dictate that the called function pops the
+    // receiver. The second copy is pushed after the arguments,
+    __ Push(a6);
 
     // Call the function.
     __ InvokeFunctionWithNewTarget(a1, a3, a0, CALL_FUNCTION);
@@ -404,16 +381,11 @@ void Builtins::Generate_ResumeGeneratorTrampoline(MacroAssembler* masm) {
   LoadStackLimit(masm, kScratchReg, StackLimitKind::kRealStackLimit);
   __ Branch(&stack_overflow, lo, sp, Operand(kScratchReg));
 
-  // Push receiver.
-  __ Ld(a5, FieldMemOperand(a1, JSGeneratorObject::kReceiverOffset));
-  __ Push(a5);
-
   // ----------- S t a t e -------------
   //  -- a1    : the JSGeneratorObject to resume
   //  -- a4    : generator function
   //  -- cp    : generator context
   //  -- ra    : return address
-  //  -- sp[0] : generator receiver
   // -----------------------------------
 
   // Push holes for arguments to generator function. Since the parser forced
@@ -427,16 +399,17 @@ void Builtins::Generate_ResumeGeneratorTrampoline(MacroAssembler* masm) {
         FieldMemOperand(a1, JSGeneratorObject::kParametersAndRegistersOffset));
   {
     Label done_loop, loop;
-    __ Move(t2, zero_reg);
     __ bind(&loop);
     __ Dsubu(a3, a3, Operand(1));
     __ Branch(&done_loop, lt, a3, Operand(zero_reg));
-    __ Dlsa(kScratchReg, t1, t2, kPointerSizeLog2);
+    __ Dlsa(kScratchReg, t1, a3, kPointerSizeLog2);
     __ Ld(kScratchReg, FieldMemOperand(kScratchReg, FixedArray::kHeaderSize));
     __ Push(kScratchReg);
-    __ Daddu(t2, t2, Operand(1));
     __ Branch(&loop);
     __ bind(&done_loop);
+    // Push receiver.
+    __ Ld(kScratchReg, FieldMemOperand(a1, JSGeneratorObject::kReceiverOffset));
+    __ Push(kScratchReg);
   }
 
   // Underlying function needs to have bytecode available.
@@ -745,25 +718,15 @@ static void Generate_JSEntryTrampolineHelper(MacroAssembler* masm,
     __ li(cp, context_address);
     __ Ld(cp, MemOperand(cp));
 
-    // Push the function and the receiver onto the stack.
-    __ Push(a2, a3);
+    // Push the function onto the stack.
+    __ Push(a2);
 
     // Check if we have enough stack space to push all arguments.
-    // Clobbers a0 and a3.
-    Generate_CheckStackOverflow(masm, a4, a0, a3);
-
-    // Setup new.target, function and argc.
-    __ mov(a3, a1);
-    __ mov(a1, a2);
-    __ mov(a0, a4);
-
-    // a0: argc
-    // a1: function
-    // a3: new.target
-    // a5: argv
+    __ daddiu(a6, a4, 1);
+    Generate_CheckStackOverflow(masm, a6, a0, s2);
 
     // Copy arguments to the stack in a loop.
-    // a3: argc
+    // a4: argc
     // a5: argv, i.e. points to first arg
     Label loop, entry;
     __ Dlsa(s1, a5, a4, kPointerSizeLog2);
@@ -771,16 +734,22 @@ static void Generate_JSEntryTrampolineHelper(MacroAssembler* masm,
     __ nop();  // Branch delay slot nop.
     // s1 points past last arg.
     __ bind(&loop);
-    __ Ld(s2, MemOperand(a5));  // Read next parameter.
-    __ daddiu(a5, a5, kPointerSize);
+    __ daddiu(s1, s1, -kPointerSize);
+    __ Ld(s2, MemOperand(s1));  // Read next parameter.
     __ Ld(s2, MemOperand(s2));  // Dereference handle.
     __ push(s2);                // Push parameter.
     __ bind(&entry);
     __ Branch(&loop, ne, a5, Operand(s1));
 
+    // Push the receive.
+    __ Push(a3);
+
     // a0: argc
     // a1: function
     // a3: new.target
+    __ mov(a3, a1);
+    __ mov(a1, a2);
+    __ mov(a0, a4);
 
     // Initialize all JavaScript callee-saved registers, since they will be seen
     // by the garbage collector as part of handlers.
@@ -862,6 +831,7 @@ static void TailCallOptimizedCodeSlot(MacroAssembler* masm,
                                       Register optimized_code_entry,
                                       Register scratch1, Register scratch2) {
   // ----------- S t a t e -------------
+  //  -- a0 : actual argument count
   //  -- a3 : new target (preserved for callee if needed, and caller)
   //  -- a1 : target function (preserved for callee if needed, and caller)
   // -----------------------------------
@@ -899,6 +869,7 @@ static void TailCallOptimizedCodeSlot(MacroAssembler* masm,
 static void MaybeOptimizeCode(MacroAssembler* masm, Register feedback_vector,
                               Register optimization_marker) {
   // ----------- S t a t e -------------
+  //  -- a0 : actual argument count
   //  -- a3 : new target (preserved for callee if needed, and caller)
   //  -- a1 : target function (preserved for callee if needed, and caller)
   //  -- feedback vector (preserved for caller if needed)
@@ -1008,10 +979,10 @@ static void AdvanceBytecodeOffsetOrReturn(MacroAssembler* masm,
 
 // Generate code for entering a JS function with the interpreter.
 // On entry to the function the receiver and arguments have been pushed on the
-// stack left to right.  The actual argument count matches the formal parameter
-// count expected by the function.
+// stack left to right.
 //
 // The live registers are:
+//   o a0 : actual argument count (not including the receiver)
 //   o a1: the JS function object being called.
 //   o a3: the incoming new target or generator object
 //   o cp: our context
@@ -1027,16 +998,18 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
 
   // Get the bytecode array from the function object and load it into
   // kInterpreterBytecodeArrayRegister.
-  __ Ld(a0, FieldMemOperand(closure, JSFunction::kSharedFunctionInfoOffset));
+  __ Ld(kScratchReg,
+        FieldMemOperand(closure, JSFunction::kSharedFunctionInfoOffset));
   __ Ld(kInterpreterBytecodeArrayRegister,
-        FieldMemOperand(a0, SharedFunctionInfo::kFunctionDataOffset));
-  GetSharedFunctionInfoBytecode(masm, kInterpreterBytecodeArrayRegister, a4);
+        FieldMemOperand(kScratchReg, SharedFunctionInfo::kFunctionDataOffset));
+  GetSharedFunctionInfoBytecode(masm, kInterpreterBytecodeArrayRegister,
+                                kScratchReg);
 
   // The bytecode array could have been flushed from the shared function info,
   // if so, call into CompileLazy.
   Label compile_lazy;
-  __ GetObjectType(kInterpreterBytecodeArrayRegister, a0, a0);
-  __ Branch(&compile_lazy, ne, a0, Operand(BYTECODE_ARRAY_TYPE));
+  __ GetObjectType(kInterpreterBytecodeArrayRegister, kScratchReg, kScratchReg);
+  __ Branch(&compile_lazy, ne, kScratchReg, Operand(BYTECODE_ARRAY_TYPE));
 
   // Load the feedback vector from the closure.
   __ Ld(feedback_vector,
@@ -1235,22 +1208,18 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
 }
 
 static void Generate_InterpreterPushArgs(MacroAssembler* masm,
-                                         Register num_args, Register index,
-                                         Register scratch, Register scratch2) {
+                                         Register num_args,
+                                         Register start_address,
+                                         Register scratch,
+                                         Register scratch2) {
   // Find the address of the last argument.
-  __ mov(scratch2, num_args);
-  __ dsll(scratch2, scratch2, kPointerSizeLog2);
-  __ Dsubu(scratch2, index, Operand(scratch2));
+  __ Dsubu(scratch, num_args, Operand(1));
+  __ dsll(scratch, scratch, kPointerSizeLog2);
+  __ Dsubu(start_address, start_address, scratch);
 
   // Push the arguments.
-  Label loop_header, loop_check;
-  __ Branch(&loop_check);
-  __ bind(&loop_header);
-  __ Ld(scratch, MemOperand(index));
-  __ Daddu(index, index, Operand(-kPointerSize));
-  __ push(scratch);
-  __ bind(&loop_check);
-  __ Branch(&loop_header, hi, index, Operand(scratch2));
+  __ PushArray(start_address, num_args, scratch, scratch2,
+               TurboAssembler::PushArrayOrder::kReverse);
 }
 
 // static
@@ -1266,23 +1235,32 @@ void Builtins::Generate_InterpreterPushArgsThenCallImpl(
   //  -- a1 : the target to call (can be any Object).
   // -----------------------------------
   Label stack_overflow;
+  if (mode == InterpreterPushArgsMode::kWithFinalSpread) {
+    // The spread argument should not be pushed.
+    __ Dsubu(a0, a0, Operand(1));
+  }
 
   __ Daddu(a3, a0, Operand(1));  // Add one for receiver.
 
-  // Push "undefined" as the receiver arg if we need to.
-  if (receiver_mode == ConvertReceiverMode::kNullOrUndefined) {
-    __ PushRoot(RootIndex::kUndefinedValue);
-    __ Dsubu(a3, a3, Operand(1));  // Subtract one for receiver.
-  }
-
   Generate_StackOverflowCheck(masm, a3, a4, t0, &stack_overflow);
+
+  if (receiver_mode == ConvertReceiverMode::kNullOrUndefined) {
+    // Don't copy receiver.
+    __ mov(a3, a0);
+  }
 
   // This function modifies a2, t0 and a4.
   Generate_InterpreterPushArgs(masm, a3, a2, a4, t0);
 
+  if (receiver_mode == ConvertReceiverMode::kNullOrUndefined) {
+    __ PushRoot(RootIndex::kUndefinedValue);
+  }
+
   if (mode == InterpreterPushArgsMode::kWithFinalSpread) {
-    __ Pop(a2);                   // Pass the spread in a register
-    __ Dsubu(a0, a0, Operand(1));  // Subtract one for spread
+    // Pass the spread in the register a2.
+    // a2 already points to the penultime argument, the spread
+    // is below that.
+    __ Ld(a2, MemOperand(a2, -kSystemPointerSize));
   }
 
   // Call the target.
@@ -1313,18 +1291,25 @@ void Builtins::Generate_InterpreterPushArgsThenConstructImpl(
   // -- a4 : address of the first argument
   // -----------------------------------
   Label stack_overflow;
+  __ daddiu(a6, a0, 1);
+  Generate_StackOverflowCheck(masm, a6, a5, t0, &stack_overflow);
+
+  if (mode == InterpreterPushArgsMode::kWithFinalSpread) {
+    // The spread argument should not be pushed.
+    __ Dsubu(a0, a0, Operand(1));
+  }
+
+  // Push the arguments, This function modifies t0, a4 and a5.
+  Generate_InterpreterPushArgs(masm, a0, a4, a5, t0);
 
   // Push a slot for the receiver.
   __ push(zero_reg);
 
-  Generate_StackOverflowCheck(masm, a0, a5, t0, &stack_overflow);
-
-  // This function modifies t0, a4 and a5.
-  Generate_InterpreterPushArgs(masm, a0, a4, a5, t0);
-
   if (mode == InterpreterPushArgsMode::kWithFinalSpread) {
-    __ Pop(a2);                   // Pass the spread in a register
-    __ Dsubu(a0, a0, Operand(1));  // Subtract one for spread
+    // Pass the spread in the register a2.
+    // a4 already points to the penultimate argument, the spread
+    // lies in the next interpreter register.
+    __ Ld(a2, MemOperand(a4, -kSystemPointerSize));
   } else {
     __ AssertUndefinedOrAllocationSite(a2, t0);
   }
@@ -1486,13 +1471,18 @@ void Generate_ContinueToBuiltinHelper(MacroAssembler* masm,
                                       bool with_result) {
   const RegisterConfiguration* config(RegisterConfiguration::Default());
   int allocatable_register_count = config->num_allocatable_general_registers();
+  Register scratch = t3;
   if (with_result) {
+  if (java_script_builtin) {
+    __ mov(scratch, v0);
+  } else {
     // Overwrite the hole inserted by the deoptimizer with the return value from
     // the LAZY deopt point.
     __ Sd(v0,
           MemOperand(
               sp, config->num_allocatable_general_registers() * kPointerSize +
                       BuiltinContinuationFrameConstants::kFixedFrameSize));
+  }
   }
   for (int i = allocatable_register_count - 1; i >= 0; --i) {
     int code = config->GetAllocatableGeneralCode(i);
@@ -1501,6 +1491,20 @@ void Generate_ContinueToBuiltinHelper(MacroAssembler* masm,
       __ SmiUntag(Register::from_code(code));
     }
   }
+
+  if (with_result && java_script_builtin) {
+    // Overwrite the hole inserted by the deoptimizer with the return value from
+    // the LAZY deopt point. t0 contains the arguments count, the return value
+    // from LAZY is always the last argument.
+    __ Daddu(a0, a0,
+            Operand(BuiltinContinuationFrameConstants::kFixedSlotCount));
+    __ Dlsa(t0, sp, a0, kSystemPointerSizeLog2);
+    __ Sd(scratch, MemOperand(t0));
+    // Recover arguments count.
+    __ Dsubu(a0, a0,
+            Operand(BuiltinContinuationFrameConstants::kFixedSlotCount));
+  }
+
   __ Ld(fp, MemOperand(
                 sp, BuiltinContinuationFrameConstants::kFixedFrameSizeFromFp));
   // Load builtin index (stored as a Smi) and use it to get the builtin start
@@ -1581,9 +1585,9 @@ void Builtins::Generate_InterpreterOnStackReplacement(MacroAssembler* masm) {
 void Builtins::Generate_FunctionPrototypeApply(MacroAssembler* masm) {
   // ----------- S t a t e -------------
   //  -- a0    : argc
-  //  -- sp[0] : argArray
+  //  -- sp[0] : receiver
   //  -- sp[4] : thisArg
-  //  -- sp[8] : receiver
+  //  -- sp[8] : argArray
   // -----------------------------------
 
   Register argc = a0;
@@ -1602,15 +1606,15 @@ void Builtins::Generate_FunctionPrototypeApply(MacroAssembler* masm) {
     // Claim (2 - argc) dummy arguments form the stack, to put the stack in a
     // consistent state for a simple pop operation.
 
-    __ Dsubu(sp, sp, Operand(2 * kPointerSize));
-    __ Dlsa(sp, sp, argc, kPointerSizeLog2);
     __ mov(scratch, argc);
-    __ Pop(this_arg, arg_array);                   // Overwrite argc
+    __ Ld(this_arg, MemOperand(sp, kPointerSize));
+    __ Ld(arg_array, MemOperand(sp, 2 * kPointerSize));
     __ Movz(arg_array, undefined_value, scratch);  // if argc == 0
     __ Movz(this_arg, undefined_value, scratch);   // if argc == 0
     __ Dsubu(scratch, scratch, Operand(1));
     __ Movz(arg_array, undefined_value, scratch);  // if argc == 1
     __ Ld(receiver, MemOperand(sp));
+    __ Dlsa(sp, sp, argc, kSystemPointerSizeLog2);
     __ Sd(this_arg, MemOperand(sp));
   }
 
@@ -1646,7 +1650,12 @@ void Builtins::Generate_FunctionPrototypeApply(MacroAssembler* masm) {
 
 // static
 void Builtins::Generate_FunctionPrototypeCall(MacroAssembler* masm) {
-  // 1. Make sure we have at least one argument.
+  // 1. Get the callable to call (passed as receiver) from the stack.
+  {
+    __ Pop(a1);
+  }
+
+  // 2. Make sure we have at least one argument.
   // a0: actual number of arguments
   {
     Label done;
@@ -1656,31 +1665,8 @@ void Builtins::Generate_FunctionPrototypeCall(MacroAssembler* masm) {
     __ bind(&done);
   }
 
-  // 2. Get the function to call (passed as receiver) from the stack.
-  // a0: actual number of arguments
-  __ Dlsa(kScratchReg, sp, a0, kPointerSizeLog2);
-  __ Ld(a1, MemOperand(kScratchReg));
-
-  // 3. Shift arguments and return address one slot down on the stack
-  //    (overwriting the original receiver).  Adjust argument count to make
-  //    the original first argument the new receiver.
-  // a0: actual number of arguments
-  // a1: function
-  {
-    Label loop;
-    // Calculate the copy start address (destination). Copy end address is sp.
-    __ Dlsa(a2, sp, a0, kPointerSizeLog2);
-
-    __ bind(&loop);
-    __ Ld(kScratchReg, MemOperand(a2, -kPointerSize));
-    __ Sd(kScratchReg, MemOperand(a2));
-    __ Dsubu(a2, a2, Operand(kPointerSize));
-    __ Branch(&loop, ne, a2, Operand(sp));
-    // Adjust the actual number of arguments and remove the top element
-    // (which is a copy of the last argument).
-    __ Dsubu(a0, a0, Operand(1));
-    __ Pop();
-  }
+  // 3. Adjust the actual number of arguments.
+  __ daddiu(a0, a0, -1);
 
   // 4. Call the callable.
   __ Jump(masm->isolate()->builtins()->Call(), RelocInfo::CODE_TARGET);
@@ -1689,10 +1675,10 @@ void Builtins::Generate_FunctionPrototypeCall(MacroAssembler* masm) {
 void Builtins::Generate_ReflectApply(MacroAssembler* masm) {
   // ----------- S t a t e -------------
   //  -- a0     : argc
-  //  -- sp[0]  : argumentsList  (if argc ==3)
-  //  -- sp[4]  : thisArgument   (if argc >=2)
-  //  -- sp[8]  : target         (if argc >=1)
-  //  -- sp[12] : receiver
+  //  -- sp[0]  : receiver
+  //  -- sp[8]  : target         (if argc >= 1)
+  //  -- sp[16] : thisArgument   (if argc >= 2)
+  //  -- sp[24] : argumentsList  (if argc == 3)
   // -----------------------------------
 
   Register argc = a0;
@@ -1711,10 +1697,10 @@ void Builtins::Generate_ReflectApply(MacroAssembler* masm) {
     // Claim (3 - argc) dummy arguments form the stack, to put the stack in a
     // consistent state for a simple pop operation.
 
-    __ Dsubu(sp, sp, Operand(3 * kPointerSize));
-    __ Dlsa(sp, sp, argc, kPointerSizeLog2);
     __ mov(scratch, argc);
-    __ Pop(target, this_argument, arguments_list);
+    __ Ld(target, MemOperand(sp, kPointerSize));
+    __ Ld(this_argument, MemOperand(sp, 2 * kPointerSize));
+    __ Ld(arguments_list, MemOperand(sp, 3 * kPointerSize));
     __ Movz(arguments_list, undefined_value, scratch);  // if argc == 0
     __ Movz(this_argument, undefined_value, scratch);   // if argc == 0
     __ Movz(target, undefined_value, scratch);          // if argc == 0
@@ -1724,6 +1710,7 @@ void Builtins::Generate_ReflectApply(MacroAssembler* masm) {
     __ Dsubu(scratch, scratch, Operand(1));
     __ Movz(arguments_list, undefined_value, scratch);  // if argc == 2
 
+    __ Dlsa(sp, sp, argc, kSystemPointerSizeLog2);
     __ Sd(this_argument, MemOperand(sp, 0));  // Overwrite receiver
   }
 
@@ -1746,11 +1733,12 @@ void Builtins::Generate_ReflectApply(MacroAssembler* masm) {
 void Builtins::Generate_ReflectConstruct(MacroAssembler* masm) {
   // ----------- S t a t e -------------
   //  -- a0     : argc
-  //  -- sp[0]  : new.target (optional) (dummy value if argc <= 2)
-  //  -- sp[4]  : argumentsList         (dummy value if argc <= 1)
-  //  -- sp[8]  : target                (dummy value if argc == 0)
-  //  -- sp[12] : receiver
+  //  -- sp[0]   : receiver
+  //  -- sp[8]   : target
+  //  -- sp[16]  : argumentsList
+  //  -- sp[24]  : new.target (optional)
   // -----------------------------------
+
   Register argc = a0;
   Register arguments_list = a2;
   Register target = a1;
@@ -1768,10 +1756,10 @@ void Builtins::Generate_ReflectConstruct(MacroAssembler* masm) {
     // Claim (3 - argc) dummy arguments form the stack, to put the stack in a
     // consistent state for a simple pop operation.
 
-    __ Dsubu(sp, sp, Operand(3 * kPointerSize));
-    __ Dlsa(sp, sp, argc, kPointerSizeLog2);
     __ mov(scratch, argc);
-    __ Pop(target, arguments_list, new_target);
+    __ Ld(target, MemOperand(sp, kPointerSize));
+    __ Ld(arguments_list, MemOperand(sp, 2 * kPointerSize));
+    __ Ld(new_target, MemOperand(sp, 3 * kPointerSize));
     __ Movz(arguments_list, undefined_value, scratch);  // if argc == 0
     __ Movz(new_target, undefined_value, scratch);      // if argc == 0
     __ Movz(target, undefined_value, scratch);          // if argc == 0
@@ -1779,9 +1767,10 @@ void Builtins::Generate_ReflectConstruct(MacroAssembler* masm) {
     __ Movz(arguments_list, undefined_value, scratch);  // if argc == 1
     __ Movz(new_target, target, scratch);               // if argc == 1
     __ Dsubu(scratch, scratch, Operand(1));
-    __ Movz(new_target, target, scratch);  // if argc == 2
+    __ Movz(new_target, target, scratch);               // if argc == 2
 
-    __ Sd(undefined_value, MemOperand(sp, 0));  // Overwrite receiver
+    __ Dlsa(sp, sp, argc, kSystemPointerSizeLog2);
+    __ Sd(undefined_value, MemOperand(sp, 0));    // Overwrite receiver
   }
 
   // ----------- S t a t e -------------
@@ -1860,6 +1849,27 @@ void Builtins::Generate_CallOrConstructVarargs(MacroAssembler* masm,
   Label stack_overflow;
   Generate_StackOverflowCheck(masm, len, kScratchReg, a5, &stack_overflow);
 
+  // Move the arguments already in the stack,
+  // including the receiver and the return address.
+  {
+    Label copy;
+    Register src = a6, dest = a7;
+    __ mov(src, sp);
+    __ dsll(t0, a4, kSystemPointerSizeLog2);
+    __ Dsubu(sp, sp, Operand(t0));
+    // Update stack pointer.
+    __ mov(dest, sp);
+    __ Daddu(t0, a0, Operand(zero_reg));
+
+    __ bind(&copy);
+    __ Ld(t1, MemOperand(src, 0));
+    __ Sd(t1, MemOperand(dest, 0));
+    __ Dsubu(t0, t0, Operand(1));
+    __ Daddu(src, src, Operand(kSystemPointerSize));
+    __ Daddu(dest, dest, Operand(kSystemPointerSize));
+    __ Branch(&copy, ge, t0, Operand(zero_reg));
+  }
+
   // Push arguments onto the stack (thisArgument is already on the stack).
   {
     Label done, push, loop;
@@ -1874,11 +1884,13 @@ void Builtins::Generate_CallOrConstructVarargs(MacroAssembler* masm,
     __ LoadRoot(t1, RootIndex::kTheHoleValue);
     __ bind(&loop);
     __ Ld(a5, MemOperand(src));
+    __ daddiu(src, src, kPointerSize);
     __ Branch(&push, ne, a5, Operand(t1));
     __ LoadRoot(a5, RootIndex::kUndefinedValue);
     __ bind(&push);
-    __ daddiu(src, src, kPointerSize);
-    __ Push(a5);
+    __ Sd(a5, MemOperand(a7, 0));
+    __ Daddu(a7, a7, Operand(kSystemPointerSize));
+    __ Daddu(scratch, scratch, Operand(kSystemPointerSize));
     __ Branch(&loop, ne, scratch, Operand(sp));
     __ bind(&done);
   }
@@ -1949,15 +1961,47 @@ void Builtins::Generate_CallOrConstructForwardVarargs(MacroAssembler* masm,
     Generate_StackOverflowCheck(masm, a7, a4, a5, &stack_overflow);
 
     // Forward the arguments from the caller frame.
+
+    // Point to the first argument to copy (skipping the receiver).
+    __ Daddu(a6, a6,
+             Operand(CommonFrameConstants::kFixedFrameSizeAboveFp +
+                     kSystemPointerSize));
+    __ Dlsa(a6, a6, a2, kSystemPointerSizeLog2);
+
+    // Move the arguments already in the stack,
+    // including the receiver and the return address.
+    {
+      Label copy;
+      Register src = t0, dest = a2;
+      __ mov(src, sp);
+      // Update stack pointer.
+      __ dsll(t1, a7, kSystemPointerSizeLog2);
+      __ Dsubu(sp, sp, Operand(t1));
+      __ mov(dest, sp);
+      __ Daddu(t2, a0, Operand(zero_reg));
+
+      __ bind(&copy);
+      __ Ld(t1, MemOperand(src, 0));
+      __ Sd(t1, MemOperand(dest, 0));
+      __ Dsubu(t2, t2, Operand(1));
+      __ Daddu(src, src, Operand(kSystemPointerSize));
+      __ Daddu(dest, dest, Operand(kSystemPointerSize));
+      __ Branch(&copy, ge, t2, Operand(zero_reg));
+    }
+
+    // Copy arguments from the caller frame.
+    // TODO(victorgomes): Consider using forward order as potentially more cache
+    // friendly.
     {
       Label loop;
       __ Daddu(a0, a0, a7);
       __ bind(&loop);
       {
-        __ Dlsa(kScratchReg, a6, a7, kPointerSizeLog2);
-        __ Ld(kScratchReg, MemOperand(kScratchReg, 1 * kPointerSize));
-        __ push(kScratchReg);
         __ Subu(a7, a7, Operand(1));
+        __ Dlsa(t0, a6, a7, kPointerSizeLog2);
+        __ Ld(kScratchReg, MemOperand(t0));
+        __ Dlsa(t0, a2, a7, kPointerSizeLog2);
+        __ Sd(kScratchReg, MemOperand(t0));
         __ Branch(&loop, ne, a7, Operand(zero_reg));
       }
     }
@@ -2013,8 +2057,7 @@ void Builtins::Generate_CallFunction(MacroAssembler* masm,
       __ LoadGlobalProxy(a3);
     } else {
       Label convert_to_object, convert_receiver;
-      __ Dlsa(kScratchReg, sp, a0, kPointerSizeLog2);
-      __ Ld(a3, MemOperand(kScratchReg));
+      __ LoadReceiver(a3, a0);
       __ JumpIfSmi(a3, &convert_to_object);
       STATIC_ASSERT(LAST_JS_RECEIVER_TYPE == LAST_TYPE);
       __ GetObjectType(a3, a4, a4);
@@ -2050,8 +2093,7 @@ void Builtins::Generate_CallFunction(MacroAssembler* masm,
       __ Ld(a2, FieldMemOperand(a1, JSFunction::kSharedFunctionInfoOffset));
       __ bind(&convert_receiver);
     }
-    __ Dlsa(kScratchReg, sp, a0, kPointerSizeLog2);
-    __ Sd(a3, MemOperand(kScratchReg));
+    __ StoreReceiver(a3, a0, kScratchReg);
   }
   __ bind(&done_convert);
 
@@ -2085,9 +2127,8 @@ void Builtins::Generate_CallBoundFunctionImpl(MacroAssembler* masm) {
 
   // Patch the receiver to [[BoundThis]].
   {
-    __ Ld(kScratchReg, FieldMemOperand(a1, JSBoundFunction::kBoundThisOffset));
-    __ Dlsa(a4, sp, a0, kPointerSizeLog2);
-    __ Sd(kScratchReg, MemOperand(a4));
+    __ Ld(t0, FieldMemOperand(a1, JSBoundFunction::kBoundThisOffset));
+    __ StoreReceiver(t0, a0, kScratchReg);
   }
 
   // Load [[BoundArguments]] into a2 and length of that into a4.
@@ -2105,13 +2146,11 @@ void Builtins::Generate_CallBoundFunctionImpl(MacroAssembler* masm) {
   {
     Label done;
     __ dsll(a5, a4, kPointerSizeLog2);
-    __ Dsubu(sp, sp, Operand(a5));
+    __ Dsubu(t0, sp, Operand(a5));
     // Check the stack for overflow. We are not trying to catch interruptions
     // (i.e. debug break and preemption) here, so check the "real stack limit".
     LoadStackLimit(masm, kScratchReg, StackLimitKind::kRealStackLimit);
-    __ Branch(&done, hs, sp, Operand(kScratchReg));
-    // Restore the stack pointer.
-    __ Daddu(sp, sp, Operand(a5));
+    __ Branch(&done, hs, t0, Operand(kScratchReg));
     {
       FrameScope scope(masm, StackFrame::MANUAL);
       __ EnterFrame(StackFrame::INTERNAL);
@@ -2120,38 +2159,27 @@ void Builtins::Generate_CallBoundFunctionImpl(MacroAssembler* masm) {
     __ bind(&done);
   }
 
-  // Relocate arguments down the stack.
-  {
-    Label loop, done_loop;
-    __ mov(a5, zero_reg);
-    __ bind(&loop);
-    __ Branch(&done_loop, gt, a5, Operand(a0));
-    __ Dlsa(a6, sp, a4, kPointerSizeLog2);
-    __ Ld(kScratchReg, MemOperand(a6));
-    __ Dlsa(a6, sp, a5, kPointerSizeLog2);
-    __ Sd(kScratchReg, MemOperand(a6));
-    __ Daddu(a4, a4, Operand(1));
-    __ Daddu(a5, a5, Operand(1));
-    __ Branch(&loop);
-    __ bind(&done_loop);
-  }
+  // Pop receiver.
+  __ Pop(t0);
 
-  // Copy [[BoundArguments]] to the stack (below the arguments).
+  // Push [[BoundArguments]].
   {
     Label loop, done_loop;
     __ SmiUntag(a4, FieldMemOperand(a2, FixedArray::kLengthOffset));
+    __ Daddu(a0, a0, Operand(a4));
     __ Daddu(a2, a2, Operand(FixedArray::kHeaderSize - kHeapObjectTag));
     __ bind(&loop);
     __ Dsubu(a4, a4, Operand(1));
     __ Branch(&done_loop, lt, a4, Operand(zero_reg));
     __ Dlsa(a5, a2, a4, kPointerSizeLog2);
     __ Ld(kScratchReg, MemOperand(a5));
-    __ Dlsa(a5, sp, a0, kPointerSizeLog2);
-    __ Sd(kScratchReg, MemOperand(a5));
-    __ Daddu(a0, a0, Operand(1));
+    __ Push(kScratchReg);
     __ Branch(&loop);
     __ bind(&done_loop);
   }
+
+  // Push receiver.
+  __ Push(t0);
 
   // Call the [[BoundTargetFunction]] via the Call builtin.
   __ Ld(a1, FieldMemOperand(a1, JSBoundFunction::kBoundTargetFunctionOffset));
@@ -2186,8 +2214,7 @@ void Builtins::Generate_Call(MacroAssembler* masm, ConvertReceiverMode mode) {
   // 2. Call to something else, which might have a [[Call]] internal method (if
   // not we raise an exception).
   // Overwrite the original receiver with the (original) target.
-  __ Dlsa(kScratchReg, sp, a0, kPointerSizeLog2);
-  __ Sd(a1, MemOperand(kScratchReg));
+  __ StoreReceiver(a1, a0, kScratchReg);
   // Let the "call_as_function_delegate" take care of the rest.
   __ LoadNativeContextSlot(Context::CALL_AS_FUNCTION_DELEGATE_INDEX, a1);
   __ Jump(masm->isolate()->builtins()->CallFunction(
@@ -2258,13 +2285,11 @@ void Builtins::Generate_ConstructBoundFunction(MacroAssembler* masm) {
   {
     Label done;
     __ dsll(a5, a4, kPointerSizeLog2);
-    __ Dsubu(sp, sp, Operand(a5));
+    __ Dsubu(t0, sp, Operand(a5));
     // Check the stack for overflow. We are not trying to catch interruptions
     // (i.e. debug break and preemption) here, so check the "real stack limit".
     LoadStackLimit(masm, kScratchReg, StackLimitKind::kRealStackLimit);
-    __ Branch(&done, hs, sp, Operand(kScratchReg));
-    // Restore the stack pointer.
-    __ Daddu(sp, sp, Operand(a5));
+    __ Branch(&done, hs, t0, Operand(kScratchReg));
     {
       FrameScope scope(masm, StackFrame::MANUAL);
       __ EnterFrame(StackFrame::INTERNAL);
@@ -2273,38 +2298,27 @@ void Builtins::Generate_ConstructBoundFunction(MacroAssembler* masm) {
     __ bind(&done);
   }
 
-  // Relocate arguments down the stack.
-  {
-    Label loop, done_loop;
-    __ mov(a5, zero_reg);
-    __ bind(&loop);
-    __ Branch(&done_loop, ge, a5, Operand(a0));
-    __ Dlsa(a6, sp, a4, kPointerSizeLog2);
-    __ Ld(kScratchReg, MemOperand(a6));
-    __ Dlsa(a6, sp, a5, kPointerSizeLog2);
-    __ Sd(kScratchReg, MemOperand(a6));
-    __ Daddu(a4, a4, Operand(1));
-    __ Daddu(a5, a5, Operand(1));
-    __ Branch(&loop);
-    __ bind(&done_loop);
-  }
+  // Pop receiver.
+  __ Pop(t0);
 
-  // Copy [[BoundArguments]] to the stack (below the arguments).
+  // Push [[BoundArguments]].
   {
     Label loop, done_loop;
     __ SmiUntag(a4, FieldMemOperand(a2, FixedArray::kLengthOffset));
+    __ Daddu(a0, a0, Operand(a4));
     __ Daddu(a2, a2, Operand(FixedArray::kHeaderSize - kHeapObjectTag));
     __ bind(&loop);
     __ Dsubu(a4, a4, Operand(1));
     __ Branch(&done_loop, lt, a4, Operand(zero_reg));
     __ Dlsa(a5, a2, a4, kPointerSizeLog2);
     __ Ld(kScratchReg, MemOperand(a5));
-    __ Dlsa(a5, sp, a0, kPointerSizeLog2);
-    __ Sd(kScratchReg, MemOperand(a5));
-    __ Daddu(a0, a0, Operand(1));
+    __ Push(kScratchReg);
     __ Branch(&loop);
     __ bind(&done_loop);
   }
+
+  // Push receiver.
+  __ Push(t0);
 
   // Patch new.target to [[BoundTargetFunction]] if new.target equals target.
   {
@@ -2357,8 +2371,7 @@ void Builtins::Generate_Construct(MacroAssembler* masm) {
   __ bind(&non_proxy);
   {
     // Overwrite the original receiver with the (original) target.
-    __ Dlsa(kScratchReg, sp, a0, kPointerSizeLog2);
-    __ Sd(a1, MemOperand(kScratchReg));
+    __ StoreReceiver(a1, a0, kScratchReg);
     // Let the "call_as_constructor_delegate" take care of the rest.
     __ LoadNativeContextSlot(Context::CALL_AS_CONSTRUCTOR_DELEGATE_INDEX, a1);
     __ Jump(masm->isolate()->builtins()->CallFunction(),
@@ -2399,8 +2412,9 @@ void Builtins::Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm) {
     Generate_StackOverflowCheck(masm, a2, a5, kScratchReg, &stack_overflow);
 
     // Calculate copy start address into a0 and copy end address into a4.
-    __ SmiScale(a0, a0, kPointerSizeLog2);
+    __ dsll(a0, a2, kPointerSizeLog2);
     __ Daddu(a0, fp, a0);
+
     // Adjust for return address and receiver.
     __ Daddu(a0, a0, Operand(2 * kPointerSize));
     // Compute copy end address.
@@ -2429,49 +2443,36 @@ void Builtins::Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm) {
     EnterArgumentsAdaptorFrame(masm);
     Generate_StackOverflowCheck(masm, a2, a5, kScratchReg, &stack_overflow);
 
-    // Calculate copy start address into a0 and copy end address into a7.
-    // a0: actual number of arguments as a smi
-    // a1: function
-    // a2: expected number of arguments
-    // a3: new target (passed through to callee)
-    __ SmiScale(a0, a0, kPointerSizeLog2);
-    __ Daddu(a0, fp, a0);
-    // Adjust for return address and receiver.
-    __ Daddu(a0, a0, Operand(2 * kPointerSize));
-    // Compute copy end address. Also adjust for return address.
-    __ Daddu(a7, fp, kPointerSize);
-
-    // Copy the arguments (including the receiver) to the new stack frame.
-    // a0: copy start address
-    // a1: function
-    // a2: expected number of arguments
-    // a3: new target (passed through to callee)
-    // a7: copy end address
-    Label copy;
-    __ bind(&copy);
-    __ Ld(a4, MemOperand(a0));  // Adjusted above for return addr and receiver.
-    __ Dsubu(sp, sp, kPointerSize);
-    __ Dsubu(a0, a0, kPointerSize);
-    __ Branch(USE_DELAY_SLOT, &copy, ne, a0, Operand(a7));
-    __ Sd(a4, MemOperand(sp));  // In the delay slot.
-
     // Fill the remaining expected arguments with undefined.
-    // a1: function
-    // a2: expected number of arguments
-    // a3: new target (passed through to callee)
-    __ LoadRoot(a5, RootIndex::kUndefinedValue);
-    __ dsll(a6, a2, kPointerSizeLog2);
-    __ Dsubu(a4, fp, Operand(a6));
+    __ LoadRoot(t0, RootIndex::kUndefinedValue);
+    __ SmiUntag(t1, a0);
+    __ Dsubu(t2, a2, Operand(t1));
+    __ dsll(a4, t2, kSystemPointerSizeLog2);
+    __ Dsubu(a4, fp, a4);
     // Adjust for frame.
     __ Dsubu(a4, a4,
              Operand(ArgumentsAdaptorFrameConstants::kFixedFrameSizeFromFp +
-                     kPointerSize));
+                     kSystemPointerSize));
 
     Label fill;
     __ bind(&fill);
-    __ Dsubu(sp, sp, kPointerSize);
-    __ Branch(USE_DELAY_SLOT, &fill, ne, sp, Operand(a4));
-    __ Sd(a5, MemOperand(sp));
+    __ push(t0);
+    __ Branch(&fill, ne, sp, Operand(a4));
+
+    // Calculate copy start address into r0 and copy end address is fp.
+    __ SmiScale(a0, a0, kPointerSizeLog2);
+    __ Daddu(a0, fp, a0);
+
+    // Copy the arguments (including the receiver) to the new stack frame.
+    Label copy;
+    __ bind(&copy);
+
+    // Adjust load for return address and receiver.
+    __ Ld(t0, MemOperand(a0, 2 * kSystemPointerSize));
+    __ push(t0);
+
+    __ Branch(USE_DELAY_SLOT, &copy, ne, a0, Operand(fp));
+    __ Dsubu(a0, a0, Operand(kSystemPointerSize));
   }
 
   // Call the entry point.
@@ -2524,6 +2525,12 @@ void Builtins::Generate_WasmCompileLazy(MacroAssembler* masm) {
         Register::ListOf(a0, a2, a3, a4, a5, a6, a7);
     constexpr RegList fp_regs =
         DoubleRegister::ListOf(f2, f4, f6, f8, f10, f12, f14);
+    constexpr int16_t num_to_push = base::bits::CountPopulation(gp_regs) +
+                                    base::bits::CountPopulation(fp_regs);
+    // The number of regs to be pushed before kWasmInstanceRegister should be
+    // equal to kNumberOfSavedAllParamRegs.
+    STATIC_ASSERT(num_to_push ==
+                  WasmCompileLazyFrameConstants::kNumberOfSavedAllParamRegs);
     __ MultiPush(gp_regs);
     __ MultiPushFPU(fp_regs);
 
@@ -2962,11 +2969,10 @@ void Builtins::Generate_CallApiCallback(MacroAssembler* masm) {
   //  -- a2                  : arguments count (not including the receiver)
   //  -- a3                  : call data
   //  -- a0                  : holder
-  //  --
-  //  -- sp[0]               : last argument
+  //  -- sp[0]               : receiver
+  //  -- sp[8]               : first argument
   //  -- ...
-  //  -- sp[(argc - 1) * 8]  : first argument
-  //  -- sp[(argc + 0) * 8]  : receiver
+  //  -- sp[(argc) * 8]      : last argument
   // -----------------------------------
 
   Register api_function_address = a1;
@@ -3043,7 +3049,9 @@ void Builtins::Generate_CallApiCallback(MacroAssembler* masm) {
 
   // FunctionCallbackInfo::values_ (points at the first varargs argument passed
   // on the stack).
-  __ Dsubu(scratch, base, Operand(1 * kPointerSize));
+  __ Daddu(scratch, scratch,
+          Operand((FCA::kArgsLength + 1) * kSystemPointerSize));
+
   __ Sd(scratch, MemOperand(sp, 2 * kPointerSize));
 
   // FunctionCallbackInfo::length_.

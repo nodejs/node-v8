@@ -287,6 +287,7 @@ std::ostream& operator<<(std::ostream& os, NamedAccess const& p) {
 
 NamedAccess const& NamedAccessOf(const Operator* op) {
   DCHECK(op->opcode() == IrOpcode::kJSLoadNamed ||
+         op->opcode() == IrOpcode::kJSLoadNamedFromSuper ||
          op->opcode() == IrOpcode::kJSStoreNamed);
   return OpParameter<NamedAccess>(op);
 }
@@ -639,9 +640,9 @@ size_t hash_value(GetIteratorParameters const& p) {
                             FeedbackSource::Hash()(p.callFeedback()));
 }
 
-size_t hash_value(ForInMode mode) { return static_cast<uint8_t>(mode); }
+size_t hash_value(ForInMode const& mode) { return static_cast<uint8_t>(mode); }
 
-std::ostream& operator<<(std::ostream& os, ForInMode mode) {
+std::ostream& operator<<(std::ostream& os, ForInMode const& mode) {
   switch (mode) {
     case ForInMode::kUseEnumCacheKeysAndIndices:
       return os << "UseEnumCacheKeysAndIndices";
@@ -653,10 +654,26 @@ std::ostream& operator<<(std::ostream& os, ForInMode mode) {
   UNREACHABLE();
 }
 
-ForInMode ForInModeOf(Operator const* op) {
+bool operator==(ForInParameters const& lhs, ForInParameters const& rhs) {
+  return lhs.feedback() == rhs.feedback() && lhs.mode() == rhs.mode();
+}
+
+bool operator!=(ForInParameters const& lhs, ForInParameters const& rhs) {
+  return !(lhs == rhs);
+}
+
+size_t hash_value(ForInParameters const& p) {
+  return base::hash_combine(FeedbackSource::Hash()(p.feedback()), p.mode());
+}
+
+std::ostream& operator<<(std::ostream& os, ForInParameters const& p) {
+  return os << p.feedback() << ", " << p.mode();
+}
+
+ForInParameters const& ForInParametersOf(const Operator* op) {
   DCHECK(op->opcode() == IrOpcode::kJSForInNext ||
          op->opcode() == IrOpcode::kJSForInPrepare);
-  return OpParameter<ForInMode>(op);
+  return OpParameter<ForInParameters>(op);
 }
 
 #define CACHED_OP_LIST(V)                                                \
@@ -918,6 +935,19 @@ const Operator* JSOperatorBuilder::LoadNamed(Handle<Name> name,
       access);                                          // parameter
 }
 
+const Operator* JSOperatorBuilder::LoadNamedFromSuper(Handle<Name> name) {
+  static constexpr int kReceiver = 1;
+  static constexpr int kHomeObject = 1;
+  static constexpr int kArity = kReceiver + kHomeObject;
+  // TODO(marja, v8:9237): Use real feedback.
+  NamedAccess access(LanguageMode::kSloppy, name, FeedbackSource());
+  return zone()->New<Operator1<NamedAccess>>(                    // --
+      IrOpcode::kJSLoadNamedFromSuper, Operator::kNoProperties,  // opcode
+      "JSLoadNamedFromSuper",                                    // name
+      kArity, 1, 1, 1, 1, 2,                                     // counts
+      access);                                                   // parameter
+}
+
 const Operator* JSOperatorBuilder::LoadProperty(
     FeedbackSource const& feedback) {
   PropertyAccess access(LanguageMode::kSloppy, feedback);
@@ -947,21 +977,23 @@ const Operator* JSOperatorBuilder::HasProperty(FeedbackSource const& feedback) {
       access);                                            // parameter
 }
 
-const Operator* JSOperatorBuilder::ForInNext(ForInMode mode) {
-  return zone()->New<Operator1<ForInMode>>(             // --
+const Operator* JSOperatorBuilder::ForInNext(ForInMode mode,
+                                             const FeedbackSource& feedback) {
+  return zone()->New<Operator1<ForInParameters>>(       // --
       IrOpcode::kJSForInNext, Operator::kNoProperties,  // opcode
       "JSForInNext",                                    // name
-      4, 1, 1, 1, 1, 2,                                 // counts
-      mode);                                            // parameter
+      5, 1, 1, 1, 1, 2,                                 // counts
+      ForInParameters{feedback, mode});                 // parameter
 }
 
-const Operator* JSOperatorBuilder::ForInPrepare(ForInMode mode) {
-  return zone()->New<Operator1<ForInMode>>(     // --
-      IrOpcode::kJSForInPrepare,                // opcode
-      Operator::kNoWrite | Operator::kNoThrow,  // flags
-      "JSForInPrepare",                         // name
-      1, 1, 1, 3, 1, 1,                         // counts
-      mode);                                    // parameter
+const Operator* JSOperatorBuilder::ForInPrepare(
+    ForInMode mode, const FeedbackSource& feedback) {
+  return zone()->New<Operator1<ForInParameters>>(  // --
+      IrOpcode::kJSForInPrepare,                   // opcode
+      Operator::kNoWrite | Operator::kNoThrow,     // flags
+      "JSForInPrepare",                            // name
+      2, 1, 1, 3, 1, 1,                            // counts
+      ForInParameters{feedback, mode});            // parameter
 }
 
 const Operator* JSOperatorBuilder::GeneratorStore(int register_count) {

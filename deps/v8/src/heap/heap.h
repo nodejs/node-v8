@@ -66,6 +66,7 @@ class ArrayBufferCollector;
 class ArrayBufferSweeper;
 class BasicMemoryChunk;
 class CodeLargeObjectSpace;
+class CollectionBarrier;
 class ConcurrentMarking;
 class GCIdleTimeHandler;
 class GCIdleTimeHeapState;
@@ -149,10 +150,11 @@ enum class GarbageCollectionReason {
   kTesting = 21,
   kExternalFinalize = 22,
   kGlobalAllocationLimit = 23,
-  kMeasureMemory = 24
+  kMeasureMemory = 24,
+  kBackgroundAllocationFailure = 25,
   // If you add new items here, then update the incremental_marking_reason,
   // mark_compact_reason, and scavenge_reason counters in counters.h.
-  // Also update src/tools/metrics/histograms/histograms.xml in chromium.
+  // Also update src/tools/metrics/histograms/enums.xml in chromium.
 };
 
 enum class YoungGenerationHandling {
@@ -175,6 +177,18 @@ enum class SkipRoot {
   kStack,
   kUnserializable,
   kWeak
+};
+
+class StrongRootsEntry {
+  StrongRootsEntry() = default;
+
+  FullObjectSlot start;
+  FullObjectSlot end;
+
+  StrongRootsEntry* prev;
+  StrongRootsEntry* next;
+
+  friend class Heap;
 };
 
 class AllocationResult {
@@ -530,7 +544,7 @@ class Heap {
 
   bool IsImmovable(HeapObject object);
 
-  static bool IsLargeObject(HeapObject object);
+  V8_EXPORT_PRIVATE static bool IsLargeObject(HeapObject object);
 
   // This method supports the deserialization allocator.  All allocations
   // are word-aligned.  The method should never fail to allocate since the
@@ -654,10 +668,8 @@ class Heap {
   template <FindMementoMode mode>
   inline AllocationMemento FindAllocationMemento(Map map, HeapObject object);
 
-  // Returns false if not able to reserve.
-  bool ReserveSpace(Reservation* reservations, std::vector<Address>* maps);
-
-  void RequestAndWaitForCollection();
+  // Requests collection and blocks until GC is finished.
+  void RequestCollectionBackground(LocalHeap* local_heap);
 
   //
   // Support for the API.
@@ -758,8 +770,13 @@ class Heap {
   V8_EXPORT_PRIVATE bool ShouldOptimizeForMemoryUsage();
 
   bool HighMemoryPressure() {
-    return memory_pressure_level_ != MemoryPressureLevel::kNone;
+    return memory_pressure_level_.load(std::memory_order_relaxed) !=
+           MemoryPressureLevel::kNone;
   }
+
+  bool CollectionRequested();
+
+  void CheckCollectionRequested();
 
   void RestoreHeapLimit(size_t heap_limit) {
     // Do not set the limit lower than the live size + some slack.
@@ -868,8 +885,11 @@ class Heap {
   V8_INLINE void SetMessageListeners(TemplateList value);
   V8_INLINE void SetPendingOptimizeForTestBytecode(Object bytecode);
 
-  void RegisterStrongRoots(FullObjectSlot start, FullObjectSlot end);
-  void UnregisterStrongRoots(FullObjectSlot start);
+  StrongRootsEntry* RegisterStrongRoots(FullObjectSlot start,
+                                        FullObjectSlot end);
+  void UnregisterStrongRoots(StrongRootsEntry* entry);
+  void UpdateStrongRoots(StrongRootsEntry* entry, FullObjectSlot start,
+                         FullObjectSlot end);
 
   void SetBuiltinsConstantsTable(FixedArray cache);
   void SetDetachedContexts(WeakArrayList detached_contexts);
@@ -1045,10 +1065,6 @@ class Heap {
   // Synchronously finalizes incremental marking.
   V8_EXPORT_PRIVATE void FinalizeIncrementalMarkingAtomically(
       GarbageCollectionReason gc_reason);
-
-  void RegisterDeserializedObjectsForBlackAllocation(
-      Reservation* reservations, const std::vector<HeapObject>& large_objects,
-      const std::vector<Address>& maps);
 
   IncrementalMarking* incremental_marking() {
     return incremental_marking_.get();
@@ -1350,6 +1366,14 @@ class Heap {
   // more eager to finalize incremental marking.
   bool AllocationLimitOvershotByLargeMargin();
 
+  // Return the maximum size objects can be before having to allocate them as
+  // large objects. This takes into account allocating in the code space for
+  // which the size of the allocatable space per V8 page may depend on the OS
+  // page size at runtime. You may use kMaxRegularHeapObjectSize as a constant
+  // instead if you know the allocation isn't in the code spaces.
+  V8_EXPORT_PRIVATE static int MaxRegularHeapObjectSize(
+      AllocationType allocation);
+
   // ===========================================================================
   // Prologue/epilogue callback methods.========================================
   // ===========================================================================
@@ -1426,8 +1450,10 @@ class Heap {
   // Heap object allocation tracking. ==========================================
   // ===========================================================================
 
-  void AddHeapObjectAllocationTracker(HeapObjectAllocationTracker* tracker);
-  void RemoveHeapObjectAllocationTracker(HeapObjectAllocationTracker* tracker);
+  V8_EXPORT_PRIVATE void AddHeapObjectAllocationTracker(
+      HeapObjectAllocationTracker* tracker);
+  V8_EXPORT_PRIVATE void RemoveHeapObjectAllocationTracker(
+      HeapObjectAllocationTracker* tracker);
   bool has_heap_object_allocation_tracker() const {
     return !allocation_trackers_.empty();
   }
@@ -1556,24 +1582,6 @@ class Heap {
 
     DISALLOW_COPY_AND_ASSIGN(ExternalStringTable);
   };
-
-  class CollectionBarrier {
-    Heap* heap_;
-    base::Mutex mutex_;
-    base::ConditionVariable cond_;
-    bool gc_requested_;
-    bool shutdown_requested_;
-
-   public:
-    explicit CollectionBarrier(Heap* heap)
-        : heap_(heap), gc_requested_(false), shutdown_requested_(false) {}
-
-    void CollectionPerformed();
-    void ShutdownRequested();
-    void Wait();
-  };
-
-  struct StrongRootsList;
 
   struct StringTypeTable {
     InstanceType type;
@@ -1800,7 +1808,7 @@ class Heap {
   void GarbageCollectionPrologue();
   void GarbageCollectionPrologueInSafepoint();
   void GarbageCollectionEpilogue();
-  void GarbageCollectionEpilogueInSafepoint();
+  void GarbageCollectionEpilogueInSafepoint(GarbageCollector collector);
 
   // Performs a major collection in the whole heap.
   void MarkCompact();
@@ -1887,12 +1895,11 @@ class Heap {
 
   V8_EXPORT_PRIVATE bool CanExpandOldGeneration(size_t size);
   V8_EXPORT_PRIVATE bool CanExpandOldGenerationBackground(size_t size);
+  V8_EXPORT_PRIVATE bool CanPromoteYoungAndExpandOldGeneration(size_t size);
 
   bool ShouldExpandOldGenerationOnSlowAllocation(
       LocalHeap* local_heap = nullptr);
   bool IsRetryOfFailedAllocation(LocalHeap* local_heap);
-
-  void AlwaysAllocateAfterTearDownStarted();
 
   HeapGrowingMode CurrentHeapGrowingMode();
 
@@ -2058,7 +2065,7 @@ class Heap {
   // and reset by a mark-compact garbage collection.
   std::atomic<MemoryPressureLevel> memory_pressure_level_;
 
-  std::vector<std::pair<v8::NearHeapLimitCallback, void*> >
+  std::vector<std::pair<v8::NearHeapLimitCallback, void*>>
       near_heap_limit_callbacks_;
 
   // For keeping track of context disposals.
@@ -2201,7 +2208,9 @@ class Heap {
   std::unique_ptr<AllocationObserver> stress_concurrent_allocation_observer_;
   std::unique_ptr<LocalEmbedderHeapTracer> local_embedder_heap_tracer_;
   std::unique_ptr<MarkingBarrier> marking_barrier_;
-  StrongRootsList* strong_roots_list_ = nullptr;
+
+  StrongRootsEntry* strong_roots_head_ = nullptr;
+  base::Mutex strong_roots_mutex_;
 
   bool need_to_remove_stress_concurrent_allocation_observer_ = false;
 
@@ -2259,7 +2268,7 @@ class Heap {
 
   base::Mutex relocation_mutex_;
 
-  CollectionBarrier collection_barrier_;
+  std::unique_ptr<CollectionBarrier> collection_barrier_;
 
   int gc_callbacks_depth_ = 0;
 
@@ -2331,6 +2340,7 @@ class Heap {
 
   // The allocator interface.
   friend class Factory;
+  friend class Deserializer;
 
   // The Isolate constructs us.
   friend class Isolate;
@@ -2488,7 +2498,8 @@ class VerifySmisVisitor : public RootVisitor {
 // is done.
 class V8_EXPORT_PRIVATE PagedSpaceIterator {
  public:
-  explicit PagedSpaceIterator(Heap* heap) : heap_(heap), counter_(OLD_SPACE) {}
+  explicit PagedSpaceIterator(Heap* heap)
+      : heap_(heap), counter_(FIRST_GROWABLE_PAGED_SPACE) {}
   PagedSpace* Next();
 
  private:
@@ -2584,6 +2595,32 @@ T ForwardingAddress(T heap_obj) {
     return heap_obj;
   }
 }
+
+// Address block allocator compatible with standard containers which registers
+// its allocated range as strong roots.
+class StrongRootBlockAllocator {
+ public:
+  using pointer = Address*;
+  using const_pointer = const Address*;
+  using reference = Address&;
+  using const_reference = const Address&;
+  using value_type = Address;
+  using size_type = size_t;
+  using difference_type = ptrdiff_t;
+  template <class U>
+  struct rebind {
+    STATIC_ASSERT((std::is_same<Address, U>::value));
+    using other = StrongRootBlockAllocator;
+  };
+
+  explicit StrongRootBlockAllocator(Heap* heap) : heap_(heap) {}
+
+  Address* allocate(size_t n);
+  void deallocate(Address* p, size_t n) noexcept;
+
+ private:
+  Heap* heap_;
+};
 
 }  // namespace internal
 }  // namespace v8

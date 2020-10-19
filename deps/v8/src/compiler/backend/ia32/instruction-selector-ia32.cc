@@ -364,37 +364,37 @@ void InstructionSelector::VisitAbortCSAAssert(Node* node) {
 
 void InstructionSelector::VisitLoadTransform(Node* node) {
   LoadTransformParameters params = LoadTransformParametersOf(node->op());
-  InstructionCode opcode = kArchNop;
+  InstructionCode opcode;
   switch (params.transformation) {
-    case LoadTransformation::kS8x16LoadSplat:
-      opcode = kIA32S8x16LoadSplat;
+    case LoadTransformation::kS128Load8Splat:
+      opcode = kIA32S128Load8Splat;
       break;
-    case LoadTransformation::kS16x8LoadSplat:
-      opcode = kIA32S16x8LoadSplat;
+    case LoadTransformation::kS128Load16Splat:
+      opcode = kIA32S128Load16Splat;
       break;
-    case LoadTransformation::kS32x4LoadSplat:
-      opcode = kIA32S32x4LoadSplat;
+    case LoadTransformation::kS128Load32Splat:
+      opcode = kIA32S128Load32Splat;
       break;
-    case LoadTransformation::kS64x2LoadSplat:
-      opcode = kIA32S64x2LoadSplat;
+    case LoadTransformation::kS128Load64Splat:
+      opcode = kIA32S128Load64Splat;
       break;
-    case LoadTransformation::kI16x8Load8x8S:
-      opcode = kIA32I16x8Load8x8S;
+    case LoadTransformation::kS128Load8x8S:
+      opcode = kIA32S128Load8x8S;
       break;
-    case LoadTransformation::kI16x8Load8x8U:
-      opcode = kIA32I16x8Load8x8U;
+    case LoadTransformation::kS128Load8x8U:
+      opcode = kIA32S128Load8x8U;
       break;
-    case LoadTransformation::kI32x4Load16x4S:
-      opcode = kIA32I32x4Load16x4S;
+    case LoadTransformation::kS128Load16x4S:
+      opcode = kIA32S128Load16x4S;
       break;
-    case LoadTransformation::kI32x4Load16x4U:
-      opcode = kIA32I32x4Load16x4U;
+    case LoadTransformation::kS128Load16x4U:
+      opcode = kIA32S128Load16x4U;
       break;
-    case LoadTransformation::kI64x2Load32x2S:
-      opcode = kIA32I64x2Load32x2S;
+    case LoadTransformation::kS128Load32x2S:
+      opcode = kIA32S128Load32x2S;
       break;
-    case LoadTransformation::kI64x2Load32x2U:
-      opcode = kIA32I64x2Load32x2U;
+    case LoadTransformation::kS128Load32x2U:
+      opcode = kIA32S128Load32x2U;
       break;
     default:
       UNREACHABLE();
@@ -419,7 +419,7 @@ void InstructionSelector::VisitLoadTransform(Node* node) {
 void InstructionSelector::VisitLoad(Node* node) {
   LoadRepresentation load_rep = LoadRepresentationOf(node->op());
 
-  ArchOpcode opcode = kArchNop;
+  ArchOpcode opcode;
   switch (load_rep.representation()) {
     case MachineRepresentation::kFloat32:
       opcode = kIA32Movss;
@@ -503,7 +503,7 @@ void InstructionSelector::VisitStore(Node* node) {
     code |= MiscField::encode(static_cast<int>(record_write_mode));
     Emit(code, 0, nullptr, arraysize(inputs), inputs, temp_count, temps);
   } else {
-    ArchOpcode opcode = kArchNop;
+    ArchOpcode opcode;
     switch (rep) {
       case MachineRepresentation::kFloat32:
         opcode = kIA32Movss;
@@ -532,7 +532,6 @@ void InstructionSelector::VisitStore(Node* node) {
       case MachineRepresentation::kWord64:             // Fall through.
       case MachineRepresentation::kNone:
         UNREACHABLE();
-        return;
     }
 
     InstructionOperand val;
@@ -1818,7 +1817,7 @@ void InstructionSelector::VisitWord32AtomicLoad(Node* node) {
 void InstructionSelector::VisitWord32AtomicStore(Node* node) {
   IA32OperandGenerator g(this);
   MachineRepresentation rep = AtomicStoreRepresentationOf(node->op());
-  ArchOpcode opcode = kArchNop;
+  ArchOpcode opcode;
   switch (rep) {
     case MachineRepresentation::kWord8:
       opcode = kWord32AtomicExchangeInt8;
@@ -1838,7 +1837,7 @@ void InstructionSelector::VisitWord32AtomicStore(Node* node) {
 void InstructionSelector::VisitWord32AtomicExchange(Node* node) {
   IA32OperandGenerator g(this);
   MachineType type = AtomicOpType(node->op());
-  ArchOpcode opcode = kArchNop;
+  ArchOpcode opcode;
   if (type == MachineType::Int8()) {
     opcode = kWord32AtomicExchangeInt8;
   } else if (type == MachineType::Uint8()) {
@@ -1851,7 +1850,6 @@ void InstructionSelector::VisitWord32AtomicExchange(Node* node) {
     opcode = kWord32AtomicExchangeWord32;
   } else {
     UNREACHABLE();
-    return;
   }
   VisitAtomicExchange(this, node, opcode, type.representation());
 }
@@ -1864,7 +1862,7 @@ void InstructionSelector::VisitWord32AtomicCompareExchange(Node* node) {
   Node* new_value = node->InputAt(3);
 
   MachineType type = AtomicOpType(node->op());
-  ArchOpcode opcode = kArchNop;
+  ArchOpcode opcode;
   if (type == MachineType::Int8()) {
     opcode = kWord32AtomicCompareExchangeInt8;
   } else if (type == MachineType::Uint8()) {
@@ -1877,7 +1875,6 @@ void InstructionSelector::VisitWord32AtomicCompareExchange(Node* node) {
     opcode = kWord32AtomicCompareExchangeWord32;
   } else {
     UNREACHABLE();
-    return;
   }
   AddressingMode addressing_mode;
   InstructionOperand new_val_operand =
@@ -1896,7 +1893,7 @@ void InstructionSelector::VisitWord32AtomicBinaryOperation(
     Node* node, ArchOpcode int8_op, ArchOpcode uint8_op, ArchOpcode int16_op,
     ArchOpcode uint16_op, ArchOpcode word32_op) {
   MachineType type = AtomicOpType(node->op());
-  ArchOpcode opcode = kArchNop;
+  ArchOpcode opcode;
   if (type == MachineType::Int8()) {
     opcode = int8_op;
   } else if (type == MachineType::Uint8()) {
@@ -1909,7 +1906,6 @@ void InstructionSelector::VisitWord32AtomicBinaryOperation(
     opcode = word32_op;
   } else {
     UNREACHABLE();
-    return;
   }
   VisitAtomicBinOp(this, node, opcode, type.representation());
 }
@@ -2079,10 +2075,10 @@ void InstructionSelector::VisitWord32AtomicPairCompareExchange(Node* node) {
   V(I32x4GeU)              \
   V(I16x8SConvertI32x4)    \
   V(I16x8Add)              \
-  V(I16x8AddSaturateS)     \
+  V(I16x8AddSatS)          \
   V(I16x8AddHoriz)         \
   V(I16x8Sub)              \
-  V(I16x8SubSaturateS)     \
+  V(I16x8SubSatS)          \
   V(I16x8Mul)              \
   V(I16x8MinS)             \
   V(I16x8MaxS)             \
@@ -2090,25 +2086,25 @@ void InstructionSelector::VisitWord32AtomicPairCompareExchange(Node* node) {
   V(I16x8Ne)               \
   V(I16x8GtS)              \
   V(I16x8GeS)              \
-  V(I16x8AddSaturateU)     \
-  V(I16x8SubSaturateU)     \
+  V(I16x8AddSatU)          \
+  V(I16x8SubSatU)          \
   V(I16x8MinU)             \
   V(I16x8MaxU)             \
   V(I16x8GtU)              \
   V(I16x8GeU)              \
   V(I8x16SConvertI16x8)    \
   V(I8x16Add)              \
-  V(I8x16AddSaturateS)     \
+  V(I8x16AddSatS)          \
   V(I8x16Sub)              \
-  V(I8x16SubSaturateS)     \
+  V(I8x16SubSatS)          \
   V(I8x16MinS)             \
   V(I8x16MaxS)             \
   V(I8x16Eq)               \
   V(I8x16Ne)               \
   V(I8x16GtS)              \
   V(I8x16GeS)              \
-  V(I8x16AddSaturateU)     \
-  V(I8x16SubSaturateU)     \
+  V(I8x16AddSatU)          \
+  V(I8x16SubSatU)          \
   V(I8x16MinU)             \
   V(I8x16MaxU)             \
   V(I8x16GtU)              \
@@ -2687,7 +2683,7 @@ bool TryMatchArchShuffle(const uint8_t* shuffle, const ShuffleEntry* table,
 
 }  // namespace
 
-void InstructionSelector::VisitS8x16Shuffle(Node* node) {
+void InstructionSelector::VisitI8x16Shuffle(Node* node) {
   uint8_t shuffle[kSimd128Size];
   bool is_swizzle;
   CanonicalizeShuffle(node, shuffle, &is_swizzle);
@@ -2706,7 +2702,7 @@ void InstructionSelector::VisitS8x16Shuffle(Node* node) {
   // We generally need UseRegister for input0, Use for input1.
   bool src0_needs_reg = true;
   bool src1_needs_reg = false;
-  ArchOpcode opcode = kIA32S8x16Shuffle;  // general shuffle is the default
+  ArchOpcode opcode = kIA32I8x16Shuffle;  // general shuffle is the default
 
   uint8_t offset;
   uint8_t shuffle32x4[4];
@@ -2794,7 +2790,7 @@ void InstructionSelector::VisitS8x16Shuffle(Node* node) {
     src0_needs_reg = true;
     imms[imm_count++] = index;
   }
-  if (opcode == kIA32S8x16Shuffle) {
+  if (opcode == kIA32I8x16Shuffle) {
     // Use same-as-first for general swizzle, but not shuffle.
     no_same_as_first = !is_swizzle;
     src0_needs_reg = !no_same_as_first;
@@ -2827,10 +2823,10 @@ void InstructionSelector::VisitS8x16Shuffle(Node* node) {
   Emit(opcode, 1, &dst, input_count, inputs, temp_count, temps);
 }
 
-void InstructionSelector::VisitS8x16Swizzle(Node* node) {
+void InstructionSelector::VisitI8x16Swizzle(Node* node) {
   IA32OperandGenerator g(this);
   InstructionOperand temps[] = {g.TempSimd128Register()};
-  Emit(kIA32S8x16Swizzle, g.DefineSameAsFirst(node),
+  Emit(kIA32I8x16Swizzle, g.DefineSameAsFirst(node),
        g.UseRegister(node->InputAt(0)), g.UseUniqueRegister(node->InputAt(1)),
        arraysize(temps), temps);
 }

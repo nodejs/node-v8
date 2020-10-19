@@ -44,9 +44,9 @@
 #include "src/objects/template-objects-inl.h"
 #include "src/regexp/regexp.h"
 #include "src/wasm/wasm-objects.h"
-#include "torque-generated/class-definitions-tq.h"
-#include "torque-generated/exported-class-definitions-tq-inl.h"
-#include "torque-generated/internal-class-definitions-tq-inl.h"
+#include "torque-generated/class-definitions.h"
+#include "torque-generated/exported-class-definitions-inl.h"
+#include "torque-generated/internal-class-definitions-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -167,7 +167,8 @@ AllocationResult Heap::AllocatePartialMap(InstanceType instance_type,
   map.set_instance_size(instance_size);
   // Initialize to only containing tagged fields.
   if (FLAG_unbox_double_fields) {
-    map.set_layout_descriptor(LayoutDescriptor::FastPointerLayout());
+    map.set_layout_descriptor(LayoutDescriptor::FastPointerLayout(),
+                              kReleaseStore);
   }
   // GetVisitorId requires a properly initialized LayoutDescriptor.
   map.set_visitor_id(Map::GetVisitorId(map));
@@ -194,7 +195,8 @@ void Heap::FinalizePartialMap(Map map) {
   map.set_raw_transitions(MaybeObject::FromSmi(Smi::zero()));
   map.SetInstanceDescriptors(isolate(), roots.empty_descriptor_array(), 0);
   if (FLAG_unbox_double_fields) {
-    map.set_layout_descriptor(LayoutDescriptor::FastPointerLayout());
+    map.set_layout_descriptor(LayoutDescriptor::FastPointerLayout(),
+                              kReleaseStore);
   }
   map.set_prototype(roots.null_value());
   map.set_constructor_or_backpointer(roots.null_value());
@@ -386,6 +388,7 @@ bool Heap::CreateInitialMaps() {
     ALLOCATE_PRIMITIVE_MAP(SYMBOL_TYPE, Symbol::kSize, symbol,
                            Context::SYMBOL_FUNCTION_INDEX)
     ALLOCATE_MAP(FOREIGN_TYPE, Foreign::kSize, foreign)
+    ALLOCATE_VARSIZE_MAP(STRONG_DESCRIPTOR_ARRAY_TYPE, strong_descriptor_array)
 
     ALLOCATE_PRIMITIVE_MAP(ODDBALL_TYPE, Oddball::kSize, boolean,
                            Context::BOOLEAN_FUNCTION_INDEX);

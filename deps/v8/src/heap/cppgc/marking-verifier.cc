@@ -16,8 +16,11 @@ MarkingVerifier::MarkingVerifier(HeapBase& heap,
     : cppgc::Visitor(VisitorFactory::CreateKey()),
       ConservativeTracingVisitor(heap, *heap.page_backend(), *this) {
   Traverse(&heap.raw_heap());
-  if (stack_state == Heap::Config::StackState::kMayContainHeapPointers)
+  if (stack_state == Heap::Config::StackState::kMayContainHeapPointers) {
+    in_construction_objects_ = &in_construction_objects_stack_;
     heap.stack()->IteratePointers(this);
+    CHECK_EQ(in_construction_objects_stack_, in_construction_objects_heap_);
+  }
 }
 
 void MarkingVerifier::Visit(const void* object, TraceDescriptor desc) {
@@ -36,12 +39,22 @@ void MarkingVerifier::VerifyChild(const void* base_object_payload) {
   const HeapObjectHeader& child_header =
       HeapObjectHeader::FromPayload(base_object_payload);
 
-  CHECK(child_header.IsMarked());
+  if (!child_header.IsMarked()) {
+    FATAL(
+        "MarkingVerifier: Encountered unmarked object.\n"
+        "#\n"
+        "# Hint:\n"
+        "#   %s\n"
+        "#     \\-> %s",
+        parent_->GetName().value, child_header.GetName().value);
+  }
 }
 
 void MarkingVerifier::VisitConservatively(
     HeapObjectHeader& header, TraceConservativelyCallback callback) {
   CHECK(header.IsMarked());
+  in_construction_objects_->insert(&header);
+  callback(this, header);
 }
 
 void MarkingVerifier::VisitPointer(const void* address) {
@@ -54,8 +67,15 @@ bool MarkingVerifier::VisitHeapObjectHeader(HeapObjectHeader* header) {
 
   DCHECK(!header->IsFree());
 
-  GlobalGCInfoTable::GCInfoFromIndex(header->GetGCInfoIndex())
-      .trace(this, header->Payload());
+  parent_ = header;
+
+  if (!header->IsInConstruction()) {
+    header->Trace(this);
+  } else {
+    // Dispatches to conservative tracing implementation.
+    TraceConservativelyIfNeeded(*header);
+  }
+
   return true;
 }
 

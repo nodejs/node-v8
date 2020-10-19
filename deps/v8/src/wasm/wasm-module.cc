@@ -137,7 +137,7 @@ void LazilyGeneratedNames::AddForTesting(int function_index,
 
 AsmJsOffsetInformation::AsmJsOffsetInformation(
     Vector<const byte> encoded_offsets)
-    : encoded_offsets_(OwnedVector<uint8_t>::Of(encoded_offsets)) {}
+    : encoded_offsets_(OwnedVector<const uint8_t>::Of(encoded_offsets)) {}
 
 AsmJsOffsetInformation::~AsmJsOffsetInformation() = default;
 
@@ -218,16 +218,7 @@ std::ostream& operator<<(std::ostream& os, const WasmFunctionName& name) {
 }
 
 WasmModule::WasmModule(std::unique_ptr<Zone> signature_zone)
-    : signature_zone(std::move(signature_zone)),
-      subtyping_cache(this->signature_zone.get() == nullptr
-                          ? nullptr
-                          : new ZoneUnorderedSet<std::pair<uint32_t, uint32_t>>(
-                                this->signature_zone.get())),
-      type_equivalence_cache(
-          this->signature_zone.get() == nullptr
-              ? nullptr
-              : new ZoneUnorderedSet<std::pair<uint32_t, uint32_t>>(
-                    this->signature_zone.get())) {}
+    : signature_zone(std::move(signature_zone)) {}
 
 bool IsWasmCodegenAllowed(Isolate* isolate, Handle<Context> context) {
   // TODO(wasm): Once wasm has its own CSP policy, we should introduce a
@@ -333,9 +324,7 @@ Handle<JSObject> GetTypeForTable(Isolate* isolate, ValueType type,
     // place and then use that constant everywhere.
     element = factory->InternalizeUtf8String("anyfunc");
   } else {
-    DCHECK(WasmFeatures::FromFlags().has_reftypes() &&
-           type.is_reference_to(HeapType::kExtern));
-    element = factory->InternalizeUtf8String("externref");
+    element = factory->InternalizeUtf8String(VectorOf(type.name()));
   }
 
   Handle<JSFunction> object_function = isolate->object_function();
@@ -629,10 +618,11 @@ size_t EstimateStoredSize(const WasmModule* module) {
          (module->signature_zone ? module->signature_zone->allocation_size()
                                  : 0) +
          VectorSize(module->types) + VectorSize(module->type_kinds) +
-         VectorSize(module->signature_ids) + VectorSize(module->functions) +
-         VectorSize(module->data_segments) + VectorSize(module->tables) +
-         VectorSize(module->import_table) + VectorSize(module->export_table) +
-         VectorSize(module->exceptions) + VectorSize(module->elem_segments);
+         VectorSize(module->canonicalized_type_ids) +
+         VectorSize(module->functions) + VectorSize(module->data_segments) +
+         VectorSize(module->tables) + VectorSize(module->import_table) +
+         VectorSize(module->export_table) + VectorSize(module->exceptions) +
+         VectorSize(module->elem_segments);
 }
 
 size_t PrintSignature(Vector<char> buffer, const wasm::FunctionSig* sig,

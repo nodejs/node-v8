@@ -9,6 +9,7 @@
 #include "src/handles/persistent-handles.h"
 #include "src/heap/concurrent-allocator-inl.h"
 #include "src/heap/local-heap-inl.h"
+#include "src/heap/local-heap.h"
 #include "src/heap/marking.h"
 #include "src/heap/memory-chunk.h"
 
@@ -17,7 +18,8 @@ namespace internal {
 
 void StressConcurrentAllocatorTask::RunInternal() {
   Heap* heap = isolate_->heap();
-  LocalHeap local_heap(heap);
+  LocalHeap local_heap(heap, ThreadKind::kBackground);
+  UnparkedScope unparked_scope(&local_heap);
 
   const int kNumIterations = 2000;
   const int kSmallObjectSize = 10 * kTaggedSize;
@@ -27,6 +29,9 @@ void StressConcurrentAllocatorTask::RunInternal() {
                        MemoryChunkLayout::ObjectStartOffsetInDataPage());
 
   for (int i = 0; i < kNumIterations; i++) {
+    // Isolate tear down started, stop allocation...
+    if (heap->gc_state() == Heap::TEAR_DOWN) return;
+
     Address address = local_heap.AllocateRawOrFail(
         kSmallObjectSize, AllocationType::kOld, AllocationOrigin::kRuntime,
         AllocationAlignment::kWordAligned);
@@ -60,27 +65,6 @@ void StressConcurrentAllocatorTask::Schedule(Isolate* isolate) {
   const double kDelayInSeconds = 0.1;
   V8::GetCurrentPlatform()->CallDelayedOnWorkerThread(std::move(task),
                                                       kDelayInSeconds);
-}
-
-Address ConcurrentAllocator::PerformCollectionAndAllocateAgain(
-    int object_size, AllocationAlignment alignment, AllocationOrigin origin) {
-  Heap* heap = local_heap_->heap();
-  local_heap_->allocation_failed_ = true;
-
-  for (int i = 0; i < 3; i++) {
-    {
-      ParkedScope scope(local_heap_);
-      heap->RequestAndWaitForCollection();
-    }
-
-    AllocationResult result = AllocateRaw(object_size, alignment, origin);
-    if (!result.IsRetry()) {
-      local_heap_->allocation_failed_ = false;
-      return result.ToObjectChecked().address();
-    }
-  }
-
-  heap->FatalProcessOutOfMemory("ConcurrentAllocator: allocation failed");
 }
 
 void ConcurrentAllocator::FreeLinearAllocationArea() {

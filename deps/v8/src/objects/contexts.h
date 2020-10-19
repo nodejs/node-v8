@@ -9,7 +9,7 @@
 #include "src/objects/function-kind.h"
 #include "src/objects/ordered-hash-table.h"
 #include "src/objects/osr-optimized-code-cache.h"
-#include "torque-generated/field-offsets-tq.h"
+#include "torque-generated/field-offsets.h"
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
 
@@ -438,13 +438,13 @@ class Context : public HeapObject {
 
   // Setter and getter for elements.
   V8_INLINE Object get(int index) const;
-  V8_INLINE Object get(const Isolate* isolate, int index) const;
+  V8_INLINE Object get(IsolateRoot isolate, int index) const;
   V8_INLINE void set(int index, Object value);
   // Setter with explicit barrier mode.
   V8_INLINE void set(int index, Object value, WriteBarrierMode mode);
   // Setter and getter with synchronization semantics.
   V8_INLINE Object synchronized_get(int index) const;
-  V8_INLINE Object synchronized_get(const Isolate* isolate, int index) const;
+  V8_INLINE Object synchronized_get(IsolateRoot isolate, int index) const;
   V8_INLINE void synchronized_set(int index, Object value);
 
   DEFINE_FIELD_OFFSET_CONSTANTS(HeapObject::kHeaderSize,
@@ -661,6 +661,8 @@ class NativeContext : public Context {
  public:
   DECL_CAST(NativeContext)
   // TODO(neis): Move some stuff from Context here.
+
+  inline void AllocateExternalPointerEntries(Isolate* isolate);
 
   // [microtask_queue]: pointer to the MicrotaskQueue object.
   DECL_GETTER(microtask_queue, MicrotaskQueue*)

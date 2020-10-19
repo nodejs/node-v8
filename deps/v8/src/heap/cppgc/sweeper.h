@@ -17,6 +17,7 @@ namespace internal {
 
 class StatsCollector;
 class RawHeap;
+class ConcurrentSweeperTest;
 
 class V8_EXPORT_PRIVATE Sweeper final {
  public:
@@ -30,11 +31,15 @@ class V8_EXPORT_PRIVATE Sweeper final {
 
   // Sweeper::Start assumes the heap holds no linear allocation buffers.
   void Start(Config);
-  void Finish();
+  void FinishIfRunning();
 
  private:
+  void WaitForConcurrentSweepingForTesting();
+
   class SweeperImpl;
   std::unique_ptr<SweeperImpl> impl_;
+
+  friend class ConcurrentSweeperTest;
 };
 
 }  // namespace internal

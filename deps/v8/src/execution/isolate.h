@@ -5,6 +5,7 @@
 #ifndef V8_EXECUTION_ISOLATE_H_
 #define V8_EXECUTION_ISOLATE_H_
 
+#include <atomic>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -22,6 +23,7 @@
 #include "src/common/globals.h"
 #include "src/debug/interface-types.h"
 #include "src/execution/execution.h"
+#include "src/execution/external-pointer-table.h"
 #include "src/execution/futex-emulation.h"
 #include "src/execution/isolate-data.h"
 #include "src/execution/messages.h"
@@ -69,6 +71,7 @@ class BuiltinsConstantsTableBuilder;
 class CancelableTaskManager;
 class CodeEventDispatcher;
 class CodeTracer;
+class CommonFrame;
 class CompilationCache;
 class CompilationStatistics;
 class CompilerDispatcher;
@@ -90,14 +93,12 @@ class OptimizingCompileDispatcher;
 class PersistentHandles;
 class PersistentHandlesList;
 class ReadOnlyArtifacts;
-class ReadOnlyDeserializer;
 class RegExpStack;
 class RootVisitor;
 class RuntimeProfiler;
 class SetupIsolateDelegate;
 class Simulator;
-class StandardFrame;
-class StartupDeserializer;
+class SnapshotData;
 class StringTable;
 class StubCache;
 class ThreadManager;
@@ -370,6 +371,18 @@ class Recorder;
     }                                                                      \
   } while (false)
 
+#define WHILE_WITH_HANDLE_SCOPE(isolate, limit_check, body)                  \
+  do {                                                                       \
+    Isolate* for_with_handle_isolate = isolate;                              \
+    while (limit_check) {                                                    \
+      HandleScope loop_scope(for_with_handle_isolate);                       \
+      for (int for_with_handle_it = 0;                                       \
+           limit_check && for_with_handle_it < 1024; ++for_with_handle_it) { \
+        body                                                                 \
+      }                                                                      \
+    }                                                                        \
+  } while (false)
+
 #define FIELD_ACCESSOR(type, name)                \
   inline void set_##name(type v) { name##_ = v; } \
   inline type name() const { return name##_; }
@@ -432,8 +445,6 @@ using DebugObjectCache = std::vector<Handle<HeapObject>>;
   V(int, code_and_metadata_size, 0)                                            \
   V(int, bytecode_and_metadata_size, 0)                                        \
   V(int, external_script_source_size, 0)                                       \
-  /* true if being profiled. Causes collection of extra compile info. */       \
-  V(bool, is_profiling, false)                                                 \
   /* Number of CPU profilers running on the isolate. */                        \
   V(size_t, num_cpu_profilers, 0)                                              \
   /* true if a trace is being formatted through Error.prepareStackTrace. */    \
@@ -443,7 +454,6 @@ using DebugObjectCache = std::vector<Handle<HeapObject>>;
   /* Current code coverage mode */                                             \
   V(debug::CoverageMode, code_coverage_mode, debug::CoverageMode::kBestEffort) \
   V(debug::TypeProfileMode, type_profile_mode, debug::TypeProfileMode::kNone)  \
-  V(int, last_stack_frame_info_id, 0)                                          \
   V(int, last_console_context_id, 0)                                           \
   V(v8_inspector::V8Inspector*, inspector, nullptr)                            \
   V(bool, next_v8_call_is_safe_for_termination, false)                         \
@@ -526,8 +536,7 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
 
   // Creates Isolate object. Must be used instead of constructing Isolate with
   // new operator.
-  static Isolate* New(
-      IsolateAllocationMode mode = IsolateAllocationMode::kDefault);
+  static Isolate* New();
 
   // Deletes Isolate object. Must be used instead of delete operator.
   // Destroys the non-default isolates.
@@ -538,9 +547,6 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   void SetUpFromReadOnlyArtifacts(std::shared_ptr<ReadOnlyArtifacts> artifacts,
                                   ReadOnlyHeap* ro_heap);
   void set_read_only_heap(ReadOnlyHeap* ro_heap) { read_only_heap_ = ro_heap; }
-
-  // Returns allocation mode of this isolate.
-  V8_INLINE IsolateAllocationMode isolate_allocation_mode();
 
   // Page allocator that must be used for allocating V8 heap pages.
   v8::PageAllocator* page_allocator();
@@ -575,8 +581,8 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   bool InitializeCounters();  // Returns false if already initialized.
 
   bool InitWithoutSnapshot();
-  bool InitWithSnapshot(ReadOnlyDeserializer* read_only_deserializer,
-                        StartupDeserializer* startup_deserializer);
+  bool InitWithSnapshot(SnapshotData* startup_snapshot_data,
+                        SnapshotData* read_only_snapshot_data, bool can_rehash);
 
   // True if at least one thread Enter'ed this isolate.
   bool IsInUse() { return entry_stack_ != nullptr; }
@@ -698,6 +704,27 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   inline Address* c_function_address() {
     return &thread_local_top()->c_function_;
   }
+
+#if defined(DEBUG) || defined(VERIFY_HEAP)
+  // Count the number of active deserializers, so that the heap verifier knows
+  // whether there is currently an active deserialization happening.
+  //
+  // This is needed as the verifier currently doesn't support verifying objects
+  // which are partially deserialized.
+  //
+  // TODO(leszeks): Make the verifier a bit more deserialization compatible.
+  void RegisterDeserializerStarted() { ++num_active_deserializers_; }
+  void RegisterDeserializerFinished() {
+    CHECK_GE(--num_active_deserializers_, 0);
+  }
+  bool has_active_deserializer() const {
+    return num_active_deserializers_.load(std::memory_order_acquire) > 0;
+  }
+#else
+  void RegisterDeserializerStarted() {}
+  void RegisterDeserializerFinished() {}
+  bool has_active_deserializer() const { UNREACHABLE(); }
+#endif
 
   // Bottom JS entry.
   Address js_entry_sp() { return thread_local_top()->js_entry_sp_; }
@@ -960,7 +987,7 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   static size_t isolate_root_bias() {
     return OFFSET_OF(Isolate, isolate_data_) + IsolateData::kIsolateRootBias;
   }
-  static Isolate* FromRoot(Address isolate_root) {
+  static Isolate* FromRootAddress(Address isolate_root) {
     return reinterpret_cast<Isolate*>(isolate_root - isolate_root_bias());
   }
 
@@ -992,6 +1019,8 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
 
   Address* builtin_entry_table() { return isolate_data_.builtin_entry_table(); }
   V8_INLINE Address* builtins_table() { return isolate_data_.builtins(); }
+
+  bool IsBuiltinsTableHandleLocation(Address* handle_location);
 
   StubCache* load_stub_cache() { return load_stub_cache_; }
   StubCache* store_stub_cache() { return store_stub_cache_; }
@@ -1074,7 +1103,16 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
 
   Debug* debug() { return debug_; }
 
-  bool* is_profiling_address() { return &is_profiling_; }
+  void* is_profiling_address() { return &is_profiling_; }
+
+  bool is_profiling() const {
+    return is_profiling_.load(std::memory_order_relaxed);
+  }
+
+  void set_is_profiling(bool enabled) {
+    is_profiling_.store(enabled, std::memory_order_relaxed);
+  }
+
   CodeEventDispatcher* code_event_dispatcher() const {
     return code_event_dispatcher_.get();
   }
@@ -1311,8 +1349,6 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
 
   int GetNextScriptId();
 
-  int GetNextStackFrameInfoId();
-
 #if V8_SFI_HAS_UNIQUE_ID
   int GetNextUniqueSharedFunctionInfoId() {
     int current_id = next_unique_sfi_id_.load(std::memory_order_relaxed);
@@ -1466,6 +1502,10 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   // annotate the builtin blob with debugging information.
   void PrepareBuiltinSourcePositionMap();
 
+  // Store the position of the labels that will be used in the list of allowed
+  // return addresses.
+  void PrepareBuiltinLabelInfoMap();
+
 #if defined(V8_OS_WIN64)
   void SetBuiltinUnwindData(
       int builtin_index,
@@ -1551,12 +1591,26 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   MaybeLocal<v8::Context> GetContextFromRecorderContextId(
       v8::metrics::Recorder::ContextId id);
 
+#ifdef V8_HEAP_SANDBOX
+  ExternalPointerTable& external_pointer_table() {
+    return isolate_data_.external_pointer_table_;
+  }
+
+  const ExternalPointerTable& external_pointer_table() const {
+    return isolate_data_.external_pointer_table_;
+  }
+
+  Address external_pointer_table_address() {
+    return reinterpret_cast<Address>(&isolate_data_.external_pointer_table_);
+  }
+#endif
+
  private:
   explicit Isolate(std::unique_ptr<IsolateAllocator> isolate_allocator);
   ~Isolate();
 
-  bool Init(ReadOnlyDeserializer* read_only_deserializer,
-            StartupDeserializer* startup_deserializer);
+  bool Init(SnapshotData* startup_snapshot_data,
+            SnapshotData* read_only_snapshot_data, bool can_rehash);
 
   void CheckIsolateLayout();
 
@@ -1695,6 +1749,9 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   RuntimeState runtime_state_;
   Builtins builtins_;
   SetupIsolateDelegate* setup_delegate_ = nullptr;
+#if defined(DEBUG) || defined(VERIFY_HEAP)
+  std::atomic<int> num_active_deserializers_;
+#endif
 #ifndef V8_INTL_SUPPORT
   unibrow::Mapping<unibrow::Ecma262UnCanonicalize> jsregexp_uncanonicalize_;
   unibrow::Mapping<unibrow::CanonicalizationRange> jsregexp_canonrange_;
@@ -1730,6 +1787,9 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
       icu_object_cache_;
 
 #endif  // V8_INTL_SUPPORT
+
+  // true if being profiled. Causes collection of extra compile info.
+  std::atomic<bool> is_profiling_{false};
 
   // Whether the isolate has been created for snapshotting.
   bool serializer_enabled_ = false;
@@ -1940,7 +2000,7 @@ class V8_EXPORT_PRIVATE SaveContext {
   Handle<Context> context() { return context_; }
 
   // Returns true if this save context is below a given JavaScript frame.
-  bool IsBelowFrame(StandardFrame* frame);
+  bool IsBelowFrame(CommonFrame* frame);
 
  private:
   Isolate* const isolate_;

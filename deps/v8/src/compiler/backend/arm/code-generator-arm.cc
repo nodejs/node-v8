@@ -755,7 +755,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       } else {
         Register reg = i.InputRegister(0);
         DCHECK_IMPLIES(
-            HasCallDescriptorFlag(instr, CallDescriptor::kFixedTargetRegister),
+            instr->HasCallDescriptorFlag(CallDescriptor::kFixedTargetRegister),
             reg == kJavaScriptCallCodeStartRegister);
         __ CallCodeObject(reg);
       }
@@ -797,7 +797,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       } else {
         Register reg = i.InputRegister(0);
         DCHECK_IMPLIES(
-            HasCallDescriptorFlag(instr, CallDescriptor::kFixedTargetRegister),
+            instr->HasCallDescriptorFlag(CallDescriptor::kFixedTargetRegister),
             reg == kJavaScriptCallCodeStartRegister);
         __ JumpCodeObject(reg);
       }
@@ -825,7 +825,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       CHECK(!instr->InputAt(0)->IsImmediate());
       Register reg = i.InputRegister(0);
       DCHECK_IMPLIES(
-          HasCallDescriptorFlag(instr, CallDescriptor::kFixedTargetRegister),
+          instr->HasCallDescriptorFlag(CallDescriptor::kFixedTargetRegister),
           reg == kJavaScriptCallCodeStartRegister);
       __ Jump(reg);
       unwinding_info_writer_.MarkBlockWillExit();
@@ -2026,7 +2026,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       Simd128Register rhs = i.InputSimd128Register(1);
       DCHECK_EQ(dst, lhs);
 
-      // Move rhs only when rhs is strictly greater (mi).
+      // Move rhs only when rhs is strictly lesser (mi).
       __ VFPCompareAndSetFlags(rhs.low(), lhs.low());
       __ vmov(dst.low(), rhs.low(), mi);
       __ VFPCompareAndSetFlags(rhs.high(), lhs.high());
@@ -2039,7 +2039,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       Simd128Register rhs = i.InputSimd128Register(1);
       DCHECK_EQ(dst, lhs);
 
-      // Move rhs only when rhs is strictly greater (mi).
+      // Move rhs only when rhs is strictly greater (gt).
       __ VFPCompareAndSetFlags(rhs.low(), lhs.low());
       __ vmov(dst.low(), rhs.low(), gt);
       __ VFPCompareAndSetFlags(rhs.high(), lhs.high());
@@ -2150,7 +2150,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kArmI64x2Neg: {
       Simd128Register dst = i.OutputSimd128Register();
       __ vmov(dst, uint64_t{0});
-      __ vqsub(NeonS64, dst, dst, i.InputSimd128Register(0));
+      __ vsub(Neon64, dst, dst, i.InputSimd128Register(0));
       break;
     }
     case kArmI64x2Shl: {
@@ -2539,7 +2539,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
               i.InputSimd128Register(1));
       break;
     }
-    case kArmI16x8AddSaturateS: {
+    case kArmI16x8AddSatS: {
       __ vqadd(NeonS16, i.OutputSimd128Register(), i.InputSimd128Register(0),
                i.InputSimd128Register(1));
       break;
@@ -2552,7 +2552,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
               i.InputSimd128Register(1));
       break;
     }
-    case kArmI16x8SubSaturateS: {
+    case kArmI16x8SubSatS: {
       __ vqsub(NeonS16, i.OutputSimd128Register(), i.InputSimd128Register(0),
                i.InputSimd128Register(1));
       break;
@@ -2611,12 +2611,12 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kArmI16x8UConvertI32x4:
       ASSEMBLE_NEON_NARROWING_OP(NeonU16, NeonS16);
       break;
-    case kArmI16x8AddSaturateU: {
+    case kArmI16x8AddSatU: {
       __ vqadd(NeonU16, i.OutputSimd128Register(), i.InputSimd128Register(0),
                i.InputSimd128Register(1));
       break;
     }
-    case kArmI16x8SubSaturateU: {
+    case kArmI16x8SubSatU: {
       __ vqsub(NeonU16, i.OutputSimd128Register(), i.InputSimd128Register(0),
                i.InputSimd128Register(1));
       break;
@@ -2707,7 +2707,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
               i.InputSimd128Register(1));
       break;
     }
-    case kArmI8x16AddSaturateS: {
+    case kArmI8x16AddSatS: {
       __ vqadd(NeonS8, i.OutputSimd128Register(), i.InputSimd128Register(0),
                i.InputSimd128Register(1));
       break;
@@ -2717,7 +2717,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
               i.InputSimd128Register(1));
       break;
     }
-    case kArmI8x16SubSaturateS: {
+    case kArmI8x16SubSatS: {
       __ vqsub(NeonS8, i.OutputSimd128Register(), i.InputSimd128Register(0),
                i.InputSimd128Register(1));
       break;
@@ -2765,12 +2765,12 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kArmI8x16UConvertI16x8:
       ASSEMBLE_NEON_NARROWING_OP(NeonU8, NeonS8);
       break;
-    case kArmI8x16AddSaturateU: {
+    case kArmI8x16AddSatU: {
       __ vqadd(NeonU8, i.OutputSimd128Register(), i.InputSimd128Register(0),
                i.InputSimd128Register(1));
       break;
     }
-    case kArmI8x16SubSaturateU: {
+    case kArmI8x16SubSatU: {
       __ vqsub(NeonU8, i.OutputSimd128Register(), i.InputSimd128Register(0),
                i.InputSimd128Register(1));
       break;
@@ -3097,7 +3097,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
               i.InputSimd128Register(1), i.InputInt4(2));
       break;
     }
-    case kArmS8x16Swizzle: {
+    case kArmI8x16Swizzle: {
       Simd128Register dst = i.OutputSimd128Register(),
                       tbl = i.InputSimd128Register(0),
                       src = i.InputSimd128Register(1);
@@ -3106,7 +3106,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ vtbl(dst.high(), table, src.high());
       break;
     }
-    case kArmS8x16Shuffle: {
+    case kArmI8x16Shuffle: {
       Simd128Register dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
                       src1 = i.InputSimd128Register(1);
@@ -3121,8 +3121,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       int scratch_s_base = scratch.code() * 4;
       for (int j = 0; j < 4; j++) {
         uint32_t four_lanes = i.InputUint32(2 + j);
-        // Ensure byte indices are in [0, 31] so masks are never NaNs.
-        four_lanes &= 0x1F1F1F1F;
+        DCHECK_EQ(0, four_lanes & (table_size == 2 ? 0xF0F0F0F0 : 0xE0E0E0E0));
         __ vmov(SwVfpRegister::from_code(scratch_s_base + j),
                 Float32::FromBits(four_lanes));
       }
@@ -3210,58 +3209,58 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ mov(i.OutputRegister(), Operand(1), LeaveCC, ne);
       break;
     }
-    case kArmS8x16LoadSplat: {
+    case kArmS128Load8Splat: {
       __ vld1r(Neon8, NeonListOperand(i.OutputSimd128Register()),
                i.NeonInputOperand(0));
       break;
     }
-    case kArmS16x8LoadSplat: {
+    case kArmS128Load16Splat: {
       __ vld1r(Neon16, NeonListOperand(i.OutputSimd128Register()),
                i.NeonInputOperand(0));
       break;
     }
-    case kArmS32x4LoadSplat: {
+    case kArmS128Load32Splat: {
       __ vld1r(Neon32, NeonListOperand(i.OutputSimd128Register()),
                i.NeonInputOperand(0));
       break;
     }
-    case kArmS64x2LoadSplat: {
+    case kArmS128Load64Splat: {
       Simd128Register dst = i.OutputSimd128Register();
       __ vld1(Neon32, NeonListOperand(dst.low()), i.NeonInputOperand(0));
       __ Move(dst.high(), dst.low());
       break;
     }
-    case kArmI16x8Load8x8S: {
+    case kArmS128Load8x8S: {
       Simd128Register dst = i.OutputSimd128Register();
       __ vld1(Neon8, NeonListOperand(dst.low()), i.NeonInputOperand(0));
       __ vmovl(NeonS8, dst, dst.low());
       break;
     }
-    case kArmI16x8Load8x8U: {
+    case kArmS128Load8x8U: {
       Simd128Register dst = i.OutputSimd128Register();
       __ vld1(Neon8, NeonListOperand(dst.low()), i.NeonInputOperand(0));
       __ vmovl(NeonU8, dst, dst.low());
       break;
     }
-    case kArmI32x4Load16x4S: {
+    case kArmS128Load16x4S: {
       Simd128Register dst = i.OutputSimd128Register();
       __ vld1(Neon16, NeonListOperand(dst.low()), i.NeonInputOperand(0));
       __ vmovl(NeonS16, dst, dst.low());
       break;
     }
-    case kArmI32x4Load16x4U: {
+    case kArmS128Load16x4U: {
       Simd128Register dst = i.OutputSimd128Register();
       __ vld1(Neon16, NeonListOperand(dst.low()), i.NeonInputOperand(0));
       __ vmovl(NeonU16, dst, dst.low());
       break;
     }
-    case kArmI64x2Load32x2S: {
+    case kArmS128Load32x2S: {
       Simd128Register dst = i.OutputSimd128Register();
       __ vld1(Neon32, NeonListOperand(dst.low()), i.NeonInputOperand(0));
       __ vmovl(NeonS32, dst, dst.low());
       break;
     }
-    case kArmI64x2Load32x2U: {
+    case kArmS128Load32x2U: {
       Simd128Register dst = i.OutputSimd128Register();
       __ vld1(Neon32, NeonListOperand(dst.low()), i.NeonInputOperand(0));
       __ vmovl(NeonU32, dst, dst.low());
@@ -3648,9 +3647,6 @@ void CodeGenerator::AssembleConstructFrame() {
       }
     } else if (call_descriptor->IsJSFunctionCall()) {
       __ Prologue();
-      if (call_descriptor->PushArgumentCount()) {
-        __ Push(kJavaScriptCallArgCountRegister);
-      }
     } else {
       __ StubPrologue(info()->GetOutputStackFrameType());
       if (call_descriptor->IsWasmFunctionCall()) {

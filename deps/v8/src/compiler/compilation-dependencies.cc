@@ -8,6 +8,7 @@
 #include "src/execution/protectors.h"
 #include "src/handles/handles-inl.h"
 #include "src/objects/allocation-site-inl.h"
+#include "src/objects/js-function-inl.h"
 #include "src/objects/objects-inl.h"
 #include "src/zone/zone-handle-set.h"
 
@@ -169,8 +170,9 @@ class FieldRepresentationDependency final : public CompilationDependency {
   bool IsValid() const override {
     DisallowHeapAllocation no_heap_allocation;
     Handle<Map> owner = owner_.object();
-    return representation_.Equals(
-        owner->instance_descriptors().GetDetails(descriptor_).representation());
+    return representation_.Equals(owner->instance_descriptors(kRelaxedLoad)
+                                      .GetDetails(descriptor_)
+                                      .representation());
   }
 
   void Install(const MaybeObjectHandle& code) const override {
@@ -178,6 +180,13 @@ class FieldRepresentationDependency final : public CompilationDependency {
     DependentCode::InstallDependency(owner_.isolate(), code, owner_.object(),
                                      DependentCode::kFieldRepresentationGroup);
   }
+
+#ifdef DEBUG
+  bool IsFieldRepresentationDependencyOnMap(
+      Handle<Map> const& receiver_map) const override {
+    return owner_.object().equals(receiver_map);
+  }
+#endif
 
  private:
   MapRef owner_;
@@ -200,7 +209,8 @@ class FieldTypeDependency final : public CompilationDependency {
     DisallowHeapAllocation no_heap_allocation;
     Handle<Map> owner = owner_.object();
     Handle<Object> type = type_.object();
-    return *type == owner->instance_descriptors().GetFieldType(descriptor_);
+    return *type ==
+           owner->instance_descriptors(kRelaxedLoad).GetFieldType(descriptor_);
   }
 
   void Install(const MaybeObjectHandle& code) const override {
@@ -228,7 +238,9 @@ class FieldConstnessDependency final : public CompilationDependency {
     DisallowHeapAllocation no_heap_allocation;
     Handle<Map> owner = owner_.object();
     return PropertyConstness::kConst ==
-           owner->instance_descriptors().GetDetails(descriptor_).constness();
+           owner->instance_descriptors(kRelaxedLoad)
+               .GetDetails(descriptor_)
+               .constness();
   }
 
   void Install(const MaybeObjectHandle& code) const override {

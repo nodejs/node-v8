@@ -6,7 +6,7 @@
 #define V8_OBJECTS_PROPERTY_ARRAY_H_
 
 #include "src/objects/heap-object.h"
-#include "torque-generated/field-offsets-tq.h"
+#include "torque-generated/field-offsets.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -30,7 +30,7 @@ class PropertyArray : public HeapObject {
   inline int Hash() const;
 
   inline Object get(int index) const;
-  inline Object get(const Isolate* isolate, int index) const;
+  inline Object get(IsolateRoot isolate, int index) const;
 
   inline void set(int index, Object value);
   // Setter with explicit barrier mode.
