@@ -108,11 +108,12 @@ namespace internal {
   F(CompileLazy, 1, 1)                    \
   F(CompileOptimized_Concurrent, 1, 1)    \
   F(CompileOptimized_NotConcurrent, 1, 1) \
-  F(EvictOptimizedCodeSlot, 1, 1)         \
+  F(HealOptimizedCodeSlot, 1, 1)          \
   F(FunctionFirstExecution, 1, 1)         \
   F(InstantiateAsmJs, 4, 1)               \
   F(NotifyDeoptimized, 0, 1)              \
-  F(ResolvePossiblyDirectEval, 6, 1)
+  F(ResolvePossiblyDirectEval, 6, 1)      \
+  F(TryInstallNCICode, 1, 1)
 
 #define FOR_EACH_INTRINSIC_DATE(F, I) F(DateCurrentTime, 0, 1)
 
@@ -276,7 +277,6 @@ namespace internal {
   F(GetHoleNaNLower, 0, 1)               \
   F(GetHoleNaNUpper, 0, 1)               \
   I(IsSmi, 1, 1)                         \
-  F(IsValidSmi, 1, 1)                    \
   F(MaxSmi, 0, 1)                        \
   F(NumberToStringSlow, 1, 1)            \
   F(StringParseFloat, 1, 1)              \
@@ -388,6 +388,7 @@ namespace internal {
 #define FOR_EACH_INTRINSIC_REGEXP(F, I)             \
   I(IsRegExp, 1, 1)                                 \
   F(RegExpExec, 4, 1)                               \
+  F(RegExpExperimentalOneshotExec, 4, 1)            \
   F(RegExpExecMultiple, 4, 1)                       \
   F(RegExpInitializeAndCompile, 3, 1)               \
   F(RegExpReplaceRT, 3, 1)                          \
@@ -438,7 +439,6 @@ namespace internal {
   F(StringLessThanOrEqual, 2, 1)          \
   F(StringMaxLength, 0, 1)                \
   F(StringReplaceOneCharWithString, 3, 1) \
-  F(StringCompareSequence, 3, 1)          \
   F(StringSubstring, 3, 1)                \
   F(StringToArray, 2, 1)                  \
   F(StringTrim, 2, 1)
@@ -470,7 +470,7 @@ namespace internal {
   F(DisallowCodegenFromStrings, 1, 1)         \
   F(DisallowWasmCodegen, 1, 1)                \
   F(DisassembleFunction, 1, 1)                \
-  F(DynamicMapChecksEnabled, 0, 1)            \
+  F(DynamicCheckMapsEnabled, 0, 1)            \
   F(EnableCodeLoggingForTesting, 0, 1)        \
   F(EnsureFeedbackVectorForFunction, 1, 1)    \
   F(FreezeWasmLazyCompilation, 1, 1)          \
@@ -507,6 +507,7 @@ namespace internal {
   F(HaveSameMap, 2, 1)                        \
   F(HeapObjectVerify, 1, 1)                   \
   F(ICsAreEnabled, 0, 1)                      \
+  F(InLargeObjectSpace, 1, 1)                 \
   F(InYoungGeneration, 1, 1)                  \
   F(IsAsmWasmCode, 1, 1)                      \
   F(IsBeingInterpreted, 0, 1)                 \
@@ -518,6 +519,7 @@ namespace internal {
   F(RegexpHasBytecode, 2, 1)                  \
   F(RegexpHasNativeCode, 2, 1)                \
   F(RegexpTypeTag, 1, 1)                      \
+  F(RegexpIsUnmodified, 1, 1)                 \
   F(MapIteratorProtector, 0, 1)               \
   F(NeverOptimizeFunction, 1, 1)              \
   F(NotifyContextDisposed, 0, 1)              \
@@ -537,6 +539,7 @@ namespace internal {
   F(SetWasmInstantiateControls, 0, 1)         \
   F(SetWasmThreadsEnabled, 1, 1)              \
   F(SimulateNewspaceFull, 0, 1)               \
+  F(ScheduleGCInStackCheck, 0, 1)             \
   F(StringIteratorProtector, 0, 1)            \
   F(SystemBreak, 0, 1)                        \
   F(TraceEnter, 0, 1)                         \
@@ -569,7 +572,7 @@ namespace internal {
   F(WasmMemoryGrow, 2, 1)             \
   F(WasmStackGuard, 0, 1)             \
   F(WasmThrowCreate, 2, 1)            \
-  F(WasmThrowTypeError, 0, 1)         \
+  F(WasmThrowJSTypeError, 0, 1)       \
   F(WasmRefFunc, 1, 1)                \
   F(WasmFunctionTableGet, 3, 1)       \
   F(WasmFunctionTableSet, 4, 1)       \
@@ -579,6 +582,7 @@ namespace internal {
   F(WasmTableFill, 4, 1)              \
   F(WasmIsValidRefValue, 3, 1)        \
   F(WasmCompileLazy, 2, 1)            \
+  F(WasmCompileWrapper, 2, 1)         \
   F(WasmTriggerTierUp, 1, 1)          \
   F(WasmDebugBreak, 0, 1)             \
   F(WasmAllocateRtt, 2, 1)
@@ -775,6 +779,8 @@ class Runtime : public AllStatic {
 
 class RuntimeState {
  public:
+  RuntimeState(const RuntimeState&) = delete;
+  RuntimeState& operator=(const RuntimeState&) = delete;
 #ifndef V8_INTL_SUPPORT
   unibrow::Mapping<unibrow::ToUppercase, 128>* to_upper_mapping() {
     return &to_upper_mapping_;
@@ -804,8 +810,6 @@ class RuntimeState {
 
   friend class Isolate;
   friend class Runtime;
-
-  DISALLOW_COPY_AND_ASSIGN(RuntimeState);
 };
 
 V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream&, Runtime::FunctionId);

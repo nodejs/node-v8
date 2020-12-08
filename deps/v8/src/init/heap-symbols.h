@@ -133,6 +133,7 @@
   V(_, ArrayBuffer_string, "ArrayBuffer")                            \
   V(_, ArrayIterator_string, "Array Iterator")                       \
   V(_, as_string, "as")                                              \
+  V(_, assert_string, "assert")                                      \
   V(_, async_string, "async")                                        \
   V(_, auto_string, "auto")                                          \
   V(_, await_string, "await")                                        \
@@ -225,6 +226,7 @@
   V(_, length_string, "length")                                      \
   V(_, let_string, "let")                                            \
   V(_, line_string, "line")                                          \
+  V(_, linear_string, "linear")                                      \
   V(_, LinkError_string, "LinkError")                                \
   V(_, long_string, "long")                                          \
   V(_, Map_string, "Map")                                            \
@@ -344,7 +346,6 @@
   V(_, error_script_symbol)                           \
   V(_, error_start_pos_symbol)                        \
   V(_, frozen_symbol)                                 \
-  V(_, generic_symbol)                                \
   V(_, home_object_symbol)                            \
   V(_, interpreter_trampoline_symbol)                 \
   V(_, megamorphic_symbol)                            \
@@ -366,19 +367,20 @@
   V(_, wasm_exception_values_symbol)                  \
   V(_, wasm_uncatchable_symbol)                       \
   V(_, wasm_wrapped_object_symbol)                    \
+  V(_, wasm_debug_proxy_name_tables)                  \
   V(_, uninitialized_symbol)
 
-#define PUBLIC_SYMBOL_LIST_GENERATOR(V, _)          \
-  V(_, async_iterator_symbol, Symbol.asyncIterator) \
-  V(_, iterator_symbol, Symbol.iterator)            \
-  V(_, intl_fallback_symbol, IntlFallback)          \
-  V(_, match_all_symbol, Symbol.matchAll)           \
-  V(_, match_symbol, Symbol.match)                  \
-  V(_, replace_symbol, Symbol.replace)              \
-  V(_, search_symbol, Symbol.search)                \
-  V(_, species_symbol, Symbol.species)              \
-  V(_, split_symbol, Symbol.split)                  \
-  V(_, to_primitive_symbol, Symbol.toPrimitive)     \
+#define PUBLIC_SYMBOL_LIST_GENERATOR(V, _)                \
+  V(_, async_iterator_symbol, Symbol.asyncIterator)       \
+  V(_, iterator_symbol, Symbol.iterator)                  \
+  V(_, intl_fallback_symbol, IntlLegacyConstructedSymbol) \
+  V(_, match_all_symbol, Symbol.matchAll)                 \
+  V(_, match_symbol, Symbol.match)                        \
+  V(_, replace_symbol, Symbol.replace)                    \
+  V(_, search_symbol, Symbol.search)                      \
+  V(_, species_symbol, Symbol.species)                    \
+  V(_, split_symbol, Symbol.split)                        \
+  V(_, to_primitive_symbol, Symbol.toPrimitive)           \
   V(_, unscopables_symbol, Symbol.unscopables)
 
 // Well-Known Symbols are "Public" symbols, which have a bit set which causes
@@ -430,7 +432,6 @@
   F(MC_CLEAR_FLUSHED_JS_FUNCTIONS)                   \
   F(MC_CLEAR_MAPS)                                   \
   F(MC_CLEAR_SLOTS_BUFFER)                           \
-  F(MC_CLEAR_STORE_BUFFER)                           \
   F(MC_CLEAR_STRING_TABLE)                           \
   F(MC_CLEAR_WEAK_COLLECTIONS)                       \
   F(MC_CLEAR_WEAK_LISTS)                             \
@@ -495,7 +496,6 @@
   F(SCAVENGER_FAST_PROMOTE)                          \
   F(SCAVENGER_FREE_REMEMBERED_SET)                   \
   F(SCAVENGER_SCAVENGE)                              \
-  F(SCAVENGER_PROCESS_ARRAY_BUFFERS)                 \
   F(SCAVENGER_SCAVENGE_WEAK_GLOBAL_HANDLES_IDENTIFY) \
   F(SCAVENGER_SCAVENGE_WEAK_GLOBAL_HANDLES_PROCESS)  \
   F(SCAVENGER_SCAVENGE_PARALLEL)                     \
@@ -508,9 +508,9 @@
   F(STOP_THE_WORLD)
 
 #define TRACER_BACKGROUND_SCOPES(F)               \
-  F(BACKGROUND_ARRAY_BUFFER_FREE)                 \
-  F(BACKGROUND_ARRAY_BUFFER_SWEEP)                \
-  F(BACKGROUND_STORE_BUFFER)                      \
+  F(BACKGROUND_YOUNG_ARRAY_BUFFER_SWEEP)          \
+  F(BACKGROUND_FULL_ARRAY_BUFFER_SWEEP)           \
+  F(BACKGROUND_COLLECTION)                        \
   F(BACKGROUND_UNMAPPER)                          \
   F(MC_BACKGROUND_EVACUATE_COPY)                  \
   F(MC_BACKGROUND_EVACUATE_UPDATE_POINTERS)       \

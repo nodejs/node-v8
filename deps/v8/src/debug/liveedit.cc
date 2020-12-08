@@ -1025,7 +1025,7 @@ void TranslateSourcePositionTable(Isolate* isolate, Handle<BytecodeArray> code,
 
   Handle<ByteArray> new_source_position_table(
       builder.ToSourcePositionTable(isolate));
-  code->set_synchronized_source_position_table(*new_source_position_table);
+  code->set_source_position_table(*new_source_position_table, kReleaseStore);
   LOG_CODE_EVENT(isolate,
                  CodeLinePosInfoRecordEvent(code->GetFirstBytecodeAddress(),
                                             *new_source_position_table));
@@ -1233,7 +1233,7 @@ void LiveEdit::PatchScript(Isolate* isolate, Handle<Script> script,
     // Check that all the functions in the new script are valid, that their
     // function literals match what is expected, and that start positions are
     // unique.
-    DisallowHeapAllocation no_gc;
+    DisallowGarbageCollection no_gc;
 
     SharedFunctionInfo::ScriptIterator it(isolate, *new_script);
     std::set<int> start_positions;

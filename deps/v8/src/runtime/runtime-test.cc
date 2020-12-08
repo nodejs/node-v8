@@ -2,8 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "src/runtime/runtime-utils.h"
-
 #include <memory>
 #include <sstream>
 
@@ -29,6 +27,8 @@
 #include "src/objects/js-function-inl.h"
 #include "src/objects/js-regexp-inl.h"
 #include "src/objects/smi.h"
+#include "src/regexp/regexp.h"
+#include "src/runtime/runtime-utils.h"
 #include "src/snapshot/snapshot.h"
 #include "src/trap-handler/trap-handler.h"
 #include "src/utils/ostreams.h"
@@ -63,11 +63,10 @@ bool IsWasmCompileAllowed(v8::Isolate* isolate, v8::Local<v8::Value> value,
   DCHECK_GT(GetPerIsolateWasmControls()->count(isolate), 0);
   const WasmCompileControls& ctrls = GetPerIsolateWasmControls()->at(isolate);
   return (is_async && ctrls.AllowAnySizeForAsync) ||
-         (value->IsArrayBuffer() &&
-          v8::Local<v8::ArrayBuffer>::Cast(value)->ByteLength() <=
-              ctrls.MaxWasmBufferSize) ||
+         (value->IsArrayBuffer() && value.As<v8::ArrayBuffer>()->ByteLength() <=
+                                        ctrls.MaxWasmBufferSize) ||
          (value->IsArrayBufferView() &&
-          v8::Local<v8::ArrayBufferView>::Cast(value)->ByteLength() <=
+          value.As<v8::ArrayBufferView>()->ByteLength() <=
               ctrls.MaxWasmBufferSize);
 }
 
@@ -251,10 +250,10 @@ RUNTIME_FUNCTION(Runtime_IsConcurrentRecompilationSupported) {
       isolate->concurrent_recompilation_enabled());
 }
 
-RUNTIME_FUNCTION(Runtime_DynamicMapChecksEnabled) {
+RUNTIME_FUNCTION(Runtime_DynamicCheckMapsEnabled) {
   SealHandleScope shs(isolate);
   DCHECK_EQ(0, args.length());
-  return isolate->heap()->ToBoolean(FLAG_dynamic_map_checks);
+  return isolate->heap()->ToBoolean(FLAG_turbo_dynamic_map_checks);
 }
 
 RUNTIME_FUNCTION(Runtime_OptimizeFunctionOnNextCall) {
@@ -551,7 +550,7 @@ RUNTIME_FUNCTION(Runtime_GetOptimizationStatus) {
 
   if (function->IsMarkedForOptimization()) {
     status |= static_cast<int>(OptimizationStatus::kMarkedForOptimization);
-  } else if (function->IsInOptimizationQueue()) {
+  } else if (function->IsMarkedForConcurrentOptimization()) {
     status |=
         static_cast<int>(OptimizationStatus::kMarkedForConcurrentOptimization);
   } else if (function->IsInOptimizationQueue()) {
@@ -708,8 +707,8 @@ RUNTIME_FUNCTION(Runtime_SetAllocationTimeout) {
 namespace {
 
 int FixedArrayLenFromSize(int size) {
-  return Min((size - FixedArray::kHeaderSize) / kTaggedSize,
-             FixedArray::kMaxRegularLength);
+  return std::min({(size - FixedArray::kHeaderSize) / kTaggedSize,
+                   FixedArray::kMaxRegularLength});
 }
 
 void FillUpOneNewSpacePage(Isolate* isolate, Heap* heap) {
@@ -749,6 +748,18 @@ RUNTIME_FUNCTION(Runtime_SimulateNewspaceFull) {
     FillUpOneNewSpacePage(isolate, heap);
   } while (space->AddFreshPage());
 
+  return ReadOnlyRoots(isolate).undefined_value();
+}
+
+RUNTIME_FUNCTION(Runtime_ScheduleGCInStackCheck) {
+  SealHandleScope shs(isolate);
+  DCHECK_EQ(0, args.length());
+  isolate->RequestInterrupt(
+      [](v8::Isolate* isolate, void*) {
+        isolate->RequestGarbageCollectionForTesting(
+            v8::Isolate::kFullGarbageCollection);
+      },
+      nullptr);
   return ReadOnlyRoots(isolate).undefined_value();
 }
 
@@ -1090,6 +1101,16 @@ RUNTIME_FUNCTION(Runtime_HaveSameMap) {
   return isolate->heap()->ToBoolean(obj1.map() == obj2.map());
 }
 
+RUNTIME_FUNCTION(Runtime_InLargeObjectSpace) {
+  SealHandleScope shs(isolate);
+  DCHECK_EQ(1, args.length());
+  CONVERT_ARG_CHECKED(HeapObject, obj, 0);
+  return isolate->heap()->ToBoolean(
+      isolate->heap()->new_lo_space()->Contains(obj) ||
+      isolate->heap()->code_lo_space()->Contains(obj) ||
+      isolate->heap()->lo_space()->Contains(obj));
+}
+
 RUNTIME_FUNCTION(Runtime_HasElementsInALargeObjectSpace) {
   SealHandleScope shs(isolate);
   DCHECK_EQ(1, args.length());
@@ -1125,7 +1146,8 @@ RUNTIME_FUNCTION(Runtime_IsAsmWasmCode) {
 namespace {
 
 v8::ModifyCodeGenerationFromStringsResult DisallowCodegenFromStringsCallback(
-    v8::Local<v8::Context> context, v8::Local<v8::Value> source) {
+    v8::Local<v8::Context> context, v8::Local<v8::Value> source,
+    bool is_code_kind) {
   return {false, {}};
 }
 
@@ -1168,13 +1190,13 @@ RUNTIME_FUNCTION(Runtime_IsWasmCode) {
 }
 
 RUNTIME_FUNCTION(Runtime_IsWasmTrapHandlerEnabled) {
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   DCHECK_EQ(0, args.length());
   return isolate->heap()->ToBoolean(trap_handler::IsTrapHandlerEnabled());
 }
 
 RUNTIME_FUNCTION(Runtime_IsThreadInWasm) {
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   DCHECK_EQ(0, args.length());
   return isolate->heap()->ToBoolean(trap_handler::IsThreadInWasm());
 }
@@ -1276,6 +1298,14 @@ RUNTIME_FUNCTION(Runtime_RegexpTypeTag) {
       break;
   }
   return *isolate->factory()->NewStringFromAsciiChecked(type_str);
+}
+
+RUNTIME_FUNCTION(Runtime_RegexpIsUnmodified) {
+  HandleScope shs(isolate);
+  DCHECK_EQ(1, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(JSRegExp, regexp, 0);
+  return isolate->heap()->ToBoolean(
+      RegExp::IsUnmodifiedRegExp(isolate, regexp));
 }
 
 #define ELEMENTS_KIND_CHECK_RUNTIME_FUNCTION(Name)      \
@@ -1556,7 +1586,7 @@ RUNTIME_FUNCTION(Runtime_CompleteInobjectSlackTracking) {
 
 RUNTIME_FUNCTION(Runtime_FreezeWasmLazyCompilation) {
   DCHECK_EQ(1, args.length());
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   CONVERT_ARG_CHECKED(WasmInstanceObject, instance, 0);
 
   instance.module_object().native_module()->set_lazy_compile_frozen(true);

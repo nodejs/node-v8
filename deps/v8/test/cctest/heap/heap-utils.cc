@@ -39,8 +39,8 @@ void SealCurrentObjects(Heap* heap) {
 }
 
 int FixedArrayLenFromSize(int size) {
-  return Min((size - FixedArray::kHeaderSize) / kTaggedSize,
-             FixedArray::kMaxRegularLength);
+  return std::min({(size - FixedArray::kHeaderSize) / kTaggedSize,
+                   FixedArray::kMaxRegularLength});
 }
 
 std::vector<Handle<FixedArray>> FillOldSpacePageWithFixedArrays(Heap* heap,
@@ -172,9 +172,6 @@ void SimulateIncrementalMarking(i::Heap* heap, bool force_completion) {
   if (collector->sweeping_in_progress()) {
     SafepointScope scope(heap);
     collector->EnsureSweepingCompleted();
-  }
-  if (marking->IsSweeping()) {
-    marking->FinalizeSweeping();
   }
   CHECK(marking->IsMarking() || marking->IsStopped() || marking->IsComplete());
   if (marking->IsStopped()) {

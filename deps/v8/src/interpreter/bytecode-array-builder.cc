@@ -77,8 +77,7 @@ Register BytecodeArrayBuilder::Receiver() const {
 }
 
 Register BytecodeArrayBuilder::Local(int index) const {
-  // TODO(marja): Make a DCHECK once crbug.com/706234 is fixed.
-  CHECK_LT(index, locals_count());
+  DCHECK_LT(index, locals_count());
   return Register(index);
 }
 
@@ -111,7 +110,7 @@ template EXPORT_TEMPLATE_DEFINE(V8_EXPORT_PRIVATE)
 
 #ifdef DEBUG
 int BytecodeArrayBuilder::CheckBytecodeMatches(BytecodeArray bytecode) {
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   return bytecode_array_writer_.CheckBytecodeMatches(bytecode);
 }
 #endif
@@ -1327,6 +1326,12 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::ThrowSuperNotCalledIfHole() {
 
 BytecodeArrayBuilder& BytecodeArrayBuilder::ThrowSuperAlreadyCalledIfNotHole() {
   OutputThrowSuperAlreadyCalledIfNotHole();
+  return *this;
+}
+
+BytecodeArrayBuilder& BytecodeArrayBuilder::ThrowIfNotSuperConstructor(
+    Register constructor) {
+  OutputThrowIfNotSuperConstructor(constructor);
   return *this;
 }
 

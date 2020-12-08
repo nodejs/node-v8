@@ -78,7 +78,7 @@ struct FormalParametersBase {
 };
 
 // Stack-allocated scope to collect source ranges from the parser.
-class SourceRangeScope final {
+class V8_NODISCARD SourceRangeScope final {
  public:
   SourceRangeScope(const Scanner* scanner, SourceRange* range)
       : scanner_(scanner), range_(range) {
@@ -463,7 +463,7 @@ class ParserBase {
       return contains_function_or_eval_;
     }
 
-    class FunctionOrEvalRecordingScope {
+    class V8_NODISCARD FunctionOrEvalRecordingScope {
      public:
       explicit FunctionOrEvalRecordingScope(FunctionState* state)
           : state_and_prev_value_(state, state->contains_function_or_eval_) {
@@ -481,7 +481,7 @@ class ParserBase {
       PointerWithPayload<FunctionState, bool, 1> state_and_prev_value_;
     };
 
-    class LoopScope final {
+    class V8_NODISCARD LoopScope final {
      public:
       explicit LoopScope(FunctionState* function_state)
           : function_state_(function_state) {
@@ -1455,7 +1455,7 @@ class ParserBase {
            expression_scope_->has_possible_arrow_parameter_in_scope_chain();
   }
 
-  class AcceptINScope final {
+  class V8_NODISCARD AcceptINScope final {
    public:
     AcceptINScope(ParserBase* parser, bool accept_IN)
         : parser_(parser), previous_accept_IN_(parser->accept_IN_) {
@@ -1469,7 +1469,7 @@ class ParserBase {
     bool previous_accept_IN_;
   };
 
-  class ParameterParsingScope {
+  class V8_NODISCARD ParameterParsingScope {
    public:
     ParameterParsingScope(Impl* parser, FormalParametersT* parameters)
         : parser_(parser), parent_parameters_(parser_->parameters_) {
@@ -1483,7 +1483,7 @@ class ParserBase {
     FormalParametersT* parent_parameters_;
   };
 
-  class FunctionParsingScope {
+  class V8_NODISCARD FunctionParsingScope {
    public:
     explicit FunctionParsingScope(Impl* parser)
         : parser_(parser), expression_scope_(parser_->expression_scope_) {
@@ -1853,7 +1853,6 @@ ParserBase<Impl>::ParsePrimaryExpression() {
       return ParseSuperExpression(is_new);
     }
     case Token::IMPORT:
-      if (!flags().allow_harmony_dynamic_import()) break;
       return ParseImportExpressions();
 
     case Token::LBRACK:
@@ -2159,13 +2158,6 @@ typename ParserBase<Impl>::ExpressionT ParserBase<Impl>::ParseProperty(
       if (V8_UNLIKELY(prop_info->position ==
                       PropertyPosition::kObjectLiteral)) {
         ReportUnexpectedToken(Token::PRIVATE_NAME);
-        prop_info->kind = ParsePropertyKind::kNotSet;
-        return impl()->FailureExpression();
-      }
-      if (V8_UNLIKELY(!flags().allow_harmony_private_methods() &&
-                      (IsAccessor(prop_info->kind) ||
-                       prop_info->kind == ParsePropertyKind::kMethod))) {
-        ReportUnexpectedToken(Next());
         prop_info->kind = ParsePropertyKind::kNotSet;
         return impl()->FailureExpression();
       }
@@ -3174,6 +3166,15 @@ ParserBase<Impl>::ParseAwaitExpression() {
 
   ExpressionT value = ParseUnaryExpression();
 
+  // 'await' is a unary operator according to the spec, even though it's treated
+  // specially in the parser.
+  if (peek() == Token::EXP) {
+    impl()->ReportMessageAt(
+        Scanner::Location(await_pos, peek_end_position()),
+        MessageTemplate::kUnexpectedTokenUnaryExponentiation);
+    return impl()->FailureExpression();
+  }
+
   ExpressionT expr = factory()->NewAwait(value, await_pos);
   function_state_->AddSuspend();
   impl()->RecordSuspendSourceRange(expr, PositionAfterSemicolon());
@@ -3439,10 +3440,7 @@ ParserBase<Impl>::ParseMemberWithPresentNewPrefixesExpression() {
   if (peek() == Token::SUPER) {
     const bool is_new = true;
     result = ParseSuperExpression(is_new);
-  } else if (flags().allow_harmony_dynamic_import() &&
-             peek() == Token::IMPORT &&
-             (!flags().allow_harmony_import_meta() ||
-              PeekAhead() == Token::LPAREN)) {
+  } else if (peek() == Token::IMPORT && PeekAhead() == Token::LPAREN) {
     impl()->ReportMessageAt(scanner()->peek_location(),
                             MessageTemplate::kImportCallNotNewExpression);
     return impl()->FailureExpression();
@@ -3540,11 +3538,9 @@ ParserBase<Impl>::ParseMemberExpression() {
 template <typename Impl>
 typename ParserBase<Impl>::ExpressionT
 ParserBase<Impl>::ParseImportExpressions() {
-  DCHECK(flags().allow_harmony_dynamic_import());
-
   Consume(Token::IMPORT);
   int pos = position();
-  if (flags().allow_harmony_import_meta() && Check(Token::PERIOD)) {
+  if (Check(Token::PERIOD)) {
     ExpectContextualKeyword(ast_value_factory()->meta_string(), "import.meta",
                             pos);
     if (!flags().is_module()) {

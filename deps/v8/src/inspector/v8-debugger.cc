@@ -502,6 +502,10 @@ size_t HeapLimitForDebugging(size_t initial_heap_limit) {
 size_t V8Debugger::nearHeapLimitCallback(void* data, size_t current_heap_limit,
                                          size_t initial_heap_limit) {
   V8Debugger* thisPtr = static_cast<V8Debugger*>(data);
+// TODO(solanes, v8:10876): Remove when bug is solved.
+#if DEBUG
+  printf("nearHeapLimitCallback\n");
+#endif
   thisPtr->m_originalHeapLimit = current_heap_limit;
   thisPtr->m_scheduledOOMBreak = true;
   v8::Local<v8::Context> context =
@@ -653,7 +657,7 @@ v8::MaybeLocal<v8::Value> V8Debugger::getTargetScopes(
   switch (kind) {
     case FUNCTION:
       iterator = v8::debug::ScopeIterator::CreateForFunction(
-          m_isolate, v8::Local<v8::Function>::Cast(value));
+          m_isolate, value.As<v8::Function>());
       break;
     case GENERATOR:
       v8::Local<v8::debug::GeneratorObject> generatorObject =
@@ -661,7 +665,7 @@ v8::MaybeLocal<v8::Value> V8Debugger::getTargetScopes(
       if (!generatorObject->IsSuspended()) return v8::MaybeLocal<v8::Value>();
 
       iterator = v8::debug::ScopeIterator::CreateForGeneratorObject(
-          m_isolate, v8::Local<v8::Object>::Cast(value));
+          m_isolate, value.As<v8::Object>());
       break;
   }
   if (!iterator) return v8::MaybeLocal<v8::Value>();

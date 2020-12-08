@@ -74,7 +74,7 @@ const char* StringsStorage::GetVFormatted(const char* format, va_list args) {
 const char* StringsStorage::GetName(Name name) {
   if (name.IsString()) {
     String str = String::cast(name);
-    int length = Min(FLAG_heap_snapshot_string_limit, str.length());
+    int length = std::min(FLAG_heap_snapshot_string_limit, str.length());
     int actual_length = 0;
     std::unique_ptr<char[]> data = str.ToCString(
         DISALLOW_NULLS, ROBUST_STRING_TRAVERSAL, 0, length, &actual_length);
@@ -92,7 +92,7 @@ const char* StringsStorage::GetName(int index) {
 const char* StringsStorage::GetConsName(const char* prefix, Name name) {
   if (name.IsString()) {
     String str = String::cast(name);
-    int length = Min(FLAG_heap_snapshot_string_limit, str.length());
+    int length = std::min(FLAG_heap_snapshot_string_limit, str.length());
     int actual_length = 0;
     std::unique_ptr<char[]> data = str.ToCString(
         DISALLOW_NULLS, ROBUST_STRING_TRAVERSAL, 0, length, &actual_length);
@@ -108,9 +108,19 @@ const char* StringsStorage::GetConsName(const char* prefix, Name name) {
   return "";
 }
 
+namespace {
+
+inline uint32_t ComputeStringHash(const char* str, int len) {
+  uint32_t raw_hash_field =
+      StringHasher::HashSequentialString(str, len, kZeroHashSeed);
+  return raw_hash_field >> Name::kHashShift;
+}
+
+}  // namespace
+
 bool StringsStorage::Release(const char* str) {
   int len = static_cast<int>(strlen(str));
-  uint32_t hash = StringHasher::HashSequentialString(str, len, kZeroHashSeed);
+  uint32_t hash = ComputeStringHash(str, len);
   base::HashMap::Entry* entry = names_.Lookup(const_cast<char*>(str), hash);
   DCHECK(entry);
   if (!entry) {
@@ -133,7 +143,7 @@ size_t StringsStorage::GetStringCountForTesting() const {
 }
 
 base::HashMap::Entry* StringsStorage::GetEntry(const char* str, int len) {
-  uint32_t hash = StringHasher::HashSequentialString(str, len, kZeroHashSeed);
+  uint32_t hash = ComputeStringHash(str, len);
   return names_.LookupOrInsert(const_cast<char*>(str), hash);
 }
 

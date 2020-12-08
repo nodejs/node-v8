@@ -112,7 +112,8 @@ std::ostream& operator<<(std::ostream& os, DeoptimizeParameters p) {
 DeoptimizeParameters const& DeoptimizeParametersOf(Operator const* const op) {
   DCHECK(op->opcode() == IrOpcode::kDeoptimize ||
          op->opcode() == IrOpcode::kDeoptimizeIf ||
-         op->opcode() == IrOpcode::kDeoptimizeUnless);
+         op->opcode() == IrOpcode::kDeoptimizeUnless ||
+         op->opcode() == IrOpcode::kDynamicCheckMapsWithDeoptUnless);
   return OpParameter<DeoptimizeParameters>(op);
 }
 
@@ -569,7 +570,7 @@ IfValueParameters const& IfValueParametersOf(const Operator* op) {
   V(TrapDivUnrepresentable)        \
   V(TrapRemByZero)                 \
   V(TrapFloatUnrepresentable)      \
-  V(TrapFuncInvalid)               \
+  V(TrapTableOutOfBounds)          \
   V(TrapFuncSigMismatch)
 
 #define CACHED_PARAMETER_LIST(V) \
@@ -781,6 +782,20 @@ struct CommonOperatorGlobalCache final {
       kDeoptimizeUnless##Kind##Reason##IsCheck##Operator;
   CACHED_DEOPTIMIZE_UNLESS_LIST(CACHED_DEOPTIMIZE_UNLESS)
 #undef CACHED_DEOPTIMIZE_UNLESS
+
+  struct DynamicMapCheckOperator final : Operator1<DeoptimizeParameters> {
+    DynamicMapCheckOperator()
+        : Operator1<DeoptimizeParameters>(                 // --
+              IrOpcode::kDynamicCheckMapsWithDeoptUnless,  // opcode
+              Operator::kFoldable | Operator::kNoThrow,    // properties
+              "DynamicCheckMapsWithDeoptUnless",           // name
+              5, 1, 1, 0, 1, 1,                            // counts
+              DeoptimizeParameters(DeoptimizeKind::kEagerWithResume,
+                                   DeoptimizeReason::kDynamicCheckMaps,
+                                   FeedbackSource(),
+                                   IsSafetyCheck::kCriticalSafetyCheck)) {}
+  };
+  DynamicMapCheckOperator kDynamicCheckMapsWithDeoptUnless;
 
   template <TrapId trap_id>
   struct TrapIfOperator final : public Operator1<TrapId> {
@@ -1017,6 +1032,10 @@ const Operator* CommonOperatorBuilder::DeoptimizeUnless(
       "DeoptimizeUnless",                               // name
       2, 1, 1, 0, 1, 1,                                 // counts
       parameter);                                       // parameter
+}
+
+const Operator* CommonOperatorBuilder::DynamicCheckMapsWithDeoptUnless() {
+  return &cache_.kDynamicCheckMapsWithDeoptUnless;
 }
 
 const Operator* CommonOperatorBuilder::TrapIf(TrapId trap_id) {

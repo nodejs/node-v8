@@ -31,6 +31,8 @@ struct TickSample;
 class V8_EXPORT_PRIVATE SourcePositionTable : public Malloced {
  public:
   SourcePositionTable() = default;
+  SourcePositionTable(const SourcePositionTable&) = delete;
+  SourcePositionTable& operator=(const SourcePositionTable&) = delete;
 
   void SetPosition(int pc_offset, int line, int inlining_id);
   int GetSourceLineNumber(int pc_offset) const;
@@ -51,7 +53,6 @@ class V8_EXPORT_PRIVATE SourcePositionTable : public Malloced {
   // the pc offset, so that we can save space and look up items using binary
   // search.
   std::vector<SourcePositionTuple> pc_offsets_to_lines_;
-  DISALLOW_COPY_AND_ASSIGN(SourcePositionTable);
 };
 
 struct CodeEntryAndLineNumber;
@@ -65,6 +66,8 @@ class CodeEntry {
                    int column_number = v8::CpuProfileNode::kNoColumnNumberInfo,
                    std::unique_ptr<SourcePositionTable> line_info = nullptr,
                    bool is_shared_cross_origin = false);
+  CodeEntry(const CodeEntry&) = delete;
+  CodeEntry& operator=(const CodeEntry&) = delete;
 
   const char* name() const { return name_; }
   const char* resource_name() const { return resource_name_; }
@@ -219,8 +222,6 @@ class CodeEntry {
   int position_;
   std::unique_ptr<SourcePositionTable> line_info_;
   std::unique_ptr<RareData> rare_data_;
-
-  DISALLOW_COPY_AND_ASSIGN(CodeEntry);
 };
 
 struct CodeEntryAndLineNumber {
@@ -228,11 +229,7 @@ struct CodeEntryAndLineNumber {
   int line_number;
 };
 
-struct ProfileStackFrame {
-  CodeEntryAndLineNumber entry;
-};
-
-typedef std::vector<ProfileStackFrame> ProfileStackTrace;
+using ProfileStackTrace = std::vector<CodeEntryAndLineNumber>;
 
 class ProfileTree;
 
@@ -240,6 +237,8 @@ class V8_EXPORT_PRIVATE ProfileNode {
  public:
   inline ProfileNode(ProfileTree* tree, CodeEntry* entry, ProfileNode* parent,
                      int line_number = 0);
+  ProfileNode(const ProfileNode&) = delete;
+  ProfileNode& operator=(const ProfileNode&) = delete;
 
   ProfileNode* FindChild(
       CodeEntry* entry,
@@ -299,14 +298,14 @@ class V8_EXPORT_PRIVATE ProfileNode {
   std::unordered_map<int, int> line_ticks_;
 
   std::vector<CpuProfileDeoptInfo> deopt_infos_;
-
-  DISALLOW_COPY_AND_ASSIGN(ProfileNode);
 };
 
 class V8_EXPORT_PRIVATE ProfileTree {
  public:
   explicit ProfileTree(Isolate* isolate);
   ~ProfileTree();
+  ProfileTree(const ProfileTree&) = delete;
+  ProfileTree& operator=(const ProfileTree&) = delete;
 
   using ProfilingMode = v8::CpuProfilingMode;
 
@@ -341,8 +340,6 @@ class V8_EXPORT_PRIVATE ProfileTree {
   unsigned next_node_id_;
   ProfileNode* root_;
   Isolate* isolate_;
-
-  DISALLOW_COPY_AND_ASSIGN(ProfileTree);
 };
 
 class CpuProfiler;
@@ -357,6 +354,8 @@ class CpuProfile {
 
   V8_EXPORT_PRIVATE CpuProfile(CpuProfiler* profiler, const char* title,
                                CpuProfilingOptions options);
+  CpuProfile(const CpuProfile&) = delete;
+  CpuProfile& operator=(const CpuProfile&) = delete;
 
   // Checks whether or not the given TickSample should be (sub)sampled, given
   // the sampling interval of the profiler that recorded it (in microseconds).
@@ -402,19 +401,21 @@ class CpuProfile {
   base::TimeDelta next_sample_delta_;
 
   static std::atomic<uint32_t> last_id_;
-
-  DISALLOW_COPY_AND_ASSIGN(CpuProfile);
 };
 
 class V8_EXPORT_PRIVATE CodeMap {
  public:
   CodeMap();
   ~CodeMap();
+  CodeMap(const CodeMap&) = delete;
+  CodeMap& operator=(const CodeMap&) = delete;
 
   void AddCode(Address addr, CodeEntry* entry, unsigned size);
   void MoveCode(Address from, Address to);
   CodeEntry* FindEntry(Address addr, Address* out_instruction_start = nullptr);
   void Print();
+
+  void Clear();
 
  private:
   struct CodeEntryMapInfo {
@@ -435,19 +436,21 @@ class V8_EXPORT_PRIVATE CodeMap {
 
   CodeEntry* entry(unsigned index) { return code_entries_[index].entry; }
 
+  // Added state here needs to be dealt with in Clear() as well.
   std::deque<CodeEntrySlotInfo> code_entries_;
   std::map<Address, CodeEntryMapInfo> code_map_;
   unsigned free_list_head_ = kNoFreeSlot;
-
-  DISALLOW_COPY_AND_ASSIGN(CodeMap);
 };
 
 class V8_EXPORT_PRIVATE CpuProfilesCollection {
  public:
   explicit CpuProfilesCollection(Isolate* isolate);
+  CpuProfilesCollection(const CpuProfilesCollection&) = delete;
+  CpuProfilesCollection& operator=(const CpuProfilesCollection&) = delete;
 
   void set_cpu_profiler(CpuProfiler* profiler) { profiler_ = profiler; }
-  bool StartProfiling(const char* title, CpuProfilingOptions options = {});
+  CpuProfilingStatus StartProfiling(const char* title,
+                                    CpuProfilingOptions options = {});
 
   CpuProfile* StopProfiling(const char* title);
   std::vector<std::unique_ptr<CpuProfile>>* profiles() {
@@ -479,30 +482,6 @@ class V8_EXPORT_PRIVATE CpuProfilesCollection {
   // Accessed by VM thread and profile generator thread.
   std::vector<std::unique_ptr<CpuProfile>> current_profiles_;
   base::Semaphore current_profiles_semaphore_;
-
-  DISALLOW_COPY_AND_ASSIGN(CpuProfilesCollection);
-};
-
-class V8_EXPORT_PRIVATE ProfileGenerator {
- public:
-  explicit ProfileGenerator(CpuProfilesCollection* profiles, CodeMap* code_map);
-
-  // Use the CodeMap to turn the raw addresses recorded in the sample into
-  // code/function names. The symbolized stack is added to the relevant
-  // profiles in the CpuProfilesCollection.
-  void SymbolizeTickSample(const TickSample& sample);
-
-  CodeMap* code_map() { return code_map_; }
-
- private:
-  CodeEntry* FindEntry(Address address,
-                       Address* out_instruction_start = nullptr);
-  CodeEntry* EntryForVMState(StateTag tag);
-
-  CpuProfilesCollection* profiles_;
-  CodeMap* const code_map_;
-
-  DISALLOW_COPY_AND_ASSIGN(ProfileGenerator);
 };
 
 }  // namespace internal

@@ -18,6 +18,8 @@
 namespace v8 {
 namespace internal {
 
+enum class StackLimitKind { kInterruptStackLimit, kRealStackLimit };
+
 // ----------------------------------------------------------------------------
 // Static helper functions
 
@@ -441,8 +443,9 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   void JumpCodeObject(Register code_object) override;
 
   void CallBuiltinByIndex(Register builtin_index) override;
-  void CallForDeoptimization(Address target, int deopt_id, Label* exit,
-                             DeoptimizeKind kind);
+  void CallForDeoptimization(Builtins::Name target, int deopt_id, Label* exit,
+                             DeoptimizeKind kind, Label* ret,
+                             Label* jump_deoptimization_entry_label);
 
   // Emit code to discard a non-negative number of pointer-sized elements
   // from the stack, clobbering only the sp register.
@@ -728,21 +731,11 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   // TODO(victorgomes): Remove this function once we stick with the reversed
   // arguments order.
   void LoadReceiver(Register dest, Register argc) {
-#ifdef V8_REVERSE_JSARGS
     LoadP(dest, MemOperand(sp, 0));
-#else
-    ShiftLeftImm(dest, argc, Operand(kSystemPointerSizeLog2));
-    LoadPX(dest, MemOperand(sp, dest));
-#endif
   }
 
   void StoreReceiver(Register rec, Register argc, Register scratch) {
-#ifdef V8_REVERSE_JSARGS
     StoreP(rec, MemOperand(sp, 0));
-#else
-    ShiftLeftImm(scratch, argc, Operand(kSystemPointerSizeLog2));
-    StorePX(rec, MemOperand(sp, scratch));
-#endif
   }
 
   // ---------------------------------------------------------------------------
@@ -955,6 +948,13 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
                         Register scratch2);
   void DecrementCounter(StatsCounter* counter, int value, Register scratch1,
                         Register scratch2);
+
+  // ---------------------------------------------------------------------------
+  // Stack limit utilities
+
+  void StackOverflowCheck(Register num_args, Register scratch,
+                          Label* stack_overflow);
+  void LoadStackLimit(Register destination, StackLimitKind kind);
 
   // ---------------------------------------------------------------------------
   // Smi utilities

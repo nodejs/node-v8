@@ -137,6 +137,7 @@ RegExpMacroAssemblerS390::~RegExpMacroAssemblerS390() {
   check_preempt_label_.Unuse();
   stack_overflow_label_.Unuse();
   internal_failure_label_.Unuse();
+  fallback_label_.Unuse();
 }
 
 int RegExpMacroAssemblerS390::stack_limit_slack() {
@@ -174,8 +175,13 @@ void RegExpMacroAssemblerS390::Backtrack() {
     __ CmpLogicalP(r2, Operand(backtrack_limit()));
     __ bne(&next);
 
-    // Exceeded limits are treated as a failed match.
-    Fail();
+    // Backtrack limit exceeded.
+    if (can_fallback()) {
+      __ jmp(&fallback_label_);
+    } else {
+      // Can't fallback, so we treat it as a failed match.
+      Fail();
+    }
 
     __ bind(&next);
   }
@@ -273,8 +279,8 @@ void RegExpMacroAssemblerS390::CheckNotBackReferenceIgnoreCase(
 
     Label loop;
     __ bind(&loop);
-    __ LoadlB(r5, MemOperand(r2, r1));
-    __ LoadlB(r6, MemOperand(r4, r1));
+    __ LoadU8(r5, MemOperand(r2, r1));
+    __ LoadU8(r6, MemOperand(r4, r1));
 
     __ CmpP(r6, r5);
     __ beq(&loop_check);
@@ -406,12 +412,12 @@ void RegExpMacroAssemblerS390::CheckNotBackReference(int start_reg,
   Label loop;
   __ bind(&loop);
   if (mode_ == LATIN1) {
-    __ LoadlB(r5, MemOperand(r2, r1));
-    __ LoadlB(r6, MemOperand(r4, r1));
+    __ LoadU8(r5, MemOperand(r2, r1));
+    __ LoadU8(r6, MemOperand(r4, r1));
   } else {
     DCHECK(mode_ == UC16);
-    __ LoadLogicalHalfWordP(r5, MemOperand(r2, r1));
-    __ LoadLogicalHalfWordP(r6, MemOperand(r4, r1));
+    __ LoadU16(r5, MemOperand(r2, r1));
+    __ LoadU16(r6, MemOperand(r4, r1));
   }
   __ la(r1, MemOperand(r1, char_size()));
   __ CmpP(r5, r6);
@@ -490,7 +496,7 @@ void RegExpMacroAssemblerS390::CheckBitInTable(Handle<ByteArray> table,
     __ AndP(r3, current_character(), Operand(kTableSize - 1));
     index = r3;
   }
-  __ LoadlB(r2,
+  __ LoadU8(r2,
             MemOperand(r2, index, (ByteArray::kHeaderSize - kHeapObjectTag)));
   __ CmpP(r2, Operand::Zero());
   BranchOrBacktrack(ne, on_bit_set);
@@ -581,7 +587,7 @@ bool RegExpMacroAssemblerS390::CheckSpecialCharacterClass(uc16 type,
       ExternalReference map =
           ExternalReference::re_word_character_map(isolate());
       __ mov(r2, Operand(map));
-      __ LoadlB(r2, MemOperand(r2, current_character()));
+      __ LoadU8(r2, MemOperand(r2, current_character()));
       __ CmpLogicalP(r2, Operand::Zero());
       BranchOrBacktrack(eq, on_no_match);
       return true;
@@ -596,7 +602,7 @@ bool RegExpMacroAssemblerS390::CheckSpecialCharacterClass(uc16 type,
       ExternalReference map =
           ExternalReference::re_word_character_map(isolate());
       __ mov(r2, Operand(map));
-      __ LoadlB(r2, MemOperand(r2, current_character()));
+      __ LoadU8(r2, MemOperand(r2, current_character()));
       __ CmpLogicalP(r2, Operand::Zero());
       BranchOrBacktrack(ne, on_no_match);
       if (mode_ != LATIN1) {
@@ -949,6 +955,12 @@ Handle<HeapObject> RegExpMacroAssemblerS390::GetCode(Handle<String> source) {
     __ b(&return_r2);
   }
 
+  if (fallback_label_.is_linked()) {
+    __ bind(&fallback_label_);
+    __ LoadImmP(r2, Operand(FALLBACK_TO_EXPERIMENTAL));
+    __ b(&return_r2);
+  }
+
   CodeDesc code_desc;
   masm_->GetCode(isolate(), &code_desc);
   Handle<Code> code =
@@ -1258,7 +1270,7 @@ void RegExpMacroAssemblerS390::LoadCurrentCharacterUnchecked(int cp_offset,
     // using load reverse for big-endian platforms
     if (characters == 4) {
 #if V8_TARGET_LITTLE_ENDIAN
-      __ LoadlW(current_character(),
+      __ LoadU32(current_character(),
                 MemOperand(current_input_offset(), end_of_input_address(),
                            cp_offset * char_size()));
 #else
@@ -1268,7 +1280,7 @@ void RegExpMacroAssemblerS390::LoadCurrentCharacterUnchecked(int cp_offset,
 #endif
     } else if (characters == 2) {
 #if V8_TARGET_LITTLE_ENDIAN
-      __ LoadLogicalHalfWordP(current_character(),
+      __ LoadU16(current_character(),
                 MemOperand(current_input_offset(), end_of_input_address(),
                            cp_offset * char_size()));
 #else
@@ -1278,14 +1290,14 @@ void RegExpMacroAssemblerS390::LoadCurrentCharacterUnchecked(int cp_offset,
 #endif
     } else {
       DCHECK_EQ(1, characters);
-      __ LoadlB(current_character(),
+      __ LoadU8(current_character(),
                 MemOperand(current_input_offset(), end_of_input_address(),
                            cp_offset * char_size()));
     }
   } else {
     DCHECK(mode_ == UC16);
     if (characters == 2) {
-      __ LoadlW(current_character(),
+      __ LoadU32(current_character(),
                 MemOperand(current_input_offset(), end_of_input_address(),
                            cp_offset * char_size()));
 #if !V8_TARGET_LITTLE_ENDIAN
@@ -1294,7 +1306,7 @@ void RegExpMacroAssemblerS390::LoadCurrentCharacterUnchecked(int cp_offset,
 #endif
     } else {
       DCHECK_EQ(1, characters);
-      __ LoadLogicalHalfWordP(
+      __ LoadU16(
           current_character(),
                 MemOperand(current_input_offset(), end_of_input_address(),
                            cp_offset * char_size()));

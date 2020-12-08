@@ -22,6 +22,10 @@ using protocol::Runtime::PropertyPreview;
 using protocol::Runtime::RemoteObject;
 
 namespace {
+
+// WebAssembly memory is organized in pages of size 64KiB.
+const size_t kWasmPageSize = 64 * 1024;
+
 V8InspectorClient* clientFor(v8::Local<v8::Context> context) {
   return static_cast<V8InspectorImpl*>(
              v8::debug::GetInspector(context->GetIsolate()))
@@ -123,7 +127,7 @@ Response toProtocolValue(v8::Local<v8::Context> context,
   if (value->IsObject()) {
     std::unique_ptr<protocol::DictionaryValue> jsonObject =
         protocol::DictionaryValue::create();
-    v8::Local<v8::Object> object = v8::Local<v8::Object>::Cast(value);
+    v8::Local<v8::Object> object = value.As<v8::Object>();
     v8::Local<v8::Array> propertyNames;
     if (!object->GetPropertyNames(context).ToLocal(&propertyNames))
       return Response::InternalError();
@@ -134,8 +138,8 @@ Response toProtocolValue(v8::Local<v8::Context> context,
         return Response::InternalError();
       // FIXME(yurys): v8::Object should support GetOwnPropertyNames
       if (name->IsString()) {
-        v8::Maybe<bool> hasRealNamedProperty = object->HasRealNamedProperty(
-            context, v8::Local<v8::String>::Cast(name));
+        v8::Maybe<bool> hasRealNamedProperty =
+            object->HasRealNamedProperty(context, name.As<v8::String>());
         if (hasRealNamedProperty.IsNothing() ||
             !hasRealNamedProperty.FromJust())
           continue;
@@ -215,7 +219,13 @@ Response toProtocolValue(v8::Local<v8::Context> context,
                          v8::Local<v8::Value> value,
                          std::unique_ptr<protocol::Value>* result) {
   if (value->IsUndefined()) return Response::Success();
-  return toProtocolValue(context, value, 1000, result);
+#if defined(V8_USE_ADDRESS_SANITIZER) && V8_OS_MACOSX
+  // For whatever reason, ASan on MacOS has bigger stack frames.
+  static const int kMaxDepth = 900;
+#else
+  static const int kMaxDepth = 1000;
+#endif
+  return toProtocolValue(context, value, kMaxDepth, result);
 }
 
 enum AbbreviateMode { kMiddle, kEnd };
@@ -272,6 +282,7 @@ String16 descriptionForRegExp(v8::Isolate* isolate,
   v8::RegExp::Flags flags = value->GetFlags();
   if (flags & v8::RegExp::Flags::kGlobal) description.append('g');
   if (flags & v8::RegExp::Flags::kIgnoreCase) description.append('i');
+  if (flags & v8::RegExp::Flags::kLinear) description.append('l');
   if (flags & v8::RegExp::Flags::kMultiline) description.append('m');
   if (flags & v8::RegExp::Flags::kDotAll) description.append('s');
   if (flags & v8::RegExp::Flags::kUnicode) description.append('u');
@@ -882,7 +893,7 @@ bool isArrayLike(v8::Local<v8::Context> context, v8::Local<v8::Value> value,
       !lengthValue->IsUint32()) {
     return false;
   }
-  *length = v8::Local<v8::Uint32>::Cast(lengthValue)->Value();
+  *length = lengthValue.As<v8::Uint32>()->Value();
   return true;
 }
 
@@ -1742,6 +1753,12 @@ std::unique_ptr<ValueMirror> clientMirror(v8::Local<v8::Context> context,
                                           v8::Local<v8::Value> value,
                                           const String16& subtype) {
   // TODO(alph): description and length retrieval should move to embedder.
+  auto descriptionForValueSubtype =
+      clientFor(context)->descriptionForValueSubtype(context, value);
+  if (descriptionForValueSubtype) {
+    return std::make_unique<ObjectMirror>(
+        value, subtype, toString16(descriptionForValueSubtype->string()));
+  }
   if (subtype == "node") {
     return std::make_unique<ObjectMirror>(value, subtype,
                                           descriptionForNode(context, value));
@@ -1896,8 +1913,15 @@ std::unique_ptr<ValueMirror> ValueMirror::create(v8::Local<v8::Context> context,
         value, RemoteObject::SubtypeEnum::Dataview,
         descriptionForCollection(isolate, view, view->ByteLength()));
   }
+  if (value->IsWasmMemoryObject()) {
+    v8::Local<v8::WasmMemoryObject> memory = value.As<v8::WasmMemoryObject>();
+    return std::make_unique<ObjectMirror>(
+        value, RemoteObject::SubtypeEnum::Webassemblymemory,
+        descriptionForCollection(
+            isolate, memory, memory->Buffer()->ByteLength() / kWasmPageSize));
+  }
   V8InternalValueType internalType =
-      v8InternalValueTypeFrom(context, v8::Local<v8::Object>::Cast(value));
+      v8InternalValueTypeFrom(context, value.As<v8::Object>());
   if (value->IsArray() && internalType == V8InternalValueType::kScopeList) {
     return std::make_unique<ObjectMirror>(
         value, "internal#scopeList",

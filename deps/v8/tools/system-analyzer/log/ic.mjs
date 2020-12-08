@@ -1,12 +1,12 @@
 // Copyright 2020 the V8 project authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-import { Event } from './log.mjs';
+import {LogEntry} from './log.mjs';
 
-class IcLogEvent extends Event {
+export class IcLogEntry extends LogEntry {
   constructor(
-    type, fn_file, time, line, column, key, oldState, newState, map, reason,
-    script, additional) {
+      type, fn_file, time, line, column, key, oldState, newState, map, reason,
+      script, modifier, additional) {
     super(type, time);
     this.category = 'other';
     if (this.type.indexOf('Store') !== -1) {
@@ -14,7 +14,7 @@ class IcLogEvent extends Event {
     } else if (this.type.indexOf('Load') !== -1) {
       this.category = 'Load';
     }
-    let parts = fn_file.split(' ');
+    const parts = fn_file.split(' ');
     this.functionName = parts[0];
     this.file = parts[1];
     let position = line + ':' + column;
@@ -27,8 +27,12 @@ class IcLogEvent extends Event {
     this.reason = reason;
     this.additional = additional;
     this.script = script;
+    this.modifier = modifier;
   }
 
+  toString() {
+    return `IC(${this.type}):\n${this.state}`;
+  }
 
   parseMapProperties(parts, offset) {
     let next = parts[++offset];
@@ -55,6 +59,11 @@ class IcLogEvent extends Event {
     this.file = parts[offset];
     return offset;
   }
-}
 
-export { IcLogEvent };
+  static get propertyNames() {
+    return [
+      'type', 'category', 'functionName', 'filePosition', 'state', 'key', 'map',
+      'reason', 'file'
+    ];
+  }
+}

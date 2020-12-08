@@ -247,7 +247,7 @@ class Logger : public CodeEventListener {
 
   V8_EXPORT_PRIVATE void TimerEvent(StartEnd se, const char* name);
 
-  void BasicBlockCounterEvent(const char* name, int block_id, uint32_t count);
+  void BasicBlockCounterEvent(const char* name, int block_id, double count);
 
   void BuiltinHashEvent(const char* name, int hash);
 
@@ -280,9 +280,6 @@ class Logger : public CodeEventListener {
   V8_INLINE static CodeEventListener::LogEventsAndTags ToNativeByScript(
       CodeEventListener::LogEventsAndTags, Script);
 
-  // Used for logging stubs found in the snapshot.
-  void LogCodeObject(Object code_object);
-
  private:
   void UpdateIsLogging(bool value);
 
@@ -313,6 +310,12 @@ class Logger : public CodeEventListener {
   // Logs a scripts sources. Keeps track of all logged scripts to ensure that
   // each script is logged only once.
   bool EnsureLogScriptSource(Script script);
+
+  void LogSourceCodeInformation(Handle<AbstractCode> code,
+                                Handle<SharedFunctionInfo> shared);
+  void LogCodeDisassemble(Handle<AbstractCode> code);
+
+  int64_t Time();
 
   Isolate* isolate_;
 
@@ -370,7 +373,7 @@ TIMER_EVENTS_LIST(V)
 #undef V
 
 template <class TimerEvent>
-class TimerEventScope {
+class V8_NODISCARD TimerEventScope {
  public:
   explicit TimerEventScope(Isolate* isolate) : isolate_(isolate) {
     LogTimerEvent(Logger::START);

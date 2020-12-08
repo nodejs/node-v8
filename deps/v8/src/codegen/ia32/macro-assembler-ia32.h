@@ -24,6 +24,10 @@ using MemOperand = Operand;
 enum RememberedSetAction { EMIT_REMEMBERED_SET, OMIT_REMEMBERED_SET };
 enum SmiCheck { INLINE_SMI_CHECK, OMIT_SMI_CHECK };
 
+// TODO(victorgomes): Move definition to macro-assembler.h, once all other
+// platforms are updated.
+enum class StackLimitKind { kInterruptStackLimit, kRealStackLimit };
+
 // Convenient class to access arguments below the stack pointer.
 class StackArgumentsAccessor {
  public:
@@ -130,8 +134,9 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   void Trap() override;
   void DebugBreak() override;
 
-  void CallForDeoptimization(Address target, int deopt_id, Label* exit,
-                             DeoptimizeKind kind);
+  void CallForDeoptimization(Builtins::Name target, int deopt_id, Label* exit,
+                             DeoptimizeKind kind, Label* ret,
+                             Label* jump_deoptimization_entry_label);
 
   // Jump the register contains a smi.
   inline void JumpIfSmi(Register value, Label* smi_label,
@@ -280,6 +285,10 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
     }                                                           \
   }
 
+  AVX_OP2_WITH_TYPE(Movss, movss, Operand, XMMRegister)
+  AVX_OP2_WITH_TYPE(Movss, movss, XMMRegister, Operand)
+  AVX_OP2_WITH_TYPE(Movsd, movsd, Operand, XMMRegister)
+  AVX_OP2_WITH_TYPE(Movsd, movsd, XMMRegister, Operand)
   AVX_OP2_WITH_TYPE(Rcpps, rcpps, XMMRegister, const Operand&)
   AVX_OP2_WITH_TYPE(Rsqrtps, rsqrtps, XMMRegister, const Operand&)
   AVX_OP2_WITH_TYPE(Movdqu, movdqu, XMMRegister, Operand)
@@ -295,11 +304,17 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   AVX_OP2_WITH_TYPE(Sqrtpd, sqrtpd, XMMRegister, XMMRegister)
   AVX_OP2_WITH_TYPE(Sqrtpd, sqrtpd, XMMRegister, const Operand&)
   AVX_OP2_WITH_TYPE(Movaps, movaps, XMMRegister, XMMRegister)
+  AVX_OP2_WITH_TYPE(Movups, movups, XMMRegister, Operand)
+  AVX_OP2_WITH_TYPE(Movups, movups, XMMRegister, XMMRegister)
+  AVX_OP2_WITH_TYPE(Movups, movups, Operand, XMMRegister)
   AVX_OP2_WITH_TYPE(Movapd, movapd, XMMRegister, XMMRegister)
   AVX_OP2_WITH_TYPE(Movapd, movapd, XMMRegister, const Operand&)
   AVX_OP2_WITH_TYPE(Movupd, movupd, XMMRegister, const Operand&)
   AVX_OP2_WITH_TYPE(Pmovmskb, pmovmskb, Register, XMMRegister)
+  AVX_OP2_WITH_TYPE(Movmskpd, movmskpd, Register, XMMRegister)
   AVX_OP2_WITH_TYPE(Movmskps, movmskps, Register, XMMRegister)
+  AVX_OP2_WITH_TYPE(Movlps, movlps, Operand, XMMRegister)
+  AVX_OP2_WITH_TYPE(Movhps, movlps, Operand, XMMRegister)
 
 #undef AVX_OP2_WITH_TYPE
 
@@ -406,6 +421,9 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   AVX_PACKED_OP3_WITH_TYPE(Psrlq, psrlq, XMMRegister, uint8_t)
   AVX_PACKED_OP3_WITH_TYPE(Psraw, psraw, XMMRegister, uint8_t)
   AVX_PACKED_OP3_WITH_TYPE(Psrad, psrad, XMMRegister, uint8_t)
+
+  AVX_PACKED_OP3_WITH_TYPE(Movlps, movlps, XMMRegister, Operand)
+  AVX_PACKED_OP3_WITH_TYPE(Movhps, movhps, XMMRegister, Operand)
 #undef AVX_PACKED_OP3_WITH_TYPE
 
 // Non-SSE2 instructions.
@@ -479,8 +497,15 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
 #undef AVX_OP3_XO_SSE4
 #undef AVX_OP3_WITH_TYPE_SCOPE
 
-  void Pshufb(XMMRegister dst, XMMRegister src) { Pshufb(dst, Operand(src)); }
-  void Pshufb(XMMRegister dst, Operand src);
+  void Pcmpeqq(XMMRegister dst, XMMRegister src1, XMMRegister src2);
+  void Pshufb(XMMRegister dst, XMMRegister src) { Pshufb(dst, dst, src); }
+  void Pshufb(XMMRegister dst, Operand src) { Pshufb(dst, dst, src); }
+  // Handles SSE and AVX. On SSE, moves src to dst if they are not equal.
+  void Pshufb(XMMRegister dst, XMMRegister src, XMMRegister mask) {
+    Pshufb(dst, src, Operand(mask));
+  }
+  void Pshufb(XMMRegister dst, XMMRegister src, Operand mask);
+
   void Pblendw(XMMRegister dst, XMMRegister src, uint8_t imm8) {
     Pblendw(dst, Operand(src), imm8);
   }
@@ -498,7 +523,9 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   }
   void Palignr(XMMRegister dst, Operand src, uint8_t imm8);
 
+  void Pextrb(Operand dst, XMMRegister src, uint8_t imm8);
   void Pextrb(Register dst, XMMRegister src, uint8_t imm8);
+  void Pextrw(Operand dst, XMMRegister src, uint8_t imm8);
   void Pextrw(Register dst, XMMRegister src, uint8_t imm8);
   void Pextrd(Register dst, XMMRegister src, uint8_t imm8);
   void Pinsrb(XMMRegister dst, Register src, int8_t imm8) {
@@ -514,6 +541,7 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   }
   void Pinsrw(XMMRegister dst, Operand src, int8_t imm8);
   void Vbroadcastss(XMMRegister dst, Operand src);
+  void Extractps(Operand dst, XMMRegister src, uint8_t imm8);
 
   // Expression support
   // cvtsi2sd instruction only writes to the low 64-bit of dst register, which
@@ -834,6 +862,12 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   void IncrementCounter(StatsCounter* counter, int value, Register scratch);
   void DecrementCounter(StatsCounter* counter, int value, Register scratch);
 
+  // ---------------------------------------------------------------------------
+  // Stack limit utilities
+  void CompareStackLimit(Register with, StackLimitKind kind);
+  void StackOverflowCheck(Register num_args, Register scratch,
+                          Label* stack_overflow, bool include_receiver = false);
+
   static int SafepointRegisterStackIndex(Register reg) {
     return SafepointRegisterStackIndex(reg.code());
   }
@@ -854,7 +888,7 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
 
   // Needs access to SafepointRegisterStackIndex for compiled frame
   // traversal.
-  friend class StandardFrame;
+  friend class CommonFrame;
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(MacroAssembler);
 };

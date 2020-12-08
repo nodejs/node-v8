@@ -27,6 +27,7 @@
 #include "src/wasm/wasm-objects-inl.h"
 
 #ifdef V8_ENABLE_WASM_GDB_REMOTE_DEBUGGING
+#include "src/base/platform/wrappers.h"
 #include "src/debug/wasm/gdb-server/gdb-server.h"
 #endif  // V8_ENABLE_WASM_GDB_REMOTE_DEBUGGING
 
@@ -419,7 +420,7 @@ WasmEngine::~WasmEngine() {
     compile_job_handles = compile_job_handles_;
   }
   for (auto& job_handle : compile_job_handles) {
-    if (job_handle->IsRunning()) job_handle->Cancel();
+    if (job_handle->IsValid()) job_handle->Cancel();
   }
 
   // All AsyncCompileJobs have been canceled.
@@ -596,7 +597,7 @@ void WasmEngine::AsyncCompile(
     if (is_shared) {
       // Make a copy of the wire bytes to avoid concurrent modification.
       std::unique_ptr<uint8_t[]> copy(new uint8_t[bytes.length()]);
-      memcpy(copy.get(), bytes.start(), bytes.length());
+      base::Memcpy(copy.get(), bytes.start(), bytes.length());
       ModuleWireBytes bytes_copy(copy.get(), copy.get() + bytes.length());
       module_object = SyncCompile(isolate, enabled, &thrower, bytes_copy);
     } else {
@@ -624,7 +625,7 @@ void WasmEngine::AsyncCompile(
   // Make a copy of the wire bytes in case the user program changes them
   // during asynchronous compilation.
   std::unique_ptr<byte[]> copy(new byte[bytes.length()]);
-  memcpy(copy.get(), bytes.start(), bytes.length());
+  base::Memcpy(copy.get(), bytes.start(), bytes.length());
 
   AsyncCompileJob* job =
       CreateAsyncCompileJob(isolate, enabled, std::move(copy), bytes.length(),
@@ -1025,9 +1026,6 @@ void WasmEngine::EnableCodeLogging(Isolate* isolate) {
 }
 
 void WasmEngine::LogOutstandingCodesForIsolate(Isolate* isolate) {
-  // If by now we should not log code any more, do not log it.
-  if (!WasmCode::ShouldBeLogged(isolate)) return;
-
   // Under the mutex, get the vector of wasm code to log. Then log and decrement
   // the ref count without holding the mutex.
   std::vector<WasmCode*> code_to_log;
@@ -1036,8 +1034,11 @@ void WasmEngine::LogOutstandingCodesForIsolate(Isolate* isolate) {
     DCHECK_EQ(1, isolates_.count(isolate));
     code_to_log.swap(isolates_[isolate]->code_to_log);
   }
-  TRACE_EVENT1("v8.wasm", "wasm.LogCode", "num_code_objects",
-               code_to_log.size());
+
+  // If by now we should not log code any more, do not log it.
+  if (!WasmCode::ShouldBeLogged(isolate)) return;
+
+  TRACE_EVENT1("v8.wasm", "wasm.LogCode", "codeObjects", code_to_log.size());
   if (code_to_log.empty()) return;
   for (WasmCode* code : code_to_log) {
     code->LogCode(isolate);

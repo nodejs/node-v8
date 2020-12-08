@@ -88,6 +88,10 @@ class WasmGCTester {
 
   byte DefineSignature(FunctionSig* sig) { return builder_.AddSignature(sig); }
 
+  byte DefineTable(ValueType type, uint32_t min_size, uint32_t max_size) {
+    return builder_.AddTable(type, min_size, max_size);
+  }
+
   void CompileModule() {
     ZoneBuffer buffer(&zone);
     builder_.WriteTo(&buffer);
@@ -116,6 +120,7 @@ class WasmGCTester {
     DCHECK(*sig == *instance_->module()->functions[function_index].sig);
     CWasmArgumentsPacker packer(CWasmArgumentsPacker::TotalSize(sig));
     CallFunctionImpl(function_index, sig, &packer);
+    CHECK(!isolate_->has_pending_exception());
     packer.Reset();
     CHECK_EQ(expected, packer.Pop<int32_t>());
   }
@@ -126,6 +131,7 @@ class WasmGCTester {
     CWasmArgumentsPacker packer(CWasmArgumentsPacker::TotalSize(sig));
     packer.Push(arg);
     CallFunctionImpl(function_index, sig, &packer);
+    CHECK(!isolate_->has_pending_exception());
     packer.Reset();
     CHECK_EQ(expected, packer.Pop<int32_t>());
   }
@@ -134,8 +140,17 @@ class WasmGCTester {
     const FunctionSig* sig = instance_->module()->functions[function_index].sig;
     CWasmArgumentsPacker packer(CWasmArgumentsPacker::TotalSize(sig));
     CallFunctionImpl(function_index, sig, &packer);
+    CHECK(!isolate_->has_pending_exception());
     packer.Reset();
     return Handle<Object>(Object(packer.Pop<Address>()), isolate_);
+  }
+
+  void CheckHasThrown(uint32_t function_index) {
+    const FunctionSig* sig = instance_->module()->functions[function_index].sig;
+    CWasmArgumentsPacker packer(CWasmArgumentsPacker::TotalSize(sig));
+    CallFunctionImpl(function_index, sig, &packer);
+    CHECK(isolate_->has_pending_exception());
+    isolate_->clear_pending_exception();
   }
 
   void CheckHasThrown(uint32_t function_index, int32_t arg) {
@@ -601,6 +616,20 @@ TEST(WasmBasicArray) {
                                WASM_RTT_CANON(type_index)),
        kExprEnd});
 
+  const uint32_t kLongLength = 1u << 16;
+  const byte kAllocateLarge = tester.DefineFunction(
+      &sig_q_v, {},
+      {WASM_ARRAY_NEW_DEFAULT(type_index, WASM_I32V(kLongLength),
+                              WASM_RTT_CANON(type_index)),
+       kExprEnd});
+
+  const uint32_t kTooLong = kV8MaxWasmArrayLength + 1;
+  const byte kAllocateTooLarge = tester.DefineFunction(
+      &sig_q_v, {},
+      {WASM_ARRAY_NEW_DEFAULT(type_index, WASM_I32V(kTooLong),
+                              WASM_RTT_CANON(type_index)),
+       kExprEnd});
+
   tester.CompileModule();
 
   tester.CheckResult(kGetElem, 12, 0);
@@ -615,6 +644,15 @@ TEST(WasmBasicArray) {
 #if OBJECT_PRINT
   h_result.ToHandleChecked()->Print();
 #endif
+
+  MaybeHandle<Object> maybe_large_result =
+      tester.GetResultObject(kAllocateLarge);
+  Handle<Object> large_result = maybe_large_result.ToHandleChecked();
+  CHECK(large_result->IsWasmArray());
+  CHECK(Handle<WasmArray>::cast(large_result)->Size() >
+        kMaxRegularHeapObjectSize);
+
+  tester.CheckHasThrown(kAllocateTooLarge);
 }
 
 TEST(WasmPackedArrayU) {
@@ -813,6 +851,80 @@ TEST(BasicRTT) {
   CHECK_EQ(Handle<WasmStruct>::cast(s)->map(), *map);
 
   tester.CheckResult(kRefCast, 43);
+}
+
+TEST(AnyRefRtt) {
+  WasmGCTester tester;
+
+  ValueType any_rtt_0_type = ValueType::Rtt(HeapType::kAny, 0);
+  FunctionSig sig_any_canon(1, 0, &any_rtt_0_type);
+  byte kAnyRttCanon = tester.DefineFunction(
+      &sig_any_canon, {}, {WASM_RTT_CANON(kAnyRefCode), kExprEnd});
+
+  ValueType any_rtt_1_type = ValueType::Rtt(HeapType::kAny, 1);
+  FunctionSig sig_any_sub(1, 0, &any_rtt_1_type);
+  byte kAnyRttSub = tester.DefineFunction(
+      &sig_any_sub, {},
+      {WASM_RTT_SUB(kAnyRefCode, WASM_RTT_CANON(kAnyRefCode)), kExprEnd});
+
+  ValueType func_rtt_1_type = ValueType::Rtt(HeapType::kFunc, 1);
+  FunctionSig sig_func_sub(1, 0, &func_rtt_1_type);
+  byte kFuncRttSub = tester.DefineFunction(
+      &sig_func_sub, {},
+      {WASM_RTT_SUB(kFuncRefCode, WASM_RTT_CANON(kAnyRefCode)), kExprEnd});
+
+  ValueType eq_rtt_1_type = ValueType::Rtt(HeapType::kEq, 1);
+  FunctionSig sig_eq_sub(1, 0, &eq_rtt_1_type);
+  byte kEqRttSub = tester.DefineFunction(
+      &sig_eq_sub, {},
+      {WASM_RTT_SUB(kEqRefCode, WASM_RTT_CANON(kAnyRefCode)), kExprEnd});
+
+  const byte type_index = tester.DefineArray(kWasmI32, true);
+  ValueType array_rtt_type = ValueType::Rtt(type_index, 1);
+  FunctionSig sig_array_canon(1, 0, &array_rtt_type);
+  byte kArrayRttCanon = tester.DefineFunction(
+      &sig_array_canon, {}, {WASM_RTT_CANON(type_index), kExprEnd});
+
+  byte kCheckArrayAgainstAny = tester.DefineFunction(
+      tester.sigs.i_v(), {kWasmAnyRef},
+      {WASM_SET_LOCAL(0, WASM_ARRAY_NEW_DEFAULT(type_index, WASM_I32V(5),
+                                                WASM_RTT_CANON(type_index))),
+       WASM_REF_TEST(kAnyRefCode, type_index, WASM_GET_LOCAL(0),
+                     WASM_RTT_CANON(type_index)),
+       kExprEnd});
+
+  byte kCheckAnyAgainstAny = tester.DefineFunction(
+      tester.sigs.i_v(), {kWasmAnyRef},
+      {WASM_SET_LOCAL(0, WASM_ARRAY_NEW_DEFAULT(type_index, WASM_I32V(5),
+                                                WASM_RTT_CANON(type_index))),
+       WASM_REF_TEST(kAnyRefCode, kAnyRefCode, WASM_GET_LOCAL(0),
+                     WASM_RTT_CANON(kAnyRefCode)),
+       kExprEnd});
+
+  tester.CompileModule();
+
+  // Check (rtt.canon any).
+  Handle<Object> result_any_canon =
+      tester.GetResultObject(kAnyRttCanon).ToHandleChecked();
+  CHECK(result_any_canon->IsMap());
+  Handle<Map> any_map = Handle<Map>::cast(result_any_canon);
+  CHECK_EQ(any_map->wasm_type_info().parent(),
+           tester.isolate()->root(RootIndex::kNullMap));
+  CHECK_EQ(any_map->wasm_type_info().supertypes().length(), 0);
+
+  for (byte func_index : {kArrayRttCanon, kAnyRttSub, kFuncRttSub, kEqRttSub}) {
+    Handle<Object> result =
+        tester.GetResultObject(func_index).ToHandleChecked();
+    CHECK(result->IsMap());
+    Handle<Map> map = Handle<Map>::cast(result);
+    // Its parent should be (rtt.canon any).
+    CHECK_EQ(map->wasm_type_info().parent(), *any_map);
+    CHECK_EQ(map->wasm_type_info().supertypes().get(0), *any_map);
+    CHECK_EQ(map->wasm_type_info().supertypes().length(), 1);
+  }
+
+  tester.CheckResult(kCheckArrayAgainstAny, 1);
+  tester.CheckResult(kCheckAnyAgainstAny, 1);
 }
 
 TEST(ArrayNewMap) {
@@ -1034,6 +1146,106 @@ TEST(I31Casts) {
   tester.CheckHasThrown(kCastStructToI31, 0);
 }
 
+// This flushed out a few bugs, so it serves as a regression test. It can also
+// be modified (made to run longer) to measure performance of casts.
+TEST(CastsBenchmark) {
+  WasmGCTester tester;
+  const byte SuperType = tester.DefineStruct({F(wasm::kWasmI32, true)});
+  const byte SubType =
+      tester.DefineStruct({F(wasm::kWasmI32, true), F(wasm::kWasmI32, true)});
+  const byte ListType = tester.DefineArray(wasm::kWasmEqRef, true);
+
+  const byte List =
+      tester.AddGlobal(ValueType::Ref(ListType, kNullable), true,
+                       WasmInitExpr::RefNullConst(
+                           static_cast<HeapType::Representation>(ListType)));
+  const byte RttSuper = tester.AddGlobal(
+      ValueType::Rtt(SuperType, 1), false,
+      WasmInitExpr::RttCanon(static_cast<HeapType::Representation>(SuperType)));
+  const byte RttSub = tester.AddGlobal(
+      ValueType::Rtt(SubType, 2), false,
+      WasmInitExpr::RttSub(static_cast<HeapType::Representation>(SubType),
+                           WasmInitExpr::GlobalGet(RttSuper)));
+  const byte RttList = tester.AddGlobal(
+      ValueType::Rtt(ListType, 1), false,
+      WasmInitExpr::RttCanon(static_cast<HeapType::Representation>(ListType)));
+
+  const uint32_t kListLength = 1024;
+  const uint32_t i = 0;
+  const byte Prepare = tester.DefineFunction(
+      tester.sigs.i_v(), {wasm::kWasmI32},
+      {// List = new eqref[kListLength];
+       WASM_SET_GLOBAL(List,
+                       WASM_ARRAY_NEW_DEFAULT(ListType, WASM_I32V(kListLength),
+                                              WASM_GET_GLOBAL(RttList))),
+       // for (int i = 0; i < kListLength; ) {
+       //   List[i] = new Super(i);
+       //   i++;
+       //   List[i] = new Sub(i, 0);
+       //   i++;
+       // }
+       WASM_SET_LOCAL(i, WASM_I32V_1(0)),
+       WASM_LOOP(
+           WASM_ARRAY_SET(ListType, WASM_GET_GLOBAL(List), WASM_GET_LOCAL(i),
+                          WASM_STRUCT_NEW_WITH_RTT(SuperType, WASM_GET_LOCAL(i),
+                                                   WASM_GET_GLOBAL(RttSuper))),
+           WASM_SET_LOCAL(i, WASM_I32_ADD(WASM_GET_LOCAL(i), WASM_I32V_1(1))),
+           WASM_ARRAY_SET(ListType, WASM_GET_GLOBAL(List), WASM_GET_LOCAL(i),
+                          WASM_STRUCT_NEW_WITH_RTT(SubType, WASM_GET_LOCAL(i),
+                                                   WASM_I32V_1(0),
+                                                   WASM_GET_GLOBAL(RttSub))),
+           WASM_SET_LOCAL(i, WASM_I32_ADD(WASM_GET_LOCAL(i), WASM_I32V_1(1))),
+           WASM_BR_IF(0,
+                      WASM_I32_NE(WASM_GET_LOCAL(i), WASM_I32V(kListLength)))),
+       // return 42;  // Dummy value, due to test framework.
+       WASM_I32V_1(42), kExprEnd});
+
+  const uint32_t sum = 1;  // Index of the local.
+  const uint32_t list = 2;
+  const uint32_t kLoops = 2;
+  const uint32_t kIterations = kLoops * kListLength;
+  const byte Main = tester.DefineFunction(
+      tester.sigs.i_v(),
+      {
+          wasm::kWasmI32,
+          wasm::kWasmI32,
+          ValueType::Ref(ListType, kNullable),
+      },
+      {WASM_SET_LOCAL(list, WASM_GET_GLOBAL(List)),
+       // sum = 0;
+       WASM_SET_LOCAL(sum, WASM_I32V_1(0)),
+       // for (int i = 0; i < kIterations; i++) {
+       //   sum += ref.cast<super>(List[i & kListLength]).x
+       // }
+       WASM_SET_LOCAL(i, WASM_I32V_1(0)),
+       WASM_LOOP(
+           WASM_SET_LOCAL(
+               sum, WASM_I32_ADD(
+                        WASM_GET_LOCAL(sum),
+                        WASM_STRUCT_GET(
+                            SuperType, 0,
+                            WASM_REF_CAST(
+                                kEqRefCode, SuperType,
+                                WASM_ARRAY_GET(
+                                    ListType, WASM_GET_LOCAL(list),
+                                    WASM_I32_AND(WASM_GET_LOCAL(i),
+                                                 WASM_I32V(kListLength - 1))),
+                                WASM_GET_GLOBAL(RttSuper))))),
+           WASM_SET_LOCAL(i, WASM_I32_ADD(WASM_GET_LOCAL(i), WASM_I32V_1(1))),
+           WASM_BR_IF(0,
+                      WASM_I32_LTS(WASM_GET_LOCAL(i), WASM_I32V(kIterations)))),
+       // return sum;
+       WASM_GET_LOCAL(sum), kExprEnd});
+
+  tester.CompileModule();
+  tester.CheckResult(Prepare, 42);
+
+  // Time this section to get a benchmark for subtyping checks.
+  // Note: if you bump kIterations or kListLength, you may have to take i32
+  // overflow into account.
+  tester.CheckResult(Main, (kListLength * (kListLength - 1) / 2) * kLoops);
+}
+
 TEST(GlobalInitReferencingGlobal) {
   WasmGCTester tester;
   const byte from = tester.AddGlobal(kWasmI32, false, WasmInitExpr(42));
@@ -1048,72 +1260,89 @@ TEST(GlobalInitReferencingGlobal) {
   tester.CheckResult(func, 42);
 }
 
-TEST(JsAccess) {
+TEST(IndirectNullSetManually) {
   WasmGCTester tester;
-  const byte type_index = tester.DefineStruct({F(wasm::kWasmI32, true)});
-  ValueType kRefTypes[] = {ref(type_index)};
-  ValueType kEqRefTypes[] = {kWasmEqRef};
-  ValueType kEqToI[] = {kWasmI32, kWasmEqRef};
-  FunctionSig sig_t_v(1, 0, kRefTypes);
-  FunctionSig sig_q_v(1, 0, kEqRefTypes);
-  FunctionSig sig_i_q(1, 1, kEqToI);
-
-  tester.DefineExportedFunction(
-      "disallowed", &sig_t_v,
-      {WASM_STRUCT_NEW_WITH_RTT(type_index, WASM_I32V(42),
-                                WASM_RTT_CANON(type_index)),
-       kExprEnd});
-  // Same code, different signature.
-  tester.DefineExportedFunction(
-      "producer", &sig_q_v,
-      {WASM_STRUCT_NEW_WITH_RTT(type_index, WASM_I32V(42),
-                                WASM_RTT_CANON(type_index)),
-       kExprEnd});
-  tester.DefineExportedFunction(
-      "consumer", &sig_i_q,
-      {WASM_STRUCT_GET(type_index, 0,
-                       WASM_REF_CAST(kEqRefCode, type_index, WASM_GET_LOCAL(0),
-                                     WASM_RTT_CANON(type_index))),
+  byte sig_index = tester.DefineSignature(tester.sigs.i_i());
+  tester.DefineTable(ValueType::Ref(sig_index, kNullable), 1, 1);
+  byte func_index = tester.DefineFunction(
+      tester.sigs.i_i(), {},
+      {WASM_TABLE_SET(0, WASM_I32V(0), WASM_REF_NULL(sig_index)),
+       WASM_CALL_INDIRECT(sig_index, WASM_I32V(0), WASM_GET_LOCAL(0)),
        kExprEnd});
 
   tester.CompileModule();
-  Isolate* isolate = tester.isolate();
-  TryCatch try_catch(reinterpret_cast<v8::Isolate*>(isolate));
-  MaybeHandle<Object> maybe_result =
-      tester.CallExportedFunction("disallowed", 0, nullptr);
-  CHECK(maybe_result.is_null());
-  CHECK(try_catch.HasCaught());
-  try_catch.Reset();
-  isolate->clear_pending_exception();
 
-  maybe_result = tester.CallExportedFunction("producer", 0, nullptr);
-  if (maybe_result.is_null()) {
-    FATAL("Calling 'producer' failed: %s",
-          *v8::String::Utf8Value(reinterpret_cast<v8::Isolate*>(isolate),
-                                 try_catch.Message()->Get()));
+  tester.CheckHasThrown(func_index, 42);
+}
+
+TEST(JsAccess) {
+  for (ValueType supertype : {kWasmEqRef, kWasmAnyRef}) {
+    WasmGCTester tester;
+    const byte type_index = tester.DefineStruct({F(wasm::kWasmI32, true)});
+    ValueType kRefType = ref(type_index);
+    ValueType kSupertypeToI[] = {kWasmI32, supertype};
+    FunctionSig sig_t_v(1, 0, &kRefType);
+    FunctionSig sig_super_v(1, 0, &supertype);
+    FunctionSig sig_i_super(1, 1, kSupertypeToI);
+
+    tester.DefineExportedFunction(
+        "disallowed", &sig_t_v,
+        {WASM_STRUCT_NEW_WITH_RTT(type_index, WASM_I32V(42),
+                                  WASM_RTT_CANON(type_index)),
+         kExprEnd});
+    // Same code, different signature.
+    tester.DefineExportedFunction(
+        "producer", &sig_super_v,
+        {WASM_STRUCT_NEW_WITH_RTT(type_index, WASM_I32V(42),
+                                  WASM_RTT_CANON(type_index)),
+         kExprEnd});
+    tester.DefineExportedFunction(
+        "consumer", &sig_i_super,
+        {WASM_STRUCT_GET(
+             type_index, 0,
+             WASM_REF_CAST(supertype.value_type_code(), type_index,
+                           WASM_GET_LOCAL(0), WASM_RTT_CANON(type_index))),
+         kExprEnd});
+
+    tester.CompileModule();
+    Isolate* isolate = tester.isolate();
+    TryCatch try_catch(reinterpret_cast<v8::Isolate*>(isolate));
+    MaybeHandle<Object> maybe_result =
+        tester.CallExportedFunction("disallowed", 0, nullptr);
+    CHECK(maybe_result.is_null());
+    CHECK(try_catch.HasCaught());
+    try_catch.Reset();
+    isolate->clear_pending_exception();
+
+    maybe_result = tester.CallExportedFunction("producer", 0, nullptr);
+    if (maybe_result.is_null()) {
+      FATAL("Calling 'producer' failed: %s",
+            *v8::String::Utf8Value(reinterpret_cast<v8::Isolate*>(isolate),
+                                   try_catch.Message()->Get()));
+    }
+    {
+      Handle<Object> args[] = {maybe_result.ToHandleChecked()};
+      maybe_result = tester.CallExportedFunction("consumer", 1, args);
+    }
+    if (maybe_result.is_null()) {
+      FATAL("Calling 'consumer' failed: %s",
+            *v8::String::Utf8Value(reinterpret_cast<v8::Isolate*>(isolate),
+                                   try_catch.Message()->Get()));
+    }
+    Handle<Object> result = maybe_result.ToHandleChecked();
+    CHECK(result->IsSmi());
+    CHECK_EQ(42, Smi::cast(*result).value());
+    // Calling {consumer} with any other object (e.g. the Smi we just got as
+    // {result}) should trap.
+    {
+      Handle<Object> args[] = {result};
+      maybe_result = tester.CallExportedFunction("consumer", 1, args);
+    }
+    CHECK(maybe_result.is_null());
+    CHECK(try_catch.HasCaught());
+    try_catch.Reset();
+    isolate->clear_pending_exception();
   }
-  {
-    Handle<Object> args[] = {maybe_result.ToHandleChecked()};
-    maybe_result = tester.CallExportedFunction("consumer", 1, args);
-  }
-  if (maybe_result.is_null()) {
-    FATAL("Calling 'consumer' failed: %s",
-          *v8::String::Utf8Value(reinterpret_cast<v8::Isolate*>(isolate),
-                                 try_catch.Message()->Get()));
-  }
-  Handle<Object> result = maybe_result.ToHandleChecked();
-  CHECK(result->IsSmi());
-  CHECK_EQ(42, Smi::cast(*result).value());
-  // Calling {consumer} with any other object (e.g. the Smi we just got as
-  // {result}) should trap.
-  {
-    Handle<Object> args[] = {result};
-    maybe_result = tester.CallExportedFunction("consumer", 1, args);
-  }
-  CHECK(maybe_result.is_null());
-  CHECK(try_catch.HasCaught());
-  try_catch.Reset();
-  isolate->clear_pending_exception();
 }
 
 }  // namespace test_gc

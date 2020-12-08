@@ -24,6 +24,7 @@ struct CoverageScript;
 struct TypeProfileEntry;
 struct TypeProfileScript;
 class Coverage;
+class DisableBreak;
 class PostponeInterruptsScope;
 class Script;
 class TypeProfile;
@@ -422,6 +423,8 @@ class V8_EXPORT_PRIVATE ScopeIterator {
 
   ScopeIterator() = default;
   virtual ~ScopeIterator() = default;
+  ScopeIterator(const ScopeIterator&) = delete;
+  ScopeIterator& operator=(const ScopeIterator&) = delete;
 
   enum ScopeType {
     ScopeTypeGlobal = 0,
@@ -448,9 +451,6 @@ class V8_EXPORT_PRIVATE ScopeIterator {
 
   virtual bool SetVariableValue(v8::Local<v8::String> name,
                                 v8::Local<v8::Value> value) = 0;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(ScopeIterator);
 };
 
 class V8_EXPORT_PRIVATE StackTraceIterator {
@@ -460,6 +460,8 @@ class V8_EXPORT_PRIVATE StackTraceIterator {
                                                     int index = 0);
   StackTraceIterator() = default;
   virtual ~StackTraceIterator() = default;
+  StackTraceIterator(const StackTraceIterator&) = delete;
+  StackTraceIterator& operator=(const StackTraceIterator&) = delete;
 
   virtual bool Done() const = 0;
   virtual void Advance() = 0;
@@ -478,9 +480,6 @@ class V8_EXPORT_PRIVATE StackTraceIterator {
                                              bool throw_on_side_effect) = 0;
   virtual v8::MaybeLocal<v8::String> EvaluateWasm(
       internal::Vector<const internal::byte> source, int frame_index) = 0;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(StackTraceIterator);
 };
 
 class QueryObjectPredicate {
@@ -532,13 +531,22 @@ void ForceGarbageCollection(
     v8::Isolate* isolate,
     v8::EmbedderHeapTracer::EmbedderStackState embedder_stack_state);
 
-class PostponeInterruptsScope {
+class V8_NODISCARD PostponeInterruptsScope {
  public:
   explicit PostponeInterruptsScope(v8::Isolate* isolate);
   ~PostponeInterruptsScope();
 
  private:
   std::unique_ptr<i::PostponeInterruptsScope> scope_;
+};
+
+class V8_NODISCARD DisableBreakScope {
+ public:
+  explicit DisableBreakScope(v8::Isolate* isolate);
+  ~DisableBreakScope();
+
+ private:
+  std::unique_ptr<i::DisableBreak> scope_;
 };
 
 class WeakMap : public v8::Object {

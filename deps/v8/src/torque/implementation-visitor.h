@@ -64,7 +64,9 @@ class LocationReference {
   static LocationReference HeapSlice(VisitResult heap_slice) {
     LocationReference result;
     DCHECK(Type::MatchUnaryGeneric(heap_slice.type(),
-                                   TypeOracle::GetSliceGeneric()));
+                                   TypeOracle::GetConstSliceGeneric()) ||
+           Type::MatchUnaryGeneric(heap_slice.type(),
+                                   TypeOracle::GetMutableSliceGeneric()));
     result.heap_slice_ = std::move(heap_slice);
     return result;
   }
@@ -142,8 +144,12 @@ class LocationReference {
       return *TypeOracle::MatchReferenceGeneric(heap_reference().type());
     }
     if (IsHeapSlice()) {
-      return *Type::MatchUnaryGeneric(heap_slice().type(),
-                                      TypeOracle::GetSliceGeneric());
+      if (auto type = Type::MatchUnaryGeneric(
+              heap_slice().type(), TypeOracle::GetMutableSliceGeneric())) {
+        return *type;
+      }
+      return Type::MatchUnaryGeneric(heap_slice().type(),
+                                     TypeOracle::GetConstSliceGeneric());
     }
     if (IsBitFieldAccess()) {
       return bit_field_->name_and_type.type;
@@ -278,6 +284,8 @@ class Binding : public T {
 
     manager_->current_bindings_[name_] = previous_binding_;
   }
+  Binding(const Binding&) = delete;
+  Binding& operator=(const Binding&) = delete;
 
   std::string BindingTypeString() const;
   bool CheckWritten() const;
@@ -300,7 +308,6 @@ class Binding : public T {
   SourcePosition declaration_position_ = CurrentSourcePosition::Get();
   bool used_;
   bool written_;
-  DISALLOW_COPY_AND_ASSIGN(Binding);
 };
 
 template <class T>
@@ -552,8 +559,12 @@ class ImplementationVisitor {
   const Type* Visit(DebugStatement* stmt);
   const Type* Visit(AssertStatement* stmt);
 
-  void BeginCSAFiles();
-  void EndCSAFiles();
+  void BeginGeneratedFiles();
+  void EndGeneratedFiles();
+  // TODO(tebbi): Switch to per-file generation for runtime macros and merge
+  // these functions into {Begin,End}GeneratedFiles().
+  void BeginRuntimeMacrosFile();
+  void EndRuntimeMacrosFile();
 
   void GenerateImplementation(const std::string& dir);
 
@@ -594,7 +605,7 @@ class ImplementationVisitor {
   //   // ... create temporary slots ...
   //   result = stack_scope.Yield(surviving_slots);
   // }
-  class StackScope {
+  class V8_NODISCARD StackScope {
    public:
     explicit StackScope(ImplementationVisitor* visitor) : visitor_(visitor) {
       base_ = visitor_->assembler().CurrentStack().AboveTop();
@@ -727,7 +738,6 @@ class ImplementationVisitor {
                                 Block* false_block);
 
   void GenerateMacroFunctionDeclaration(std::ostream& o,
-                                        const std::string& macro_prefix,
                                         Macro* macro);
   std::vector<std::string> GenerateFunctionDeclaration(
       std::ostream& o, const std::string& macro_prefix, const std::string& name,
@@ -760,18 +770,39 @@ class ImplementationVisitor {
                                          size_t i);
   std::string ExternalParameterName(const std::string& name);
 
-  std::ostream& source_out() {
+  std::ostream& csa_ccfile() {
     if (auto* streams = CurrentFileStreams::Get()) {
-      return streams->csa_ccfile;
+      return output_type_ == OutputType::kCSA ? streams->csa_ccfile
+                                              : runtime_macros_cc_;
     }
     return null_stream_;
   }
-  std::ostream& header_out() {
+  std::ostream& csa_headerfile() {
     if (auto* streams = CurrentFileStreams::Get()) {
-      return streams->csa_headerfile;
+      return output_type_ == OutputType::kCSA ? streams->csa_headerfile
+                                              : runtime_macros_h_;
     }
     return null_stream_;
   }
+  std::ostream& class_definition_headerfile() {
+    if (auto* streams = CurrentFileStreams::Get()) {
+      return streams->class_definition_headerfile;
+    }
+    return null_stream_;
+  }
+  std::ostream& class_definition_inline_headerfile() {
+    if (auto* streams = CurrentFileStreams::Get()) {
+      return streams->class_definition_inline_headerfile;
+    }
+    return null_stream_;
+  }
+  std::ostream& class_definition_ccfile() {
+    if (auto* streams = CurrentFileStreams::Get()) {
+      return streams->class_definition_ccfile;
+    }
+    return null_stream_;
+  }
+
   CfgAssembler& assembler() { return *assembler_; }
 
   void SetReturnValue(VisitResult return_value) {
@@ -818,6 +849,16 @@ class ImplementationVisitor {
   // the value to load.
   std::unordered_map<const Expression*, const Identifier*>
       bitfield_expressions_;
+
+  // The contents of the runtime macros output files. These contain all Torque
+  // macros that have been generated using the C++ backend. They're not yet
+  // split per source file like CSA macros, but eventually we should change them
+  // to generate -inl.inc files so that callers can easily inline their
+  // contents.
+  std::stringstream runtime_macros_cc_;
+  std::stringstream runtime_macros_h_;
+
+  OutputType output_type_ = OutputType::kCSA;
 };
 
 void ReportAllUnusedMacros();
