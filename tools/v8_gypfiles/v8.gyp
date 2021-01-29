@@ -651,6 +651,13 @@
             '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "\\"v8_base_without_compiler.*?v8_current_cpu == \\"arm64\\".*?sources \+= ")',
           ],
           'conditions': [
+            ['OS=="mac"', {
+              'sources': [
+                "<(V8_ROOT)/src/trap-handler/handler-inside-posix.cc",
+                "<(V8_ROOT)/src/trap-handler/handler-inside-posix.h",
+                "<(V8_ROOT)/src/trap-handler/handler-outside-posix.cc",
+              ],
+            }],
             ['OS=="win"', {
               'sources': [
                 "<(V8_ROOT)/src/diagnostics/unwinding-info-win64.cc",
@@ -1575,6 +1582,7 @@
           '<(V8_ROOT)/src/objects/primitive-heap-object.h',
           '<(V8_ROOT)/src/objects/primitive-heap-object-inl.h',
           '<(V8_ROOT)/src/objects/scope-info.h',
+          '<(V8_ROOT)/src/objects/scope-info-inl.h',
           '<(V8_ROOT)/src/objects/script.h',
           '<(V8_ROOT)/src/objects/script-inl.h',
           '<(V8_ROOT)/src/objects/shared-function-info.cc',
