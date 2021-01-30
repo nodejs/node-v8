@@ -115,6 +115,7 @@ class Typer::Visitor : public Reducer {
       DECLARE_IMPOSSIBLE_CASE(Deoptimize)
       DECLARE_IMPOSSIBLE_CASE(DeoptimizeIf)
       DECLARE_IMPOSSIBLE_CASE(DeoptimizeUnless)
+      DECLARE_IMPOSSIBLE_CASE(DynamicCheckMapsWithDeoptUnless)
       DECLARE_IMPOSSIBLE_CASE(TrapIf)
       DECLARE_IMPOSSIBLE_CASE(TrapUnless)
       DECLARE_IMPOSSIBLE_CASE(Return)
@@ -576,6 +577,10 @@ Type Typer::Visitor::ObjectIsCallable(Type type, Typer* t) {
 Type Typer::Visitor::ObjectIsConstructor(Type type, Typer* t) {
   // TODO(turbofan): Introduce a Type::Constructor?
   CHECK(!type.IsNone());
+  if (type.IsHeapConstant() &&
+      type.AsHeapConstant()->Ref().map().is_constructor()) {
+    return t->singleton_true_;
+  }
   if (!type.Maybe(Type::Callable())) return t->singleton_false_;
   return Type::Boolean();
 }
@@ -675,10 +680,7 @@ Type Typer::Visitor::TypeIfException(Node* node) { return Type::NonInternal(); }
 // Common operators.
 
 Type Typer::Visitor::TypeParameter(Node* node) {
-  Node* const start = node->InputAt(0);
-  DCHECK_EQ(IrOpcode::kStart, start->opcode());
-  int const parameter_count = start->op()->ValueOutputCount() - 4;
-  DCHECK_LE(1, parameter_count);
+  StartNode start{node->InputAt(0)};
   int const index = ParameterIndexOf(node->op());
   if (index == Linkage::kJSCallClosureParamIndex) {
     return Type::Function();
@@ -689,15 +691,15 @@ Type Typer::Visitor::TypeParameter(Node* node) {
       // Parameter[this] can be the_hole for derived class constructors.
       return Type::Union(Type::Hole(), Type::NonInternal(), typer_->zone());
     }
-  } else if (index == Linkage::GetJSCallNewTargetParamIndex(parameter_count)) {
+  } else if (index == start.NewTargetParameterIndex()) {
     if (typer_->flags() & Typer::kNewTargetIsReceiver) {
       return Type::Receiver();
     } else {
       return Type::Union(Type::Receiver(), Type::Undefined(), typer_->zone());
     }
-  } else if (index == Linkage::GetJSCallArgCountParamIndex(parameter_count)) {
+  } else if (index == start.ArgCountParameterIndex()) {
     return Type::Range(0.0, FixedArray::kMaxLength, typer_->zone());
-  } else if (index == Linkage::GetJSCallContextParamIndex(parameter_count)) {
+  } else if (index == start.ContextParameterIndex()) {
     return Type::OtherInternal();
   }
   return Type::NonInternal();
@@ -1434,7 +1436,7 @@ Type Typer::Visitor::JSOrdinaryHasInstanceTyper(Type lhs, Type rhs, Typer* t) {
 }
 
 Type Typer::Visitor::TypeJSGetSuperConstructor(Node* node) {
-  return Type::Callable();
+  return Type::NonInternal();
 }
 
 // JS context operators.
@@ -2316,10 +2318,6 @@ Type Typer::Visitor::TypeArgumentsLength(Node* node) {
 
 Type Typer::Visitor::TypeRestLength(Node* node) {
   return TypeCache::Get()->kArgumentsLengthType;
-}
-
-Type Typer::Visitor::TypeArgumentsFrame(Node* node) {
-  return Type::ExternalPointer();
 }
 
 Type Typer::Visitor::TypeNewDoubleElements(Node* node) {

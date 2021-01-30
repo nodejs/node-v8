@@ -16,7 +16,6 @@
 #include "src/objects/objects.h"
 #include "src/wasm/struct-types.h"
 #include "src/wasm/value-type.h"
-#include "torque-generated/class-definitions.h"
 
 // Has to be the last include (doesn't have include guards)
 #include "src/objects/object-macros.h"
@@ -44,12 +43,13 @@ class WasmExternalFunction;
 class WasmInstanceObject;
 class WasmJSFunction;
 class WasmModuleObject;
-class WasmIndirectFunctionTable;
 
 enum class SharedFlag : uint8_t;
 
 template <class CppType>
 class Managed;
+
+#include "torque-generated/src/wasm/wasm-objects-tq.inc"
 
 #define DECL_OPTIONAL_ACCESSORS(name, type) \
   DECL_GETTER(has_##name, bool)             \
@@ -573,29 +573,9 @@ class V8_EXPORT_PRIVATE WasmInstanceObject : public JSObject {
   static wasm::WasmValue GetGlobalValue(Handle<WasmInstanceObject>,
                                         const wasm::WasmGlobal&);
 
-  // Get the name of a global in the given instance by index.
-  static MaybeHandle<String> GetGlobalNameOrNull(Isolate*,
-                                                 Handle<WasmInstanceObject>,
-                                                 uint32_t global_index);
-
-  // Get the name of a memory in the given instance by index.
-  static MaybeHandle<String> GetMemoryNameOrNull(Isolate*,
-                                                 Handle<WasmInstanceObject>,
-                                                 uint32_t memory_index);
-
-  // Get the name of a table in the given instance by index.
-  static MaybeHandle<String> GetTableNameOrNull(Isolate*,
-                                                Handle<WasmInstanceObject>,
-                                                uint32_t table_index);
-
   OBJECT_CONSTRUCTORS(WasmInstanceObject, JSObject);
 
  private:
-  // Get the name in the given instance by index and kind.
-  static MaybeHandle<String> GetNameFromImportsAndExportsOrNull(
-      Isolate*, Handle<WasmInstanceObject>, wasm::ImportExportKindCode kind,
-      uint32_t index);
-
   static void InitDataSegmentArrays(Handle<WasmInstanceObject>,
                                     Handle<WasmModuleObject>);
   static void InitElemSegmentArrays(Handle<WasmInstanceObject>,
@@ -665,6 +645,13 @@ class WasmExportedFunction : public JSFunction {
   Address GetWasmCallTarget();
 
   V8_EXPORT_PRIVATE const wasm::FunctionSig* sig();
+
+  bool MatchesSignature(const wasm::WasmModule* other_module,
+                        const wasm::FunctionSig* other_sig);
+
+  // Return a null-terminated string with the debug name in the form
+  // 'js-to-wasm:<sig>'.
+  static std::unique_ptr<char[]> GetDebugName(const wasm::FunctionSig* sig);
 
   DECL_CAST(WasmExportedFunction)
   OBJECT_CONSTRUCTORS(WasmExportedFunction, JSFunction);
@@ -750,27 +737,6 @@ class WasmIndirectFunctionTable : public Struct {
   OBJECT_CONSTRUCTORS(WasmIndirectFunctionTable, Struct);
 };
 
-class WasmCapiFunctionData : public Struct {
- public:
-  DECL_PRIMITIVE_ACCESSORS(call_target, Address)
-  DECL_ACCESSORS(embedder_data, Foreign)
-  DECL_ACCESSORS(wrapper_code, Code)
-  DECL_ACCESSORS(serialized_signature, PodArray<wasm::ValueType>)
-
-  DECL_CAST(WasmCapiFunctionData)
-
-  DECL_PRINTER(WasmCapiFunctionData)
-  DECL_VERIFIER(WasmCapiFunctionData)
-
-  DEFINE_FIELD_OFFSET_CONSTANTS(HeapObject::kHeaderSize,
-                                TORQUE_GENERATED_WASM_CAPI_FUNCTION_DATA_FIELDS)
-
-  STATIC_ASSERT(kStartOfStrongFieldsOffset == kEmbedderDataOffset);
-  using BodyDescriptor = FlexibleBodyDescriptor<kStartOfStrongFieldsOffset>;
-
-  OBJECT_CONSTRUCTORS(WasmCapiFunctionData, Struct);
-};
-
 // Information for a WasmExportedFunction which is referenced as the function
 // data of the SharedFunctionInfo underlying the function. For details please
 // see the {SharedFunctionInfo::HasWasmExportedFunctionData} predicate.
@@ -780,10 +746,13 @@ class WasmExportedFunctionData : public Struct {
   DECL_ACCESSORS(instance, WasmInstanceObject)
   DECL_INT_ACCESSORS(jump_table_offset)
   DECL_INT_ACCESSORS(function_index)
+  DECL_ACCESSORS(signature, Foreign)
+  DECL_INT_ACCESSORS(wrapper_budget)
   DECL_ACCESSORS(c_wrapper_code, Object)
   DECL_ACCESSORS(wasm_call_target, Object)
   DECL_INT_ACCESSORS(packed_args_size)
-  DECL_ACCESSORS(signature, Foreign)
+
+  inline wasm::FunctionSig* sig() const;
 
   DECL_CAST(WasmExportedFunctionData)
 
@@ -809,6 +778,7 @@ class WasmJSFunctionData : public Struct {
   DECL_ACCESSORS(serialized_signature, PodArray<wasm::ValueType>)
   DECL_ACCESSORS(callable, JSReceiver)
   DECL_ACCESSORS(wrapper_code, Code)
+  DECL_ACCESSORS(wasm_to_js_wrapper_code, Code)
 
   DECL_CAST(WasmJSFunctionData)
 
@@ -948,6 +918,7 @@ class WasmArray : public TorqueGeneratedWasmArray<WasmArray, HeapObject> {
   static inline wasm::ArrayType* GcSafeType(Map map);
 
   static inline int SizeFor(Map map, int length);
+  static inline int GcSafeSizeFor(Map map, int length);
 
   DECL_CAST(WasmArray)
   DECL_PRINTER(WasmArray)
@@ -962,11 +933,9 @@ class WasmArray : public TorqueGeneratedWasmArray<WasmArray, HeapObject> {
 namespace wasm {
 
 Handle<Map> CreateStructMap(Isolate* isolate, const WasmModule* module,
-                            int struct_index, Handle<Map> rtt_parent);
+                            int struct_index, MaybeHandle<Map> rtt_parent);
 Handle<Map> CreateArrayMap(Isolate* isolate, const WasmModule* module,
-                           int array_index, Handle<Map> rtt_parent);
-Handle<Map> CreateGenericRtt(Isolate* isolate, const WasmModule* module,
-                             Handle<Map> rtt_parent);
+                           int array_index, MaybeHandle<Map> rtt_parent);
 Handle<Map> AllocateSubRtt(Isolate* isolate,
                            Handle<WasmInstanceObject> instance, uint32_t type,
                            Handle<Map> parent);

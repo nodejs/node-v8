@@ -5,6 +5,7 @@
 #ifndef V8_OBJECTS_JS_REGEXP_H_
 #define V8_OBJECTS_JS_REGEXP_H_
 
+#include "src/objects/contexts.h"
 #include "src/objects/js-array.h"
 #include "torque-generated/bit-fields.h"
 
@@ -13,6 +14,8 @@
 
 namespace v8 {
 namespace internal {
+
+#include "torque-generated/src/objects/js-regexp-tq.inc"
 
 // Regular expressions
 // The regular expression holds a single reference to a FixedArray in
@@ -40,8 +43,8 @@ class JSRegExp : public TorqueGeneratedJSRegExp<JSRegExp, JSObject> {
   enum Type { NOT_COMPILED, ATOM, IRREGEXP, EXPERIMENTAL };
   DEFINE_TORQUE_GENERATED_JS_REG_EXP_FLAGS()
 
-  static constexpr base::Optional<Flag> FlagFromChar(char c) {
-    STATIC_ASSERT(kFlagCount == 6);
+  static base::Optional<Flag> FlagFromChar(char c) {
+    STATIC_ASSERT(kFlagCount == 8);
     // clang-format off
     return c == 'g' ? base::Optional<Flag>(kGlobal)
          : c == 'i' ? base::Optional<Flag>(kIgnoreCase)
@@ -49,6 +52,10 @@ class JSRegExp : public TorqueGeneratedJSRegExp<JSRegExp, JSObject> {
          : c == 'y' ? base::Optional<Flag>(kSticky)
          : c == 'u' ? base::Optional<Flag>(kUnicode)
          : c == 's' ? base::Optional<Flag>(kDotAll)
+         : (FLAG_enable_experimental_regexp_engine && c == 'l')
+           ? base::Optional<Flag>(kLinear)
+         : (FLAG_harmony_regexp_match_indices &&  c == 'd')
+           ? base::Optional<Flag>(kHasIndices)
          : base::Optional<Flag>();
     // clang-format on
   }
@@ -60,6 +67,8 @@ class JSRegExp : public TorqueGeneratedJSRegExp<JSRegExp, JSObject> {
   STATIC_ASSERT(static_cast<int>(kSticky) == v8::RegExp::kSticky);
   STATIC_ASSERT(static_cast<int>(kUnicode) == v8::RegExp::kUnicode);
   STATIC_ASSERT(static_cast<int>(kDotAll) == v8::RegExp::kDotAll);
+  STATIC_ASSERT(static_cast<int>(kLinear) == v8::RegExp::kLinear);
+  STATIC_ASSERT(static_cast<int>(kHasIndices) == v8::RegExp::kHasIndices);
   STATIC_ASSERT(kFlagCount == v8::RegExp::kFlagCount);
 
   DECL_ACCESSORS(last_index, Object)
@@ -244,22 +253,38 @@ class JSRegExpResult : public JSArray {
   DEFINE_FIELD_OFFSET_CONSTANTS(JSArray::kHeaderSize,
                                 TORQUE_GENERATED_JS_REG_EXP_RESULT_FIELDS)
 
-  static MaybeHandle<JSArray> GetAndCacheIndices(
-      Isolate* isolate, Handle<JSRegExpResult> regexp_result);
-
   // Indices of in-object properties.
   static const int kIndexIndex = 0;
   static const int kInputIndex = 1;
   static const int kGroupsIndex = 2;
 
   // Private internal only fields.
-  static const int kCachedIndicesOrRegExpIndex = 3;
-  static const int kNamesIndex = 4;
-  static const int kRegExpInputIndex = 5;
-  static const int kRegExpLastIndex = 6;
-  static const int kInObjectPropertyCount = 7;
+  static const int kNamesIndex = 3;
+  static const int kRegExpInputIndex = 4;
+  static const int kRegExpLastIndex = 5;
+  static const int kInObjectPropertyCount = 6;
+
+  static const int kMapIndexInContext = Context::REGEXP_RESULT_MAP_INDEX;
 
   OBJECT_CONSTRUCTORS(JSRegExpResult, JSArray);
+};
+
+class JSRegExpResultWithIndices : public JSRegExpResult {
+ public:
+  DECL_CAST(JSRegExpResultWithIndices)
+
+  // Layout description.
+  DEFINE_FIELD_OFFSET_CONSTANTS(
+      JSRegExpResult::kSize,
+      TORQUE_GENERATED_JS_REG_EXP_RESULT_WITH_INDICES_FIELDS)
+
+  static_assert(
+      JSRegExpResult::kInObjectPropertyCount == 6,
+      "JSRegExpResultWithIndices must be a subclass of JSRegExpResult");
+  static const int kIndicesIndex = 6;
+  static const int kInObjectPropertyCount = 7;
+
+  OBJECT_CONSTRUCTORS(JSRegExpResultWithIndices, JSRegExpResult);
 };
 
 // JSRegExpResultIndices is just a JSArray with a specific initial map.

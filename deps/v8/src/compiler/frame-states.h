@@ -104,7 +104,8 @@ class FrameStateFunctionInfo {
 
 class FrameStateInfo final {
  public:
-  FrameStateInfo(BailoutId bailout_id, OutputFrameStateCombine state_combine,
+  FrameStateInfo(BytecodeOffset bailout_id,
+                 OutputFrameStateCombine state_combine,
                  const FrameStateFunctionInfo* info)
       : bailout_id_(bailout_id),
         frame_state_combine_(state_combine),
@@ -114,7 +115,7 @@ class FrameStateInfo final {
     return info_ == nullptr ? FrameStateType::kInterpretedFunction
                             : info_->type();
   }
-  BailoutId bailout_id() const { return bailout_id_; }
+  BytecodeOffset bailout_id() const { return bailout_id_; }
   OutputFrameStateCombine state_combine() const { return frame_state_combine_; }
   MaybeHandle<SharedFunctionInfo> shared_info() const {
     return info_ == nullptr ? MaybeHandle<SharedFunctionInfo>()
@@ -129,7 +130,7 @@ class FrameStateInfo final {
   const FrameStateFunctionInfo* function_info() const { return info_; }
 
  private:
-  BailoutId const bailout_id_;
+  BytecodeOffset const bailout_id_;
   OutputFrameStateCombine const frame_state_combine_;
   const FrameStateFunctionInfo* const info_;
 };
@@ -141,15 +142,9 @@ size_t hash_value(FrameStateInfo const&);
 
 std::ostream& operator<<(std::ostream&, FrameStateInfo const&);
 
-static constexpr int kFrameStateParametersInput = 0;
-static constexpr int kFrameStateLocalsInput = 1;
-static constexpr int kFrameStateStackInput = 2;
-static constexpr int kFrameStateContextInput = 3;
-static constexpr int kFrameStateFunctionInput = 4;
-static constexpr int kFrameStateOuterStateInput = 5;
-static constexpr int kFrameStateInputCount = kFrameStateOuterStateInput + 1;
-
 enum class ContinuationFrameStateMode { EAGER, LAZY, LAZY_WITH_CATCH };
+
+class FrameState;
 
 FrameState CreateStubBuiltinContinuationFrameState(
     JSGraph* graph, Builtins::Name name, Node* context, Node* const* parameters,

@@ -20,11 +20,9 @@ namespace internal {
 
 template <typename T>
 class Handle;
-class JSObject;
 template <typename T>
 class Vector;
 class WasmFrame;
-class WasmInstanceObject;
 
 namespace wasm {
 
@@ -34,6 +32,7 @@ class NativeModule;
 class WasmCode;
 class WireBytesRef;
 class WasmValue;
+struct WasmFunction;
 
 // Side table storing information used to inspect Liftoff frames at runtime.
 // This table is only created on demand for debugging, so it is not optimized
@@ -135,10 +134,6 @@ class DebugSideTable {
   std::vector<Entry> entries_;
 };
 
-// Get the module scope for a given instance. This will contain the wasm memory
-// (if the instance has a memory) and the values of all globals.
-Handle<JSObject> GetModuleScopeObject(Handle<WasmInstanceObject>);
-
 // Debug info per NativeModule, created lazily on demand.
 // Implementation in {wasm-debug.cc} using PIMPL.
 class V8_EXPORT_PRIVATE DebugInfo {
@@ -153,20 +148,32 @@ class V8_EXPORT_PRIVATE DebugInfo {
   WasmValue GetLocalValue(int local, Address pc, Address fp,
                           Address debug_break_fp);
   int GetStackDepth(Address pc);
+
+  const wasm::WasmFunction& GetFunctionAtAddress(Address pc);
+
   WasmValue GetStackValue(int index, Address pc, Address fp,
                           Address debug_break_fp);
 
-  Handle<JSObject> GetLocalScopeObject(Isolate*, Address pc, Address fp,
-                                       Address debug_break_fp);
+  // Returns the name of the entity (with the given |index| and |kind|) derived
+  // from the exports table. If the entity is not exported, an empty reference
+  // will be returned instead.
+  WireBytesRef GetExportName(ImportExportKindCode kind, uint32_t index);
 
-  Handle<JSObject> GetStackScopeObject(Isolate*, Address pc, Address fp,
-                                       Address debug_break_fp);
+  // Returns the module and field name of the entity (with the given |index|
+  // and |kind|) derived from the imports table. If the entity is not imported,
+  // a pair of empty references will be returned instead.
+  std::pair<WireBytesRef, WireBytesRef> GetImportName(ImportExportKindCode kind,
+                                                      uint32_t index);
 
   WireBytesRef GetLocalName(int func_index, int local_index);
 
   void SetBreakpoint(int func_index, int offset, Isolate* current_isolate);
 
-  void PrepareStep(Isolate*, StackFrameId);
+  // Returns true if we stay inside the passed frame (or a called frame) after
+  // the step. False if the frame will return after the step.
+  bool PrepareStep(WasmFrame*);
+
+  void PrepareStepOutTo(WasmFrame*);
 
   void ClearStepping(Isolate*);
 

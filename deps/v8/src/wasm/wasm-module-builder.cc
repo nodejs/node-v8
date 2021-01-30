@@ -414,11 +414,12 @@ void WasmModuleBuilder::SetHasSharedMemory() { has_shared_memory_ = true; }
 namespace {
 void WriteValueType(ZoneBuffer* buffer, const ValueType& type) {
   buffer->write_u8(type.value_type_code());
-  if (type.has_depth()) {
-    buffer->write_u32v(type.depth());
-  }
   if (type.encoding_needs_heap_type()) {
     buffer->write_i32v(type.heap_type().code());
+  }
+  if (type.is_rtt()) {
+    if (type.has_depth()) buffer->write_u32v(type.depth());
+    buffer->write_u32v(type.ref_index());
   }
 }
 
@@ -489,6 +490,7 @@ void WriteGlobalInitializer(ZoneBuffer* buffer, const WasmInitExpr& init,
         case ValueType::kBottom:
         case ValueType::kRef:
         case ValueType::kRtt:
+        case ValueType::kRttWithDepth:
           UNREACHABLE();
       }
       break;
@@ -497,16 +499,17 @@ void WriteGlobalInitializer(ZoneBuffer* buffer, const WasmInitExpr& init,
       STATIC_ASSERT((kExprRttCanon >> 8) == kGCPrefix);
       buffer->write_u8(kGCPrefix);
       buffer->write_u8(static_cast<uint8_t>(kExprRttCanon));
-      buffer->write_i32v(HeapType(init.immediate().heap_type).code());
+      buffer->write_i32v(static_cast<int32_t>(init.immediate().index));
       break;
     case WasmInitExpr::kRttSub:
+      // The operand to rtt.sub must be emitted first.
+      WriteGlobalInitializer(buffer, *init.operand(), kWasmBottom);
       // TODO(7748): If immediates for rtts remain in the standard, adapt this
       // to emit them.
       STATIC_ASSERT((kExprRttSub >> 8) == kGCPrefix);
       buffer->write_u8(kGCPrefix);
       buffer->write_u8(static_cast<uint8_t>(kExprRttSub));
-      buffer->write_i32v(HeapType(init.immediate().heap_type).code());
-      WriteGlobalInitializer(buffer, *init.operand(), kWasmBottom);
+      buffer->write_i32v(static_cast<int32_t>(init.immediate().index));
       break;
   }
 }
@@ -597,7 +600,7 @@ void WasmModuleBuilder::WriteTo(ZoneBuffer* buffer) const {
     size_t start = EmitSection(kTableSectionCode, buffer);
     buffer->write_size(tables_.size());
     for (const WasmTable& table : tables_) {
-      buffer->write_u8(table.type.value_type_code());
+      WriteValueType(buffer, table.type);
       buffer->write_u8(table.has_maximum ? kWithMaximum : kNoMaximum);
       buffer->write_size(table.min_size);
       if (table.has_maximum) buffer->write_size(table.max_size);

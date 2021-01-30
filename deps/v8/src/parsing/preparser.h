@@ -567,7 +567,7 @@ class PreParserFactory {
   }
   PreParserExpression NewObjectLiteral(
       const PreParserExpressionList& properties, int boilerplate_properties,
-      int pos, bool has_rest_property) {
+      int pos, bool has_rest_property, Variable* home_object = nullptr) {
     return PreParserExpression::ObjectLiteral();
   }
   PreParserExpression NewVariableProxy(void* variable) {
@@ -792,6 +792,12 @@ class PreParserFactory {
     return PreParserExpression::Default();
   }
 
+  PreParserExpression NewImportCallExpression(
+      const PreParserExpression& specifier,
+      const PreParserExpression& import_assertions, int pos) {
+    return PreParserExpression::Default();
+  }
+
  private:
   // For creating VariableProxy objects to track unresolved variables.
   AstNodeFactory ast_node_factory_;
@@ -823,6 +829,9 @@ class PreParserFormalParameters : public FormalParametersBase {
 class PreParserFuncNameInferrer {
  public:
   explicit PreParserFuncNameInferrer(AstValueFactory* avf) {}
+  PreParserFuncNameInferrer(const PreParserFuncNameInferrer&) = delete;
+  PreParserFuncNameInferrer& operator=(const PreParserFuncNameInferrer&) =
+      delete;
   void RemoveAsyncKeywordFromEnd() const {}
   void Infer() const {}
   void RemoveLastFunction() const {}
@@ -830,13 +839,9 @@ class PreParserFuncNameInferrer {
   class State {
    public:
     explicit State(PreParserFuncNameInferrer* fni) {}
-
-   private:
-    DISALLOW_COPY_AND_ASSIGN(State);
+    State(const State&) = delete;
+    State& operator=(const State&) = delete;
   };
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(PreParserFuncNameInferrer);
 };
 
 class PreParserSourceRange {
@@ -1539,9 +1544,6 @@ class PreParser : public ParserBase<PreParser> {
   }
 
   V8_INLINE PreParserExpression NewSuperPropertyReference(int pos) {
-    scope()->NewUnresolved(factory()->ast_node_factory(),
-                           ast_value_factory()->this_function_string(), pos,
-                           NORMAL_VARIABLE);
     return PreParserExpression::Default();
   }
 

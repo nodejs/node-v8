@@ -16,11 +16,6 @@ namespace v8 {
 namespace internal {
 namespace compiler {
 
-// Guard equality of these constants. Ideally they should be merged at
-// some point.
-STATIC_ASSERT(kFrameStateOuterStateInput ==
-              FrameState::kFrameStateOuterStateInput);
-
 size_t hash_value(OutputFrameStateCombine const& sc) {
   return base::hash_value(sc.parameter_);
 }
@@ -118,7 +113,7 @@ FrameState CreateBuiltinContinuationFrameStateCommon(
       common->StateValues(parameter_count, SparseInputMask::Dense());
   Node* params_node = graph->NewNode(op_param, parameter_count, parameters);
 
-  BailoutId bailout_id = Builtins::GetContinuationBailoutId(name);
+  BytecodeOffset bailout_id = Builtins::GetContinuationBytecodeOffset(name);
   const FrameStateFunctionInfo* state_info =
       common->CreateFrameStateFunctionInfo(frame_type, parameter_count, 0,
                                            shared);
@@ -185,6 +180,7 @@ FrameState CreateJavaScriptBuiltinContinuationFrameState(
   // to be the second value in the translation when creating stack crawls
   // (e.g. Error.stack) of optimized JavaScript frames.
   std::vector<Node*> actual_parameters;
+  actual_parameters.reserve(stack_parameter_count);
   for (int i = 0; i < stack_parameter_count; ++i) {
     actual_parameters.push_back(stack_parameters[i]);
   }

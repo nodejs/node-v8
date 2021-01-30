@@ -21,6 +21,74 @@
 namespace v8 {
 namespace internal {
 
+namespace {
+
+// Returns false iff an exception was thrown.
+bool MaybeSpawnNativeContextIndependentCompilationJob(
+    Handle<JSFunction> function, ConcurrencyMode mode) {
+  if (!FLAG_turbo_nci || FLAG_turbo_nci_as_midtier) {
+    return true;  // Nothing to do.
+  }
+
+  // If delayed codegen is enabled, the first optimization request does not
+  // trigger NCI compilation, since we try to avoid compiling Code that
+  // remains unused in the future.  Repeated optimization (possibly in
+  // different native contexts) is taken as a signal that this SFI will
+  // continue to be used in the future, thus we trigger NCI compilation.
+  if (!FLAG_turbo_nci_delayed_codegen ||
+      function->shared().has_optimized_at_least_once()) {
+    if (!Compiler::CompileOptimized(function, mode,
+                                    CodeKind::NATIVE_CONTEXT_INDEPENDENT)) {
+      return false;
+    }
+  } else {
+    function->shared().set_has_optimized_at_least_once(true);
+  }
+
+  return true;
+}
+
+Object CompileOptimized(Isolate* isolate, Handle<JSFunction> function,
+                        ConcurrencyMode mode) {
+  StackLimitCheck check(isolate);
+  if (check.JsHasOverflowed(kStackSpaceRequiredForCompilation * KB)) {
+    return isolate->StackOverflow();
+  }
+
+  // Compile for the next tier.
+  if (!Compiler::CompileOptimized(function, mode, function->NextTier())) {
+    return ReadOnlyRoots(isolate).exception();
+  }
+
+  // Possibly compile for NCI caching.
+  if (!MaybeSpawnNativeContextIndependentCompilationJob(function, mode)) {
+    return ReadOnlyRoots(isolate).exception();
+  }
+
+  // As a post-condition of CompileOptimized, the function *must* be compiled,
+  // i.e. the installed Code object must not be the CompileLazy builtin.
+  DCHECK(function->is_compiled());
+  return function->code();
+}
+
+void TryInstallNCICode(Isolate* isolate, Handle<JSFunction> function,
+                       Handle<SharedFunctionInfo> sfi,
+                       IsCompiledScope* is_compiled_scope) {
+  // This function should only be called if there's a possibility that cached
+  // code exists.
+  DCHECK(sfi->may_have_cached_code());
+  DCHECK_EQ(function->shared(), *sfi);
+
+  Handle<Code> code;
+  if (sfi->TryGetCachedCode(isolate).ToHandle(&code)) {
+    function->set_code(*code);
+    JSFunction::EnsureFeedbackVector(function, is_compiled_scope);
+    if (FLAG_trace_turbo_nci) CompilationCacheCode::TraceHit(sfi, code);
+  }
+}
+
+}  // namespace
+
 RUNTIME_FUNCTION(Runtime_CompileLazy) {
   HandleScope scope(isolate);
   DCHECK_EQ(1, args.length());
@@ -46,58 +114,23 @@ RUNTIME_FUNCTION(Runtime_CompileLazy) {
     return ReadOnlyRoots(isolate).exception();
   }
   if (sfi->may_have_cached_code()) {
-    Handle<Code> code;
-    if (sfi->TryGetCachedCode(isolate).ToHandle(&code)) {
-      function->set_code(*code);
-      JSFunction::EnsureFeedbackVector(function, &is_compiled_scope);
-      if (FLAG_trace_turbo_nci) CompilationCacheCode::TraceHit(sfi, code);
-      return *code;
-    }
+    TryInstallNCICode(isolate, function, sfi, &is_compiled_scope);
   }
   DCHECK(function->is_compiled());
   return function->code();
 }
 
-namespace {
-
-inline bool MaybeSpawnNativeContextIndependentCompilationJob() {
-  return FLAG_turbo_nci && !FLAG_turbo_nci_as_midtier;
-}
-
-Object CompileOptimized(Isolate* isolate, Handle<JSFunction> function,
-                        ConcurrencyMode mode) {
-  StackLimitCheck check(isolate);
-  if (check.JsHasOverflowed(kStackSpaceRequiredForCompilation * KB)) {
-    return isolate->StackOverflow();
-  }
-
-  // Compile for the next tier.
-  if (!Compiler::CompileOptimized(function, mode, function->NextTier())) {
-    return ReadOnlyRoots(isolate).exception();
-  }
-
-  // Possibly compile for NCI caching.
-  if (MaybeSpawnNativeContextIndependentCompilationJob()) {
-    // The first optimization request does not trigger NCI compilation,
-    // since we try to avoid compiling Code that remains unused in the future.
-    // Repeated optimization (possibly in different native contexts) is taken
-    // as a signal that this SFI will continue to be used in the future, thus
-    // we trigger NCI compilation.
-    if (function->shared().has_optimized_at_least_once()) {
-      if (!Compiler::CompileOptimized(function, mode,
-                                      CodeKind::NATIVE_CONTEXT_INDEPENDENT)) {
-        return ReadOnlyRoots(isolate).exception();
-      }
-    } else {
-      function->shared().set_has_optimized_at_least_once(true);
-    }
-  }
-
+RUNTIME_FUNCTION(Runtime_TryInstallNCICode) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(1, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(JSFunction, function, 0);
+  DCHECK(function->is_compiled());
+  Handle<SharedFunctionInfo> sfi(function->shared(), isolate);
+  IsCompiledScope is_compiled_scope(*sfi, isolate);
+  TryInstallNCICode(isolate, function, sfi, &is_compiled_scope);
   DCHECK(function->is_compiled());
   return function->code();
 }
-
-}  // namespace
 
 RUNTIME_FUNCTION(Runtime_CompileOptimized_Concurrent) {
   HandleScope scope(isolate);
@@ -123,16 +156,17 @@ RUNTIME_FUNCTION(Runtime_FunctionFirstExecution) {
             OptimizationMarker::kLogFirstExecution);
   DCHECK(FLAG_log_function_events);
   Handle<SharedFunctionInfo> sfi(function->shared(), isolate);
-  LOG(isolate, FunctionEvent(
-                   "first-execution", Script::cast(sfi->script()).id(), 0,
-                   sfi->StartPosition(), sfi->EndPosition(), sfi->DebugName()));
+  Handle<String> name = SharedFunctionInfo::DebugName(sfi);
+  LOG(isolate,
+      FunctionEvent("first-execution", Script::cast(sfi->script()).id(), 0,
+                    sfi->StartPosition(), sfi->EndPosition(), *name));
   function->feedback_vector().ClearOptimizationMarker();
   // Return the code to continue execution, we don't care at this point whether
   // this is for lazy compilation or has been eagerly complied.
   return function->code();
 }
 
-RUNTIME_FUNCTION(Runtime_EvictOptimizedCodeSlot) {
+RUNTIME_FUNCTION(Runtime_HealOptimizedCodeSlot) {
   SealHandleScope scope(isolate);
   DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSFunction, function, 0);
@@ -140,7 +174,7 @@ RUNTIME_FUNCTION(Runtime_EvictOptimizedCodeSlot) {
   DCHECK(function->shared().is_compiled());
 
   function->feedback_vector().EvictOptimizedCodeMarkedForDeoptimization(
-      function->shared(), "Runtime_EvictOptimizedCodeSlot");
+      function->shared(), "Runtime_HealOptimizedCodeSlot");
   return function->code();
 }
 
@@ -185,7 +219,6 @@ RUNTIME_FUNCTION(Runtime_NotifyDeoptimized) {
   Deoptimizer* deoptimizer = Deoptimizer::Grab(isolate);
   DCHECK(CodeKindCanDeoptimize(deoptimizer->compiled_code()->kind()));
   DCHECK(deoptimizer->compiled_code()->is_turbofanned());
-  DCHECK(AllowHeapAllocation::IsAllowed());
   DCHECK(AllowGarbageCollection::IsAllowed());
   DCHECK(isolate->context().is_null());
 
@@ -224,6 +257,14 @@ RUNTIME_FUNCTION(Runtime_NotifyDeoptimized) {
   return ReadOnlyRoots(isolate).undefined_value();
 }
 
+RUNTIME_FUNCTION(Runtime_ObserveNode) {
+  // The %ObserveNode intrinsic only tracks the changes to an observed node in
+  // code compiled by TurboFan.
+  HandleScope scope(isolate);
+  DCHECK_EQ(1, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(Object, obj, 0);
+  return *obj;
+}
 
 static bool IsSuitableForOnStackReplacement(Isolate* isolate,
                                             Handle<JSFunction> function) {
@@ -250,13 +291,15 @@ static bool IsSuitableForOnStackReplacement(Isolate* isolate,
 
 namespace {
 
-BailoutId DetermineEntryAndDisarmOSRForInterpreter(JavaScriptFrame* frame) {
+BytecodeOffset DetermineEntryAndDisarmOSRForInterpreter(
+    JavaScriptFrame* frame) {
   InterpretedFrame* iframe = reinterpret_cast<InterpretedFrame*>(frame);
 
   // Note that the bytecode array active on the stack might be different from
   // the one installed on the function (e.g. patched by debugger). This however
-  // is fine because we guarantee the layout to be in sync, hence any BailoutId
-  // representing the entry point will be valid for any copy of the bytecode.
+  // is fine because we guarantee the layout to be in sync, hence any
+  // BytecodeOffset representing the entry point will be valid for any copy of
+  // the bytecode.
   Handle<BytecodeArray> bytecode(iframe->GetBytecodeArray(), iframe->isolate());
 
   DCHECK(frame->LookupCode().is_interpreter_trampoline_builtin());
@@ -266,8 +309,9 @@ BailoutId DetermineEntryAndDisarmOSRForInterpreter(JavaScriptFrame* frame) {
   // Reset the OSR loop nesting depth to disarm back edges.
   bytecode->set_osr_loop_nesting_level(0);
 
-  // Return a BailoutId representing the bytecode offset of the back branch.
-  return BailoutId(iframe->GetBytecodeOffset());
+  // Return a BytecodeOffset representing the bytecode offset of the back
+  // branch.
+  return BytecodeOffset(iframe->GetBytecodeOffset());
 }
 
 }  // namespace
@@ -286,8 +330,8 @@ RUNTIME_FUNCTION(Runtime_CompileForOnStackReplacement) {
 
   // Determine the entry point for which this OSR request has been fired and
   // also disarm all back edges in the calling code to stop new requests.
-  BailoutId ast_id = DetermineEntryAndDisarmOSRForInterpreter(frame);
-  DCHECK(!ast_id.IsNone());
+  BytecodeOffset osr_offset = DetermineEntryAndDisarmOSRForInterpreter(frame);
+  DCHECK(!osr_offset.IsNone());
 
   MaybeHandle<Code> maybe_result;
   Handle<JSFunction> function(frame->function(), isolate);
@@ -296,9 +340,18 @@ RUNTIME_FUNCTION(Runtime_CompileForOnStackReplacement) {
       CodeTracer::Scope scope(isolate->GetCodeTracer());
       PrintF(scope.file(), "[OSR - Compiling: ");
       function->PrintName(scope.file());
-      PrintF(scope.file(), " at AST id %d]\n", ast_id.ToInt());
+      PrintF(scope.file(), " at OSR bytecode offset %d]\n", osr_offset.ToInt());
     }
-    maybe_result = Compiler::GetOptimizedCodeForOSR(function, ast_id, frame);
+    maybe_result =
+        Compiler::GetOptimizedCodeForOSR(function, osr_offset, frame);
+
+    // Possibly compile for NCI caching.
+    if (!MaybeSpawnNativeContextIndependentCompilationJob(
+            function, isolate->concurrent_recompilation_enabled()
+                          ? ConcurrencyMode::kConcurrent
+                          : ConcurrencyMode::kNotConcurrent)) {
+      return Object();
+    }
   }
 
   // Check whether we ended up with usable optimized code.
@@ -309,12 +362,13 @@ RUNTIME_FUNCTION(Runtime_CompileForOnStackReplacement) {
         DeoptimizationData::cast(result->deoptimization_data());
 
     if (data.OsrPcOffset().value() >= 0) {
-      DCHECK(BailoutId(data.OsrBytecodeOffset().value()) == ast_id);
+      DCHECK(BytecodeOffset(data.OsrBytecodeOffset().value()) == osr_offset);
       if (FLAG_trace_osr) {
         CodeTracer::Scope scope(isolate->GetCodeTracer());
         PrintF(scope.file(),
-               "[OSR - Entry at AST id %d, offset %d in optimized code]\n",
-               ast_id.ToInt(), data.OsrPcOffset().value());
+               "[OSR - Entry at OSR bytecode offset %d, offset %d in optimized "
+               "code]\n",
+               osr_offset.ToInt(), data.OsrPcOffset().value());
       }
 
       DCHECK(result->is_turbofanned());
@@ -358,7 +412,7 @@ RUNTIME_FUNCTION(Runtime_CompileForOnStackReplacement) {
     CodeTracer::Scope scope(isolate->GetCodeTracer());
     PrintF(scope.file(), "[OSR - Failed: ");
     function->PrintName(scope.file());
-    PrintF(scope.file(), " at AST id %d]\n", ast_id.ToInt());
+    PrintF(scope.file(), " at OSR bytecode offset %d]\n", osr_offset.ToInt());
   }
 
   if (!function->HasAttachedOptimizedCode()) {

@@ -16,7 +16,7 @@
 #include "src/heap/heap-inl.h"
 #include "src/heap/mark-compact.h"
 #include "src/logging/counters.h"
-#include "src/objects/compilation-cache-inl.h"
+#include "src/objects/compilation-cache-table-inl.h"
 #include "src/objects/heap-object.h"
 #include "src/objects/js-array-inl.h"
 #include "src/objects/js-collection-inl.h"
@@ -150,7 +150,7 @@ FieldStatsCollector::GetInobjectFieldStats(Map map) {
   JSObjectFieldStats stats;
   stats.embedded_fields_count_ = JSObject::GetEmbedderFieldCount(map);
   if (!map.is_dictionary_map()) {
-    DescriptorArray descriptors = map.instance_descriptors();
+    DescriptorArray descriptors = map.instance_descriptors(kRelaxedLoad);
     for (InternalIndex descriptor : map.IterateOwnDescriptors()) {
       PropertyDetails details = descriptors.GetDetails(descriptor);
       if (details.location() == kField) {
@@ -355,8 +355,8 @@ int Log2ForSize(size_t size) {
 
 int ObjectStats::HistogramIndexFromSize(size_t size) {
   if (size == 0) return 0;
-  return Min(Max(Log2ForSize(size) + 1 - kFirstBucketShift, 0),
-             kLastValueBucketIndex);
+  return std::min({std::max(Log2ForSize(size) + 1 - kFirstBucketShift, 0),
+                   kLastValueBucketIndex});
 }
 
 void ObjectStats::RecordObjectStats(InstanceType type, size_t size,
@@ -565,9 +565,10 @@ void ObjectStatsCollectorImpl::RecordVirtualFunctionTemplateInfoDetails(
     FunctionTemplateInfo fti) {
   // named_property_handler and indexed_property_handler are recorded as
   // INTERCEPTOR_INFO_TYPE.
-  if (!fti.call_code().IsUndefined(isolate())) {
+  HeapObject call_code = fti.call_code(kAcquireLoad);
+  if (!call_code.IsUndefined(isolate())) {
     RecordSimpleVirtualObjectStats(
-        fti, CallHandlerInfo::cast(fti.call_code()),
+        fti, CallHandlerInfo::cast(call_code),
         ObjectStats::FUNCTION_TEMPLATE_INFO_ENTRIES_TYPE);
   }
   if (!fti.GetInstanceCallHandler().IsUndefined(isolate())) {
@@ -580,7 +581,7 @@ void ObjectStatsCollectorImpl::RecordVirtualFunctionTemplateInfoDetails(
 void ObjectStatsCollectorImpl::RecordVirtualJSGlobalObjectDetails(
     JSGlobalObject object) {
   // Properties.
-  GlobalDictionary properties = object.global_dictionary();
+  GlobalDictionary properties = object.global_dictionary(kAcquireLoad);
   RecordHashTableVirtualObjectStats(object, properties,
                                     ObjectStats::GLOBAL_PROPERTIES_TYPE);
   // Elements.
@@ -883,7 +884,7 @@ void ObjectStatsCollectorImpl::RecordVirtualMapDetails(Map map) {
     // This will be logged as MAP_TYPE in Phase2.
   }
 
-  DescriptorArray array = map.instance_descriptors();
+  DescriptorArray array = map.instance_descriptors(kRelaxedLoad);
   if (map.owns_descriptors() &&
       array != ReadOnlyRoots(heap_).empty_descriptor_array()) {
     // Generally DescriptorArrays have their own instance type already
@@ -1091,7 +1092,7 @@ class ObjectStatsVisitor {
             heap->mark_compact_collector()->non_atomic_marking_state()),
         phase_(phase) {}
 
-  bool Visit(HeapObject obj, int size) {
+  void Visit(HeapObject obj) {
     if (marking_state_->IsBlack(obj)) {
       live_collector_->CollectStatistics(
           obj, phase_, ObjectStatsCollectorImpl::CollectFieldStats::kYes);
@@ -1100,7 +1101,6 @@ class ObjectStatsVisitor {
       dead_collector_->CollectStatistics(
           obj, phase_, ObjectStatsCollectorImpl::CollectFieldStats::kNo);
     }
-    return true;
   }
 
  private:
@@ -1116,7 +1116,7 @@ void IterateHeap(Heap* heap, ObjectStatsVisitor* visitor) {
   CombinedHeapObjectIterator iterator(heap);
   for (HeapObject obj = iterator.Next(); !obj.is_null();
        obj = iterator.Next()) {
-    visitor->Visit(obj, obj.Size());
+    visitor->Visit(obj);
   }
 }
 

@@ -211,8 +211,7 @@ void AccessorAssembler::HandleLoadAccessor(
 
   TNode<Foreign> foreign = LoadObjectField<Foreign>(
       call_handler_info, CallHandlerInfo::kJsCallbackOffset);
-  TNode<RawPtrT> callback =
-      DecodeExternalPointer(LoadForeignForeignAddress(foreign));
+  TNode<RawPtrT> callback = LoadForeignForeignAddressPtr(foreign);
   TNode<Object> data =
       LoadObjectField(call_handler_info, CallHandlerInfo::kDataOffset);
 
@@ -869,6 +868,11 @@ TNode<Object> AccessorAssembler::HandleProtoHandler(
 
       BIND(&if_lookup_on_lookup_start_object);
       {
+        if (V8_DICT_MODE_PROTOTYPES_BOOL) {
+          // TODO(v8:11167) remove once OrderedNameDictionary supported.
+          GotoIf(Int32TrueConstant(), miss);
+        }
+
         // Dictionary lookup on lookup start object is not necessary for
         // Load/StoreGlobalIC (which is the only case when the
         // lookup_start_object can be a JSGlobalObject) because prototype
@@ -1669,8 +1673,7 @@ void AccessorAssembler::HandleStoreICProtoHandler(
 
       TNode<Foreign> foreign = LoadObjectField<Foreign>(
           call_handler_info, CallHandlerInfo::kJsCallbackOffset);
-      TNode<RawPtrT> callback =
-          DecodeExternalPointer(LoadForeignForeignAddress(foreign));
+      TNode<RawPtrT> callback = LoadForeignForeignAddressPtr(foreign);
       TNode<Object> data =
           LoadObjectField(call_handler_info, CallHandlerInfo::kDataOffset);
 
@@ -2446,6 +2449,11 @@ void AccessorAssembler::GenericPropertyLoad(
 
   BIND(&if_property_dictionary);
   {
+    if (V8_DICT_MODE_PROTOTYPES_BOOL) {
+      // TODO(v8:11167) remove once OrderedNameDictionary supported.
+      GotoIf(Int32TrueConstant(), slow);
+    }
+
     Comment("dictionary property load");
     // We checked for LAST_CUSTOM_ELEMENTS_RECEIVER before, which rules out
     // seeing global objects here (which would need special handling).
@@ -2499,9 +2507,9 @@ void AccessorAssembler::GenericPropertyLoad(
       var_holder_map = proto_map;
       var_holder_instance_type = proto_instance_type;
       Label next_proto(this), return_value(this, &var_value), goto_slow(this);
-      TryGetOwnProperty(p->context(), CAST(p->receiver()), CAST(proto),
-                        proto_map, proto_instance_type, name, &return_value,
-                        &var_value, &next_proto, &goto_slow);
+      TryGetOwnProperty(p->context(), p->receiver(), CAST(proto), proto_map,
+                        proto_instance_type, name, &return_value, &var_value,
+                        &next_proto, &goto_slow);
 
       // This trampoline and the next are required to appease Turbofan's
       // variable merging.
@@ -2556,9 +2564,9 @@ enum AccessorAssembler::StubCacheTable : int {
 TNode<IntPtrT> AccessorAssembler::StubCachePrimaryOffset(TNode<Name> name,
                                                          TNode<Map> map) {
   // Compute the hash of the name (use entire hash field).
-  TNode<Uint32T> hash_field = LoadNameHashField(name);
+  TNode<Uint32T> raw_hash_field = LoadNameRawHashField(name);
   CSA_ASSERT(this,
-             Word32Equal(Word32And(hash_field,
+             Word32Equal(Word32And(raw_hash_field,
                                    Int32Constant(Name::kHashNotComputedMask)),
                          Int32Constant(0)));
 
@@ -2570,7 +2578,7 @@ TNode<IntPtrT> AccessorAssembler::StubCachePrimaryOffset(TNode<Name> name,
   TNode<Int32T> map32 = TruncateIntPtrToInt32(UncheckedCast<IntPtrT>(
       WordXor(map_word, WordShr(map_word, StubCache::kMapKeyShift))));
   // Base the offset on a simple combination of name and map.
-  TNode<Word32T> hash = Int32Add(hash_field, map32);
+  TNode<Word32T> hash = Int32Add(raw_hash_field, map32);
   uint32_t mask = (StubCache::kPrimaryTableSize - 1)
                   << StubCache::kCacheIndexShift;
   TNode<UintPtrT> result =
@@ -2882,8 +2890,7 @@ void AccessorAssembler::LoadIC_NoFeedback(const LoadICParameters* p,
     // Special case for Function.prototype load, because it's very common
     // for ICs that are only executed once (MyFunc.prototype.foo = ...).
     Label not_function_prototype(this, Label::kDeferred);
-    GotoIfNot(InstanceTypeEqual(instance_type, JS_FUNCTION_TYPE),
-              &not_function_prototype);
+    GotoIfNot(IsJSFunctionInstanceType(instance_type), &not_function_prototype);
     GotoIfNot(IsPrototypeString(p->name()), &not_function_prototype);
 
     GotoIfPrototypeRequiresRuntimeLookup(CAST(lookup_start_object),
@@ -3060,13 +3067,11 @@ void AccessorAssembler::ScriptContextTableLookup(
         ScriptContextTable::kFirstContextSlotIndex * kTaggedSize));
     TNode<ScopeInfo> scope_info =
         CAST(LoadContextElement(script_context, Context::SCOPE_INFO_INDEX));
-    TNode<IntPtrT> length = LoadAndUntagFixedArrayBaseLength(scope_info);
-    GotoIf(IntPtrLessThanOrEqual(length, IntPtrConstant(0)), &loop);
 
     TVARIABLE(IntPtrT, scope_var_index,
               IntPtrConstant(ScopeInfo::kVariablePartIndex - 1));
-    TNode<IntPtrT> num_scope_vars = SmiUntag(CAST(LoadFixedArrayElement(
-        scope_info, IntPtrConstant(ScopeInfo::Fields::kContextLocalCount))));
+    TNode<IntPtrT> num_scope_vars = SmiUntag(
+        CAST(LoadObjectField(scope_info, ScopeInfo::kContextLocalCountOffset)));
     TNode<IntPtrT> end_index = IntPtrAdd(
         num_scope_vars, IntPtrConstant(ScopeInfo::kVariablePartIndex));
     Label loop_scope_info(this, &scope_var_index);
@@ -3078,8 +3083,9 @@ void AccessorAssembler::ScriptContextTableLookup(
       GotoIf(IntPtrGreaterThanOrEqual(scope_var_index.value(), end_index),
              &loop);
 
-      TNode<Object> var_name =
-          LoadFixedArrayElement(scope_info, scope_var_index.value(), 0);
+      FixedArrayBoundsCheck(scope_info, scope_var_index.value(), 0);
+      TNode<Object> var_name = CAST(LoadArrayElement(
+          scope_info, FixedArray::kHeaderSize, scope_var_index.value()));
       GotoIf(TaggedNotEqual(var_name, name), &loop_scope_info);
 
       TNode<IntPtrT> var_index =
@@ -3731,11 +3737,11 @@ void AccessorAssembler::StoreInArrayLiteralIC(const StoreICParameters* p) {
 void AccessorAssembler::GenerateLoadIC() {
   using Descriptor = LoadWithVectorDescriptor;
 
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<HeapObject> vector = CAST(Parameter(Descriptor::kVector));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto receiver = Parameter<Object>(Descriptor::kReceiver);
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto vector = Parameter<HeapObject>(Descriptor::kVector);
+  auto context = Parameter<Context>(Descriptor::kContext);
 
   LoadICParameters p(context, receiver, name, slot, vector);
   LoadIC(&p);
@@ -3744,11 +3750,11 @@ void AccessorAssembler::GenerateLoadIC() {
 void AccessorAssembler::GenerateLoadIC_Megamorphic() {
   using Descriptor = LoadWithVectorDescriptor;
 
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<HeapObject> vector = CAST(Parameter(Descriptor::kVector));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto receiver = Parameter<Object>(Descriptor::kReceiver);
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto vector = Parameter<HeapObject>(Descriptor::kVector);
+  auto context = Parameter<Context>(Descriptor::kContext);
 
   ExitPoint direct_exit(this);
   TVARIABLE(MaybeObject, var_handler);
@@ -3778,11 +3784,11 @@ void AccessorAssembler::GenerateLoadIC_Megamorphic() {
 void AccessorAssembler::GenerateLoadIC_Noninlined() {
   using Descriptor = LoadWithVectorDescriptor;
 
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<FeedbackVector> vector = CAST(Parameter(Descriptor::kVector));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto receiver = Parameter<Object>(Descriptor::kReceiver);
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto vector = Parameter<FeedbackVector>(Descriptor::kVector);
+  auto context = Parameter<Context>(Descriptor::kContext);
 
   ExitPoint direct_exit(this);
   TVARIABLE(MaybeObject, var_handler);
@@ -3811,10 +3817,10 @@ void AccessorAssembler::GenerateLoadIC_Noninlined() {
 void AccessorAssembler::GenerateLoadIC_NoFeedback() {
   using Descriptor = LoadNoFeedbackDescriptor;
 
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
-  TNode<Smi> ic_kind = CAST(Parameter(Descriptor::kICKind));
+  auto receiver = Parameter<Object>(Descriptor::kReceiver);
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto context = Parameter<Context>(Descriptor::kContext);
+  auto ic_kind = Parameter<Smi>(Descriptor::kICKind);
 
   LoadICParameters p(context, receiver, name,
                      TaggedIndexConstant(FeedbackSlot::Invalid().ToInt()),
@@ -3825,10 +3831,10 @@ void AccessorAssembler::GenerateLoadIC_NoFeedback() {
 void AccessorAssembler::GenerateLoadICTrampoline() {
   using Descriptor = LoadDescriptor;
 
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto receiver = Parameter<Object>(Descriptor::kReceiver);
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto context = Parameter<Context>(Descriptor::kContext);
   TNode<FeedbackVector> vector = LoadFeedbackVectorForStub();
 
   TailCallBuiltin(Builtins::kLoadIC, context, receiver, name, slot, vector);
@@ -3837,10 +3843,10 @@ void AccessorAssembler::GenerateLoadICTrampoline() {
 void AccessorAssembler::GenerateLoadICTrampoline_Megamorphic() {
   using Descriptor = LoadDescriptor;
 
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto receiver = Parameter<Object>(Descriptor::kReceiver);
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto context = Parameter<Context>(Descriptor::kContext);
   TNode<FeedbackVector> vector = LoadFeedbackVectorForStub();
 
   TailCallBuiltin(Builtins::kLoadIC_Megamorphic, context, receiver, name, slot,
@@ -3850,13 +3856,12 @@ void AccessorAssembler::GenerateLoadICTrampoline_Megamorphic() {
 void AccessorAssembler::GenerateLoadSuperIC() {
   using Descriptor = LoadWithReceiverAndVectorDescriptor;
 
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  TNode<Object> lookup_start_object =
-      CAST(Parameter(Descriptor::kLookupStartObject));
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<HeapObject> vector = CAST(Parameter(Descriptor::kVector));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto receiver = Parameter<Object>(Descriptor::kReceiver);
+  auto lookup_start_object = Parameter<Object>(Descriptor::kLookupStartObject);
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto vector = Parameter<HeapObject>(Descriptor::kVector);
+  auto context = Parameter<Context>(Descriptor::kContext);
 
   LoadICParameters p(context, receiver, name, slot, vector,
                      lookup_start_object);
@@ -3866,9 +3871,9 @@ void AccessorAssembler::GenerateLoadSuperIC() {
 void AccessorAssembler::GenerateLoadGlobalIC_NoFeedback() {
   using Descriptor = LoadGlobalNoFeedbackDescriptor;
 
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
-  TNode<Smi> ic_kind = CAST(Parameter(Descriptor::kICKind));
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto context = Parameter<Context>(Descriptor::kContext);
+  auto ic_kind = Parameter<Smi>(Descriptor::kICKind);
 
   LoadGlobalIC_NoFeedback(context, name, ic_kind);
 }
@@ -3876,10 +3881,10 @@ void AccessorAssembler::GenerateLoadGlobalIC_NoFeedback() {
 void AccessorAssembler::GenerateLoadGlobalIC(TypeofMode typeof_mode) {
   using Descriptor = LoadGlobalWithVectorDescriptor;
 
-  TNode<Name> name = CAST(Parameter(Descriptor::kName));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<HeapObject> vector = CAST(Parameter(Descriptor::kVector));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto name = Parameter<Name>(Descriptor::kName);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto vector = Parameter<HeapObject>(Descriptor::kVector);
+  auto context = Parameter<Context>(Descriptor::kContext);
 
   ExitPoint direct_exit(this);
   LoadGlobalIC(
@@ -3895,9 +3900,9 @@ void AccessorAssembler::GenerateLoadGlobalIC(TypeofMode typeof_mode) {
 void AccessorAssembler::GenerateLoadGlobalICTrampoline(TypeofMode typeof_mode) {
   using Descriptor = LoadGlobalDescriptor;
 
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto context = Parameter<Context>(Descriptor::kContext);
   TNode<FeedbackVector> vector = LoadFeedbackVectorForStub();
 
   Callable callable =
@@ -3908,11 +3913,11 @@ void AccessorAssembler::GenerateLoadGlobalICTrampoline(TypeofMode typeof_mode) {
 void AccessorAssembler::GenerateKeyedLoadIC() {
   using Descriptor = LoadWithVectorDescriptor;
 
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<HeapObject> vector = CAST(Parameter(Descriptor::kVector));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto receiver = Parameter<Object>(Descriptor::kReceiver);
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto vector = Parameter<HeapObject>(Descriptor::kVector);
+  auto context = Parameter<Context>(Descriptor::kContext);
 
   LoadICParameters p(context, receiver, name, slot, vector);
   KeyedLoadIC(&p, LoadAccessMode::kLoad);
@@ -3921,11 +3926,11 @@ void AccessorAssembler::GenerateKeyedLoadIC() {
 void AccessorAssembler::GenerateKeyedLoadIC_Megamorphic() {
   using Descriptor = LoadWithVectorDescriptor;
 
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<HeapObject> vector = CAST(Parameter(Descriptor::kVector));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto receiver = Parameter<Object>(Descriptor::kReceiver);
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto vector = Parameter<HeapObject>(Descriptor::kVector);
+  auto context = Parameter<Context>(Descriptor::kContext);
 
   LoadICParameters p(context, receiver, name, slot, vector);
   KeyedLoadICGeneric(&p);
@@ -3934,10 +3939,10 @@ void AccessorAssembler::GenerateKeyedLoadIC_Megamorphic() {
 void AccessorAssembler::GenerateKeyedLoadICTrampoline() {
   using Descriptor = LoadDescriptor;
 
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto receiver = Parameter<Object>(Descriptor::kReceiver);
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto context = Parameter<Context>(Descriptor::kContext);
   TNode<FeedbackVector> vector = LoadFeedbackVectorForStub();
 
   TailCallBuiltin(Builtins::kKeyedLoadIC, context, receiver, name, slot,
@@ -3947,10 +3952,10 @@ void AccessorAssembler::GenerateKeyedLoadICTrampoline() {
 void AccessorAssembler::GenerateKeyedLoadICTrampoline_Megamorphic() {
   using Descriptor = LoadDescriptor;
 
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto receiver = Parameter<Object>(Descriptor::kReceiver);
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto context = Parameter<Context>(Descriptor::kContext);
   TNode<FeedbackVector> vector = LoadFeedbackVectorForStub();
 
   TailCallBuiltin(Builtins::kKeyedLoadIC_Megamorphic, context, receiver, name,
@@ -3960,11 +3965,11 @@ void AccessorAssembler::GenerateKeyedLoadICTrampoline_Megamorphic() {
 void AccessorAssembler::GenerateKeyedLoadIC_PolymorphicName() {
   using Descriptor = LoadWithVectorDescriptor;
 
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<FeedbackVector> vector = CAST(Parameter(Descriptor::kVector));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto receiver = Parameter<Object>(Descriptor::kReceiver);
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto vector = Parameter<FeedbackVector>(Descriptor::kVector);
+  auto context = Parameter<Context>(Descriptor::kContext);
 
   LoadICParameters p(context, receiver, name, slot, vector);
   KeyedLoadICPolymorphicName(&p, LoadAccessMode::kLoad);
@@ -3973,11 +3978,11 @@ void AccessorAssembler::GenerateKeyedLoadIC_PolymorphicName() {
 void AccessorAssembler::GenerateStoreGlobalIC() {
   using Descriptor = StoreGlobalWithVectorDescriptor;
 
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<Object> value = CAST(Parameter(Descriptor::kValue));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<HeapObject> vector = CAST(Parameter(Descriptor::kVector));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto value = Parameter<Object>(Descriptor::kValue);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto vector = Parameter<HeapObject>(Descriptor::kVector);
+  auto context = Parameter<Context>(Descriptor::kContext);
 
   StoreICParameters p(context, base::nullopt, name, value, slot, vector);
   StoreGlobalIC(&p);
@@ -3986,10 +3991,10 @@ void AccessorAssembler::GenerateStoreGlobalIC() {
 void AccessorAssembler::GenerateStoreGlobalICTrampoline() {
   using Descriptor = StoreGlobalDescriptor;
 
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<Object> value = CAST(Parameter(Descriptor::kValue));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto value = Parameter<Object>(Descriptor::kValue);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto context = Parameter<Context>(Descriptor::kContext);
   TNode<FeedbackVector> vector = LoadFeedbackVectorForStub();
 
   TailCallBuiltin(Builtins::kStoreGlobalIC, context, name, value, slot, vector);
@@ -3998,12 +4003,12 @@ void AccessorAssembler::GenerateStoreGlobalICTrampoline() {
 void AccessorAssembler::GenerateStoreIC() {
   using Descriptor = StoreWithVectorDescriptor;
 
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<Object> value = CAST(Parameter(Descriptor::kValue));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<HeapObject> vector = CAST(Parameter(Descriptor::kVector));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto receiver = Parameter<Object>(Descriptor::kReceiver);
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto value = Parameter<Object>(Descriptor::kValue);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto vector = Parameter<HeapObject>(Descriptor::kVector);
+  auto context = Parameter<Context>(Descriptor::kContext);
 
   StoreICParameters p(context, receiver, name, value, slot, vector);
   StoreIC(&p);
@@ -4012,11 +4017,11 @@ void AccessorAssembler::GenerateStoreIC() {
 void AccessorAssembler::GenerateStoreICTrampoline() {
   using Descriptor = StoreDescriptor;
 
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<Object> value = CAST(Parameter(Descriptor::kValue));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto receiver = Parameter<Object>(Descriptor::kReceiver);
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto value = Parameter<Object>(Descriptor::kValue);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto context = Parameter<Context>(Descriptor::kContext);
   TNode<FeedbackVector> vector = LoadFeedbackVectorForStub();
 
   TailCallBuiltin(Builtins::kStoreIC, context, receiver, name, value, slot,
@@ -4026,12 +4031,12 @@ void AccessorAssembler::GenerateStoreICTrampoline() {
 void AccessorAssembler::GenerateKeyedStoreIC() {
   using Descriptor = StoreWithVectorDescriptor;
 
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<Object> value = CAST(Parameter(Descriptor::kValue));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<HeapObject> vector = CAST(Parameter(Descriptor::kVector));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto receiver = Parameter<Object>(Descriptor::kReceiver);
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto value = Parameter<Object>(Descriptor::kValue);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto vector = Parameter<HeapObject>(Descriptor::kVector);
+  auto context = Parameter<Context>(Descriptor::kContext);
 
   StoreICParameters p(context, receiver, name, value, slot, vector);
   KeyedStoreIC(&p);
@@ -4040,11 +4045,11 @@ void AccessorAssembler::GenerateKeyedStoreIC() {
 void AccessorAssembler::GenerateKeyedStoreICTrampoline() {
   using Descriptor = StoreDescriptor;
 
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<Object> value = CAST(Parameter(Descriptor::kValue));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto receiver = Parameter<Object>(Descriptor::kReceiver);
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto value = Parameter<Object>(Descriptor::kValue);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto context = Parameter<Context>(Descriptor::kContext);
   TNode<FeedbackVector> vector = LoadFeedbackVectorForStub();
 
   TailCallBuiltin(Builtins::kKeyedStoreIC, context, receiver, name, value, slot,
@@ -4054,12 +4059,12 @@ void AccessorAssembler::GenerateKeyedStoreICTrampoline() {
 void AccessorAssembler::GenerateStoreInArrayLiteralIC() {
   using Descriptor = StoreWithVectorDescriptor;
 
-  TNode<Object> array = CAST(Parameter(Descriptor::kReceiver));
-  TNode<Object> index = CAST(Parameter(Descriptor::kName));
-  TNode<Object> value = CAST(Parameter(Descriptor::kValue));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<HeapObject> vector = CAST(Parameter(Descriptor::kVector));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto array = Parameter<Object>(Descriptor::kReceiver);
+  auto index = Parameter<Object>(Descriptor::kName);
+  auto value = Parameter<Object>(Descriptor::kValue);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto vector = Parameter<HeapObject>(Descriptor::kVector);
+  auto context = Parameter<Context>(Descriptor::kContext);
 
   StoreICParameters p(context, array, index, value, slot, vector);
   StoreInArrayLiteralIC(&p);
@@ -4067,9 +4072,9 @@ void AccessorAssembler::GenerateStoreInArrayLiteralIC() {
 
 void AccessorAssembler::GenerateCloneObjectIC_Slow() {
   using Descriptor = CloneObjectWithVectorDescriptor;
-  TNode<Object> source = CAST(Parameter(Descriptor::kSource));
-  TNode<Smi> flags = CAST(Parameter(Descriptor::kFlags));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto source = Parameter<Object>(Descriptor::kSource);
+  auto flags = Parameter<Smi>(Descriptor::kFlags);
+  auto context = Parameter<Context>(Descriptor::kContext);
 
   // The Slow case uses the same call interface as CloneObjectIC, so that it
   // can be tail called from it. However, the feedback slot and vector are not
@@ -4120,11 +4125,11 @@ void AccessorAssembler::GenerateCloneObjectIC_Slow() {
 
 void AccessorAssembler::GenerateCloneObjectIC() {
   using Descriptor = CloneObjectWithVectorDescriptor;
-  TNode<Object> source = CAST(Parameter(Descriptor::kSource));
-  TNode<Smi> flags = CAST(Parameter(Descriptor::kFlags));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<HeapObject> maybe_vector = CAST(Parameter(Descriptor::kVector));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto source = Parameter<Object>(Descriptor::kSource);
+  auto flags = Parameter<Smi>(Descriptor::kFlags);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto maybe_vector = Parameter<HeapObject>(Descriptor::kVector);
+  auto context = Parameter<Context>(Descriptor::kContext);
   TVARIABLE(MaybeObject, var_handler);
   Label if_handler(this, &var_handler), miss(this, Label::kDeferred),
       try_polymorphic(this, Label::kDeferred),
@@ -4269,11 +4274,11 @@ void AccessorAssembler::GenerateCloneObjectIC() {
 void AccessorAssembler::GenerateKeyedHasIC() {
   using Descriptor = LoadWithVectorDescriptor;
 
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<HeapObject> vector = CAST(Parameter(Descriptor::kVector));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto receiver = Parameter<Object>(Descriptor::kReceiver);
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto vector = Parameter<HeapObject>(Descriptor::kVector);
+  auto context = Parameter<Context>(Descriptor::kContext);
 
   LoadICParameters p(context, receiver, name, slot, vector);
   KeyedLoadIC(&p, LoadAccessMode::kHas);
@@ -4282,9 +4287,9 @@ void AccessorAssembler::GenerateKeyedHasIC() {
 void AccessorAssembler::GenerateKeyedHasIC_Megamorphic() {
   using Descriptor = LoadWithVectorDescriptor;
 
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto receiver = Parameter<Object>(Descriptor::kReceiver);
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto context = Parameter<Context>(Descriptor::kContext);
   // TODO(magardn): implement HasProperty handling in KeyedLoadICGeneric
   Return(HasProperty(context, receiver, name,
                      HasPropertyLookupMode::kHasProperty));
@@ -4293,11 +4298,11 @@ void AccessorAssembler::GenerateKeyedHasIC_Megamorphic() {
 void AccessorAssembler::GenerateKeyedHasIC_PolymorphicName() {
   using Descriptor = LoadWithVectorDescriptor;
 
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<HeapObject> vector = CAST(Parameter(Descriptor::kVector));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto receiver = Parameter<Object>(Descriptor::kReceiver);
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto vector = Parameter<HeapObject>(Descriptor::kVector);
+  auto context = Parameter<Context>(Descriptor::kContext);
 
   LoadICParameters p(context, receiver, name, slot, vector);
   KeyedLoadICPolymorphicName(&p, LoadAccessMode::kHas);

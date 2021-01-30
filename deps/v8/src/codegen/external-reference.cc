@@ -33,6 +33,7 @@
 #include "src/wasm/wasm-external-refs.h"
 
 #ifdef V8_INTL_SUPPORT
+#include "src/base/platform/wrappers.h"
 #include "src/objects/intl-objects.h"
 #endif  // V8_INTL_SUPPORT
 
@@ -73,6 +74,103 @@ constexpr struct alignas(16) {
   uint64_t b;
 } double_negate_constant = {uint64_t{0x8000000000000000},
                             uint64_t{0x8000000000000000}};
+
+constexpr struct alignas(16) {
+  uint64_t a;
+  uint64_t b;
+} wasm_i8x16_popcnt_mask = {uint64_t{0x03020201'02010100},
+                            uint64_t{0x04030302'03020201}};
+
+constexpr struct alignas(16) {
+  uint64_t a;
+  uint64_t b;
+} wasm_i8x16_splat_0x01 = {uint64_t{0x01010101'01010101},
+                           uint64_t{0x01010101'01010101}};
+
+constexpr struct alignas(16) {
+  uint64_t a;
+  uint64_t b;
+} wasm_i8x16_splat_0x0f = {uint64_t{0x0F0F0F0F'0F0F0F0F},
+                           uint64_t{0x0F0F0F0F'0F0F0F0F}};
+
+constexpr struct alignas(16) {
+  uint64_t a;
+  uint64_t b;
+} wasm_i8x16_splat_0x33 = {uint64_t{0x33333333'33333333},
+                           uint64_t{0x33333333'33333333}};
+
+constexpr struct alignas(16) {
+  uint64_t a;
+  uint64_t b;
+} wasm_i8x16_splat_0x55 = {uint64_t{0x55555555'55555555},
+                           uint64_t{0x55555555'55555555}};
+
+constexpr struct alignas(16) {
+  uint64_t a;
+  uint64_t b;
+} wasm_i16x8_splat_0x0001 = {uint64_t{0x00010001'00010001},
+                             uint64_t{0x00010001'00010001}};
+
+constexpr struct alignas(16) {
+  uint64_t a;
+  uint64_t b;
+} wasm_f64x2_convert_low_i32x4_u_int_mask = {uint64_t{0x4330000043300000},
+                                             uint64_t{0x4330000043300000}};
+
+constexpr struct alignas(16) {
+  uint64_t a;
+  uint64_t b;
+} wasm_double_2_power_52 = {uint64_t{0x4330000000000000},
+                            uint64_t{0x4330000000000000}};
+
+constexpr struct alignas(16) {
+  uint64_t a;
+  uint64_t b;
+} wasm_int32_max_as_double = {uint64_t{0x41dfffffffc00000},
+                              uint64_t{0x41dfffffffc00000}};
+
+constexpr struct alignas(16) {
+  uint64_t a;
+  uint64_t b;
+} wasm_uint32_max_as_double = {uint64_t{0x41efffffffe00000},
+                               uint64_t{0x41efffffffe00000}};
+
+// Helper masks used for i32x4.widen_i8x16_{s,u}.
+constexpr struct alignas(16) {
+  uint64_t a;
+  uint64_t b;
+} i32x4_widen_i8x16_s1_mask = {uint64_t{0x05FFFFFF'04FFFFFF},
+                               uint64_t{0x07FFFFFF'06FFFFFF}};
+
+constexpr struct alignas(16) {
+  uint64_t a;
+  uint64_t b;
+} i32x4_widen_i8x16_s2_mask = {uint64_t{0x09FFFFFF'08FFFFFF},
+                               uint64_t{0x0BFFFFFF'0AFFFFFF}};
+
+constexpr struct alignas(16) {
+  uint64_t a;
+  uint64_t b;
+} i32x4_widen_i8x16_s3_mask = {uint64_t{0x0DFFFFFF'0CFFFFFF},
+                               uint64_t{0x0FFFFFFF'0EFFFFFF}};
+
+constexpr struct alignas(16) {
+  uint64_t a;
+  uint64_t b;
+} i32x4_widen_i8x16_u1_mask = {uint64_t{0xFFFFFF05'FFFFFF04},
+                               uint64_t{0xFFFFFF07'FFFFFF06}};
+
+constexpr struct alignas(16) {
+  uint64_t a;
+  uint64_t b;
+} i32x4_widen_i8x16_u2_mask = {uint64_t{0xFFFFFF09'FFFFFF08},
+                               uint64_t{0xFFFFFF0B'FFFFFF0A}};
+
+constexpr struct alignas(16) {
+  uint64_t a;
+  uint64_t b;
+} i32x4_widen_i8x16_u3_mask = {uint64_t{0xFFFFFF0D'FFFFFF0C},
+                               uint64_t{0xFFFFFF0F'FFFFFF0E}};
 
 // Implementation of ExternalReference
 
@@ -120,6 +218,13 @@ ExternalReference ExternalReference::handle_scope_implementer_address(
     Isolate* isolate) {
   return ExternalReference(isolate->handle_scope_implementer_address());
 }
+
+#ifdef V8_HEAP_SANDBOX
+ExternalReference ExternalReference::external_pointer_table_address(
+    Isolate* isolate) {
+  return ExternalReference(isolate->external_pointer_table_address());
+}
+#endif
 
 ExternalReference ExternalReference::interpreter_dispatch_table_address(
     Isolate* isolate) {
@@ -420,6 +525,15 @@ ExternalReference::address_of_mock_arraybuffer_allocator_flag() {
   return ExternalReference(&FLAG_mock_arraybuffer_allocator);
 }
 
+ExternalReference ExternalReference::address_of_builtin_subclassing_flag() {
+  return ExternalReference(&FLAG_builtin_subclassing);
+}
+
+ExternalReference
+ExternalReference::address_of_harmony_regexp_match_indices_flag() {
+  return ExternalReference(&FLAG_harmony_regexp_match_indices);
+}
+
 ExternalReference ExternalReference::address_of_runtime_stats_flag() {
   return ExternalReference(&TracingFlags::runtime_stats);
 }
@@ -466,6 +580,85 @@ ExternalReference ExternalReference::address_of_double_abs_constant() {
 
 ExternalReference ExternalReference::address_of_double_neg_constant() {
   return ExternalReference(reinterpret_cast<Address>(&double_negate_constant));
+}
+
+ExternalReference ExternalReference::address_of_wasm_i8x16_popcnt_mask() {
+  return ExternalReference(reinterpret_cast<Address>(&wasm_i8x16_popcnt_mask));
+}
+
+ExternalReference ExternalReference::address_of_wasm_i8x16_splat_0x01() {
+  return ExternalReference(reinterpret_cast<Address>(&wasm_i8x16_splat_0x01));
+}
+
+ExternalReference ExternalReference::address_of_wasm_i8x16_splat_0x0f() {
+  return ExternalReference(reinterpret_cast<Address>(&wasm_i8x16_splat_0x0f));
+}
+
+ExternalReference ExternalReference::address_of_wasm_i8x16_splat_0x33() {
+  return ExternalReference(reinterpret_cast<Address>(&wasm_i8x16_splat_0x33));
+}
+
+ExternalReference ExternalReference::address_of_wasm_i8x16_splat_0x55() {
+  return ExternalReference(reinterpret_cast<Address>(&wasm_i8x16_splat_0x55));
+}
+
+ExternalReference ExternalReference::address_of_wasm_i16x8_splat_0x0001() {
+  return ExternalReference(reinterpret_cast<Address>(&wasm_i16x8_splat_0x0001));
+}
+
+ExternalReference
+ExternalReference::address_of_wasm_f64x2_convert_low_i32x4_u_int_mask() {
+  return ExternalReference(
+      reinterpret_cast<Address>(&wasm_f64x2_convert_low_i32x4_u_int_mask));
+}
+
+ExternalReference ExternalReference::address_of_wasm_double_2_power_52() {
+  return ExternalReference(reinterpret_cast<Address>(&wasm_double_2_power_52));
+}
+
+ExternalReference ExternalReference::address_of_wasm_int32_max_as_double() {
+  return ExternalReference(
+      reinterpret_cast<Address>(&wasm_int32_max_as_double));
+}
+
+ExternalReference ExternalReference::address_of_wasm_uint32_max_as_double() {
+  return ExternalReference(
+      reinterpret_cast<Address>(&wasm_uint32_max_as_double));
+}
+
+ExternalReference ExternalReference::address_of_i32x4_widen_i8x16_s1_mask() {
+  return ExternalReference(
+      reinterpret_cast<Address>(&i32x4_widen_i8x16_s1_mask));
+}
+
+ExternalReference ExternalReference::address_of_i32x4_widen_i8x16_s2_mask() {
+  return ExternalReference(
+      reinterpret_cast<Address>(&i32x4_widen_i8x16_s2_mask));
+}
+
+ExternalReference ExternalReference::address_of_i32x4_widen_i8x16_s3_mask() {
+  return ExternalReference(
+      reinterpret_cast<Address>(&i32x4_widen_i8x16_s3_mask));
+}
+
+ExternalReference ExternalReference::address_of_i32x4_widen_i8x16_u1_mask() {
+  return ExternalReference(
+      reinterpret_cast<Address>(&i32x4_widen_i8x16_u1_mask));
+}
+
+ExternalReference ExternalReference::address_of_i32x4_widen_i8x16_u2_mask() {
+  return ExternalReference(
+      reinterpret_cast<Address>(&i32x4_widen_i8x16_u2_mask));
+}
+
+ExternalReference ExternalReference::address_of_i32x4_widen_i8x16_u3_mask() {
+  return ExternalReference(
+      reinterpret_cast<Address>(&i32x4_widen_i8x16_u3_mask));
+}
+
+ExternalReference
+ExternalReference::address_of_enable_experimental_regexp_engine() {
+  return ExternalReference(&FLAG_enable_experimental_regexp_engine);
 }
 
 ExternalReference ExternalReference::is_profiling_address(Isolate* isolate) {
@@ -598,7 +791,7 @@ void* libc_memchr(void* string, int character, size_t search_length) {
 FUNCTION_REFERENCE(libc_memchr_function, libc_memchr)
 
 void* libc_memcpy(void* dest, const void* src, size_t n) {
-  return memcpy(dest, src, n);
+  return base::Memcpy(dest, src, n);
 }
 
 FUNCTION_REFERENCE(libc_memcpy_function, libc_memcpy)
@@ -647,10 +840,53 @@ ExternalReference ExternalReference::search_string_raw_two_two() {
   return search_string_raw<const uc16, const uc16>();
 }
 
+namespace {
+
+void StringWriteToFlatOneByte(Address source, uint8_t* sink, int32_t from,
+                              int32_t to) {
+  return String::WriteToFlat<uint8_t>(String::cast(Object(source)), sink, from,
+                                      to);
+}
+
+void StringWriteToFlatTwoByte(Address source, uint16_t* sink, int32_t from,
+                              int32_t to) {
+  return String::WriteToFlat<uint16_t>(String::cast(Object(source)), sink, from,
+                                       to);
+}
+
+const uint8_t* ExternalOneByteStringGetChars(Address string) {
+  // The following CHECK is a workaround to prevent a CFI bug where
+  // ExternalOneByteStringGetChars() and ExternalTwoByteStringGetChars() are
+  // merged by the linker, resulting in one of the input type's vtable address
+  // failing the address range check.
+  // TODO(chromium:1160961): Consider removing the CHECK when CFI is fixed.
+  CHECK(Object(string).IsExternalOneByteString());
+  return ExternalOneByteString::cast(Object(string)).GetChars();
+}
+const uint16_t* ExternalTwoByteStringGetChars(Address string) {
+  // The following CHECK is a workaround to prevent a CFI bug where
+  // ExternalOneByteStringGetChars() and ExternalTwoByteStringGetChars() are
+  // merged by the linker, resulting in one of the input type's vtable address
+  // failing the address range check.
+  // TODO(chromium:1160961): Consider removing the CHECK when CFI is fixed.
+  CHECK(Object(string).IsExternalTwoByteString());
+  return ExternalTwoByteString::cast(Object(string)).GetChars();
+}
+
+}  // namespace
+
+FUNCTION_REFERENCE(string_write_to_flat_one_byte, StringWriteToFlatOneByte)
+FUNCTION_REFERENCE(string_write_to_flat_two_byte, StringWriteToFlatTwoByte)
+
+FUNCTION_REFERENCE(external_one_byte_string_get_chars,
+                   ExternalOneByteStringGetChars)
+FUNCTION_REFERENCE(external_two_byte_string_get_chars,
+                   ExternalTwoByteStringGetChars)
+
 FUNCTION_REFERENCE(orderedhashmap_gethash_raw, OrderedHashMap::GetHash)
 
 Address GetOrCreateHash(Isolate* isolate, Address raw_key) {
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   return Object(raw_key).GetOrCreateHash(isolate).ptr();
 }
 
@@ -665,7 +901,7 @@ FUNCTION_REFERENCE(jsreceiver_create_identity_hash,
                    JSReceiverCreateIdentityHash)
 
 static uint32_t ComputeSeededIntegerHash(Isolate* isolate, int32_t key) {
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   return ComputeSeededHash(static_cast<uint32_t>(key), HashSeed(isolate));
 }
 
@@ -813,6 +1049,12 @@ ExternalReference ExternalReference::fast_c_call_caller_pc_address(
       isolate->isolate_data()->fast_c_call_caller_pc_address());
 }
 
+ExternalReference ExternalReference::fast_api_call_target_address(
+    Isolate* isolate) {
+  return ExternalReference(
+      isolate->isolate_data()->fast_api_call_target_address());
+}
+
 ExternalReference ExternalReference::stack_is_iterable_address(
     Isolate* isolate) {
   return ExternalReference(
@@ -940,6 +1182,11 @@ FUNCTION_REFERENCE(call_enter_context_function, EnterMicrotaskContextWrapper)
 FUNCTION_REFERENCE(
     js_finalization_registry_remove_cell_from_unregister_token_map,
     JSFinalizationRegistry::RemoveCellFromUnregisterTokenMap)
+
+#ifdef V8_HEAP_SANDBOX
+FUNCTION_REFERENCE(external_pointer_table_grow_table_function,
+                   ExternalPointerTable::GrowTable)
+#endif
 
 bool operator==(ExternalReference lhs, ExternalReference rhs) {
   return lhs.address() == rhs.address();

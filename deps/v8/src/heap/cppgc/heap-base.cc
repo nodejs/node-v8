@@ -53,8 +53,11 @@ class ObjectSizeCounter : private HeapVisitor<ObjectSizeCounter> {
 
 }  // namespace
 
-HeapBase::HeapBase(std::shared_ptr<cppgc::Platform> platform,
-                   size_t custom_spaces, StackSupport stack_support)
+HeapBase::HeapBase(
+    std::shared_ptr<cppgc::Platform> platform,
+    const std::vector<std::unique_ptr<CustomSpaceBase>>& custom_spaces,
+    StackSupport stack_support,
+    std::unique_ptr<MetricRecorder> histogram_recorder)
     : raw_heap_(this, custom_spaces),
       platform_(std::move(platform)),
 #if defined(CPPGC_CAGED_HEAP)
@@ -64,10 +67,12 @@ HeapBase::HeapBase(std::shared_ptr<cppgc::Platform> platform,
       page_backend_(
           std::make_unique<PageBackend>(platform_->GetPageAllocator())),
 #endif
-      stats_collector_(std::make_unique<StatsCollector>()),
+      stats_collector_(
+          std::make_unique<StatsCollector>(std::move(histogram_recorder))),
       stack_(std::make_unique<heap::base::Stack>(
           v8::base::Stack::GetStackStart())),
-      prefinalizer_handler_(std::make_unique<PreFinalizerHandler>()),
+      prefinalizer_handler_(std::make_unique<PreFinalizerHandler>(*this)),
+      compactor_(raw_heap_),
       object_allocator_(&raw_heap_, page_backend_.get(),
                         stats_collector_.get()),
       sweeper_(&raw_heap_, platform_.get(), stats_collector_.get()),
@@ -80,18 +85,39 @@ size_t HeapBase::ObjectPayloadSize() const {
   return ObjectSizeCounter().GetSize(const_cast<RawHeap*>(&raw_heap()));
 }
 
-HeapBase::NoGCScope::NoGCScope(HeapBase& heap) : heap_(heap) {
-  heap_.no_gc_scope_++;
-}
-
-HeapBase::NoGCScope::~NoGCScope() { heap_.no_gc_scope_--; }
-
-void HeapBase::VerifyMarking(cppgc::Heap::StackState stack_state) {
-  MarkingVerifier verifier(*this, stack_state);
-}
-
 void HeapBase::AdvanceIncrementalGarbageCollectionOnAllocationIfNeeded() {
   if (marker_) marker_->AdvanceMarkingOnAllocation();
+}
+
+void HeapBase::Terminate() {
+  DCHECK(!IsMarking());
+  DCHECK(!in_no_gc_scope());
+  CHECK(!in_disallow_gc_scope());
+
+  sweeper().FinishIfRunning();
+
+  constexpr size_t kMaxTerminationGCs = 20;
+  size_t gc_count = 0;
+  do {
+    CHECK_LT(gc_count++, kMaxTerminationGCs);
+
+    // Clear root sets.
+    strong_persistent_region_.ClearAllUsedNodes();
+    strong_cross_thread_persistent_region_.ClearAllUsedNodes();
+
+    stats_collector()->NotifyMarkingStarted(
+        GarbageCollector::Config::CollectionType::kMajor,
+        GarbageCollector::Config::IsForcedGC::kForced);
+    stats_collector()->NotifyMarkingCompleted(0);
+    object_allocator().ResetLinearAllocationBuffers();
+    sweeper().Start(
+        {Sweeper::SweepingConfig::SweepingType::kAtomic,
+         Sweeper::SweepingConfig::CompactableSpaceHandling::kSweep});
+    sweeper().NotifyDoneIfNeeded();
+  } while (strong_persistent_region_.NodesInUse() > 0);
+
+  object_allocator().Terminate();
+  disallow_gc_scope_++;
 }
 
 }  // namespace internal

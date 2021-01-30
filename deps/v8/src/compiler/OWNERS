@@ -1,12 +1,12 @@
 bmeurer@chromium.org
 danno@chromium.org
 sigurds@chromium.org
-tebbi@chromium.org
 neis@chromium.org
 mvstanton@chromium.org
 mslekova@chromium.org
 jgruber@chromium.org
 nicohartmann@chromium.org
+solanes@chromium.org
 
 per-file wasm-*=ahaas@chromium.org
 per-file wasm-*=bbudge@chromium.org
@@ -20,5 +20,3 @@ per-file int64-lowering.*=ahaas@chromium.org
 per-file simd-scalar-lowering.*=bbudge@chromium.org
 per-file simd-scalar-lowering.*=gdeepti@chromium.org
 per-file simd-scalar-lowering.*=zhin@chromium.org
-
-# COMPONENT: Blink>JavaScript>Compiler

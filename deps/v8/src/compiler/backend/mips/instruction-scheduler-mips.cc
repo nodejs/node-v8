@@ -70,6 +70,16 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kMipsI64x2Shl:
     case kMipsI64x2ShrS:
     case kMipsI64x2ShrU:
+    case kMipsI64x2BitMask:
+    case kMipsI64x2Eq:
+    case kMipsI64x2SConvertI32x4Low:
+    case kMipsI64x2SConvertI32x4High:
+    case kMipsI64x2UConvertI32x4Low:
+    case kMipsI64x2UConvertI32x4High:
+    case kMipsI64x2ExtMulLowI32x4S:
+    case kMipsI64x2ExtMulHighI32x4S:
+    case kMipsI64x2ExtMulLowI32x4U:
+    case kMipsI64x2ExtMulHighI32x4U:
     case kMipsF32x4Abs:
     case kMipsF32x4Add:
     case kMipsF32x4AddHoriz:
@@ -118,8 +128,8 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kMipsFloorWS:
     case kMipsI16x8Add:
     case kMipsI16x8AddHoriz:
-    case kMipsI16x8AddSaturateS:
-    case kMipsI16x8AddSaturateU:
+    case kMipsI16x8AddSatS:
+    case kMipsI16x8AddSatU:
     case kMipsI16x8Eq:
     case kMipsI16x8ExtractLaneU:
     case kMipsI16x8ExtractLaneS:
@@ -144,13 +154,18 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kMipsI16x8ShrU:
     case kMipsI16x8Splat:
     case kMipsI16x8Sub:
-    case kMipsI16x8SubSaturateS:
-    case kMipsI16x8SubSaturateU:
+    case kMipsI16x8SubSatS:
+    case kMipsI16x8SubSatU:
     case kMipsI16x8UConvertI32x4:
     case kMipsI16x8UConvertI8x16High:
     case kMipsI16x8UConvertI8x16Low:
     case kMipsI16x8Abs:
     case kMipsI16x8BitMask:
+    case kMipsI16x8Q15MulRSatS:
+    case kMipsI16x8ExtMulLowI8x16S:
+    case kMipsI16x8ExtMulHighI8x16S:
+    case kMipsI16x8ExtMulLowI8x16U:
+    case kMipsI16x8ExtMulHighI8x16U:
     case kMipsI32x4Add:
     case kMipsI32x4AddHoriz:
     case kMipsI32x4Eq:
@@ -180,9 +195,14 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kMipsI32x4UConvertI16x8Low:
     case kMipsI32x4Abs:
     case kMipsI32x4BitMask:
+    case kMipsI32x4DotI16x8S:
+    case kMipsI32x4ExtMulLowI16x8S:
+    case kMipsI32x4ExtMulHighI16x8S:
+    case kMipsI32x4ExtMulLowI16x8U:
+    case kMipsI32x4ExtMulHighI16x8U:
     case kMipsI8x16Add:
-    case kMipsI8x16AddSaturateS:
-    case kMipsI8x16AddSaturateU:
+    case kMipsI8x16AddSatS:
+    case kMipsI8x16AddSatU:
     case kMipsI8x16Eq:
     case kMipsI8x16ExtractLaneU:
     case kMipsI8x16ExtractLaneS:
@@ -205,8 +225,8 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kMipsI8x16ShrU:
     case kMipsI8x16Splat:
     case kMipsI8x16Sub:
-    case kMipsI8x16SubSaturateS:
-    case kMipsI8x16SubSaturateU:
+    case kMipsI8x16SubSatS:
+    case kMipsI8x16SubSatU:
     case kMipsI8x16UConvertI16x8:
     case kMipsI8x16Abs:
     case kMipsI8x16BitMask:
@@ -315,21 +335,20 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kMipsUlhu:
     case kMipsUlw:
     case kMipsUlwc1:
-    case kMipsS8x16LoadSplat:
-    case kMipsS16x8LoadSplat:
-    case kMipsS32x4LoadSplat:
-    case kMipsS64x2LoadSplat:
-    case kMipsI16x8Load8x8S:
-    case kMipsI16x8Load8x8U:
-    case kMipsI32x4Load16x4S:
-    case kMipsI32x4Load16x4U:
-    case kMipsI64x2Load32x2S:
-    case kMipsI64x2Load32x2U:
+    case kMipsS128Load8Splat:
+    case kMipsS128Load16Splat:
+    case kMipsS128Load32Splat:
+    case kMipsS128Load64Splat:
+    case kMipsS128Load8x8S:
+    case kMipsS128Load8x8U:
+    case kMipsS128Load16x4S:
+    case kMipsS128Load16x4U:
+    case kMipsS128Load32x2S:
+    case kMipsS128Load32x2U:
     case kMipsWord32AtomicPairLoad:
       return kIsLoadOperation;
 
     case kMipsModD:
-    case kMipsModS:
     case kMipsMsaSt:
     case kMipsPush:
     case kMipsSb:
@@ -1248,11 +1267,6 @@ int PrepareForTailCallLatency() {
          Latency::BRANCH + 2 * SubuLatency(false) + 2 + Latency::BRANCH + 1;
 }
 
-int AssemblePopArgumentsAdaptorFrameLatency() {
-  return 1 + Latency::BRANCH + 1 + SmiUntagLatency() +
-         PrepareForTailCallLatency();
-}
-
 int JumpLatency() {
   // Estimated max.
   return 1 + AdduLatency(false) + Latency::BRANCH + 2;
@@ -1365,14 +1379,7 @@ int InstructionScheduler::GetInstructionLatency(const Instruction* instr) {
     case kArchCallCodeObject:
     case kArchCallWasmFunction:
       return CallLatency();
-    case kArchTailCallCodeObjectFromJSFunction:
-    case kArchTailCallCodeObject: {
-      int latency = 0;
-      if (instr->arch_opcode() == kArchTailCallCodeObjectFromJSFunction) {
-        latency = AssemblePopArgumentsAdaptorFrameLatency();
-      }
-      return latency + JumpLatency();
-    }
+    case kArchTailCallCodeObject:
     case kArchTailCallWasm:
     case kArchTailCallAddress:
       return JumpLatency();
@@ -1529,7 +1536,6 @@ int InstructionScheduler::GetInstructionLatency(const Instruction* instr) {
       return RorLatency(instr->InputAt(1)->IsRegister());
     case kMipsLsa:
       return LsaLatency();
-    case kMipsModS:
     case kMipsModD:
       return PrepareCallCFunctionLatency() + MovToFloatParametersLatency() +
              CallCFunctionLatency() + MovFromFloatResultLatency();

@@ -15,15 +15,13 @@ load("test/mjsunit/wasm/wasm-module-builder.js");
         kExprI32Add,
       ]).exportFunc();
   builder.addFunction("main", kSig_i_i)
-      .addLocals(kWasmExnRef, 1)
       .addBody([
         kExprTry, kWasmStmt,
           kExprLocalGet, 0,
           kExprCallFunction, f.index,
           kExprCallFunction, f.index,
           kExprLocalSet, 0,
-        kExprCatch,
-          kExprDrop,
+        kExprCatchAll,
           kExprLocalGet, 0,
           kExprCallFunction, f.index,
           kExprLocalSet, 0,

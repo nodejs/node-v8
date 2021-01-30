@@ -38,9 +38,10 @@ class Simd128;
 #define FOREACH_VALUE_TYPE(V)                                               \
   V(Stmt, -1, Void, None, 'v', "<stmt>")                                    \
   FOREACH_NUMERIC_VALUE_TYPE(V)                                             \
-  V(Rtt, kSystemPointerSizeLog2, Rtt, TaggedPointer, 't', "rtt")            \
-  V(Ref, kSystemPointerSizeLog2, Ref, TaggedPointer, 'r', "ref")            \
-  V(OptRef, kSystemPointerSizeLog2, OptRef, TaggedPointer, 'n', "ref null") \
+  V(Rtt, kTaggedSizeLog2, Rtt, TaggedPointer, 't', "rtt")                   \
+  V(RttWithDepth, kTaggedSizeLog2, RttWithDepth, TaggedPointer, 'k', "rtt") \
+  V(Ref, kTaggedSizeLog2, Ref, AnyTagged, 'r', "ref")                       \
+  V(OptRef, kTaggedSizeLog2, OptRef, AnyTagged, 'n', "ref null")            \
   V(Bottom, -1, Void, None, '*', "<bot>")
 
 // Represents a WebAssembly heap type, as per the typed-funcref and gc
@@ -55,8 +56,9 @@ class HeapType {
     kFunc = kV8MaxWasmTypes,  // shorthand: c
     kExtern,                  // shorthand: e
     kEq,                      // shorthand: q
-    kExn,                     // shorthand: x
     kI31,                     // shorthand: j
+    kData,                    // shorthand: o
+    kAny,                     // shorthand: a
     // This value is used to represent failures in the parsing of heap types and
     // does not correspond to a wasm heap type.
     kBottom
@@ -64,7 +66,7 @@ class HeapType {
   // Internal use only; defined in the public section to make it easy to
   // check that they are defined correctly:
   static constexpr Representation kFirstSentinel = kFunc;
-  static constexpr Representation kLastSentinel = kI31;
+  static constexpr Representation kLastSentinel = kAny;
 
   static constexpr HeapType from_code(uint8_t code) {
     switch (code) {
@@ -74,10 +76,12 @@ class HeapType {
         return HeapType(kExtern);
       case ValueTypeCode::kEqRefCode:
         return HeapType(kEq);
-      case ValueTypeCode::kExnRefCode:
-        return HeapType(kExn);
       case ValueTypeCode::kI31RefCode:
         return HeapType(kI31);
+      case ValueTypeCode::kAnyRefCode:
+        return HeapType(kAny);
+      case ValueTypeCode::kDataRefCode:
+        return HeapType(kData);
       default:
         return HeapType(kBottom);
     }
@@ -126,10 +130,12 @@ class HeapType {
         return std::string("extern");
       case kEq:
         return std::string("eq");
-      case kExn:
-        return std::string("exn");
       case kI31:
         return std::string("i31");
+      case kData:
+        return std::string("data");
+      case kAny:
+        return std::string("any");
       default:
         return std::to_string(representation_);
     }
@@ -143,14 +149,16 @@ class HeapType {
     switch (representation_) {
       case kFunc:
         return mask | kFuncRefCode;
-      case kExn:
-        return mask | kExnRefCode;
       case kExtern:
         return mask | kExternRefCode;
       case kEq:
         return mask | kEqRefCode;
       case kI31:
         return mask | kI31RefCode;
+      case kData:
+        return mask | kDataRefCode;
+      case kAny:
+        return mask | kAnyRefCode;
       default:
         return static_cast<int32_t>(representation_);
     }
@@ -178,38 +186,7 @@ class ValueType {
 #undef DEF_ENUM
   };
 
-  constexpr bool is_reference_type() const {
-    return kind() == kRef || kind() == kOptRef || kind() == kRtt;
-  }
-
-  constexpr bool is_object_reference_type() const {
-    return kind() == kRef || kind() == kOptRef;
-  }
-
-  constexpr bool is_packed() const { return kind() == kI8 || kind() == kI16; }
-
-  constexpr bool is_nullable() const { return kind() == kOptRef; }
-
-  constexpr bool is_reference_to(uint32_t htype) const {
-    return (kind() == kRef || kind() == kOptRef) &&
-           heap_representation() == htype;
-  }
-
-  constexpr bool is_defaultable() const {
-    CONSTEXPR_DCHECK(kind() != kBottom && kind() != kStmt);
-    return kind() != kRef && kind() != kRtt;
-  }
-
-  constexpr ValueType Unpacked() const {
-    return is_packed() ? Primitive(kI32) : *this;
-  }
-
-  constexpr bool has_index() const {
-    return is_reference_type() && heap_type().is_index();
-  }
-  constexpr bool is_rtt() const { return kind() == kRtt; }
-  constexpr bool has_depth() const { return is_rtt(); }
-
+  /******************************* Constructors *******************************/
   constexpr ValueType() : bit_field_(KindField::encode(kStmt)) {}
   static constexpr ValueType Primitive(Kind kind) {
     CONSTEXPR_DCHECK(kind == kBottom || kind <= kI16);
@@ -225,16 +202,18 @@ class ValueType {
     return Ref(heap_type.representation(), nullability);
   }
 
-  static constexpr ValueType Rtt(uint32_t heap_type,
-                                 uint8_t inheritance_depth) {
-    CONSTEXPR_DCHECK(HeapType(heap_type).is_valid());
+  static constexpr ValueType Rtt(uint32_t type_index) {
+    CONSTEXPR_DCHECK(HeapType(type_index).is_index());
     return ValueType(KindField::encode(kRtt) |
-                     HeapTypeField::encode(heap_type) |
-                     DepthField::encode(inheritance_depth));
+                     HeapTypeField::encode(type_index));
   }
-  static constexpr ValueType Rtt(HeapType heap_type,
+
+  static constexpr ValueType Rtt(uint32_t type_index,
                                  uint8_t inheritance_depth) {
-    return Rtt(heap_type.representation(), inheritance_depth);
+    CONSTEXPR_DCHECK(HeapType(type_index).is_index());
+    return ValueType(KindField::encode(kRttWithDepth) |
+                     HeapTypeField::encode(type_index) |
+                     DepthField::encode(inheritance_depth));
   }
 
   // Useful when deserializing a type stored in a runtime object.
@@ -242,13 +221,54 @@ class ValueType {
     return ValueType(bit_field);
   }
 
+  /******************************** Type checks *******************************/
+  constexpr bool is_reference_type() const {
+    return kind() == kRef || kind() == kOptRef || kind() == kRtt ||
+           kind() == kRttWithDepth;
+  }
+
+  constexpr bool is_object_reference_type() const {
+    return kind() == kRef || kind() == kOptRef;
+  }
+
+  constexpr bool is_nullable() const { return kind() == kOptRef; }
+
+  constexpr bool is_reference_to(uint32_t htype) const {
+    return (kind() == kRef || kind() == kOptRef) &&
+           heap_representation() == htype;
+  }
+
+  constexpr bool is_rtt() const {
+    return kind() == kRtt || kind() == kRttWithDepth;
+  }
+  constexpr bool has_depth() const { return kind() == kRttWithDepth; }
+
+  constexpr bool has_index() const {
+    return is_rtt() || (is_object_reference_type() && heap_type().is_index());
+  }
+
+  constexpr bool is_defaultable() const {
+    CONSTEXPR_DCHECK(kind() != kBottom && kind() != kStmt);
+    return kind() != kRef && !is_rtt();
+  }
+
+  constexpr bool is_bottom() const { return kind() == kBottom; }
+
+  constexpr bool is_packed() const { return kind() == kI8 || kind() == kI16; }
+
+  constexpr ValueType Unpacked() const {
+    return is_packed() ? Primitive(kI32) : *this;
+  }
+
+  /***************************** Field Accessors ******************************/
   constexpr Kind kind() const { return KindField::decode(bit_field_); }
   constexpr HeapType::Representation heap_representation() const {
-    CONSTEXPR_DCHECK(is_reference_type());
+    CONSTEXPR_DCHECK(is_object_reference_type());
     return static_cast<HeapType::Representation>(
         HeapTypeField::decode(bit_field_));
   }
   constexpr HeapType heap_type() const {
+    CONSTEXPR_DCHECK(is_object_reference_type());
     return HeapType(heap_representation());
   }
   constexpr uint8_t depth() const {
@@ -257,11 +277,23 @@ class ValueType {
   }
   constexpr uint32_t ref_index() const {
     CONSTEXPR_DCHECK(has_index());
-    return heap_type().ref_index();
+    return HeapTypeField::decode(bit_field_);
+  }
+  constexpr Nullability nullability() const {
+    CONSTEXPR_DCHECK(is_object_reference_type());
+    return kind() == kOptRef ? kNullable : kNonNullable;
   }
 
   // Useful when serializing this type to store it into a runtime object.
   constexpr uint32_t raw_bit_field() const { return bit_field_; }
+
+  /*************************** Other utility methods **************************/
+  constexpr bool operator==(ValueType other) const {
+    return bit_field_ == other.bit_field_;
+  }
+  constexpr bool operator!=(ValueType other) const {
+    return bit_field_ != other.bit_field_;
+  }
 
   static constexpr size_t bit_field_offset() {
     return offsetof(ValueType, bit_field_);
@@ -292,13 +324,7 @@ class ValueType {
     return size;
   }
 
-  constexpr bool operator==(ValueType other) const {
-    return bit_field_ == other.bit_field_;
-  }
-  constexpr bool operator!=(ValueType other) const {
-    return bit_field_ != other.bit_field_;
-  }
-
+  /*************************** Machine-type related ***************************/
   constexpr MachineType machine_type() const {
     CONSTEXPR_DCHECK(kBottom != kind());
 
@@ -314,55 +340,6 @@ class ValueType {
 
   constexpr MachineRepresentation machine_representation() const {
     return machine_type().representation();
-  }
-
-  // Returns the first byte of this type's representation in the wasm binary
-  // format.
-  // For compatibility with the reftypes and exception-handling proposals, this
-  // function prioritizes shorthand encodings
-  // (e.g., Ref(HeapType::kFunc, kNullable).value_type_code will return
-  // kFuncrefCode and not kOptRefCode).
-  constexpr ValueTypeCode value_type_code() const {
-    CONSTEXPR_DCHECK(kind() != kBottom);
-    switch (kind()) {
-      case kOptRef:
-        switch (heap_representation()) {
-          case HeapType::kFunc:
-            return kFuncRefCode;
-          case HeapType::kExtern:
-            return kExternRefCode;
-          case HeapType::kEq:
-            return kEqRefCode;
-          case HeapType::kExn:
-            return kExnRefCode;
-          default:
-            return kOptRefCode;
-        }
-      case kRef:
-        if (heap_representation() == HeapType::kI31) return kI31RefCode;
-        return kRefCode;
-      case kStmt:
-        return kVoidCode;
-      case kRtt:
-        return kRttCode;
-#define NUMERIC_TYPE_CASE(kind, ...) \
-  case k##kind:                      \
-    return k##kind##Code;
-        FOREACH_NUMERIC_VALUE_TYPE(NUMERIC_TYPE_CASE)
-#undef NUMERIC_TYPE_CASE
-      case kBottom:
-        // Unreachable code
-        return kVoidCode;
-    }
-  }
-
-  // Returns true iff the heap type is needed to encode this type in the wasm
-  // binary format, taking into account available type shorthands.
-  constexpr bool encoding_needs_heap_type() const {
-    return (kind() == kRef && heap_representation() != HeapType::kI31) ||
-           kind() == kRtt ||
-           (kind() == kOptRef && (!heap_type().is_generic() ||
-                                  heap_representation() == HeapType::kI31));
   }
 
   static ValueType For(MachineType type) {
@@ -386,6 +363,69 @@ class ValueType {
     }
   }
 
+  /********************************* Encoding *********************************/
+
+  // Returns the first byte of this type's representation in the wasm binary
+  // format.
+  // For compatibility with the reftypes and exception-handling proposals, this
+  // function prioritizes shorthand encodings
+  // (e.g., Ref(HeapType::kFunc, kNullable).value_type_code will return
+  // kFuncrefCode and not kOptRefCode).
+  constexpr ValueTypeCode value_type_code() const {
+    CONSTEXPR_DCHECK(kind() != kBottom);
+    switch (kind()) {
+      case kOptRef:
+        switch (heap_representation()) {
+          case HeapType::kFunc:
+            return kFuncRefCode;
+          case HeapType::kExtern:
+            return kExternRefCode;
+          case HeapType::kEq:
+            return kEqRefCode;
+          case HeapType::kAny:
+            return kAnyRefCode;
+          default:
+            return kOptRefCode;
+        }
+      case kRef:
+        switch (heap_representation()) {
+          case HeapType::kI31:
+            return kI31RefCode;
+          case HeapType::kData:
+            return kDataRefCode;
+          default:
+            return kRefCode;
+        }
+      case kStmt:
+        return kVoidCode;
+      case kRtt:
+        return kRttCode;
+      case kRttWithDepth:
+        return kRttWithDepthCode;
+#define NUMERIC_TYPE_CASE(kind, ...) \
+  case k##kind:                      \
+    return k##kind##Code;
+        FOREACH_NUMERIC_VALUE_TYPE(NUMERIC_TYPE_CASE)
+#undef NUMERIC_TYPE_CASE
+      case kBottom:
+        // Unreachable code
+        return kVoidCode;
+    }
+  }
+
+  // Returns true iff the heap type is needed to encode this type in the wasm
+  // binary format, taking into account available type shorthands.
+  constexpr bool encoding_needs_heap_type() const {
+    return (kind() == kRef && heap_representation() != HeapType::kI31 &&
+            heap_representation() != HeapType::kData) ||
+           (kind() == kOptRef && (heap_type().is_index() ||
+                                  heap_representation() == HeapType::kI31 ||
+                                  heap_representation() == HeapType::kData));
+  }
+
+  static constexpr int kLastUsedBit = 30;
+
+  /****************************** Pretty-printing *****************************/
   constexpr char short_name() const {
     constexpr char kShortName[] = {
 #define SHORT_NAME(kind, log2Size, code, machineType, shortName, ...) shortName,
@@ -400,32 +440,26 @@ class ValueType {
     std::ostringstream buf;
     switch (kind()) {
       case kRef:
-        if (heap_representation() == HeapType::kI31) {
-          buf << "i31ref";
+      case kOptRef:
+        if (encoding_needs_heap_type()) {
+          buf << "(ref " << (kind() == kOptRef ? "null " : "")
+              << heap_type().name() << ")";
         } else {
-          buf << "(ref " << heap_type().name() << ")";
+          buf << heap_type().name() << "ref";
         }
         break;
-      case kOptRef:
-        if (heap_type().is_generic() &&
-            heap_representation() != HeapType::kI31) {
-          // We use shorthands to be compatible with the 'reftypes' proposal.
-          buf << heap_type().name() << "ref";
-        } else {
-          buf << "(ref null " << heap_type().name() << ")";
-        }
+      case kRttWithDepth:
+        buf << "(rtt " << static_cast<uint32_t>(depth()) << " " << ref_index()
+            << ")";
         break;
       case kRtt:
-        buf << "(rtt " << static_cast<uint32_t>(depth()) << " "
-            << heap_type().name() << ")";
+        buf << "(rtt " << ref_index() << ")";
         break;
       default:
         buf << kind_name();
     }
     return buf.str();
   }
-
-  static constexpr int kLastUsedBit = 30;
 
  private:
   // We only use 31 bits so ValueType fits in a Smi. This can be changed if
@@ -485,13 +519,15 @@ constexpr ValueType kWasmI8 = ValueType::Primitive(ValueType::kI8);
 constexpr ValueType kWasmI16 = ValueType::Primitive(ValueType::kI16);
 constexpr ValueType kWasmStmt = ValueType::Primitive(ValueType::kStmt);
 constexpr ValueType kWasmBottom = ValueType::Primitive(ValueType::kBottom);
-// Established wasm shorthands:
+// Established reference-type proposal shorthands.
 constexpr ValueType kWasmFuncRef = ValueType::Ref(HeapType::kFunc, kNullable);
-constexpr ValueType kWasmExnRef = ValueType::Ref(HeapType::kExn, kNullable);
 constexpr ValueType kWasmExternRef =
     ValueType::Ref(HeapType::kExtern, kNullable);
 constexpr ValueType kWasmEqRef = ValueType::Ref(HeapType::kEq, kNullable);
 constexpr ValueType kWasmI31Ref = ValueType::Ref(HeapType::kI31, kNonNullable);
+constexpr ValueType kWasmDataRef =
+    ValueType::Ref(HeapType::kData, kNonNullable);
+constexpr ValueType kWasmAnyRef = ValueType::Ref(HeapType::kAny, kNullable);
 
 #define FOREACH_WASMVALUE_CTYPES(V) \
   V(kI32, int32_t)                  \
@@ -537,7 +573,7 @@ class LoadType {
   constexpr ValueType value_type() const { return kValueType[val_]; }
   constexpr MachineType mem_type() const { return kMemType[val_]; }
 
-  static LoadType ForValueType(ValueType type) {
+  static LoadType ForValueType(ValueType type, bool is_signed = false) {
     switch (type.kind()) {
       case ValueType::kI32:
         return kI32Load;
@@ -549,6 +585,10 @@ class LoadType {
         return kF64Load;
       case ValueType::kS128:
         return kS128Load;
+      case ValueType::kI8:
+        return is_signed ? kI32Load8S : kI32Load8U;
+      case ValueType::kI16:
+        return is_signed ? kI32Load16S : kI32Load16U;
       default:
         UNREACHABLE();
     }
@@ -621,6 +661,10 @@ class StoreType {
         return kF64Store;
       case ValueType::kS128:
         return kS128Store;
+      case ValueType::kI8:
+        return kI32Store8;
+      case ValueType::kI16:
+        return kI32Store16;
       default:
         UNREACHABLE();
     }

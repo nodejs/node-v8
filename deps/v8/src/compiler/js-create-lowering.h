@@ -22,6 +22,7 @@ namespace compiler {
 // Forward declarations.
 class CommonOperatorBuilder;
 class CompilationDependencies;
+class FrameState;
 class JSGraph;
 class JSOperatorBuilder;
 class MachineOperatorBuilder;
@@ -82,15 +83,15 @@ class V8_EXPORT_PRIVATE JSCreateLowering final
       const SlackTrackingPrediction& slack_tracking_prediction);
   Reduction ReduceJSCreateObject(Node* node);
 
-  Node* AllocateArguments(Node* effect, Node* control, Node* frame_state);
-  Node* AllocateRestArguments(Node* effect, Node* control, Node* frame_state,
-                              int start_index);
-  Node* AllocateAliasedArguments(Node* effect, Node* control, Node* frame_state,
-                                 Node* context,
+  Node* AllocateArguments(Node* effect, Node* control, FrameState frame_state);
+  Node* AllocateRestArguments(Node* effect, Node* control,
+                              FrameState frame_state, int start_index);
+  Node* AllocateAliasedArguments(Node* effect, Node* control,
+                                 FrameState frame_state, Node* context,
                                  const SharedFunctionInfoRef& shared,
                                  bool* has_aliased_arguments);
   Node* AllocateAliasedArguments(Node* effect, Node* control, Node* context,
-                                 Node* arguments_frame, Node* arguments_length,
+                                 Node* arguments_length,
                                  const SharedFunctionInfoRef& shared,
                                  bool* has_aliased_arguments);
   Node* AllocateElements(Node* effect, Node* control,

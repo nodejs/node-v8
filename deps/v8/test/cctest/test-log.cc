@@ -65,7 +65,7 @@ static std::vector<std::string> Split(const std::string& s, char delimiter) {
   return result;
 }
 
-class ScopedLoggerInitializer {
+class V8_NODISCARD ScopedLoggerInitializer {
  public:
   explicit ScopedLoggerInitializer(v8::Isolate* isolate)
       : temp_file_(nullptr),
@@ -82,6 +82,9 @@ class ScopedLoggerInitializer {
     FILE* log_file = logger_->TearDownAndGetLogFile();
     if (log_file != nullptr) fclose(log_file);
   }
+
+  ScopedLoggerInitializer(const ScopedLoggerInitializer&) = delete;
+  ScopedLoggerInitializer& operator=(const ScopedLoggerInitializer&) = delete;
 
   v8::Local<v8::Context>& env() { return env_; }
 
@@ -212,8 +215,6 @@ class ScopedLoggerInitializer {
 
   std::string raw_log_;
   std::vector<std::string> log_;
-
-  DISALLOW_COPY_AND_ASSIGN(ScopedLoggerInitializer);
 };
 
 class TestCodeEventHandler : public v8::CodeEventHandler {
@@ -298,8 +299,7 @@ TEST(Issue23768) {
   // Script needs to have a name in order to trigger InitLineEnds execution.
   v8::Local<v8::String> origin =
       v8::String::NewFromUtf8Literal(CcTest::isolate(), "issue-23768-test");
-  v8::Local<v8::Script> evil_script =
-      CompileWithOrigin(source, origin, v8_bool(false));
+  v8::Local<v8::Script> evil_script = CompileWithOrigin(source, origin, false);
   CHECK(!evil_script.IsEmpty());
   CHECK(!evil_script->Run(env).IsEmpty());
   i::Handle<i::ExternalTwoByteString> i_source(
@@ -504,6 +504,7 @@ UNINITIALIZED_TEST(Issue539892) {
 UNINITIALIZED_TEST(LogAll) {
   SETUP_FLAGS();
   i::FLAG_log_all = true;
+  i::FLAG_log_deopt = true;
   i::FLAG_log_api = true;
   i::FLAG_turbo_inlining = false;
   i::FLAG_log_internal_timer_events = true;
@@ -614,7 +615,7 @@ UNINITIALIZED_TEST(LogInterpretedFramesNativeStackWithSerialization) {
       v8::Local<v8::String> source = v8_str(
           "function eyecatcher() { return a * a; } return eyecatcher();");
       v8::Local<v8::String> arg_str = v8_str("a");
-      v8::ScriptOrigin origin(v8_str("filename"));
+      v8::ScriptOrigin origin(isolate, v8_str("filename"));
 
       i::DisallowCompilation* no_compile_expected =
           has_cache ? new i::DisallowCompilation(
@@ -709,7 +710,7 @@ UNINITIALIZED_TEST(ExternalCodeEventListenerInnerFunctions) {
     code_event_handler.Enable();
 
     v8::Local<v8::String> source_string = v8_str(source_cstring);
-    v8::ScriptOrigin origin(v8_str("test"));
+    v8::ScriptOrigin origin(isolate1, v8_str("test"));
     v8::ScriptCompiler::Source source(source_string, origin);
     v8::Local<v8::UnboundScript> script =
         v8::ScriptCompiler::CompileUnboundScript(isolate1, &source)
@@ -733,7 +734,7 @@ UNINITIALIZED_TEST(ExternalCodeEventListenerInnerFunctions) {
     code_event_handler.Enable();
 
     v8::Local<v8::String> source_string = v8_str(source_cstring);
-    v8::ScriptOrigin origin(v8_str("test"));
+    v8::ScriptOrigin origin(isolate2, v8_str("test"));
     v8::ScriptCompiler::Source source(source_string, origin, cache);
     {
       i::DisallowCompilation no_compile_expected(
@@ -802,7 +803,7 @@ UNINITIALIZED_TEST(ExternalCodeEventListenerWithInterpretedFramesNativeStack) {
 
 UNINITIALIZED_TEST(TraceMaps) {
   SETUP_FLAGS();
-  i::FLAG_trace_maps = true;
+  i::FLAG_log_maps = true;
   v8::Isolate::CreateParams create_params;
   create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
   v8::Isolate* isolate = v8::Isolate::New(create_params);
@@ -837,7 +838,7 @@ UNINITIALIZED_TEST(TraceMaps) {
     CHECK(logger.ContainsLine({"map,Transition", ",0x"}));
     CHECK(logger.ContainsLine({"map-details", ",0x"}));
   }
-  i::FLAG_trace_maps = false;
+  i::FLAG_log_maps = false;
   isolate->Dispose();
 }
 
@@ -855,7 +856,7 @@ void ValidateMapDetailsLogging(v8::Isolate* isolate,
   // Iterate over all maps on the heap.
   i::Heap* heap = reinterpret_cast<i::Isolate*>(isolate)->heap();
   i::HeapObjectIterator iterator(heap);
-  i::DisallowHeapAllocation no_gc;
+  i::DisallowGarbageCollection no_gc;
   size_t i = 0;
   for (i::HeapObject obj = iterator.Next(); !obj.is_null();
        obj = iterator.Next()) {
@@ -895,7 +896,7 @@ UNINITIALIZED_TEST(LogMapsDetailsStartup) {
   }
   // Test that all Map details from Maps in the snapshot are logged properly.
   SETUP_FLAGS();
-  i::FLAG_trace_maps = true;
+  i::FLAG_log_maps = true;
   v8::Isolate::CreateParams create_params;
   create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
   v8::Isolate* isolate = v8::Isolate::New(create_params);
@@ -917,7 +918,7 @@ UNINITIALIZED_TEST(LogMapsDetailsCode) {
   }
   SETUP_FLAGS();
   i::FLAG_retain_maps_for_n_gc = 0xFFFFFFF;
-  i::FLAG_trace_maps = true;
+  i::FLAG_log_maps = true;
   v8::Isolate::CreateParams create_params;
   create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
   v8::Isolate* isolate = v8::Isolate::New(create_params);
@@ -1014,7 +1015,7 @@ UNINITIALIZED_TEST(LogMapsDetailsContexts) {
   }
   // Test that all Map details from Maps in the snapshot are logged properly.
   SETUP_FLAGS();
-  i::FLAG_trace_maps = true;
+  i::FLAG_log_maps = true;
   v8::Isolate::CreateParams create_params;
   create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
   v8::Isolate* isolate = v8::Isolate::New(create_params);
@@ -1182,12 +1183,12 @@ UNINITIALIZED_TEST(BuiltinsNotLoggedAsLazyCompile) {
     i::SNPrintF(buffer, ",0x%" V8PRIxPTR ",%d,BooleanConstructor",
                 builtin->InstructionStart(), builtin->InstructionSize());
     CHECK(logger.ContainsLine(
-        {"code-creation,Builtin,3,", std::string(buffer.begin())}));
+        {"code-creation,Builtin,2,", std::string(buffer.begin())}));
 
     i::SNPrintF(buffer, ",0x%" V8PRIxPTR ",%d,", builtin->InstructionStart(),
                 builtin->InstructionSize());
     CHECK(!logger.ContainsLine(
-        {"code-creation,LazyCompile,3,", std::string(buffer.begin())}));
+        {"code-creation,LazyCompile,2,", std::string(buffer.begin())}));
   }
   isolate->Dispose();
 }
