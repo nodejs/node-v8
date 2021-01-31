@@ -35,8 +35,6 @@ jobs:
 
       - name: Notify Slack on failure
         if: ${{ failure() }}
-        env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
         run: |
           ACTIONS_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}?check_suite_focus=true"
           SLACK_PAYLOAD="{\"username\": \"canary_bot\", \"text\": \"*Canary update failed!*\n\nRun: ${ACTIONS_URL}\", \"icon_emoji\": \":bell:\"}"
