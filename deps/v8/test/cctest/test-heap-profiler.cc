@@ -459,12 +459,13 @@ TEST(HeapSnapshotCodeObjects) {
 
   // Verify that non-compiled function doesn't contain references to "x"
   // literal, while compiled function does. The scope info is stored in
-  // FixedArray objects attached to the SharedFunctionInfo.
+  // ScopeInfo objects attached to the SharedFunctionInfo.
   bool compiled_references_x = false, lazy_references_x = false;
   for (int i = 0, count = compiled_sfi->GetChildrenCount(); i < count; ++i) {
     const v8::HeapGraphEdge* prop = compiled_sfi->GetChild(i);
     const v8::HeapGraphNode* node = prop->GetToNode();
-    if (node->GetType() == v8::HeapGraphNode::kArray) {
+    if (node->GetType() == v8::HeapGraphNode::kHidden &&
+        !strcmp("system / ScopeInfo", GetName(node))) {
       if (HasString(env->GetIsolate(), node, "x")) {
         compiled_references_x = true;
         break;
@@ -474,7 +475,8 @@ TEST(HeapSnapshotCodeObjects) {
   for (int i = 0, count = lazy_sfi->GetChildrenCount(); i < count; ++i) {
     const v8::HeapGraphEdge* prop = lazy_sfi->GetChild(i);
     const v8::HeapGraphNode* node = prop->GetToNode();
-    if (node->GetType() == v8::HeapGraphNode::kArray) {
+    if (node->GetType() == v8::HeapGraphNode::kHidden &&
+        !strcmp("system / ScopeInfo", GetName(node))) {
       if (HasString(env->GetIsolate(), node, "x")) {
         lazy_references_x = true;
         break;
@@ -4072,7 +4074,8 @@ TEST(WeakReference) {
           .Build();
   CHECK(code->IsCode());
 
-  fv->set_maybe_optimized_code(i::HeapObjectReference::Weak(*code));
+  fv->set_maybe_optimized_code(i::HeapObjectReference::Weak(*code),
+                               v8::kReleaseStore);
   fv->set_flags(i::FeedbackVector::OptimizationTierBits::encode(
                     i::OptimizationTier::kTopTier) |
                 i::FeedbackVector::OptimizationMarkerBits::encode(

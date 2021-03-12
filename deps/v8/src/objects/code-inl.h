@@ -5,17 +5,19 @@
 #ifndef V8_OBJECTS_CODE_INL_H_
 #define V8_OBJECTS_CODE_INL_H_
 
-#include "src/objects/code.h"
-
 #include "src/base/memory.h"
+#include "src/baseline/bytecode-offset-iterator.h"
 #include "src/codegen/code-desc.h"
+#include "src/common/assert-scope.h"
 #include "src/execution/isolate.h"
 #include "src/interpreter/bytecode-register.h"
+#include "src/objects/code.h"
 #include "src/objects/dictionary.h"
 #include "src/objects/instance-type-inl.h"
 #include "src/objects/map-inl.h"
 #include "src/objects/maybe-object-inl.h"
 #include "src/objects/oddball.h"
+#include "src/objects/shared-function-info.h"
 #include "src/objects/smi-inl.h"
 
 // Has to be the last include (doesn't have include guards):
@@ -55,9 +57,18 @@ int AbstractCode::InstructionSize() {
   }
 }
 
-ByteArray AbstractCode::source_position_table() {
+ByteArray AbstractCode::SourcePositionTableInternal() {
   if (IsCode()) {
-    return GetCode().SourcePositionTable();
+    DCHECK_NE(GetCode().kind(), CodeKind::BASELINE);
+    return GetCode().source_position_table();
+  } else {
+    return GetBytecodeArray().SourcePositionTable();
+  }
+}
+
+ByteArray AbstractCode::SourcePositionTable(SharedFunctionInfo sfi) {
+  if (IsCode()) {
+    return GetCode().SourcePositionTable(sfi);
   } else {
     return GetBytecodeArray().SourcePositionTable();
   }
@@ -177,7 +188,14 @@ INT32_ACCESSORS(Code, unwinding_info_offset, kUnwindingInfoOffsetOffset)
 
 CODE_ACCESSORS(relocation_info, ByteArray, kRelocationInfoOffset)
 CODE_ACCESSORS(deoptimization_data, FixedArray, kDeoptimizationDataOffset)
-CODE_ACCESSORS(source_position_table, Object, kSourcePositionTableOffset)
+#define IS_BASELINE() (kind() == CodeKind::BASELINE)
+ACCESSORS_CHECKED2(Code, source_position_table, ByteArray, kPositionTableOffset,
+                   !IS_BASELINE(),
+                   !IS_BASELINE() && !ObjectInYoungGeneration(value))
+ACCESSORS_CHECKED2(Code, bytecode_offset_table, ByteArray, kPositionTableOffset,
+                   IS_BASELINE(),
+                   IS_BASELINE() && !ObjectInYoungGeneration(value))
+#undef IS_BASELINE
 // Concurrent marker needs to access kind specific flags in code data container.
 RELEASE_ACQUIRE_CODE_ACCESSORS(code_data_container, CodeDataContainer,
                                kCodeDataContainerOffset)
@@ -187,7 +205,7 @@ RELEASE_ACQUIRE_CODE_ACCESSORS(code_data_container, CodeDataContainer,
 void Code::WipeOutHeader() {
   WRITE_FIELD(*this, kRelocationInfoOffset, Smi::FromInt(0));
   WRITE_FIELD(*this, kDeoptimizationDataOffset, Smi::FromInt(0));
-  WRITE_FIELD(*this, kSourcePositionTableOffset, Smi::FromInt(0));
+  WRITE_FIELD(*this, kPositionTableOffset, Smi::FromInt(0));
   WRITE_FIELD(*this, kCodeDataContainerOffset, Smi::FromInt(0));
 }
 
@@ -204,12 +222,12 @@ void Code::clear_padding() {
   memset(reinterpret_cast<void*>(raw_body_end()), 0, trailing_padding_size);
 }
 
-ByteArray Code::SourcePositionTable() const {
-  Object maybe_table = source_position_table();
-  if (maybe_table.IsByteArray()) return ByteArray::cast(maybe_table);
-  ReadOnlyRoots roots = GetReadOnlyRoots();
-  DCHECK(maybe_table.IsUndefined(roots) || maybe_table.IsException(roots));
-  return roots.empty_byte_array();
+ByteArray Code::SourcePositionTable(SharedFunctionInfo sfi) const {
+  DisallowGarbageCollection no_gc;
+  if (kind() == CodeKind::BASELINE) {
+    return sfi.GetBytecodeArray(sfi.GetIsolate()).SourcePositionTable();
+  }
+  return source_position_table();
 }
 
 Object Code::next_code_link() const {
@@ -326,7 +344,31 @@ int Code::CodeSize() const { return SizeFor(raw_body_size()); }
 
 CodeKind Code::kind() const {
   STATIC_ASSERT(FIELD_SIZE(kFlagsOffset) == kInt32Size);
-  return KindField::decode(ReadField<uint32_t>(kFlagsOffset));
+  const uint32_t flags = RELAXED_READ_UINT32_FIELD(*this, kFlagsOffset);
+  return KindField::decode(flags);
+}
+
+int Code::GetBytecodeOffsetForBaselinePC(Address baseline_pc,
+                                         BytecodeArray bytecodes) {
+  DisallowGarbageCollection no_gc;
+  CHECK(!is_baseline_prologue_builtin());
+  if (is_baseline_leave_frame_builtin()) return kFunctionExitBytecodeOffset;
+  CHECK_EQ(kind(), CodeKind::BASELINE);
+  baseline::BytecodeOffsetIterator offset_iterator(
+      ByteArray::cast(bytecode_offset_table()), bytecodes);
+  Address pc = baseline_pc - InstructionStart();
+  offset_iterator.AdvanceToPCOffset(pc);
+  return offset_iterator.current_bytecode_offset();
+}
+
+uintptr_t Code::GetBaselinePCForBytecodeOffset(int bytecode_offset,
+                                               BytecodeArray bytecodes) {
+  DisallowGarbageCollection no_gc;
+  CHECK_EQ(kind(), CodeKind::BASELINE);
+  baseline::BytecodeOffsetIterator offset_iterator(
+      ByteArray::cast(bytecode_offset_table()), bytecodes);
+  offset_iterator.AdvanceToBytecodeOffset(bytecode_offset);
+  return offset_iterator.current_pc_start_offset();
 }
 
 void Code::initialize_flags(CodeKind kind, bool is_turbofanned, int stack_slots,
@@ -338,7 +380,7 @@ void Code::initialize_flags(CodeKind kind, bool is_turbofanned, int stack_slots,
                    StackSlotsField::encode(stack_slots) |
                    IsOffHeapTrampoline::encode(is_off_heap_trampoline);
   STATIC_ASSERT(FIELD_SIZE(kFlagsOffset) == kInt32Size);
-  WriteField<uint32_t>(kFlagsOffset, flags);
+  RELAXED_WRITE_UINT32_FIELD(*this, kFlagsOffset, flags);
   DCHECK_IMPLIES(stack_slots != 0, has_safepoint_info());
 }
 
@@ -352,6 +394,14 @@ inline bool Code::is_interpreter_trampoline_builtin() const {
           index == Builtins::kInterpreterEnterBytecodeDispatch);
 }
 
+inline bool Code::is_baseline_leave_frame_builtin() const {
+  return builtin_index() == Builtins::kBaselineLeaveFrame;
+}
+
+inline bool Code::is_baseline_prologue_builtin() const {
+  return builtin_index() == Builtins::kBaselineOutOfLinePrologue;
+}
+
 inline bool Code::checks_optimization_marker() const {
   bool checks_marker =
       (builtin_index() == Builtins::kCompileLazy ||
@@ -361,13 +411,14 @@ inline bool Code::checks_optimization_marker() const {
          (CodeKindCanDeoptimize(kind()) && marked_for_deoptimization());
 }
 
-inline bool Code::has_tagged_params() const {
+inline bool Code::has_tagged_outgoing_params() const {
   return kind() != CodeKind::JS_TO_WASM_FUNCTION &&
          kind() != CodeKind::C_WASM_ENTRY && kind() != CodeKind::WASM_FUNCTION;
 }
 
 inline bool Code::is_turbofanned() const {
-  return IsTurbofannedField::decode(ReadField<uint32_t>(kFlagsOffset));
+  const uint32_t flags = RELAXED_READ_UINT32_FIELD(*this, kFlagsOffset);
+  return IsTurbofannedField::decode(flags);
 }
 
 inline bool Code::can_have_weak_objects() const {
@@ -413,7 +464,8 @@ inline void Code::set_is_exception_caught(bool value) {
 }
 
 inline bool Code::is_off_heap_trampoline() const {
-  return IsOffHeapTrampoline::decode(ReadField<uint32_t>(kFlagsOffset));
+  const uint32_t flags = RELAXED_READ_UINT32_FIELD(*this, kFlagsOffset);
+  return IsOffHeapTrampoline::decode(flags);
 }
 
 inline HandlerTable::CatchPrediction Code::GetBuiltinCatchPrediction() {
@@ -423,14 +475,14 @@ inline HandlerTable::CatchPrediction Code::GetBuiltinCatchPrediction() {
 }
 
 int Code::builtin_index() const {
-  int index = ReadField<int>(kBuiltinIndexOffset);
+  int index = RELAXED_READ_INT_FIELD(*this, kBuiltinIndexOffset);
   DCHECK(index == Builtins::kNoBuiltinId || Builtins::IsBuiltinId(index));
   return index;
 }
 
 void Code::set_builtin_index(int index) {
   DCHECK(index == Builtins::kNoBuiltinId || Builtins::IsBuiltinId(index));
-  WriteField<int>(kBuiltinIndexOffset, index);
+  RELAXED_WRITE_INT_FIELD(*this, kBuiltinIndexOffset, index);
 }
 
 bool Code::is_builtin() const {
@@ -438,14 +490,14 @@ bool Code::is_builtin() const {
 }
 
 unsigned Code::inlined_bytecode_size() const {
-  DCHECK(CodeKindIsOptimizedJSFunction(kind()) ||
-         ReadField<unsigned>(kInlinedBytecodeSizeOffset) == 0);
-  return ReadField<unsigned>(kInlinedBytecodeSizeOffset);
+  unsigned size = RELAXED_READ_UINT_FIELD(*this, kInlinedBytecodeSizeOffset);
+  DCHECK(CodeKindIsOptimizedJSFunction(kind()) || size == 0);
+  return size;
 }
 
 void Code::set_inlined_bytecode_size(unsigned size) {
   DCHECK(CodeKindIsOptimizedJSFunction(kind()) || size == 0);
-  WriteField<unsigned>(kInlinedBytecodeSizeOffset, size);
+  RELAXED_WRITE_UINT_FIELD(*this, kInlinedBytecodeSizeOffset, size);
 }
 
 bool Code::has_safepoint_info() const {
@@ -454,7 +506,8 @@ bool Code::has_safepoint_info() const {
 
 int Code::stack_slots() const {
   DCHECK(has_safepoint_info());
-  return StackSlotsField::decode(ReadField<uint32_t>(kFlagsOffset));
+  const uint32_t flags = RELAXED_READ_UINT32_FIELD(*this, kFlagsOffset);
+  return StackSlotsField::decode(flags);
 }
 
 bool Code::marked_for_deoptimization() const {
@@ -655,7 +708,7 @@ void BytecodeArray::set_parameter_count(int32_t number_of_parameters) {
   // Parameter count is stored as the size on stack of the parameters to allow
   // it to be used directly by generated code.
   WriteField<int32_t>(kParameterSizeOffset,
-                  (number_of_parameters << kSystemPointerSizeLog2));
+                      (number_of_parameters << kSystemPointerSizeLog2));
 }
 
 interpreter::Register BytecodeArray::incoming_new_target_or_generator_register()
@@ -678,7 +731,7 @@ void BytecodeArray::set_incoming_new_target_or_generator_register(
            register_count());
     DCHECK_NE(0, incoming_new_target_or_generator_register.ToOperand());
     WriteField<int32_t>(kIncomingNewTargetOrGeneratorRegisterOffset,
-                    incoming_new_target_or_generator_register.ToOperand());
+                        incoming_new_target_or_generator_register.ToOperand());
   }
 }
 
@@ -762,7 +815,7 @@ int BytecodeArray::SizeIncludingMetadata() {
   return size;
 }
 
-DEFINE_DEOPT_ELEMENT_ACCESSORS(TranslationByteArray, ByteArray)
+DEFINE_DEOPT_ELEMENT_ACCESSORS(TranslationByteArray, TranslationArray)
 DEFINE_DEOPT_ELEMENT_ACCESSORS(InlinedFunctionCount, Smi)
 DEFINE_DEOPT_ELEMENT_ACCESSORS(LiteralArray, FixedArray)
 DEFINE_DEOPT_ELEMENT_ACCESSORS(OsrBytecodeOffset, Smi)
@@ -777,11 +830,11 @@ DEFINE_DEOPT_ENTRY_ACCESSORS(BytecodeOffsetRaw, Smi)
 DEFINE_DEOPT_ENTRY_ACCESSORS(TranslationIndex, Smi)
 DEFINE_DEOPT_ENTRY_ACCESSORS(Pc, Smi)
 
-BailoutId DeoptimizationData::BytecodeOffset(int i) {
-  return BailoutId(BytecodeOffsetRaw(i).value());
+BytecodeOffset DeoptimizationData::GetBytecodeOffset(int i) {
+  return BytecodeOffset(BytecodeOffsetRaw(i).value());
 }
 
-void DeoptimizationData::SetBytecodeOffset(int i, BailoutId value) {
+void DeoptimizationData::SetBytecodeOffset(int i, BytecodeOffset value) {
   SetBytecodeOffsetRaw(i, Smi::FromInt(value.ToInt()));
 }
 

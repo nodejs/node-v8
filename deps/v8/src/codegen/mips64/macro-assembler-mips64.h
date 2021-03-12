@@ -103,6 +103,14 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   }
   void LeaveFrame(StackFrame::Type type);
 
+  void AllocateStackSpace(Register bytes) { Dsubu(sp, sp, bytes); }
+
+  void AllocateStackSpace(int bytes) {
+    DCHECK_GE(bytes, 0);
+    if (bytes == 0) return;
+    Dsubu(sp, sp, Operand(bytes));
+  }
+
   // Generates function and stub prologue code.
   void StubPrologue(StackFrame::Type type);
   void Prologue();
@@ -250,7 +258,8 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
     // TODO(mips): Implement.
     UNIMPLEMENTED();
   }
-  void JumpCodeObject(Register code_object) override {
+  void JumpCodeObject(Register code_object,
+                      JumpMode jump_mode = JumpMode::kJump) override {
     // TODO(mips): Implement.
     UNIMPLEMENTED();
   }
@@ -355,6 +364,7 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   // saved in higher memory addresses.
   void MultiPush(RegList regs);
   void MultiPushFPU(RegList regs);
+  void MultiPushMSA(RegList regs);
 
   // Calculate how much stack space (in bytes) are required to store caller
   // registers excluding those specified in the arguments.
@@ -402,6 +412,7 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   // registers specified in regs. Pop order is the opposite as in MultiPush.
   void MultiPop(RegList regs);
   void MultiPopFPU(RegList regs);
+  void MultiPopMSA(RegList regs);
 
 #define DEFINE_INSTRUCTION(instr)                          \
   void instr(Register rd, Register rs, const Operand& rt); \
@@ -799,6 +810,8 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
                  MSARegister src2);
   void ExtMulHigh(MSADataType type, MSARegister dst, MSARegister src1,
                   MSARegister src2);
+  void LoadSplat(MSASize sz, MSARegister dst, MemOperand src);
+  void ExtAddPairwise(MSADataType type, MSARegister dst, MSARegister src);
   void MSARoundW(MSARegister dst, MSARegister src, FPURoundingMode mode);
   void MSARoundD(MSARegister dst, MSARegister src, FPURoundingMode mode);
 
@@ -1043,10 +1056,10 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
 
   // Load the global proxy from the current context.
   void LoadGlobalProxy(Register dst) {
-    LoadNativeContextSlot(Context::GLOBAL_PROXY_INDEX, dst);
+    LoadNativeContextSlot(dst, Context::GLOBAL_PROXY_INDEX);
   }
 
-  void LoadNativeContextSlot(int index, Register dst);
+  void LoadNativeContextSlot(Register dst, int index);
 
   // Load the initial map from the global function. The registers
   // function and map can be the same, function is then overwritten.
@@ -1090,6 +1103,9 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   // Support functions.
 
   void GetObjectType(Register function, Register map, Register type_reg);
+
+  void GetInstanceTypeRange(Register map, Register type_reg,
+                            InstanceType lower_limit, Register range);
 
   // -------------------------------------------------------------------------
   // Runtime calls.

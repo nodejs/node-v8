@@ -64,7 +64,11 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   void AllocateStackSpace(int bytes);
 #else
   void AllocateStackSpace(Register bytes) { sub(sp, sp, bytes); }
-  void AllocateStackSpace(int bytes) { sub(sp, sp, Operand(bytes)); }
+  void AllocateStackSpace(int bytes) {
+    DCHECK_GE(bytes, 0);
+    if (bytes == 0) return;
+    sub(sp, sp, Operand(bytes));
+  }
 #endif
 
   // Push a fixed frame, consisting of lr, fp
@@ -317,7 +321,8 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
 
   void LoadCodeObjectEntry(Register destination, Register code_object) override;
   void CallCodeObject(Register code_object) override;
-  void JumpCodeObject(Register code_object) override;
+  void JumpCodeObject(Register code_object,
+                      JumpMode jump_mode = JumpMode::kJump) override;
 
   // Generates an instruction sequence s.t. the return address points to the
   // instruction following the call.
@@ -565,6 +570,20 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   // Define an exception handler and bind a label.
   void BindExceptionHandler(Label* label) { bind(label); }
 
+  // Wasm SIMD helpers. These instructions don't have direct lowering to native
+  // instructions. These helpers allow us to define the optimal code sequence,
+  // and be used in both TurboFan and Liftoff.
+  void I64x2BitMask(Register dst, QwNeonRegister src);
+  void I64x2Eq(QwNeonRegister dst, QwNeonRegister src1, QwNeonRegister src2);
+  void I64x2Ne(QwNeonRegister dst, QwNeonRegister src1, QwNeonRegister src2);
+  void I64x2GtS(QwNeonRegister dst, QwNeonRegister src1, QwNeonRegister src2);
+  void I64x2GeS(QwNeonRegister dst, QwNeonRegister src1, QwNeonRegister src2);
+  void I64x2AllTrue(Register dst, QwNeonRegister src);
+  void I64x2Abs(QwNeonRegister dst, QwNeonRegister src);
+  void F64x2ConvertLowI32x4S(QwNeonRegister dst, QwNeonRegister src);
+  void F64x2ConvertLowI32x4U(QwNeonRegister dst, QwNeonRegister src);
+  void F64x2PromoteLowF32x4(QwNeonRegister dst, QwNeonRegister src);
+
  private:
   // Compare single values and then load the fpscr flags to a register.
   void VFPCompareAndLoadFlags(const SwVfpRegister src1,
@@ -658,7 +677,7 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   // Load the global proxy from the current context.
   void LoadGlobalProxy(Register dst);
 
-  void LoadNativeContextSlot(int index, Register dst);
+  void LoadNativeContextSlot(Register dst, int index);
 
   // ---------------------------------------------------------------------------
   // JavaScript invokes
@@ -712,6 +731,14 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   // object type should be compared with the given type.  This both
   // sets the flags and leaves the object type in the type_reg register.
   void CompareInstanceType(Register map, Register type_reg, InstanceType type);
+
+  // Compare instance type ranges for a map (lower_limit and higher_limit
+  // inclusive).
+  //
+  // Always use unsigned comparisons: ls for a positive result.
+  void CompareInstanceTypeRange(Register map, Register type_reg,
+                                InstanceType lower_limit,
+                                InstanceType higher_limit);
 
   // Compare the object in a register to a value from the root list.
   // Acquires a scratch register.

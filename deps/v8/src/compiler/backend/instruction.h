@@ -924,7 +924,11 @@ class V8_EXPORT_PRIVATE Instruction final {
   bool IsJump() const { return arch_opcode() == ArchOpcode::kArchJmp; }
   bool IsRet() const { return arch_opcode() == ArchOpcode::kArchRet; }
   bool IsTailCall() const {
+#if V8_ENABLE_WEBASSEMBLY
     return arch_opcode() <= ArchOpcode::kArchTailCallWasm;
+#else
+    return arch_opcode() <= ArchOpcode::kArchTailCallAddress;
+#endif  // V8_ENABLE_WEBASSEMBLY
   }
   bool IsThrow() const {
     return arch_opcode() == ArchOpcode::kArchThrowTerminator;
@@ -1225,6 +1229,8 @@ class StateValueList {
 
   size_t size() { return fields_.size(); }
 
+  size_t nested_count() { return nested_.size(); }
+
   struct Value {
     StateValueDescriptor* desc;
     StateValueList* nested;
@@ -1266,6 +1272,14 @@ class StateValueList {
     ZoneVector<StateValueList*>::iterator nested_iterator;
   };
 
+  struct Slice {
+    Slice(ZoneVector<StateValueDescriptor>::iterator start, size_t fields)
+        : start_position(start), fields_count(fields) {}
+
+    ZoneVector<StateValueDescriptor>::iterator start_position;
+    size_t fields_count;
+  };
+
   void ReserveSize(size_t size) { fields_.reserve(size); }
 
   StateValueList* PushRecursiveField(Zone* zone, size_t id) {
@@ -1289,18 +1303,39 @@ class StateValueList {
   void PushOptimizedOut(size_t num = 1) {
     fields_.insert(fields_.end(), num, StateValueDescriptor::OptimizedOut());
   }
+  void PushCachedSlice(const Slice& cached) {
+    fields_.insert(fields_.end(), cached.start_position,
+                   cached.start_position + cached.fields_count);
+  }
+
+  // Returns a Slice representing the (non-nested) fields in StateValueList from
+  // values_start to  the current end position.
+  Slice MakeSlice(size_t values_start) {
+    DCHECK(!HasNestedFieldsAfter(values_start));
+    size_t fields_count = fields_.size() - values_start;
+    return Slice(fields_.begin() + values_start, fields_count);
+  }
 
   iterator begin() { return iterator(fields_.begin(), nested_.begin()); }
   iterator end() { return iterator(fields_.end(), nested_.end()); }
 
  private:
+  bool HasNestedFieldsAfter(size_t values_start) {
+    auto it = fields_.begin() + values_start;
+    for (; it != fields_.end(); it++) {
+      if (it->IsNested()) return true;
+    }
+    return false;
+  }
+
   ZoneVector<StateValueDescriptor> fields_;
   ZoneVector<StateValueList*> nested_;
 };
 
 class FrameStateDescriptor : public ZoneObject {
  public:
-  FrameStateDescriptor(Zone* zone, FrameStateType type, BailoutId bailout_id,
+  FrameStateDescriptor(Zone* zone, FrameStateType type,
+                       BytecodeOffset bailout_id,
                        OutputFrameStateCombine state_combine,
                        size_t parameters_count, size_t locals_count,
                        size_t stack_count,
@@ -1308,7 +1343,7 @@ class FrameStateDescriptor : public ZoneObject {
                        FrameStateDescriptor* outer_state = nullptr);
 
   FrameStateType type() const { return type_; }
-  BailoutId bailout_id() const { return bailout_id_; }
+  BytecodeOffset bailout_id() const { return bailout_id_; }
   OutputFrameStateCombine state_combine() const { return frame_state_combine_; }
   size_t parameters_count() const { return parameters_count_; }
   size_t locals_count() const { return locals_count_; }
@@ -1318,6 +1353,9 @@ class FrameStateDescriptor : public ZoneObject {
   bool HasContext() const {
     return FrameStateFunctionInfo::IsJSFunctionType(type_) ||
            type_ == FrameStateType::kBuiltinContinuation ||
+#if V8_ENABLE_WEBASSEMBLY
+           type_ == FrameStateType::kJSToWasmBuiltinContinuation ||
+#endif  // V8_ENABLE_WEBASSEMBLY
            type_ == FrameStateType::kConstructStub;
   }
 
@@ -1346,7 +1384,7 @@ class FrameStateDescriptor : public ZoneObject {
 
  private:
   FrameStateType type_;
-  BailoutId bailout_id_;
+  BytecodeOffset bailout_id_;
   OutputFrameStateCombine frame_state_combine_;
   const size_t parameters_count_;
   const size_t locals_count_;
@@ -1356,6 +1394,25 @@ class FrameStateDescriptor : public ZoneObject {
   MaybeHandle<SharedFunctionInfo> const shared_info_;
   FrameStateDescriptor* const outer_state_;
 };
+
+#if V8_ENABLE_WEBASSEMBLY
+class JSToWasmFrameStateDescriptor : public FrameStateDescriptor {
+ public:
+  JSToWasmFrameStateDescriptor(Zone* zone, FrameStateType type,
+                               BytecodeOffset bailout_id,
+                               OutputFrameStateCombine state_combine,
+                               size_t parameters_count, size_t locals_count,
+                               size_t stack_count,
+                               MaybeHandle<SharedFunctionInfo> shared_info,
+                               FrameStateDescriptor* outer_state,
+                               const wasm::FunctionSig* wasm_signature);
+
+  base::Optional<wasm::ValueKind> return_kind() const { return return_kind_; }
+
+ private:
+  base::Optional<wasm::ValueKind> return_kind_;
+};
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 // A deoptimization entry is a pair of the reason why we deoptimize and the
 // frame state descriptor that we have to go back to.

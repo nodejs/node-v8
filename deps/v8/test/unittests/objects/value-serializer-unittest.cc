@@ -12,11 +12,15 @@
 #include "src/base/build_config.h"
 #include "src/objects/backing-store.h"
 #include "src/objects/objects-inl.h"
-#include "src/wasm/wasm-objects.h"
-#include "src/wasm/wasm-result.h"
 #include "test/unittests/test-utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+#if V8_ENABLE_WEBASSEMBLY
+#include "src/wasm/wasm-engine.h"
+#include "src/wasm/wasm-objects.h"
+#include "src/wasm/wasm-result.h"
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 namespace v8 {
 namespace {
@@ -1511,6 +1515,25 @@ TEST_F(ValueSerializerTest, DecodeLinearRegExp) {
   i::FLAG_enable_experimental_regexp_engine = flag_was_enabled;
 }
 
+TEST_F(ValueSerializerTest, DecodeHasIndicesRegExp) {
+  bool flag_was_enabled = i::FLAG_harmony_regexp_match_indices;
+
+  // The last byte encodes the regexp flags.
+  std::vector<uint8_t> regexp_encoding = {0xFF, 0x09, 0x3F, 0x00, 0x52, 0x03,
+                                          0x66, 0x6F, 0x6F, 0xAD, 0x01};
+
+  i::FLAG_harmony_regexp_match_indices = true;
+  Local<Value> value = DecodeTest(regexp_encoding);
+  ASSERT_TRUE(value->IsRegExp());
+  ExpectScriptTrue("Object.getPrototypeOf(result) === RegExp.prototype");
+  ExpectScriptTrue("result.toString() === '/foo/dgmsy'");
+
+  i::FLAG_harmony_regexp_match_indices = false;
+  InvalidDecodeTest(regexp_encoding);
+
+  i::FLAG_harmony_regexp_match_indices = flag_was_enabled;
+}
+
 TEST_F(ValueSerializerTest, RoundTripMap) {
   Local<Value> value = RoundTripTest("var m = new Map(); m.set(42, 'foo'); m;");
   ASSERT_TRUE(value->IsMap());
@@ -2024,6 +2047,7 @@ class ValueSerializerTestWithSharedArrayBufferClone
 
   Local<SharedArrayBuffer> NewSharedArrayBuffer(void* data, size_t byte_length,
                                                 bool is_wasm_memory) {
+#if V8_ENABLE_WEBASSEMBLY
     if (is_wasm_memory) {
       // TODO(titzer): there is no way to create Wasm memory backing stores
       // through the API, or to create a shared array buffer whose backing
@@ -2038,17 +2062,19 @@ class ValueSerializerTestWithSharedArrayBufferClone
           i_isolate->factory()->NewJSSharedArrayBuffer(
               std::move(backing_store));
       return Utils::ToLocalShared(buffer);
-    } else {
-      std::unique_ptr<v8::BackingStore> backing_store =
-          SharedArrayBuffer::NewBackingStore(
-              data, byte_length,
-              [](void*, size_t, void*) {
-                // Leak the buffer as it has the
-                // lifetime of the test.
-              },
-              nullptr);
-      return SharedArrayBuffer::New(isolate(), std::move(backing_store));
     }
+#endif  // V8_ENABLE_WEBASSEMBLY
+
+    CHECK(!is_wasm_memory);
+    std::unique_ptr<v8::BackingStore> backing_store =
+        SharedArrayBuffer::NewBackingStore(
+            data, byte_length,
+            [](void*, size_t, void*) {
+              // Leak the buffer as it has the
+              // lifetime of the test.
+            },
+            nullptr);
+    return SharedArrayBuffer::New(isolate(), std::move(backing_store));
   }
 
   static void SetUpTestCase() {
@@ -2154,6 +2180,7 @@ TEST_F(ValueSerializerTestWithSharedArrayBufferClone,
   ExpectScriptTrue("new Uint8Array(result.a).toString() === '0,1,128,255'");
 }
 
+#if V8_ENABLE_WEBASSEMBLY
 TEST_F(ValueSerializerTestWithSharedArrayBufferClone,
        RoundTripWebAssemblyMemory) {
   bool flag_was_enabled = i::FLAG_experimental_wasm_threads;
@@ -2186,6 +2213,7 @@ TEST_F(ValueSerializerTestWithSharedArrayBufferClone,
 
   i::FLAG_experimental_wasm_threads = flag_was_enabled;
 }
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 TEST_F(ValueSerializerTest, UnsupportedHostObject) {
   InvalidEncodeTest("new ExampleHostObject()");
@@ -2461,6 +2489,7 @@ TEST_F(ValueSerializerTestWithHostArrayBufferView, RoundTripUint8ArrayInput) {
   ExpectScriptTrue("result.a === result.b");
 }
 
+#if V8_ENABLE_WEBASSEMBLY
 // It's expected that WebAssembly has more exhaustive tests elsewhere; this
 // mostly checks that the logic to embed it in structured clone serialization
 // works correctly.
@@ -2712,6 +2741,7 @@ TEST_F(ValueSerializerTestWithWasm, ComplexObjectWithManyTransfer) {
   VerifyComplexObject(value);
   ExpectScriptTrue("result.mod1 != result.mod2");
 }
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 class ValueSerializerTestWithLimitedMemory : public ValueSerializerTest {
  protected:

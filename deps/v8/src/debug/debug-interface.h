@@ -73,7 +73,7 @@ V8_EXPORT_PRIVATE bool GetPrivateMembers(Local<Context> context,
  * Forwards to v8::Object::CreationContext, but with special handling for
  * JSGlobalProxy objects.
  */
-Local<Context> GetCreationContext(Local<Object> value);
+MaybeLocal<Context> GetCreationContext(Local<Object> value);
 
 enum ExceptionBreakState {
   NoBreakOnException = 0,
@@ -166,10 +166,13 @@ class V8_EXPORT_PRIVATE Script {
                        LiveEditResult* result) const;
   bool SetBreakpoint(v8::Local<v8::String> condition, debug::Location* location,
                      BreakpointId* id) const;
+#if V8_ENABLE_WEBASSEMBLY
   void RemoveWasmBreakpoint(BreakpointId id);
+#endif  // V8_ENABLE_WEBASSEMBLY
   bool SetBreakpointOnScriptEntry(BreakpointId* id) const;
 };
 
+#if V8_ENABLE_WEBASSEMBLY
 // Specialization for wasm Scripts.
 class WasmScript : public Script {
  public:
@@ -190,6 +193,7 @@ class WasmScript : public Script {
   int CodeOffset() const;
   int CodeLength() const;
 };
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 V8_EXPORT_PRIVATE void GetLoadedScripts(
     Isolate* isolate,
@@ -228,8 +232,10 @@ class DebugDelegate {
 V8_EXPORT_PRIVATE void SetDebugDelegate(Isolate* isolate,
                                         DebugDelegate* listener);
 
+#if V8_ENABLE_WEBASSEMBLY
 V8_EXPORT_PRIVATE void TierDownAllModulesPerIsolate(Isolate* isolate);
 V8_EXPORT_PRIVATE void TierUpAllModulesPerIsolate(Isolate* isolate);
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 class AsyncEventDelegate {
  public:
@@ -592,12 +598,17 @@ struct PropertyDescriptor {
 
 class PropertyIterator {
  public:
-  static std::unique_ptr<PropertyIterator> Create(v8::Local<v8::Object> object);
+  // Creating a PropertyIterator can potentially throw an exception.
+  // The returned std::unique_ptr is empty iff that happens.
+  V8_WARN_UNUSED_RESULT static std::unique_ptr<PropertyIterator> Create(
+      v8::Local<v8::Context> context, v8::Local<v8::Object> object);
 
   virtual ~PropertyIterator() = default;
 
   virtual bool Done() const = 0;
-  virtual void Advance() = 0;
+  // Returns |Nothing| should |Advance| throw an exception,
+  // |true| otherwise.
+  V8_WARN_UNUSED_RESULT virtual Maybe<bool> Advance() = 0;
 
   virtual v8::Local<v8::Name> name() const = 0;
 
@@ -610,6 +621,25 @@ class PropertyIterator {
   virtual bool is_own() = 0;
   virtual bool is_array_index() = 0;
 };
+
+#if V8_ENABLE_WEBASSEMBLY
+class V8_EXPORT_PRIVATE WasmValueObject : public v8::Object {
+ public:
+  WasmValueObject() = delete;
+  static bool IsWasmValueObject(v8::Local<v8::Value> obj);
+  static WasmValueObject* Cast(v8::Value* value) {
+#ifdef V8_ENABLE_CHECKS
+    CheckCast(value);
+#endif
+    return static_cast<WasmValueObject*>(value);
+  }
+
+  v8::Local<v8::String> type() const;
+
+ private:
+  static void CheckCast(v8::Value* obj);
+};
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 AccessorPair* AccessorPair::Cast(v8::Value* value) {
 #ifdef V8_ENABLE_CHECKS

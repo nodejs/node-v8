@@ -320,7 +320,7 @@ TNode<JSArray> ObjectEntriesValuesBuiltinsAssembler::FastGetOwnValuesOrEntries(
             IntPtrConstant(2));
         StoreFixedArrayElement(CAST(elements), 0, next_key, SKIP_WRITE_BARRIER);
         StoreFixedArrayElement(CAST(elements), 1, value, SKIP_WRITE_BARRIER);
-        value = TNode<JSArray>::UncheckedCast(array);
+        value = array;
       }
 
       StoreFixedArrayElement(values_or_entries, var_result_index.value(),
@@ -350,7 +350,7 @@ ObjectEntriesValuesBuiltinsAssembler::FinalizeValuesOrEntriesJSArray(
 
   GotoIf(IntPtrEqual(size, IntPtrConstant(0)), if_empty);
   TNode<JSArray> array = AllocateJSArray(array_map, result, SmiTag(size));
-  return TNode<JSArray>::UncheckedCast(array);
+  return array;
 }
 
 TF_BUILTIN(ObjectPrototypeHasOwnProperty, ObjectBuiltinsAssembler) {
@@ -737,16 +737,15 @@ TF_BUILTIN(ObjectToString, ObjectBuiltinsAssembler) {
   var_holder = receiver_heap_object;
   TNode<Uint16T> receiver_instance_type = LoadMapInstanceType(receiver_map);
   GotoIf(IsPrimitiveInstanceType(receiver_instance_type), &if_primitive);
+  GotoIf(IsFunctionInstanceType(receiver_instance_type), &if_function);
   const struct {
     InstanceType value;
     Label* label;
   } kJumpTable[] = {{JS_OBJECT_TYPE, &if_object},
                     {JS_ARRAY_TYPE, &if_array},
-                    {JS_FUNCTION_TYPE, &if_function},
                     {JS_REG_EXP_TYPE, &if_regexp},
                     {JS_ARGUMENTS_OBJECT_TYPE, &if_arguments},
                     {JS_DATE_TYPE, &if_date},
-                    {JS_BOUND_FUNCTION_TYPE, &if_function},
                     {JS_API_OBJECT_TYPE, &if_object},
                     {JS_SPECIAL_API_OBJECT_TYPE, &if_object},
                     {JS_PROXY_TYPE, &if_proxy},
@@ -1035,7 +1034,7 @@ TF_BUILTIN(ObjectCreate, ObjectBuiltinsAssembler) {
       no_properties(this);
 
   if (V8_DICT_MODE_PROTOTYPES_BOOL) {
-    // TODO(v8:11167) remove once OrderedNameDictionary supported.
+    // TODO(v8:11167) remove once SwissNameDictionary supported.
     GotoIf(Int32TrueConstant(), &call_runtime);
   }
 
@@ -1079,8 +1078,8 @@ TF_BUILTIN(ObjectCreate, ObjectBuiltinsAssembler) {
     {
       map = LoadSlowObjectWithNullPrototypeMap(native_context);
       if (V8_DICT_MODE_PROTOTYPES_BOOL) {
-        properties = AllocateOrderedNameDictionary(
-            OrderedNameDictionary::kInitialCapacity);
+        properties =
+            AllocateSwissNameDictionary(SwissNameDictionary::kInitialCapacity);
       } else {
         properties = AllocateNameDictionary(NameDictionary::kInitialCapacity);
       }
@@ -1172,11 +1171,21 @@ TF_BUILTIN(InstanceOf_WithFeedback, ObjectBuiltinsAssembler) {
   auto object = Parameter<Object>(Descriptor::kLeft);
   auto callable = Parameter<Object>(Descriptor::kRight);
   auto context = Parameter<Context>(Descriptor::kContext);
-  auto maybe_feedback_vector =
-      Parameter<HeapObject>(Descriptor::kMaybeFeedbackVector);
+  auto feedback_vector = Parameter<HeapObject>(Descriptor::kFeedbackVector);
   auto slot = UncheckedParameter<UintPtrT>(Descriptor::kSlot);
 
-  CollectInstanceOfFeedback(callable, context, maybe_feedback_vector, slot);
+  CollectInstanceOfFeedback(callable, context, feedback_vector, slot);
+  Return(InstanceOf(object, callable, context));
+}
+
+TF_BUILTIN(InstanceOf_Baseline, ObjectBuiltinsAssembler) {
+  auto object = Parameter<Object>(Descriptor::kLeft);
+  auto callable = Parameter<Object>(Descriptor::kRight);
+  auto context = LoadContextFromBaseline();
+  auto feedback_vector = LoadFeedbackVectorFromBaseline();
+  auto slot = UncheckedParameter<UintPtrT>(Descriptor::kSlot);
+
+  CollectInstanceOfFeedback(callable, context, feedback_vector, slot);
   Return(InstanceOf(object, callable, context));
 }
 
@@ -1217,7 +1226,7 @@ TF_BUILTIN(CreateGeneratorObject, ObjectBuiltinsAssembler) {
       IntPtrAdd(WordSar(frame_size, IntPtrConstant(kTaggedSizeLog2)),
                 formal_parameter_count);
   TNode<FixedArrayBase> parameters_and_registers =
-      AllocateFixedArray(HOLEY_ELEMENTS, size);
+      AllocateFixedArray(HOLEY_ELEMENTS, size, kAllowLargeObjectAllocation);
   FillFixedArrayWithValue(HOLEY_ELEMENTS, parameters_and_registers,
                           IntPtrConstant(0), size, RootIndex::kUndefinedValue);
   // TODO(cbruni): support start_offset to avoid double initialization.
@@ -1275,9 +1284,8 @@ TF_BUILTIN(ObjectGetOwnPropertyDescriptor, ObjectBuiltinsAssembler) {
   Label if_keyisindex(this), if_iskeyunique(this),
       call_runtime(this, Label::kDeferred),
       return_undefined(this, Label::kDeferred), if_notunique_name(this);
-
   if (V8_DICT_MODE_PROTOTYPES_BOOL) {
-    // TODO(v8:11167) remove once OrderedNameDictionary supported.
+    // TODO(v8:11167) remove once SwissNameDictionary supported.
     GotoIf(Int32TrueConstant(), &call_runtime);
   }
 
@@ -1364,7 +1372,7 @@ void ObjectBuiltinsAssembler::AddToDictionaryIf(
   GotoIfNot(condition, &done);
 
   if (V8_DICT_MODE_PROTOTYPES_BOOL) {
-    // TODO(v8:11167) remove once OrderedNameDictionary supported.
+    // TODO(v8:11167) remove once SwissNameDictionary supported.
     CallRuntime(Runtime::kAddDictionaryProperty, context, object,
                 HeapConstant(name), value);
   } else {
@@ -1428,7 +1436,7 @@ TNode<JSObject> ObjectBuiltinsAssembler::FromPropertyDescriptor(
     // enumerable and configurable - a total of 6
     TNode<HeapObject> properties =
         V8_DICT_MODE_PROTOTYPES_BOOL
-            ? TNode<HeapObject>(AllocateOrderedNameDictionary(6))
+            ? TNode<HeapObject>(AllocateSwissNameDictionary(6))
             : AllocateNameDictionary(6);
     TNode<JSObject> js_desc = AllocateJSObjectFromMap(map, properties);
 
@@ -1472,7 +1480,7 @@ TNode<JSObject> ObjectBuiltinsAssembler::FromPropertyDescriptor(
     Goto(&return_desc);
 
     if (!V8_DICT_MODE_PROTOTYPES_BOOL) {
-      // TODO(v8:11167) make unconditional once OrderedNameDictionary supported.
+      // TODO(v8:11167) make unconditional once SwissNameDictionary supported.
       BIND(&bailout);
       CSA_ASSERT(this, Int32Constant(0));
       Unreachable();

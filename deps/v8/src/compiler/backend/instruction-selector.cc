@@ -19,7 +19,10 @@
 #include "src/compiler/schedule.h"
 #include "src/compiler/state-values-utils.h"
 #include "src/deoptimizer/deoptimizer.h"
+
+#if V8_ENABLE_WEBASSEMBLY
 #include "src/wasm/simd-shuffle.h"
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 namespace v8 {
 namespace internal {
@@ -57,6 +60,7 @@ InstructionSelector::InstructionSelector(
       enable_scheduling_(enable_scheduling),
       enable_roots_relative_addressing_(enable_roots_relative_addressing),
       enable_switch_jump_table_(enable_switch_jump_table),
+      state_values_cache_(zone),
       poisoning_level_(poisoning_level),
       frame_(frame),
       instruction_selection_failed_(false),
@@ -649,29 +653,93 @@ size_t InstructionSelector::AddOperandToStateValueDescriptor(
   }
 }
 
+struct InstructionSelector::CachedStateValues : public ZoneObject {
+ public:
+  CachedStateValues(Zone* zone, StateValueList* values, size_t values_start,
+                    InstructionOperandVector* inputs, size_t inputs_start)
+      : inputs_(inputs->begin() + inputs_start, inputs->end(), zone),
+        values_(values->MakeSlice(values_start)) {}
+
+  size_t Emit(InstructionOperandVector* inputs, StateValueList* values) {
+    inputs->insert(inputs->end(), inputs_.begin(), inputs_.end());
+    values->PushCachedSlice(values_);
+    return inputs_.size();
+  }
+
+ private:
+  InstructionOperandVector inputs_;
+  StateValueList::Slice values_;
+};
+
+class InstructionSelector::CachedStateValuesBuilder {
+ public:
+  explicit CachedStateValuesBuilder(StateValueList* values,
+                                    InstructionOperandVector* inputs)
+      : values_(values),
+        inputs_(inputs),
+        values_start_(values->size()),
+        nested_start_(values->nested_count()),
+        inputs_start_(inputs->size()) {}
+
+  // We can only build a CachedStateValues for a StateValue if it's processing
+  // does not create any nested StateValueLists.
+  bool CanCache() const { return values_->nested_count() == nested_start_; }
+
+  InstructionSelector::CachedStateValues* Build(Zone* zone) {
+    DCHECK(CanCache());
+    return zone->New<InstructionSelector::CachedStateValues>(
+        zone, values_, values_start_, inputs_, inputs_start_);
+  }
+
+ private:
+  StateValueList* values_;
+  InstructionOperandVector* inputs_;
+  size_t values_start_;
+  size_t nested_start_;
+  size_t inputs_start_;
+};
+
 size_t InstructionSelector::AddInputsToFrameStateDescriptor(
     StateValueList* values, InstructionOperandVector* inputs,
     OperandGenerator* g, StateObjectDeduplicator* deduplicator, Node* node,
     FrameStateInputKind kind, Zone* zone) {
-  size_t entries = 0;
-  StateValuesAccess::iterator it = StateValuesAccess(node).begin();
-  // Take advantage of sparse nature of StateValuesAccess to skip over multiple
-  // empty nodes at once pushing repeated OptimizedOuts all in one go.
-  while (!it.done()) {
-    values->PushOptimizedOut(it.AdvanceTillNotEmpty());
-    if (it.done()) break;
-    StateValuesAccess::TypedNode input_node = *it;
-    entries += AddOperandToStateValueDescriptor(values, inputs, g, deduplicator,
-                                                input_node.node,
-                                                input_node.type, kind, zone);
-    ++it;
+  // StateValues are often shared across different nodes, and processing them is
+  // expensive, so cache the result of processing a StateValue so that we can
+  // quickly copy the result if we see it again.
+  FrameStateInput key(node, kind);
+  auto cache_entry = state_values_cache_.find(key);
+  if (cache_entry != state_values_cache_.end()) {
+    // Entry found in cache, emit cached version.
+    return cache_entry->second->Emit(inputs, values);
+  } else {
+    // Not found in cache, generate and then store in cache if possible.
+    size_t entries = 0;
+    CachedStateValuesBuilder cache_builder(values, inputs);
+    StateValuesAccess::iterator it = StateValuesAccess(node).begin();
+    // Take advantage of sparse nature of StateValuesAccess to skip over
+    // multiple empty nodes at once pushing repeated OptimizedOuts all in one
+    // go.
+    while (!it.done()) {
+      values->PushOptimizedOut(it.AdvanceTillNotEmpty());
+      if (it.done()) break;
+      StateValuesAccess::TypedNode input_node = *it;
+      entries += AddOperandToStateValueDescriptor(values, inputs, g,
+                                                  deduplicator, input_node.node,
+                                                  input_node.type, kind, zone);
+      ++it;
+    }
+    if (cache_builder.CanCache()) {
+      // Use this->zone() to build the cache entry in the instruction selector's
+      // zone rather than the more long-lived instruction zone.
+      state_values_cache_.emplace(key, cache_builder.Build(this->zone()));
+    }
+    return entries;
   }
-  return entries;
 }
 
 // Returns the number of instruction operands added to inputs.
 size_t InstructionSelector::AddInputsToFrameStateDescriptor(
-    FrameStateDescriptor* descriptor, Node* state, OperandGenerator* g,
+    FrameStateDescriptor* descriptor, FrameState state, OperandGenerator* g,
     StateObjectDeduplicator* deduplicator, InstructionOperandVector* inputs,
     FrameStateInputKind kind, Zone* zone) {
   DCHECK_EQ(IrOpcode::kFrameState, state->op()->opcode());
@@ -682,15 +750,15 @@ size_t InstructionSelector::AddInputsToFrameStateDescriptor(
 
   if (descriptor->outer_state()) {
     entries += AddInputsToFrameStateDescriptor(
-        descriptor->outer_state(), state->InputAt(kFrameStateOuterStateInput),
-        g, deduplicator, inputs, kind, zone);
+        descriptor->outer_state(), state.outer_frame_state(), g, deduplicator,
+        inputs, kind, zone);
   }
 
-  Node* parameters = state->InputAt(kFrameStateParametersInput);
-  Node* locals = state->InputAt(kFrameStateLocalsInput);
-  Node* stack = state->InputAt(kFrameStateStackInput);
-  Node* context = state->InputAt(kFrameStateContextInput);
-  Node* function = state->InputAt(kFrameStateFunctionInput);
+  Node* parameters = state.parameters();
+  Node* locals = state.locals();
+  Node* stack = state.stack();
+  Node* context = state.context();
+  Node* function = state.function();
 
   DCHECK_EQ(descriptor->parameters_count(),
             StateValuesAccess(parameters).size());
@@ -803,7 +871,7 @@ Instruction* InstructionSelector::EmitWithContinuation(
               DeoptFrameStateOffsetField::encode(static_cast<int>(input_count));
     AppendDeoptimizeArguments(&continuation_inputs_, cont->kind(),
                               cont->reason(), cont->feedback(),
-                              cont->frame_state());
+                              FrameState{cont->frame_state()});
   } else if (cont->IsSet()) {
     continuation_outputs_.push_back(g.DefineAsRegister(cont->result()));
   } else if (cont->IsTrap()) {
@@ -828,7 +896,7 @@ Instruction* InstructionSelector::EmitWithContinuation(
 void InstructionSelector::AppendDeoptimizeArguments(
     InstructionOperandVector* args, DeoptimizeKind kind,
     DeoptimizeReason reason, FeedbackSource const& feedback,
-    Node* frame_state) {
+    FrameState frame_state) {
   OperandGenerator g(this);
   FrameStateDescriptor* const descriptor = GetFrameStateDescriptor(frame_state);
   DCHECK_NE(DeoptimizeKind::kLazy, kind);
@@ -914,7 +982,7 @@ void InstructionSelector::InitializeCallBuffer(Node* call, CallBuffer* buffer,
       }
 
       frame_->EnsureReturnSlots(
-          static_cast<int>(buffer->descriptor->StackReturnCount()));
+          static_cast<int>(buffer->descriptor->ReturnSlotCount()));
     }
 
     // Filter out the outputs that aren't live because no projection uses them.
@@ -951,18 +1019,12 @@ void InstructionSelector::InitializeCallBuffer(Node* call, CallBuffer* buffer,
   bool call_use_fixed_target_reg = (flags & kCallFixedTargetRegister) != 0;
   switch (buffer->descriptor->kind()) {
     case CallDescriptor::kCallCodeObject:
-      // TODO(jgruber, v8:7449): The below is a hack to support tail-calls from
-      // JS-linkage callers with a register code target. The problem is that the
-      // code target register may be clobbered before the final jmp by
-      // AssemblePopArgumentsAdaptorFrame. As a more permanent fix we could
-      // entirely remove support for tail-calls from JS-linkage callers.
       buffer->instruction_args.push_back(
           (call_code_immediate && callee->opcode() == IrOpcode::kHeapConstant)
               ? g.UseImmediate(callee)
               : call_use_fixed_target_reg
                     ? g.UseFixed(callee, kJavaScriptCallCodeStartRegister)
-                    : is_tail_call ? g.UseUniqueRegister(callee)
-                                   : g.UseRegister(callee));
+                    : g.UseRegister(callee));
       break;
     case CallDescriptor::kCallAddress:
       buffer->instruction_args.push_back(
@@ -973,6 +1035,7 @@ void InstructionSelector::InitializeCallBuffer(Node* call, CallBuffer* buffer,
                     ? g.UseFixed(callee, kJavaScriptCallCodeStartRegister)
                     : g.UseRegister(callee));
       break;
+#if V8_ENABLE_WEBASSEMBLY
     case CallDescriptor::kCallWasmCapiFunction:
     case CallDescriptor::kCallWasmFunction:
     case CallDescriptor::kCallWasmImportWrapper:
@@ -985,6 +1048,7 @@ void InstructionSelector::InitializeCallBuffer(Node* call, CallBuffer* buffer,
                     ? g.UseFixed(callee, kJavaScriptCallCodeStartRegister)
                     : g.UseRegister(callee));
       break;
+#endif  // V8_ENABLE_WEBASSEMBLY
     case CallDescriptor::kCallBuiltinPointer:
       // The common case for builtin pointers is to have the target in a
       // register. If we have a constant, we use a register anyway to simplify
@@ -1015,20 +1079,21 @@ void InstructionSelector::InitializeCallBuffer(Node* call, CallBuffer* buffer,
   size_t frame_state_entries = 0;
   USE(frame_state_entries);  // frame_state_entries is only used for debug.
   if (buffer->frame_state_descriptor != nullptr) {
-    Node* frame_state =
-        call->InputAt(static_cast<int>(buffer->descriptor->InputCount()));
+    FrameState frame_state{
+        call->InputAt(static_cast<int>(buffer->descriptor->InputCount()))};
 
     // If it was a syntactic tail call we need to drop the current frame and
     // all the frames on top of it that are either an arguments adaptor frame
     // or a tail caller frame.
     if (is_tail_call) {
-      frame_state = NodeProperties::GetFrameStateInput(frame_state);
+      frame_state = FrameState{NodeProperties::GetFrameStateInput(frame_state)};
       buffer->frame_state_descriptor =
           buffer->frame_state_descriptor->outer_state();
       while (buffer->frame_state_descriptor != nullptr &&
              buffer->frame_state_descriptor->type() ==
                  FrameStateType::kArgumentsAdaptor) {
-        frame_state = NodeProperties::GetFrameStateInput(frame_state);
+        frame_state =
+            FrameState{NodeProperties::GetFrameStateInput(frame_state)};
         buffer->frame_state_descriptor =
             buffer->frame_state_descriptor->outer_state();
       }
@@ -1169,8 +1234,7 @@ void InstructionSelector::VisitBlock(BasicBlock* block) {
     if (!source_positions_) return true;
     SourcePosition source_position = source_positions_->GetSourcePosition(node);
     if (source_position.IsKnown() && IsSourcePositionUsed(node)) {
-      sequence()->SetSourcePosition(instructions_[instruction_start],
-                                    source_position);
+      sequence()->SetSourcePosition(instructions_.back(), source_position);
     }
     return true;
   };
@@ -1178,8 +1242,9 @@ void InstructionSelector::VisitBlock(BasicBlock* block) {
   // Generate code for the block control "top down", but schedule the code
   // "bottom up".
   VisitControl(block);
-  if (!FinishEmittedInstructions(block->control_input(), current_block_end))
+  if (!FinishEmittedInstructions(block->control_input(), current_block_end)) {
     return;
+  }
 
   // Visit code in reverse control flow order, because architecture-specific
   // matching may cover more than one node at a time.
@@ -1288,7 +1353,7 @@ void InstructionSelector::VisitControl(BasicBlock* block) {
     }
     case BasicBlock::kDeoptimize: {
       DeoptimizeParameters p = DeoptimizeParametersOf(input->op());
-      Node* value = input->InputAt(0);
+      FrameState value{input->InputAt(0)};
       VisitDeoptimize(p.kind(), p.reason(), p.feedback(), value);
       break;
     }
@@ -1945,6 +2010,12 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsSimd128(node), VisitF64x2Trunc(node);
     case IrOpcode::kF64x2NearestInt:
       return MarkAsSimd128(node), VisitF64x2NearestInt(node);
+    case IrOpcode::kF64x2ConvertLowI32x4S:
+      return MarkAsSimd128(node), VisitF64x2ConvertLowI32x4S(node);
+    case IrOpcode::kF64x2ConvertLowI32x4U:
+      return MarkAsSimd128(node), VisitF64x2ConvertLowI32x4U(node);
+    case IrOpcode::kF64x2PromoteLowF32x4:
+      return MarkAsSimd128(node), VisitF64x2PromoteLowF32x4(node);
     case IrOpcode::kF32x4Splat:
       return MarkAsSimd128(node), VisitF32x4Splat(node);
     case IrOpcode::kF32x4ExtractLane:
@@ -1967,8 +2038,6 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsSimd128(node), VisitF32x4RecipSqrtApprox(node);
     case IrOpcode::kF32x4Add:
       return MarkAsSimd128(node), VisitF32x4Add(node);
-    case IrOpcode::kF32x4AddHoriz:
-      return MarkAsSimd128(node), VisitF32x4AddHoriz(node);
     case IrOpcode::kF32x4Sub:
       return MarkAsSimd128(node), VisitF32x4Sub(node);
     case IrOpcode::kF32x4Mul:
@@ -2003,6 +2072,8 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsSimd128(node), VisitF32x4Trunc(node);
     case IrOpcode::kF32x4NearestInt:
       return MarkAsSimd128(node), VisitF32x4NearestInt(node);
+    case IrOpcode::kF32x4DemoteF64x2Zero:
+      return MarkAsSimd128(node), VisitF32x4DemoteF64x2Zero(node);
     case IrOpcode::kI64x2Splat:
       return MarkAsSimd128(node), VisitI64x2Splat(node);
     case IrOpcode::kI64x2SplatI32Pair:
@@ -2013,6 +2084,8 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsSimd128(node), VisitI64x2ReplaceLane(node);
     case IrOpcode::kI64x2ReplaceLaneI32Pair:
       return MarkAsSimd128(node), VisitI64x2ReplaceLaneI32Pair(node);
+    case IrOpcode::kI64x2Abs:
+      return MarkAsSimd128(node), VisitI64x2Abs(node);
     case IrOpcode::kI64x2Neg:
       return MarkAsSimd128(node), VisitI64x2Neg(node);
     case IrOpcode::kI64x2SConvertI32x4Low:
@@ -2037,6 +2110,12 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsSimd128(node), VisitI64x2Mul(node);
     case IrOpcode::kI64x2Eq:
       return MarkAsSimd128(node), VisitI64x2Eq(node);
+    case IrOpcode::kI64x2Ne:
+      return MarkAsSimd128(node), VisitI64x2Ne(node);
+    case IrOpcode::kI64x2GtS:
+      return MarkAsSimd128(node), VisitI64x2GtS(node);
+    case IrOpcode::kI64x2GeS:
+      return MarkAsSimd128(node), VisitI64x2GeS(node);
     case IrOpcode::kI64x2ShrU:
       return MarkAsSimd128(node), VisitI64x2ShrU(node);
     case IrOpcode::kI64x2ExtMulLowI32x4S:
@@ -2047,8 +2126,6 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsSimd128(node), VisitI64x2ExtMulLowI32x4U(node);
     case IrOpcode::kI64x2ExtMulHighI32x4U:
       return MarkAsSimd128(node), VisitI64x2ExtMulHighI32x4U(node);
-    case IrOpcode::kI64x2SignSelect:
-      return MarkAsSimd128(node), VisitI64x2SignSelect(node);
     case IrOpcode::kI32x4Splat:
       return MarkAsSimd128(node), VisitI32x4Splat(node);
     case IrOpcode::kI32x4ExtractLane:
@@ -2069,8 +2146,6 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsSimd128(node), VisitI32x4ShrS(node);
     case IrOpcode::kI32x4Add:
       return MarkAsSimd128(node), VisitI32x4Add(node);
-    case IrOpcode::kI32x4AddHoriz:
-      return MarkAsSimd128(node), VisitI32x4AddHoriz(node);
     case IrOpcode::kI32x4Sub:
       return MarkAsSimd128(node), VisitI32x4Sub(node);
     case IrOpcode::kI32x4Mul:
@@ -2117,12 +2192,14 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsSimd128(node), VisitI32x4ExtMulLowI16x8U(node);
     case IrOpcode::kI32x4ExtMulHighI16x8U:
       return MarkAsSimd128(node), VisitI32x4ExtMulHighI16x8U(node);
-    case IrOpcode::kI32x4SignSelect:
-      return MarkAsSimd128(node), VisitI32x4SignSelect(node);
     case IrOpcode::kI32x4ExtAddPairwiseI16x8S:
       return MarkAsSimd128(node), VisitI32x4ExtAddPairwiseI16x8S(node);
     case IrOpcode::kI32x4ExtAddPairwiseI16x8U:
       return MarkAsSimd128(node), VisitI32x4ExtAddPairwiseI16x8U(node);
+    case IrOpcode::kI32x4TruncSatF64x2SZero:
+      return MarkAsSimd128(node), VisitI32x4TruncSatF64x2SZero(node);
+    case IrOpcode::kI32x4TruncSatF64x2UZero:
+      return MarkAsSimd128(node), VisitI32x4TruncSatF64x2UZero(node);
     case IrOpcode::kI16x8Splat:
       return MarkAsSimd128(node), VisitI16x8Splat(node);
     case IrOpcode::kI16x8ExtractLaneU:
@@ -2147,8 +2224,6 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsSimd128(node), VisitI16x8Add(node);
     case IrOpcode::kI16x8AddSatS:
       return MarkAsSimd128(node), VisitI16x8AddSatS(node);
-    case IrOpcode::kI16x8AddHoriz:
-      return MarkAsSimd128(node), VisitI16x8AddHoriz(node);
     case IrOpcode::kI16x8Sub:
       return MarkAsSimd128(node), VisitI16x8Sub(node);
     case IrOpcode::kI16x8SubSatS:
@@ -2203,8 +2278,6 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsSimd128(node), VisitI16x8ExtMulLowI8x16U(node);
     case IrOpcode::kI16x8ExtMulHighI8x16U:
       return MarkAsSimd128(node), VisitI16x8ExtMulHighI8x16U(node);
-    case IrOpcode::kI16x8SignSelect:
-      return MarkAsSimd128(node), VisitI16x8SignSelect(node);
     case IrOpcode::kI16x8ExtAddPairwiseI8x16S:
       return MarkAsSimd128(node), VisitI16x8ExtAddPairwiseI8x16S(node);
     case IrOpcode::kI16x8ExtAddPairwiseI8x16U:
@@ -2233,8 +2306,6 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsSimd128(node), VisitI8x16Sub(node);
     case IrOpcode::kI8x16SubSatS:
       return MarkAsSimd128(node), VisitI8x16SubSatS(node);
-    case IrOpcode::kI8x16Mul:
-      return MarkAsSimd128(node), VisitI8x16Mul(node);
     case IrOpcode::kI8x16MinS:
       return MarkAsSimd128(node), VisitI8x16MinS(node);
     case IrOpcode::kI8x16MaxS:
@@ -2271,8 +2342,6 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsSimd128(node), VisitI8x16Abs(node);
     case IrOpcode::kI8x16BitMask:
       return MarkAsWord32(node), VisitI8x16BitMask(node);
-    case IrOpcode::kI8x16SignSelect:
-      return MarkAsSimd128(node), VisitI8x16SignSelect(node);
     case IrOpcode::kS128Const:
       return MarkAsSimd128(node), VisitS128Const(node);
     case IrOpcode::kS128Zero:
@@ -2293,18 +2362,16 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsSimd128(node), VisitI8x16Swizzle(node);
     case IrOpcode::kI8x16Shuffle:
       return MarkAsSimd128(node), VisitI8x16Shuffle(node);
-    case IrOpcode::kV32x4AnyTrue:
-      return MarkAsWord32(node), VisitV32x4AnyTrue(node);
-    case IrOpcode::kV32x4AllTrue:
-      return MarkAsWord32(node), VisitV32x4AllTrue(node);
-    case IrOpcode::kV16x8AnyTrue:
-      return MarkAsWord32(node), VisitV16x8AnyTrue(node);
-    case IrOpcode::kV16x8AllTrue:
-      return MarkAsWord32(node), VisitV16x8AllTrue(node);
-    case IrOpcode::kV8x16AnyTrue:
-      return MarkAsWord32(node), VisitV8x16AnyTrue(node);
-    case IrOpcode::kV8x16AllTrue:
-      return MarkAsWord32(node), VisitV8x16AllTrue(node);
+    case IrOpcode::kV128AnyTrue:
+      return MarkAsWord32(node), VisitV128AnyTrue(node);
+    case IrOpcode::kI64x2AllTrue:
+      return MarkAsWord32(node), VisitI64x2AllTrue(node);
+    case IrOpcode::kI32x4AllTrue:
+      return MarkAsWord32(node), VisitI32x4AllTrue(node);
+    case IrOpcode::kI16x8AllTrue:
+      return MarkAsWord32(node), VisitI16x8AllTrue(node);
+    case IrOpcode::kI8x16AllTrue:
+      return MarkAsWord32(node), VisitI8x16AllTrue(node);
     default:
       FATAL("Unexpected operator #%d:%s @ node #%d", node->opcode(),
             node->op()->mnemonic(), node->id());
@@ -2689,7 +2756,7 @@ void InstructionSelector::VisitWord32AtomicPairCompareExchange(Node* node) {
 #endif  // !V8_TARGET_ARCH_IA32 && !V8_TARGET_ARCH_ARM && !V8_TARGET_ARCH_MIPS
 
 #if !V8_TARGET_ARCH_X64 && !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_MIPS64 && \
-    !V8_TARGET_ARCH_S390 && !V8_TARGET_ARCH_PPC64
+    !V8_TARGET_ARCH_S390 && !V8_TARGET_ARCH_PPC64 && !V8_TARGET_ARCH_RISCV64
 void InstructionSelector::VisitWord64AtomicLoad(Node* node) { UNIMPLEMENTED(); }
 
 void InstructionSelector::VisitWord64AtomicStore(Node* node) {
@@ -2714,7 +2781,8 @@ void InstructionSelector::VisitWord64AtomicCompareExchange(Node* node) {
   UNIMPLEMENTED();
 }
 #endif  // !V8_TARGET_ARCH_X64 && !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_PPC64
-        // !V8_TARGET_ARCH_MIPS64 && !V8_TARGET_ARCH_S390
+        // !V8_TARGET_ARCH_MIPS64 && !V8_TARGET_ARCH_S390 &&
+        // !V8_TARGET_ARCH_RISCV64
 
 #if !V8_TARGET_ARCH_IA32 && !V8_TARGET_ARCH_ARM
 // This is only needed on 32-bit to split the 64-bit value into two operands.
@@ -2740,83 +2808,13 @@ void InstructionSelector::VisitF32x4Qfms(Node* node) { UNIMPLEMENTED(); }
 #endif  // !V8_TARGET_ARCH_ARM64
 #endif  // !V8_TARGET_ARCH_X64 && !V8_TARGET_ARCH_S390X
 
-#if !V8_TARGET_ARCH_X64 && !V8_TARGET_ARCH_S390X && !V8_TARGET_ARCH_ARM64 && \
-    !V8_TARGET_ARCH_IA32 && !V8_TARGET_ARCH_ARM && !V8_TARGET_ARCH_MIPS64 && \
-    !V8_TARGET_ARCH_MIPS
-void InstructionSelector::VisitI64x2Eq(Node* node) { UNIMPLEMENTED(); }
-#endif  // !V8_TARGET_ARCH_X64 && !V8_TARGET_ARCH_S390X && !V8_TARGET_ARCH_ARM64
-        // && !V8_TARGET_ARCH_IA32 && !V8_TARGET_ARCH_ARM
-        // && !V8_TARGET_ARCH_MIPS64 && !V8_TARGET_ARCH_MIPS
-
-#if !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_X64 && !V8_TARGET_ARCH_IA32 && \
-    !V8_TARGET_ARCH_ARM
-// TODO(v8:10972) Prototype i64x2 widen i32x4.
-void InstructionSelector::VisitI64x2SConvertI32x4Low(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitI64x2SConvertI32x4High(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitI64x2UConvertI32x4Low(Node* node) {
-  UNIMPLEMENTED();
-}
-
-void InstructionSelector::VisitI64x2UConvertI32x4High(Node* node) {
-  UNIMPLEMENTED();
-}
-#endif  // !V8_TARGET_ARCH_ARM64 || !V8_TARGET_ARCH_X64 && !V8_TARGET_ARCH_IA32
-        // && !V8_TARGET_ARCH_ARM
-
-#if !V8_TARGET_ARCH_ARM64
+#if !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_X64 && !V8_TARGET_ARCH_IA32
 // TODO(v8:11168): Prototyping prefetch.
 void InstructionSelector::VisitPrefetchTemporal(Node* node) { UNIMPLEMENTED(); }
 void InstructionSelector::VisitPrefetchNonTemporal(Node* node) {
   UNIMPLEMENTED();
 }
-#endif  // !V8_TARGET_ARCH_ARM64
-
-#if !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_ARM
-// TODO(v8:11002) Prototype i8x16.popcnt.
-void InstructionSelector::VisitI8x16Popcnt(Node* node) { UNIMPLEMENTED(); }
-#endif  // !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_ARM
-
-#if !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_ARM && !V8_TARGET_ARCH_X64 && \
-    !V8_TARGET_ARCH_IA32
-// TODO(v8:11086) Prototype extended pairwise add.
-void InstructionSelector::VisitI32x4ExtAddPairwiseI16x8S(Node* node) {
-  UNIMPLEMENTED();
-}
-void InstructionSelector::VisitI32x4ExtAddPairwiseI16x8U(Node* node) {
-  UNIMPLEMENTED();
-}
-void InstructionSelector::VisitI16x8ExtAddPairwiseI8x16S(Node* node) {
-  UNIMPLEMENTED();
-}
-void InstructionSelector::VisitI16x8ExtAddPairwiseI8x16U(Node* node) {
-  UNIMPLEMENTED();
-}
-#endif  // !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_ARM && !V8_TARGET_ARCH_X64
-        // && !V8_TARGET_ARCH_IA32
-
-#if !V8_TARGET_ARCH_X64 && !V8_TARGET_ARCH_IA32 && !V8_TARGET_ARCH_ARM64 && \
-    !V8_TARGET_ARCH_ARM && !V8_TARGET_ARCH_MIPS64
-// TODO(v8:10975): Prototyping load lane and store lane.
-void InstructionSelector::VisitLoadLane(Node* node) { UNIMPLEMENTED(); }
-void InstructionSelector::VisitStoreLane(Node* node) { UNIMPLEMENTED(); }
-#endif  // !V8_TARGET_ARCH_X64 && !V8_TARGET_ARCH_IA32 && !V8_TARGET_ARCH_ARM64
-        // && !V8_TARGET_ARCH_ARM && !V8_TARGET_ARCH_MIPS64
-
-#if !V8_TARGET_ARCH_X64 && !V8_TARGET_ARCH_IA32 && !V8_TARGET_ARCH_ARM64 && \
-    !V8_TARGET_ARCH_ARM
-// TODO(v8:10983) Prototyping sign select.
-void InstructionSelector::VisitI8x16SignSelect(Node* node) { UNIMPLEMENTED(); }
-void InstructionSelector::VisitI16x8SignSelect(Node* node) { UNIMPLEMENTED(); }
-void InstructionSelector::VisitI32x4SignSelect(Node* node) { UNIMPLEMENTED(); }
-void InstructionSelector::VisitI64x2SignSelect(Node* node) { UNIMPLEMENTED(); }
-#endif  // !V8_TARGET_ARCH_X64 && !V8_TARGET_ARCH_IA32 && !V8_TARGET_ARCH_ARM64
-        // && !V8_TARGET_ARCH_ARM
+#endif  // !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_X64 || !V8_TARGET_ARCH_IA32
 
 void InstructionSelector::VisitFinishRegion(Node* node) { EmitIdentity(node); }
 
@@ -2938,8 +2936,8 @@ void InstructionSelector::VisitCall(Node* node, BasicBlock* handler) {
 
   FrameStateDescriptor* frame_state_descriptor = nullptr;
   if (call_descriptor->NeedsFrameState()) {
-    frame_state_descriptor = GetFrameStateDescriptor(
-        node->InputAt(static_cast<int>(call_descriptor->InputCount())));
+    frame_state_descriptor = GetFrameStateDescriptor(FrameState{
+        node->InputAt(static_cast<int>(call_descriptor->InputCount()))});
   }
 
   CallBuffer buffer(zone(), call_descriptor, frame_state_descriptor);
@@ -2985,11 +2983,13 @@ void InstructionSelector::VisitCall(Node* node, BasicBlock* handler) {
     case CallDescriptor::kCallJSFunction:
       opcode = EncodeCallDescriptorFlags(kArchCallJSFunction, flags);
       break;
+#if V8_ENABLE_WEBASSEMBLY
     case CallDescriptor::kCallWasmCapiFunction:
     case CallDescriptor::kCallWasmFunction:
     case CallDescriptor::kCallWasmImportWrapper:
       opcode = EncodeCallDescriptorFlags(kArchCallWasmFunction, flags);
       break;
+#endif  // V8_ENABLE_WEBASSEMBLY
     case CallDescriptor::kCallBuiltinPointer:
       opcode = EncodeCallDescriptorFlags(kArchCallBuiltinPointer, flags);
       break;
@@ -3040,48 +3040,38 @@ void InstructionSelector::VisitTailCall(Node* node) {
   // Select the appropriate opcode based on the call type.
   InstructionCode opcode;
   InstructionOperandVector temps(zone());
-  if (caller->IsJSFunctionCall()) {
-    switch (call_descriptor->kind()) {
-      case CallDescriptor::kCallCodeObject:
-        opcode = kArchTailCallCodeObjectFromJSFunction;
-        break;
-      default:
-        UNREACHABLE();
-    }
-    int temps_count = GetTempsCountForTailCallFromJSFunction();
-    for (int i = 0; i < temps_count; i++) {
-      temps.push_back(g.TempRegister());
-    }
-  } else {
-    switch (call_descriptor->kind()) {
-      case CallDescriptor::kCallCodeObject:
-        opcode = kArchTailCallCodeObject;
-        break;
-      case CallDescriptor::kCallAddress:
-        opcode = kArchTailCallAddress;
-        break;
-      case CallDescriptor::kCallWasmFunction:
-        opcode = kArchTailCallWasm;
-        break;
-      default:
-        UNREACHABLE();
-    }
+  switch (call_descriptor->kind()) {
+    case CallDescriptor::kCallCodeObject:
+      opcode = kArchTailCallCodeObject;
+      break;
+    case CallDescriptor::kCallAddress:
+      DCHECK(!caller->IsJSFunctionCall());
+      opcode = kArchTailCallAddress;
+      break;
+#if V8_ENABLE_WEBASSEMBLY
+    case CallDescriptor::kCallWasmFunction:
+      DCHECK(!caller->IsJSFunctionCall());
+      opcode = kArchTailCallWasm;
+      break;
+#endif  // V8_ENABLE_WEBASSEMBLY
+    default:
+      UNREACHABLE();
   }
   opcode = EncodeCallDescriptorFlags(opcode, call_descriptor->flags());
 
   Emit(kArchPrepareTailCall, g.NoOutput());
 
-  // Add an immediate operand that represents the first slot that is unused
-  // with respect to the stack pointer that has been updated for the tail call
-  // instruction. This is used by backends that need to pad arguments for stack
-  // alignment, in order to store an optional slot of padding above the
-  // arguments.
-  const int optional_padding_slot = callee->GetFirstUnusedStackSlot();
-  buffer.instruction_args.push_back(g.TempImmediate(optional_padding_slot));
+  // Add an immediate operand that represents the offset to the first slot that
+  // is unused with respect to the stack pointer that has been updated for the
+  // tail call instruction. Backends that pad arguments can write the padding
+  // value at this offset from the stack.
+  const int optional_padding_offset =
+      callee->GetOffsetToFirstUnusedStackSlot() - 1;
+  buffer.instruction_args.push_back(g.TempImmediate(optional_padding_offset));
 
-  const int first_unused_stack_slot =
+  const int first_unused_slot_offset =
       kReturnAddressStackSlotCount + stack_param_delta;
-  buffer.instruction_args.push_back(g.TempImmediate(first_unused_stack_slot));
+  buffer.instruction_args.push_back(g.TempImmediate(first_unused_slot_offset));
 
   // Emit the tailcall instruction.
   Emit(opcode, 0, nullptr, buffer.instruction_args.size(),
@@ -3202,7 +3192,7 @@ void InstructionSelector::EmitIdentity(Node* node) {
 void InstructionSelector::VisitDeoptimize(DeoptimizeKind kind,
                                           DeoptimizeReason reason,
                                           FeedbackSource const& feedback,
-                                          Node* frame_state) {
+                                          FrameState frame_state) {
   InstructionOperandVector args(instruction_zone());
   AppendDeoptimizeArguments(&args, kind, reason, feedback, frame_state);
   Emit(kArchDeoptimize, 0, nullptr, args.size(), &args.front(), 0, nullptr);
@@ -3318,19 +3308,31 @@ bool InstructionSelector::ZeroExtendsWord32ToWord64(Node* node,
 
 namespace {
 
-FrameStateDescriptor* GetFrameStateDescriptorInternal(Zone* zone, Node* state) {
+FrameStateDescriptor* GetFrameStateDescriptorInternal(Zone* zone,
+                                                      FrameState state) {
   DCHECK_EQ(IrOpcode::kFrameState, state->opcode());
-  DCHECK_EQ(kFrameStateInputCount, state->InputCount());
+  DCHECK_EQ(FrameState::kFrameStateInputCount, state->InputCount());
   const FrameStateInfo& state_info = FrameStateInfoOf(state->op());
   int parameters = state_info.parameter_count();
   int locals = state_info.local_count();
-  int stack = state_info.type() == FrameStateType::kInterpretedFunction ? 1 : 0;
+  int stack = state_info.type() == FrameStateType::kUnoptimizedFunction ? 1 : 0;
 
   FrameStateDescriptor* outer_state = nullptr;
-  Node* outer_node = state->InputAt(kFrameStateOuterStateInput);
-  if (outer_node->opcode() == IrOpcode::kFrameState) {
-    outer_state = GetFrameStateDescriptorInternal(zone, outer_node);
+  if (state.has_outer_frame_state()) {
+    outer_state =
+        GetFrameStateDescriptorInternal(zone, state.outer_frame_state());
   }
+
+#if V8_ENABLE_WEBASSEMBLY
+  if (state_info.type() == FrameStateType::kJSToWasmBuiltinContinuation) {
+    auto function_info = static_cast<const JSToWasmFrameStateFunctionInfo*>(
+        state_info.function_info());
+    return zone->New<JSToWasmFrameStateDescriptor>(
+        zone, state_info.type(), state_info.bailout_id(),
+        state_info.state_combine(), parameters, locals, stack,
+        state_info.shared_info(), outer_state, function_info->signature());
+  }
+#endif  // V8_ENABLE_WEBASSEMBLY
 
   return zone->New<FrameStateDescriptor>(
       zone, state_info.type(), state_info.bailout_id(),
@@ -3341,7 +3343,7 @@ FrameStateDescriptor* GetFrameStateDescriptorInternal(Zone* zone, Node* state) {
 }  // namespace
 
 FrameStateDescriptor* InstructionSelector::GetFrameStateDescriptor(
-    Node* state) {
+    FrameState state) {
   auto* desc = GetFrameStateDescriptorInternal(instruction_zone(), state);
   *max_unoptimized_frame_height_ =
       std::max(*max_unoptimized_frame_height_,
@@ -3349,6 +3351,7 @@ FrameStateDescriptor* InstructionSelector::GetFrameStateDescriptor(
   return desc;
 }
 
+#if V8_ENABLE_WEBASSEMBLY
 void InstructionSelector::CanonicalizeShuffle(Node* node, uint8_t* shuffle,
                                               bool* is_swizzle) {
   // Get raw shuffle indices.
@@ -3376,6 +3379,7 @@ void InstructionSelector::SwapShuffleInputs(Node* node) {
   node->ReplaceInput(0, input1);
   node->ReplaceInput(1, input0);
 }
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 // static
 bool InstructionSelector::NeedsPoisoning(IsSafetyCheck safety_check) const {

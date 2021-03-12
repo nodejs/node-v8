@@ -23,11 +23,15 @@ namespace internal {
 static base::LazyInstance<CodeRangeAddressHint>::type code_range_address_hint =
     LAZY_INSTANCE_INITIALIZER;
 
+namespace {
+void FunctionInStaticBinaryForAddressHint() {}
+}  // namespace
+
 Address CodeRangeAddressHint::GetAddressHint(size_t code_range_size) {
   base::MutexGuard guard(&mutex_);
   auto it = recently_freed_.find(code_range_size);
   if (it == recently_freed_.end() || it->second.empty()) {
-    return reinterpret_cast<Address>(GetRandomMmapAddr());
+    return FUNCTION_ADDR(&FunctionInStaticBinaryForAddressHint);
   }
   Address result = it->second.back();
   it->second.pop_back();
@@ -163,12 +167,14 @@ class MemoryAllocator::Unmapper::UnmapFreeMemoryJob : public JobTask {
   UnmapFreeMemoryJob& operator=(const UnmapFreeMemoryJob&) = delete;
 
   void Run(JobDelegate* delegate) override {
-    TRACE_GC1(tracer_, GCTracer::Scope::BACKGROUND_UNMAPPER,
-              ThreadKind::kBackground);
-    unmapper_->PerformFreeMemoryOnQueuedChunks<FreeMode::kUncommitPooled>(
-        delegate);
-    if (FLAG_trace_unmapper) {
-      PrintIsolate(unmapper_->heap_->isolate(), "UnmapFreeMemoryTask Done\n");
+    if (delegate->IsJoiningThread()) {
+      TRACE_GC(tracer_, GCTracer::Scope::UNMAPPER);
+      RunImpl(delegate);
+
+    } else {
+      TRACE_GC1(tracer_, GCTracer::Scope::BACKGROUND_UNMAPPER,
+                ThreadKind::kBackground);
+      RunImpl(delegate);
     }
   }
 
@@ -182,6 +188,13 @@ class MemoryAllocator::Unmapper::UnmapFreeMemoryJob : public JobTask {
   }
 
  private:
+  void RunImpl(JobDelegate* delegate) {
+    unmapper_->PerformFreeMemoryOnQueuedChunks<FreeMode::kUncommitPooled>(
+        delegate);
+    if (FLAG_trace_unmapper) {
+      PrintIsolate(unmapper_->heap_->isolate(), "UnmapFreeMemoryTask Done\n");
+    }
+  }
   Unmapper* const unmapper_;
   GCTracer* const tracer_;
 };

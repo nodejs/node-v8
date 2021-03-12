@@ -43,8 +43,12 @@
 #include "src/tracing/tracing-category-observer.h"
 #include "src/utils/memcopy.h"
 #include "src/utils/version.h"
+
+#if V8_ENABLE_WEBASSEMBLY
 #include "src/wasm/wasm-code-manager.h"
+#include "src/wasm/wasm-engine.h"
 #include "src/wasm/wasm-objects-inl.h"
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 namespace v8 {
 namespace internal {
@@ -81,13 +85,23 @@ static v8::CodeEventType GetCodeEventTypeForTag(
   }
 
 static const char* ComputeMarker(SharedFunctionInfo shared, AbstractCode code) {
+  CodeKind kind = code.kind();
+  // We record interpreter trampoline builting copies as having the
+  // "interpreted" marker.
+  if (FLAG_interpreted_frames_native_stack && kind == CodeKind::BUILTIN &&
+      code.GetCode().is_interpreter_trampoline_builtin() &&
+      code.GetCode() !=
+          *BUILTIN_CODE(shared.GetIsolate(), InterpreterEntryTrampoline)) {
+    kind = CodeKind::INTERPRETED_FUNCTION;
+  }
   if (shared.optimization_disabled() &&
-      code.kind() == CodeKind::INTERPRETED_FUNCTION) {
+      kind == CodeKind::INTERPRETED_FUNCTION) {
     return "";
   }
-  return CodeKindToMarker(code.kind());
+  return CodeKindToMarker(kind);
 }
 
+#if V8_ENABLE_WEBASSEMBLY
 static const char* ComputeMarker(const wasm::WasmCode* code) {
   switch (code->kind()) {
     case wasm::WasmCode::kFunction:
@@ -96,6 +110,7 @@ static const char* ComputeMarker(const wasm::WasmCode* code) {
       return "";
   }
 }
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 class CodeEventLogger::NameBuffer {
  public:
@@ -237,6 +252,7 @@ void CodeEventLogger::CodeCreateEvent(LogEventsAndTags tag,
   LogRecordedBuffer(code, shared, name_buffer_->get(), name_buffer_->size());
 }
 
+#if V8_ENABLE_WEBASSEMBLY
 void CodeEventLogger::CodeCreateEvent(LogEventsAndTags tag,
                                       const wasm::WasmCode* code,
                                       wasm::WasmName name,
@@ -255,6 +271,7 @@ void CodeEventLogger::CodeCreateEvent(LogEventsAndTags tag,
   name_buffer_->AppendBytes(ExecutionTierToString(code->tier()));
   LogRecordedBuffer(code, name_buffer_->get(), name_buffer_->size());
 }
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 void CodeEventLogger::RegExpCodeCreateEvent(Handle<AbstractCode> code,
                                             Handle<String> source) {
@@ -279,8 +296,10 @@ class PerfBasicLogger : public CodeEventLogger {
   void LogRecordedBuffer(Handle<AbstractCode> code,
                          MaybeHandle<SharedFunctionInfo> maybe_shared,
                          const char* name, int length) override;
+#if V8_ENABLE_WEBASSEMBLY
   void LogRecordedBuffer(const wasm::WasmCode* code, const char* name,
                          int length) override;
+#endif  // V8_ENABLE_WEBASSEMBLY
   void WriteLogRecordedBuffer(uintptr_t address, int size, const char* name,
                               int name_length);
 
@@ -339,11 +358,13 @@ void PerfBasicLogger::LogRecordedBuffer(Handle<AbstractCode> code,
                          code->InstructionSize(), name, length);
 }
 
+#if V8_ENABLE_WEBASSEMBLY
 void PerfBasicLogger::LogRecordedBuffer(const wasm::WasmCode* code,
                                         const char* name, int length) {
   WriteLogRecordedBuffer(static_cast<uintptr_t>(code->instruction_start()),
                          code->instructions().length(), name, length);
 }
+#endif  // V8_ENABLE_WEBASSEMBLY
 #endif  // V8_OS_LINUX
 
 // External CodeEventListener
@@ -465,11 +486,13 @@ void ExternalCodeEventListener::CodeCreateEvent(
   code_event_handler_->Handle(reinterpret_cast<v8::CodeEvent*>(&code_event));
 }
 
+#if V8_ENABLE_WEBASSEMBLY
 void ExternalCodeEventListener::CodeCreateEvent(
     LogEventsAndTags tag, const wasm::WasmCode* code, wasm::WasmName name,
     const char* source_url, int code_offset, int script_id) {
   // TODO(mmarchini): handle later
 }
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 void ExternalCodeEventListener::RegExpCodeCreateEvent(Handle<AbstractCode> code,
                                                       Handle<String> source) {
@@ -520,8 +543,10 @@ class LowLevelLogger : public CodeEventLogger {
   void LogRecordedBuffer(Handle<AbstractCode> code,
                          MaybeHandle<SharedFunctionInfo> maybe_shared,
                          const char* name, int length) override;
+#if V8_ENABLE_WEBASSEMBLY
   void LogRecordedBuffer(const wasm::WasmCode* code, const char* name,
                          int length) override;
+#endif  // V8_ENABLE_WEBASSEMBLY
 
   // Low-level profiling event structures.
   struct CodeCreateStruct {
@@ -595,6 +620,8 @@ void LowLevelLogger::LogCodeInfo() {
   const char arch[] = "arm64";
 #elif V8_TARGET_ARCH_S390
   const char arch[] = "s390";
+#elif V8_TARGET_ARCH_RISCV64
+  const char arch[] = "riscv64";
 #else
   const char arch[] = "unknown";
 #endif
@@ -614,6 +641,7 @@ void LowLevelLogger::LogRecordedBuffer(Handle<AbstractCode> code,
                 code->InstructionSize());
 }
 
+#if V8_ENABLE_WEBASSEMBLY
 void LowLevelLogger::LogRecordedBuffer(const wasm::WasmCode* code,
                                        const char* name, int length) {
   CodeCreateStruct event;
@@ -625,6 +653,7 @@ void LowLevelLogger::LogRecordedBuffer(const wasm::WasmCode* code,
   LogWriteBytes(reinterpret_cast<const char*>(code->instruction_start()),
                 code->instructions().length());
 }
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 void LowLevelLogger::CodeMoveEvent(AbstractCode from, AbstractCode to) {
   CodeMoveStruct event;
@@ -663,8 +692,10 @@ class JitLogger : public CodeEventLogger {
   void LogRecordedBuffer(Handle<AbstractCode> code,
                          MaybeHandle<SharedFunctionInfo> maybe_shared,
                          const char* name, int length) override;
+#if V8_ENABLE_WEBASSEMBLY
   void LogRecordedBuffer(const wasm::WasmCode* code, const char* name,
                          int length) override;
+#endif  // V8_ENABLE_WEBASSEMBLY
 
   JitCodeEventHandler code_event_handler_;
   base::Mutex logger_mutex_;
@@ -695,6 +726,7 @@ void JitLogger::LogRecordedBuffer(Handle<AbstractCode> code,
   code_event_handler_(&event);
 }
 
+#if V8_ENABLE_WEBASSEMBLY
 void JitLogger::LogRecordedBuffer(const wasm::WasmCode* code, const char* name,
                                   int length) {
   JitCodeEvent event;
@@ -744,6 +776,7 @@ void JitLogger::LogRecordedBuffer(const wasm::WasmCode* code, const char* name,
   }
   code_event_handler_(&event);
 }
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 void JitLogger::CodeMoveEvent(AbstractCode from, AbstractCode to) {
   base::MutexGuard guard(&logger_mutex_);
@@ -886,7 +919,7 @@ class Ticker : public sampler::Sampler {
       : sampler::Sampler(reinterpret_cast<v8::Isolate*>(isolate)),
         sampling_thread_(
             std::make_unique<SamplingThread>(this, interval_microseconds)),
-        threadId_(ThreadId::Current()) {}
+        perThreadData_(isolate->FindPerThreadDataForThisThread()) {}
 
   ~Ticker() override {
     if (IsActive()) Stop();
@@ -908,8 +941,9 @@ class Ticker : public sampler::Sampler {
   void SampleStack(const v8::RegisterState& state) override {
     if (!profiler_) return;
     Isolate* isolate = reinterpret_cast<Isolate*>(this->isolate());
-    if (v8::Locker::IsActive() &&
-        !isolate->thread_manager()->IsLockedByThread(threadId_))
+    if (v8::Locker::IsActive() && (!isolate->thread_manager()->IsLockedByThread(
+                                       perThreadData_->thread_id()) ||
+                                   perThreadData_->thread_state() != nullptr))
       return;
     TickSample sample;
     sample.Init(isolate, state, TickSample::kIncludeCEntryFrame, true);
@@ -919,7 +953,7 @@ class Ticker : public sampler::Sampler {
  private:
   Profiler* profiler_ = nullptr;
   std::unique_ptr<SamplingThread> sampling_thread_;
-  ThreadId threadId_;
+  Isolate::PerIsolateThreadData* perThreadData_;
 };
 
 //
@@ -1029,10 +1063,7 @@ void Logger::UncheckedStringEvent(const char* name, const char* value) {
 }
 
 void Logger::IntPtrTEvent(const char* name, intptr_t value) {
-  if (FLAG_log) UncheckedIntPtrTEvent(name, value);
-}
-
-void Logger::UncheckedIntPtrTEvent(const char* name, intptr_t value) {
+  if (!FLAG_log) return;
   MSG_BUILDER();
   msg << name << kNext;
   msg.AppendFormatString("%" V8PRIdPTR, value);
@@ -1088,7 +1119,7 @@ void Logger::TimerEvent(Logger::StartEnd se, const char* name) {
 }
 
 void Logger::BasicBlockCounterEvent(const char* name, int block_id,
-                                    double count) {
+                                    uint32_t count) {
   if (!FLAG_turbo_profiling_log_builtins) return;
   MSG_BUILDER();
   msg << ProfileDataFromFileConstants::kBlockCounterMarker << kNext << name
@@ -1221,15 +1252,18 @@ void Logger::LogSourceCodeInformation(Handle<AbstractCode> code,
       << reinterpret_cast<void*>(code->InstructionStart()) << Logger::kNext
       << script.id() << Logger::kNext << shared->StartPosition()
       << Logger::kNext << shared->EndPosition() << Logger::kNext;
-
-  SourcePositionTableIterator iterator(code->source_position_table());
+  // TODO(v8:11429): Clean-up baseline-replated code in source position
+  // iteration.
   bool hasInlined = false;
-  for (; !iterator.done(); iterator.Advance()) {
-    SourcePosition pos = iterator.source_position();
-    msg << "C" << iterator.code_offset() << "O" << pos.ScriptOffset();
-    if (pos.isInlined()) {
-      msg << "I" << pos.InliningId();
-      hasInlined = true;
+  if (code->kind() != CodeKind::BASELINE) {
+    SourcePositionTableIterator iterator(code->SourcePositionTable(*shared));
+    for (; !iterator.done(); iterator.Advance()) {
+      SourcePosition pos = iterator.source_position();
+      msg << "C" << iterator.code_offset() << "O" << pos.ScriptOffset();
+      if (pos.isInlined()) {
+        msg << "I" << pos.InliningId();
+        hasInlined = true;
+      }
     }
   }
   msg << Logger::kNext;
@@ -1361,6 +1395,7 @@ void Logger::CodeCreateEvent(LogEventsAndTags tag, Handle<AbstractCode> code,
   LogCodeDisassemble(code);
 }
 
+#if V8_ENABLE_WEBASSEMBLY
 void Logger::CodeCreateEvent(LogEventsAndTags tag, const wasm::WasmCode* code,
                              wasm::WasmName name, const char* /*source_url*/,
                              int /*code_offset*/, int /*script_id*/) {
@@ -1383,6 +1418,7 @@ void Logger::CodeCreateEvent(LogEventsAndTags tag, const wasm::WasmCode* code,
   msg << kNext << tag_ptr << kNext << ComputeMarker(code);
   msg.WriteToLogFile();
 }
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 void Logger::CallbackEventInternal(const char* prefix, Handle<Name> name,
                                    Address entry_point) {
@@ -1469,7 +1505,7 @@ void Logger::ProcessDeoptEvent(Handle<Code> code, SourcePosition position,
 
 void Logger::CodeDeoptEvent(Handle<Code> code, DeoptimizeKind kind, Address pc,
                             int fp_to_sp_delta, bool reuse_code) {
-  if (!is_logging()) return;
+  if (!is_logging() || !FLAG_log_deopt) return;
   Deoptimizer::DeoptInfo info = Deoptimizer::GetDeoptInfo(*code, pc);
   ProcessDeoptEvent(code, info.position,
                     Deoptimizer::MessageFor(kind, reuse_code),
@@ -1479,7 +1515,7 @@ void Logger::CodeDeoptEvent(Handle<Code> code, DeoptimizeKind kind, Address pc,
 void Logger::CodeDependencyChangeEvent(Handle<Code> code,
                                        Handle<SharedFunctionInfo> sfi,
                                        const char* reason) {
-  if (!is_logging()) return;
+  if (!is_logging() || !FLAG_log_deopt) return;
   SourcePosition position(sfi->StartPosition(), -1);
   ProcessDeoptEvent(code, position, "dependency-change", reason);
 }
@@ -1487,41 +1523,41 @@ void Logger::CodeDependencyChangeEvent(Handle<Code> code,
 namespace {
 
 void CodeLinePosEvent(
-    JitLogger* jit_logger, Address code_start,
+    JitLogger& jit_logger, Address code_start,
     SourcePositionTableIterator& iter) {  // NOLINT(runtime/references)
-  if (jit_logger) {
-    void* jit_handler_data = jit_logger->StartCodePosInfoEvent();
-    for (; !iter.done(); iter.Advance()) {
-      if (iter.is_statement()) {
-        jit_logger->AddCodeLinePosInfoEvent(
-            jit_handler_data, iter.code_offset(),
-            iter.source_position().ScriptOffset(),
-            JitCodeEvent::STATEMENT_POSITION);
-      }
-      jit_logger->AddCodeLinePosInfoEvent(jit_handler_data, iter.code_offset(),
-                                          iter.source_position().ScriptOffset(),
-                                          JitCodeEvent::POSITION);
+  void* jit_handler_data = jit_logger.StartCodePosInfoEvent();
+  for (; !iter.done(); iter.Advance()) {
+    if (iter.is_statement()) {
+      jit_logger.AddCodeLinePosInfoEvent(jit_handler_data, iter.code_offset(),
+                                         iter.source_position().ScriptOffset(),
+                                         JitCodeEvent::STATEMENT_POSITION);
     }
-    jit_logger->EndCodePosInfoEvent(code_start, jit_handler_data);
+    jit_logger.AddCodeLinePosInfoEvent(jit_handler_data, iter.code_offset(),
+                                       iter.source_position().ScriptOffset(),
+                                       JitCodeEvent::POSITION);
   }
+  jit_logger.EndCodePosInfoEvent(code_start, jit_handler_data);
 }
 
 }  // namespace
 
 void Logger::CodeLinePosInfoRecordEvent(Address code_start,
                                         ByteArray source_position_table) {
+  if (!jit_logger_) return;
   SourcePositionTableIterator iter(source_position_table);
-  CodeLinePosEvent(jit_logger_.get(), code_start, iter);
+  CodeLinePosEvent(*jit_logger_, code_start, iter);
 }
 
 void Logger::CodeLinePosInfoRecordEvent(
     Address code_start, Vector<const byte> source_position_table) {
+  if (!jit_logger_) return;
   SourcePositionTableIterator iter(source_position_table);
-  CodeLinePosEvent(jit_logger_.get(), code_start, iter);
+  CodeLinePosEvent(*jit_logger_, code_start, iter);
 }
 
 void Logger::CodeNameEvent(Address addr, int pos, const char* code_name) {
   if (code_name == nullptr) return;  // Not a code object.
+  if (!is_listening_to_code_events()) return;
   MSG_BUILDER();
   msg << kLogEventsNames[CodeEventListener::SNAPSHOT_CODE_NAME_EVENT] << kNext
       << pos << kNext << code_name;
@@ -1726,7 +1762,7 @@ void Logger::TickEvent(TickSample* sample, bool overflow) {
 void Logger::ICEvent(const char* type, bool keyed, Handle<Map> map,
                      Handle<Object> key, char old_state, char new_state,
                      const char* modifier, const char* slow_stub_reason) {
-  if (!FLAG_trace_ic) return;
+  if (!FLAG_log_ic) return;
   MSG_BUILDER();
   if (keyed) msg << "Keyed";
   int line;
@@ -1752,7 +1788,7 @@ void Logger::ICEvent(const char* type, bool keyed, Handle<Map> map,
 
 void Logger::MapEvent(const char* type, Handle<Map> from, Handle<Map> to,
                       const char* reason, Handle<HeapObject> name_or_sfi) {
-  if (!FLAG_trace_maps) return;
+  if (!FLAG_log_maps) return;
   if (!to.is_null()) MapDetails(*to);
   int line = -1;
   int column = -1;
@@ -1783,7 +1819,7 @@ void Logger::MapEvent(const char* type, Handle<Map> from, Handle<Map> to,
 }
 
 void Logger::MapCreate(Map map) {
-  if (!FLAG_trace_maps) return;
+  if (!FLAG_log_maps) return;
   DisallowGarbageCollection no_gc;
   MSG_BUILDER();
   msg << "map-create" << kNext << Time() << kNext << AsHex::Address(map.ptr());
@@ -1791,12 +1827,12 @@ void Logger::MapCreate(Map map) {
 }
 
 void Logger::MapDetails(Map map) {
-  if (!FLAG_trace_maps) return;
+  if (!FLAG_log_maps) return;
   DisallowGarbageCollection no_gc;
   MSG_BUILDER();
   msg << "map-details" << kNext << Time() << kNext << AsHex::Address(map.ptr())
       << kNext;
-  if (FLAG_trace_maps_details) {
+  if (FLAG_log_maps_details) {
     std::ostringstream buffer;
     map.PrintMapDetails(buffer);
     msg << buffer.str().c_str();
@@ -1855,22 +1891,6 @@ EnumerateCompiledFunctions(Heap* heap) {
   }
 
   return compiled_funcs;
-}
-
-static std::vector<Handle<WasmModuleObject>> EnumerateWasmModuleObjects(
-    Heap* heap) {
-  HeapObjectIterator iterator(heap);
-  DisallowGarbageCollection no_gc;
-  std::vector<Handle<WasmModuleObject>> module_objects;
-
-  for (HeapObject obj = iterator.Next(); !obj.is_null();
-       obj = iterator.Next()) {
-    if (obj.IsWasmModuleObject()) {
-      WasmModuleObject module = WasmModuleObject::cast(obj);
-      module_objects.emplace_back(module, Isolate::FromHeap(heap));
-    }
-  }
-  return module_objects;
 }
 
 void Logger::LogCodeObjects() { existing_code_logger_.LogCodeObjects(); }
@@ -2007,21 +2027,16 @@ bool Logger::SetUp(Isolate* isolate) {
         std::make_unique<LowLevelLogger>(isolate, log_file_name.str().c_str());
     AddCodeEventListener(ll_logger_.get());
   }
-
   ticker_ = std::make_unique<Ticker>(isolate, FLAG_prof_sampling_interval);
-
-  if (Log::InitLogAtStart()) UpdateIsLogging(true);
-
+  if (FLAG_log) UpdateIsLogging(true);
   timer_.Start();
-
   if (FLAG_prof_cpp) {
-    UpdateIsLogging(true);
+    CHECK(FLAG_log);
+    CHECK(is_logging());
     profiler_ = std::make_unique<Profiler>(isolate);
     profiler_->Engage();
   }
-
   if (is_logging_) AddCodeEventListener(this);
-
   return true;
 }
 
@@ -2033,9 +2048,11 @@ void Logger::SetCodeEventHandler(uint32_t options,
   }
 
   if (event_handler) {
+#if V8_ENABLE_WEBASSEMBLY
     if (isolate_->wasm_engine() != nullptr) {
       isolate_->wasm_engine()->EnableCodeLogging(isolate_);
     }
+#endif  // V8_ENABLE_WEBASSEMBLY
     jit_logger_ = std::make_unique<JitLogger>(isolate_, event_handler);
     AddCodeEventListener(jit_logger_.get());
     if (options & kJitCodeEventEnumExisting) {
@@ -2107,6 +2124,7 @@ void ExistingCodeLogger::LogCodeObject(Object object) {
   switch (abstract_code->kind()) {
     case CodeKind::INTERPRETED_FUNCTION:
     case CodeKind::TURBOFAN:
+    case CodeKind::BASELINE:
     case CodeKind::NATIVE_CONTEXT_INDEPENDENT:
     case CodeKind::TURBOPROP:
       return;  // We log this later using LogCompiledFunctions.
@@ -2178,26 +2196,38 @@ void ExistingCodeLogger::LogCompiledFunctions() {
   // During iteration, there can be heap allocation due to
   // GetScriptLineNumber call.
   for (auto& pair : compiled_funcs) {
-    SharedFunctionInfo::EnsureSourcePositionsAvailable(isolate_, pair.first);
-    if (pair.first->function_data(kAcquireLoad).IsInterpreterData()) {
+    Handle<SharedFunctionInfo> shared = pair.first;
+    SharedFunctionInfo::EnsureSourcePositionsAvailable(isolate_, shared);
+    if (shared->HasInterpreterData()) {
       LogExistingFunction(
-          pair.first,
+          shared,
           Handle<AbstractCode>(
-              AbstractCode::cast(pair.first->InterpreterTrampoline()),
-              isolate_),
-          CodeEventListener::INTERPRETED_FUNCTION_TAG);
+              AbstractCode::cast(shared->InterpreterTrampoline()), isolate_));
+    }
+    if (shared->HasBaselineData()) {
+      LogExistingFunction(
+          shared,
+          Handle<AbstractCode>(
+              AbstractCode::cast(shared->baseline_data().baseline_code()),
+              isolate_));
     }
     if (pair.second.is_identical_to(BUILTIN_CODE(isolate_, CompileLazy)))
       continue;
     LogExistingFunction(pair.first, pair.second);
   }
 
-  const std::vector<Handle<WasmModuleObject>> wasm_module_objects =
-      EnumerateWasmModuleObjects(heap);
-  for (auto& module_object : wasm_module_objects) {
-    module_object->native_module()->LogWasmCodes(isolate_,
-                                                 module_object->script());
+#if V8_ENABLE_WEBASSEMBLY
+  HeapObjectIterator iterator(heap);
+  DisallowGarbageCollection no_gc;
+
+  for (HeapObject obj = iterator.Next(); !obj.is_null();
+       obj = iterator.Next()) {
+    if (!obj.IsWasmModuleObject()) continue;
+    auto module_object = WasmModuleObject::cast(obj);
+    module_object.native_module()->LogWasmCodes(isolate_,
+                                                module_object.script());
   }
+#endif  // V8_ENABLE_WEBASSEMBLY
 }
 
 void ExistingCodeLogger::LogExistingFunction(
@@ -2210,7 +2240,7 @@ void ExistingCodeLogger::LogExistingFunction(
         Script::GetColumnNumber(script, shared->StartPosition()) + 1;
     if (script->name().IsString()) {
       Handle<String> script_name(String::cast(script->name()), isolate_);
-      if (line_num > 0) {
+      if (!shared->is_toplevel()) {
         CALL_CODE_EVENT_HANDLER(
             CodeCreateEvent(Logger::ToNativeByScript(tag, *script), code,
                             shared, script_name, line_num, column_num))

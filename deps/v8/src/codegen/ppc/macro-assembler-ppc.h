@@ -119,6 +119,12 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   // Returns the pc offset at which the frame ends.
   int LeaveFrame(StackFrame::Type type, int stack_adjustment = 0);
 
+  void AllocateStackSpace(int bytes) {
+    DCHECK_GE(bytes, 0);
+    if (bytes == 0) return;
+    Add(sp, sp, -bytes, r0);
+  }
+
   // Push a fixed frame, consisting of lr, fp, constant pool.
   void PushCommonFrame(Register marker_reg = no_reg);
 
@@ -298,6 +304,9 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   void MultiPushDoubles(RegList dregs, Register location = sp);
   void MultiPopDoubles(RegList dregs, Register location = sp);
 
+  void MultiPushV128(RegList dregs, Register location = sp);
+  void MultiPopV128(RegList dregs, Register location = sp);
+
   // Calculate how much stack space (in bytes) are required to store caller
   // registers excluding those specified in the arguments.
   int RequiredStackSizeForCallerSaved(SaveFPRegsMode fp_mode,
@@ -440,7 +449,8 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   void LoadEntryFromBuiltinIndex(Register builtin_index);
   void LoadCodeObjectEntry(Register destination, Register code_object) override;
   void CallCodeObject(Register code_object) override;
-  void JumpCodeObject(Register code_object) override;
+  void JumpCodeObject(Register code_object,
+                      JumpMode jump_mode = JumpMode::kJump) override;
 
   void CallBuiltinByIndex(Register builtin_index) override;
   void CallForDeoptimization(Builtins::Name target, int deopt_id, Label* exit,
@@ -777,10 +787,10 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
 
   // Load the global proxy from the current context.
   void LoadGlobalProxy(Register dst) {
-    LoadNativeContextSlot(Context::GLOBAL_PROXY_INDEX, dst);
+    LoadNativeContextSlot(dst, Context::GLOBAL_PROXY_INDEX);
   }
 
-  void LoadNativeContextSlot(int index, Register dst);
+  void LoadNativeContextSlot(Register dst, int index);
 
   // ----------------------------------------------------------------
   // new PPC macro-assembler interfaces that are slightly higher level
@@ -872,6 +882,14 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   // object type should be compared with the given type.  This both
   // sets the flags and leaves the object type in the type_reg register.
   void CompareInstanceType(Register map, Register type_reg, InstanceType type);
+
+  // Compare instance type ranges for a map (lower_limit and higher_limit
+  // inclusive).
+  //
+  // Always use unsigned comparisons: ls for a positive result.
+  void CompareInstanceTypeRange(Register map, Register type_reg,
+                                InstanceType lower_limit,
+                                InstanceType higher_limit);
 
   // Compare the object in a register to a value from the root list.
   // Uses the ip register as scratch.

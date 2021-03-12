@@ -8,6 +8,7 @@
 #include "src/codegen/compiler.h"
 #include "src/codegen/optimized-compilation-info.h"
 #include "src/compiler/pipeline.h"
+#include "src/debug/debug.h"
 #include "src/handles/handles.h"
 #include "src/logging/counters.h"
 #include "src/objects/js-function.h"
@@ -130,7 +131,7 @@ TEST(TestConcurrentSharedFunctionInfo) {
   OptimizedCompilationInfo f_info(&zone, isolate, f_sfi, f, CodeKind::TURBOFAN);
   Handle<Code> f_code =
       Pipeline::GenerateCodeForTesting(&f_info, isolate).ToHandleChecked();
-  f->set_code(*f_code);
+  f->set_code(*f_code, kReleaseStore);
   IsCompiledScope compiled_scope_f(*f_sfi, isolate);
   JSFunction::EnsureFeedbackVector(f, &compiled_scope_f);
 

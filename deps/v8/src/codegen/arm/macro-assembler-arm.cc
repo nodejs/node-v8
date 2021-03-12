@@ -25,7 +25,10 @@
 #include "src/runtime/runtime.h"
 #include "src/snapshot/embedded/embedded-data.h"
 #include "src/snapshot/snapshot.h"
+
+#if V8_ENABLE_WEBASSEMBLY
 #include "src/wasm/wasm-code-manager.h"
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 // Satisfy cpplint check, but don't include platform-specific header. It is
 // included recursively via macro-assembler.h.
@@ -366,7 +369,8 @@ void TurboAssembler::CallCodeObject(Register code_object) {
   Call(code_object);
 }
 
-void TurboAssembler::JumpCodeObject(Register code_object) {
+void TurboAssembler::JumpCodeObject(Register code_object, JumpMode jump_mode) {
+  DCHECK_EQ(JumpMode::kJump, jump_mode);
   LoadCodeObjectEntry(code_object, code_object);
   Jump(code_object);
 }
@@ -1385,6 +1389,7 @@ void TurboAssembler::AllocateStackSpace(Register bytes_scratch) {
 }
 
 void TurboAssembler::AllocateStackSpace(int bytes) {
+  DCHECK_GE(bytes, 0);
   UseScratchRegisterScope temps(this);
   DwVfpRegister scratch = no_dreg;
   while (bytes > kStackPageSize) {
@@ -1395,6 +1400,7 @@ void TurboAssembler::AllocateStackSpace(int bytes) {
     vldr(scratch, MemOperand(sp));
     bytes -= kStackPageSize;
   }
+  if (bytes == 0) return;
   sub(sp, sp, Operand(bytes));
 }
 #endif
@@ -1609,7 +1615,6 @@ void MacroAssembler::InvokePrologue(Register expected_parameter_count,
   DCHECK_EQ(actual_parameter_count, r0);
   DCHECK_EQ(expected_parameter_count, r2);
 
-#ifdef V8_NO_ARGUMENTS_ADAPTOR
   // If the expected parameter count is equal to the adaptor sentinel, no need
   // to push undefined value as arguments.
   cmp(expected_parameter_count, Operand(kDontAdaptArgumentsSentinel));
@@ -1663,20 +1668,7 @@ void MacroAssembler::InvokePrologue(Register expected_parameter_count,
     CallRuntime(Runtime::kThrowStackOverflow);
     bkpt(0);
   }
-#else
-  // Check whether the expected and actual arguments count match. If not,
-  // setup registers according to contract with ArgumentsAdaptorTrampoline.
-  cmp(expected_parameter_count, actual_parameter_count);
-  b(eq, &regular_invoke);
 
-  Handle<Code> adaptor = BUILTIN_CODE(isolate(), ArgumentsAdaptorTrampoline);
-  if (flag == CALL_FUNCTION) {
-    Call(adaptor);
-    b(done);
-  } else {
-    Jump(adaptor, RelocInfo::CODE_TARGET);
-  }
-#endif
   bind(&regular_invoke);
 }
 
@@ -1855,6 +1847,17 @@ void MacroAssembler::CompareInstanceType(Register map, Register type_reg,
   cmp(type_reg, Operand(type));
 }
 
+void MacroAssembler::CompareInstanceTypeRange(Register map, Register type_reg,
+                                              InstanceType lower_limit,
+                                              InstanceType higher_limit) {
+  DCHECK_LT(lower_limit, higher_limit);
+  UseScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  ldrh(type_reg, FieldMemOperand(map, Map::kInstanceTypeOffset));
+  sub(scratch, type_reg, Operand(lower_limit));
+  cmp(scratch, Operand(higher_limit - lower_limit));
+}
+
 void MacroAssembler::CompareRoot(Register obj, RootIndex index) {
   UseScratchRegisterScope temps(this);
   Register scratch = temps.Acquire();
@@ -1915,8 +1918,13 @@ void TurboAssembler::TruncateDoubleToI(Isolate* isolate, Zone* zone,
   AllocateStackSpace(kDoubleSize);  // Put input on stack.
   vstr(double_input, MemOperand(sp, 0));
 
+#if V8_ENABLE_WEBASSEMBLY
   if (stub_mode == StubCallMode::kCallWasmRuntimeStub) {
     Call(wasm::WasmCode::kDoubleToI, RelocInfo::WASM_STUB_CALL);
+#else
+  // For balance.
+  if (false) {
+#endif  // V8_ENABLE_WEBASSEMBLY
   } else if (options().inline_offheap_trampolines) {
     CallBuiltin(Builtins::kDoubleToI);
   } else {
@@ -2072,10 +2080,10 @@ void TurboAssembler::LoadMap(Register destination, Register object) {
 }
 
 void MacroAssembler::LoadGlobalProxy(Register dst) {
-  LoadNativeContextSlot(Context::GLOBAL_PROXY_INDEX, dst);
+  LoadNativeContextSlot(dst, Context::GLOBAL_PROXY_INDEX);
 }
 
-void MacroAssembler::LoadNativeContextSlot(int index, Register dst) {
+void MacroAssembler::LoadNativeContextSlot(Register dst, int index) {
   LoadMap(dst, cp);
   ldr(dst, FieldMemOperand(
                dst, Map::kConstructorOrBackPointerOrNativeContextOffset));
@@ -2155,9 +2163,11 @@ void MacroAssembler::AssertFunction(Register object) {
     tst(object, Operand(kSmiTagMask));
     Check(ne, AbortReason::kOperandIsASmiAndNotAFunction);
     push(object);
-    CompareObjectType(object, object, object, JS_FUNCTION_TYPE);
+    LoadMap(object, object);
+    CompareInstanceTypeRange(object, object, FIRST_JS_FUNCTION_TYPE,
+                             LAST_JS_FUNCTION_TYPE);
     pop(object);
-    Check(eq, AbortReason::kOperandIsNotAFunction);
+    Check(ls, AbortReason::kOperandIsNotAFunction);
   }
 }
 
@@ -2629,6 +2639,115 @@ void TurboAssembler::CallForDeoptimization(Builtins::Name target, int,
 
 void TurboAssembler::Trap() { stop(); }
 void TurboAssembler::DebugBreak() { stop(); }
+
+void TurboAssembler::I64x2BitMask(Register dst, QwNeonRegister src) {
+  UseScratchRegisterScope temps(this);
+  QwNeonRegister tmp1 = temps.AcquireQ();
+  Register tmp = temps.Acquire();
+
+  vshr(NeonU64, tmp1, src, 63);
+  vmov(NeonU32, dst, tmp1.low(), 0);
+  vmov(NeonU32, tmp, tmp1.high(), 0);
+  add(dst, dst, Operand(tmp, LSL, 1));
+}
+
+void TurboAssembler::I64x2Eq(QwNeonRegister dst, QwNeonRegister src1,
+                             QwNeonRegister src2) {
+  UseScratchRegisterScope temps(this);
+  Simd128Register scratch = temps.AcquireQ();
+  vceq(Neon32, dst, src1, src2);
+  vrev64(Neon32, scratch, dst);
+  vand(dst, dst, scratch);
+}
+
+void TurboAssembler::I64x2Ne(QwNeonRegister dst, QwNeonRegister src1,
+                             QwNeonRegister src2) {
+  UseScratchRegisterScope temps(this);
+  Simd128Register tmp = temps.AcquireQ();
+  vceq(Neon32, dst, src1, src2);
+  vrev64(Neon32, tmp, dst);
+  vmvn(dst, dst);
+  vorn(dst, dst, tmp);
+}
+
+void TurboAssembler::I64x2GtS(QwNeonRegister dst, QwNeonRegister src1,
+                              QwNeonRegister src2) {
+  vqsub(NeonS64, dst, src2, src1);
+  vshr(NeonS64, dst, dst, 63);
+}
+
+void TurboAssembler::I64x2GeS(QwNeonRegister dst, QwNeonRegister src1,
+                              QwNeonRegister src2) {
+  vqsub(NeonS64, dst, src1, src2);
+  vshr(NeonS64, dst, dst, 63);
+  vmvn(dst, dst);
+}
+
+void TurboAssembler::I64x2AllTrue(Register dst, QwNeonRegister src) {
+  UseScratchRegisterScope temps(this);
+  QwNeonRegister tmp = temps.AcquireQ();
+  // src = | a | b | c | d |
+  // tmp = | max(a,b) | max(c,d) | ...
+  vpmax(NeonU32, tmp.low(), src.low(), src.high());
+  // tmp = | max(a,b) == 0 | max(c,d) == 0 | ...
+  vceq(Neon32, tmp, tmp, 0);
+  // tmp = | max(a,b) == 0 or max(c,d) == 0 | ...
+  vpmax(NeonU32, tmp.low(), tmp.low(), tmp.low());
+  // dst = (max(a,b) == 0 || max(c,d) == 0)
+  // dst will either be -1 or 0.
+  vmov(NeonS32, dst, tmp.low(), 0);
+  // dst = !dst (-1 -> 0, 0 -> 1)
+  add(dst, dst, Operand(1));
+  // This works because:
+  // !dst
+  // = !(max(a,b) == 0 || max(c,d) == 0)
+  // = max(a,b) != 0 && max(c,d) != 0
+  // = (a != 0 || b != 0) && (c != 0 || d != 0)
+  // = defintion of i64x2.all_true.
+}
+
+void TurboAssembler::I64x2Abs(QwNeonRegister dst, QwNeonRegister src) {
+  UseScratchRegisterScope temps(this);
+  Simd128Register tmp = temps.AcquireQ();
+  vshr(NeonS64, tmp, src, 63);
+  veor(dst, src, tmp);
+  vsub(Neon64, dst, dst, tmp);
+}
+
+namespace {
+using AssemblerFunc = void (Assembler::*)(DwVfpRegister, SwVfpRegister,
+                                          VFPConversionMode, const Condition);
+// Helper function for f64x2 convert low instructions.
+// This ensures that we do not overwrite src, if dst == src.
+void F64x2ConvertLowHelper(Assembler* assm, QwNeonRegister dst,
+                           QwNeonRegister src, AssemblerFunc convert_fn) {
+  LowDwVfpRegister src_d = LowDwVfpRegister::from_code(src.low().code());
+  UseScratchRegisterScope temps(assm);
+  if (dst == src) {
+    LowDwVfpRegister tmp = temps.AcquireLowD();
+    assm->vmov(tmp, src_d);
+    src_d = tmp;
+  }
+  // Default arguments are not part of the function type
+  (assm->*convert_fn)(dst.low(), src_d.low(), kDefaultRoundToZero, al);
+  (assm->*convert_fn)(dst.high(), src_d.high(), kDefaultRoundToZero, al);
+}
+}  // namespace
+
+void TurboAssembler::F64x2ConvertLowI32x4S(QwNeonRegister dst,
+                                           QwNeonRegister src) {
+  F64x2ConvertLowHelper(this, dst, src, &Assembler::vcvt_f64_s32);
+}
+
+void TurboAssembler::F64x2ConvertLowI32x4U(QwNeonRegister dst,
+                                           QwNeonRegister src) {
+  F64x2ConvertLowHelper(this, dst, src, &Assembler::vcvt_f64_u32);
+}
+
+void TurboAssembler::F64x2PromoteLowF32x4(QwNeonRegister dst,
+                                          QwNeonRegister src) {
+  F64x2ConvertLowHelper(this, dst, src, &Assembler::vcvt_f64_f32);
+}
 
 }  // namespace internal
 }  // namespace v8

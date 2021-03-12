@@ -155,7 +155,7 @@ void VisitBinop(InstructionSelector* selector, Node* node,
 
 void InstructionSelector::VisitStackSlot(Node* node) {
   StackSlotRepresentation rep = StackSlotRepresentationOf(node->op());
-  int slot = frame_->AllocateSpillSlot(rep.size());
+  int slot = frame_->AllocateSpillSlot(rep.size(), rep.alignment());
   OperandGenerator g(this);
 
   Emit(kArchStackSlot, g.DefineAsRegister(node),
@@ -230,7 +230,7 @@ void InstructionSelector::VisitLoad(Node* node) {
 
   if (node->opcode() == IrOpcode::kPoisonedLoad &&
       poisoning_level_ != PoisoningMitigationLevel::kDontPoison) {
-    opcode |= MiscField::encode(kMemoryAccessPoisoned);
+    opcode |= AccessModeField::encode(kMemoryAccessPoisoned);
   }
 
   bool is_atomic = (node->opcode() == IrOpcode::kWord32AtomicLoad ||
@@ -1862,17 +1862,19 @@ void InstructionSelector::EmitPrepareArguments(
     }
   } else {
     // Push any stack arguments.
+    int stack_decrement = 0;
     for (PushParameter input : base::Reversed(*arguments)) {
+      stack_decrement += kSystemPointerSize;
       // Skip any alignment holes in pushed nodes.
       if (input.node == nullptr) continue;
-      Emit(kPPC_Push, g.NoOutput(), g.UseRegister(input.node));
+      InstructionOperand decrement = g.UseImmediate(stack_decrement);
+      stack_decrement = 0;
+      Emit(kPPC_Push, g.NoOutput(), decrement, g.UseRegister(input.node));
     }
   }
 }
 
 bool InstructionSelector::IsTailCallAddressImmediate() { return false; }
-
-int InstructionSelector::GetTempsCountForTailCallFromJSFunction() { return 3; }
 
 void InstructionSelector::VisitFloat64ExtractLowWord32(Node* node) {
   PPCOperandGenerator g(this);
@@ -2161,7 +2163,6 @@ void InstructionSelector::VisitInt64AbsWithOverflow(Node* node) {
   V(F64x2Min)              \
   V(F64x2Max)              \
   V(F32x4Add)              \
-  V(F32x4AddHoriz)         \
   V(F32x4Sub)              \
   V(F32x4Mul)              \
   V(F32x4Eq)               \
@@ -2174,8 +2175,9 @@ void InstructionSelector::VisitInt64AbsWithOverflow(Node* node) {
   V(I64x2Add)              \
   V(I64x2Sub)              \
   V(I64x2Mul)              \
+  V(I64x2Eq)               \
+  V(I64x2Ne)               \
   V(I32x4Add)              \
-  V(I32x4AddHoriz)         \
   V(I32x4Sub)              \
   V(I32x4Mul)              \
   V(I32x4MinS)             \
@@ -2190,7 +2192,6 @@ void InstructionSelector::VisitInt64AbsWithOverflow(Node* node) {
   V(I32x4GeU)              \
   V(I32x4DotI16x8S)        \
   V(I16x8Add)              \
-  V(I16x8AddHoriz)         \
   V(I16x8Sub)              \
   V(I16x8Mul)              \
   V(I16x8MinS)             \
@@ -2213,7 +2214,6 @@ void InstructionSelector::VisitInt64AbsWithOverflow(Node* node) {
   V(I16x8Q15MulRSatS)      \
   V(I8x16Add)              \
   V(I8x16Sub)              \
-  V(I8x16Mul)              \
   V(I8x16MinS)             \
   V(I8x16MinU)             \
   V(I8x16MaxS)             \
@@ -2237,42 +2237,50 @@ void InstructionSelector::VisitInt64AbsWithOverflow(Node* node) {
   V(S128Xor)               \
   V(S128AndNot)
 
-#define SIMD_UNOP_LIST(V)   \
-  V(F64x2Abs)               \
-  V(F64x2Neg)               \
-  V(F64x2Sqrt)              \
-  V(F64x2Ceil)              \
-  V(F64x2Floor)             \
-  V(F64x2Trunc)             \
-  V(F64x2NearestInt)        \
-  V(F32x4Abs)               \
-  V(F32x4Neg)               \
-  V(F32x4RecipApprox)       \
-  V(F32x4RecipSqrtApprox)   \
-  V(F32x4Sqrt)              \
-  V(F32x4SConvertI32x4)     \
-  V(F32x4UConvertI32x4)     \
-  V(F32x4Ceil)              \
-  V(F32x4Floor)             \
-  V(F32x4Trunc)             \
-  V(F32x4NearestInt)        \
-  V(I64x2Neg)               \
-  V(I32x4Neg)               \
-  V(I32x4Abs)               \
-  V(I32x4SConvertF32x4)     \
-  V(I32x4UConvertF32x4)     \
-  V(I32x4SConvertI16x8Low)  \
-  V(I32x4SConvertI16x8High) \
-  V(I32x4UConvertI16x8Low)  \
-  V(I32x4UConvertI16x8High) \
-  V(I16x8Neg)               \
-  V(I16x8Abs)               \
-  V(I8x16Neg)               \
-  V(I8x16Abs)               \
-  V(I16x8SConvertI8x16Low)  \
-  V(I16x8SConvertI8x16High) \
-  V(I16x8UConvertI8x16Low)  \
-  V(I16x8UConvertI8x16High) \
+#define SIMD_UNOP_LIST(V)      \
+  V(F64x2Abs)                  \
+  V(F64x2Neg)                  \
+  V(F64x2Sqrt)                 \
+  V(F64x2Ceil)                 \
+  V(F64x2Floor)                \
+  V(F64x2Trunc)                \
+  V(F64x2NearestInt)           \
+  V(F32x4Abs)                  \
+  V(F32x4Neg)                  \
+  V(F32x4RecipApprox)          \
+  V(F32x4RecipSqrtApprox)      \
+  V(F32x4Sqrt)                 \
+  V(F32x4SConvertI32x4)        \
+  V(F32x4UConvertI32x4)        \
+  V(F32x4Ceil)                 \
+  V(F32x4Floor)                \
+  V(F32x4Trunc)                \
+  V(F32x4NearestInt)           \
+  V(I64x2Neg)                  \
+  V(I64x2SConvertI32x4Low)     \
+  V(I64x2SConvertI32x4High)    \
+  V(I64x2UConvertI32x4Low)     \
+  V(I64x2UConvertI32x4High)    \
+  V(I32x4Neg)                  \
+  V(I32x4Abs)                  \
+  V(I32x4SConvertF32x4)        \
+  V(I32x4UConvertF32x4)        \
+  V(I32x4SConvertI16x8Low)     \
+  V(I32x4SConvertI16x8High)    \
+  V(I32x4UConvertI16x8Low)     \
+  V(I32x4UConvertI16x8High)    \
+  V(I32x4ExtAddPairwiseI16x8S) \
+  V(I32x4ExtAddPairwiseI16x8U) \
+  V(I16x8Neg)                  \
+  V(I16x8Abs)                  \
+  V(I8x16Neg)                  \
+  V(I8x16Abs)                  \
+  V(I16x8SConvertI8x16Low)     \
+  V(I16x8SConvertI8x16High)    \
+  V(I16x8UConvertI8x16Low)     \
+  V(I16x8UConvertI8x16High)    \
+  V(I16x8ExtAddPairwiseI8x16S) \
+  V(I16x8ExtAddPairwiseI8x16U) \
   V(S128Not)
 
 #define SIMD_SHIFT_LIST(V) \
@@ -2290,12 +2298,11 @@ void InstructionSelector::VisitInt64AbsWithOverflow(Node* node) {
   V(I8x16ShrU)
 
 #define SIMD_BOOL_LIST(V) \
-  V(V32x4AnyTrue)         \
-  V(V16x8AnyTrue)         \
-  V(V8x16AnyTrue)         \
-  V(V32x4AllTrue)         \
-  V(V16x8AllTrue)         \
-  V(V8x16AllTrue)
+  V(V128AnyTrue)          \
+  V(I64x2AllTrue)         \
+  V(I32x4AllTrue)         \
+  V(I16x8AllTrue)         \
+  V(I8x16AllTrue)
 
 #define SIMD_VISIT_SPLAT(Type)                               \
   void InstructionSelector::Visit##Type##Splat(Node* node) { \
@@ -2404,6 +2411,7 @@ SIMD_VISIT_PMIN_MAX(F32x4Pmax)
 #undef SIMD_VISIT_PMIN_MAX
 #undef SIMD_TYPES
 
+#if V8_ENABLE_WEBASSEMBLY
 void InstructionSelector::VisitI8x16Shuffle(Node* node) {
   uint8_t shuffle[kSimd128Size];
   bool is_swizzle;
@@ -2428,6 +2436,9 @@ void InstructionSelector::VisitI8x16Shuffle(Node* node) {
        g.UseImmediate(wasm::SimdShuffle::Pack4Lanes(shuffle_remapped + 8)),
        g.UseImmediate(wasm::SimdShuffle::Pack4Lanes(shuffle_remapped + 12)));
 }
+#else
+void InstructionSelector::VisitI8x16Shuffle(Node* node) { UNREACHABLE(); }
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 void InstructionSelector::VisitS128Zero(Node* node) {
   PPCOperandGenerator g(this);
@@ -2496,6 +2507,28 @@ void InstructionSelector::VisitI16x8ExtMulLowI8x16U(Node* node) {
 void InstructionSelector::VisitI16x8ExtMulHighI8x16U(Node* node) {
   UNIMPLEMENTED();
 }
+void InstructionSelector::VisitI8x16Popcnt(Node* node) { UNIMPLEMENTED(); }
+void InstructionSelector::VisitF64x2ConvertLowI32x4S(Node* node) {
+  UNIMPLEMENTED();
+}
+void InstructionSelector::VisitF64x2ConvertLowI32x4U(Node* node) {
+  UNIMPLEMENTED();
+}
+void InstructionSelector::VisitF64x2PromoteLowF32x4(Node* node) {
+  UNIMPLEMENTED();
+}
+void InstructionSelector::VisitF32x4DemoteF64x2Zero(Node* node) {
+  UNIMPLEMENTED();
+}
+void InstructionSelector::VisitI32x4TruncSatF64x2SZero(Node* node) {
+  UNIMPLEMENTED();
+}
+void InstructionSelector::VisitI32x4TruncSatF64x2UZero(Node* node) {
+  UNIMPLEMENTED();
+}
+void InstructionSelector::VisitI64x2GtS(Node* node) { UNIMPLEMENTED(); }
+void InstructionSelector::VisitI64x2GeS(Node* node) { UNIMPLEMENTED(); }
+void InstructionSelector::VisitI64x2Abs(Node* node) { UNIMPLEMENTED(); }
 
 void InstructionSelector::EmitPrepareResults(
     ZoneVector<PushParameter>* results, const CallDescriptor* call_descriptor,
@@ -2520,6 +2553,28 @@ void InstructionSelector::EmitPrepareResults(
            g.UseImmediate(reverse_slot));
     }
   }
+}
+
+void InstructionSelector::VisitLoadLane(Node* node) {
+  LoadLaneParameters params = LoadLaneParametersOf(node->op());
+  InstructionCode opcode = kArchNop;
+  if (params.rep == MachineType::Int8()) {
+    opcode = kPPC_S128Load8Lane;
+  } else if (params.rep == MachineType::Int16()) {
+    opcode = kPPC_S128Load16Lane;
+  } else if (params.rep == MachineType::Int32()) {
+    opcode = kPPC_S128Load32Lane;
+  } else if (params.rep == MachineType::Int64()) {
+    opcode = kPPC_S128Load64Lane;
+  } else {
+    UNREACHABLE();
+  }
+
+  PPCOperandGenerator g(this);
+  Emit(opcode | AddressingModeField::encode(kMode_MRR),
+       g.DefineSameAsFirst(node), g.UseRegister(node->InputAt(2)),
+       g.UseRegister(node->InputAt(0)), g.UseRegister(node->InputAt(1)),
+       g.UseImmediate(params.laneidx));
 }
 
 void InstructionSelector::VisitLoadTransform(Node* node) {
@@ -2571,6 +2626,32 @@ void InstructionSelector::VisitLoadTransform(Node* node) {
   }
   Emit(opcode | AddressingModeField::encode(kMode_MRR),
        g.DefineAsRegister(node), g.UseRegister(base), g.UseRegister(index));
+}
+
+void InstructionSelector::VisitStoreLane(Node* node) {
+  PPCOperandGenerator g(this);
+
+  StoreLaneParameters params = StoreLaneParametersOf(node->op());
+  InstructionCode opcode = kArchNop;
+  if (params.rep == MachineRepresentation::kWord8) {
+    opcode = kPPC_S128Store8Lane;
+  } else if (params.rep == MachineRepresentation::kWord16) {
+    opcode = kPPC_S128Store16Lane;
+  } else if (params.rep == MachineRepresentation::kWord32) {
+    opcode = kPPC_S128Store32Lane;
+  } else if (params.rep == MachineRepresentation::kWord64) {
+    opcode = kPPC_S128Store64Lane;
+  } else {
+    UNREACHABLE();
+  }
+
+  InstructionOperand inputs[4];
+  InstructionOperand value_operand = g.UseRegister(node->InputAt(2));
+  inputs[0] = value_operand;
+  inputs[1] = g.UseRegister(node->InputAt(0));
+  inputs[2] = g.UseRegister(node->InputAt(1));
+  inputs[3] = g.UseImmediate(params.laneidx);
+  Emit(opcode | AddressingModeField::encode(kMode_MRR), 0, nullptr, 4, inputs);
 }
 
 // static

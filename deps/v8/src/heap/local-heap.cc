@@ -4,6 +4,7 @@
 
 #include "src/heap/local-heap.h"
 
+#include <atomic>
 #include <memory>
 
 #include "src/base/logging.h"
@@ -11,6 +12,7 @@
 #include "src/common/globals.h"
 #include "src/execution/isolate.h"
 #include "src/handles/local-handles.h"
+#include "src/heap/gc-tracer.h"
 #include "src/heap/heap-inl.h"
 #include "src/heap/heap-write-barrier.h"
 #include "src/heap/local-heap-inl.h"
@@ -43,7 +45,6 @@ LocalHeap::LocalHeap(Heap* heap, ThreadKind kind,
     : heap_(heap),
       is_main_thread_(kind == ThreadKind::kMain),
       state_(ThreadState::Parked),
-      safepoint_requested_(false),
       allocation_failed_(false),
       prev_(nullptr),
       next_(nullptr),
@@ -52,7 +53,7 @@ LocalHeap::LocalHeap(Heap* heap, ThreadKind kind,
       marking_barrier_(new MarkingBarrier(this)),
       old_space_allocator_(this, heap->old_space()) {
   heap_->safepoint()->AddLocalHeap(this, [this] {
-    if (FLAG_local_heaps && !is_main_thread()) {
+    if (!is_main_thread()) {
       WriteBarrier::SetForThread(marking_barrier_.get());
       if (heap_->incremental_marking()->IsMarking()) {
         marking_barrier_->Activate(
@@ -75,7 +76,7 @@ LocalHeap::~LocalHeap() {
   heap_->safepoint()->RemoveLocalHeap(this, [this] {
     old_space_allocator_.FreeLinearAllocationArea();
 
-    if (FLAG_local_heaps && !is_main_thread()) {
+    if (!is_main_thread()) {
       marking_barrier_->Publish();
       WriteBarrier::ClearForThread(marking_barrier_.get());
     }
@@ -85,6 +86,8 @@ LocalHeap::~LocalHeap() {
     DCHECK_EQ(current_local_heap, this);
     current_local_heap = nullptr;
   }
+
+  DCHECK(gc_epilogue_callbacks_.empty());
 }
 
 void LocalHeap::EnsurePersistentHandles() {
@@ -120,7 +123,9 @@ bool LocalHeap::IsHandleDereferenceAllowed() {
 #ifdef DEBUG
   VerifyCurrent();
 #endif
-  return state_ == ThreadState::Running;
+  ThreadState state = state_relaxed();
+  return state == ThreadState::Running ||
+         state == ThreadState::SafepointRequested;
 }
 #endif
 
@@ -128,40 +133,53 @@ bool LocalHeap::IsParked() {
 #ifdef DEBUG
   VerifyCurrent();
 #endif
-  return state_ == ThreadState::Parked;
+  ThreadState state = state_relaxed();
+  return state == ThreadState::Parked || state == ThreadState::ParkedSafepoint;
 }
 
 void LocalHeap::Park() {
-  base::MutexGuard guard(&state_mutex_);
-  CHECK(state_ == ThreadState::Running);
-  state_ = ThreadState::Parked;
-  state_change_.NotifyAll();
+  ThreadState expected = ThreadState::Running;
+  if (!state_.compare_exchange_strong(expected, ThreadState::Parked)) {
+    CHECK_EQ(expected, ThreadState::SafepointRequested);
+    expected = ThreadState::SafepointRequested;
+    CHECK(
+        state_.compare_exchange_strong(expected, ThreadState::ParkedSafepoint));
+    heap_->safepoint()->NotifyPark();
+  }
 }
 
 void LocalHeap::Unpark() {
-  base::MutexGuard guard(&state_mutex_);
-  CHECK(state_ == ThreadState::Parked);
-  state_ = ThreadState::Running;
+  while (true) {
+    ThreadState expected = ThreadState::Parked;
+    if (!state_.compare_exchange_strong(expected, ThreadState::Running)) {
+      CHECK_EQ(expected, ThreadState::ParkedSafepoint);
+      DCHECK(!is_main_thread());
+      DCHECK_EQ(LocalHeap::Current(), this);
+      TRACE_GC1(heap_->tracer(), GCTracer::Scope::BACKGROUND_UNPARK,
+                ThreadKind::kBackground);
+      heap_->safepoint()->WaitInUnpark();
+    } else {
+      break;
+    }
+  }
 }
 
 void LocalHeap::EnsureParkedBeforeDestruction() {
-  if (IsParked()) return;
-  base::MutexGuard guard(&state_mutex_);
-  state_ = ThreadState::Parked;
-  state_change_.NotifyAll();
+  DCHECK_IMPLIES(!is_main_thread(), IsParked());
 }
 
-void LocalHeap::RequestSafepoint() {
-  safepoint_requested_.store(true, std::memory_order_relaxed);
-}
-
-void LocalHeap::ClearSafepointRequested() {
-  safepoint_requested_.store(false, std::memory_order_relaxed);
-}
-
-void LocalHeap::EnterSafepoint() {
+void LocalHeap::SafepointSlowPath() {
+  DCHECK(!is_main_thread());
   DCHECK_EQ(LocalHeap::Current(), this);
-  if (state_ == ThreadState::Running) heap_->safepoint()->EnterFromThread(this);
+  TRACE_GC1(heap_->tracer(), GCTracer::Scope::BACKGROUND_SAFEPOINT,
+            ThreadKind::kBackground);
+  LocalHeap::ThreadState expected = LocalHeap::ThreadState::SafepointRequested;
+  CHECK(state_.compare_exchange_strong(expected,
+                                       LocalHeap::ThreadState::Safepoint));
+  heap_->safepoint()->WaitInSafepoint();
+  // This might be a bit surprising, GlobalSafepoint transitions the state from
+  // Safepoint (--> Running) --> Parked when returning from the safepoint.
+  Unpark();
 }
 
 void LocalHeap::FreeLinearAllocationArea() {
@@ -202,6 +220,32 @@ Address LocalHeap::PerformCollectionAndAllocateAgain(
   }
 
   heap_->FatalProcessOutOfMemory("LocalHeap: allocation failed");
+}
+
+void LocalHeap::AddGCEpilogueCallback(GCEpilogueCallback* callback,
+                                      void* data) {
+  DCHECK(!IsParked());
+  std::pair<GCEpilogueCallback*, void*> callback_and_data(callback, data);
+  DCHECK_EQ(std::find(gc_epilogue_callbacks_.begin(),
+                      gc_epilogue_callbacks_.end(), callback_and_data),
+            gc_epilogue_callbacks_.end());
+  gc_epilogue_callbacks_.push_back(callback_and_data);
+}
+
+void LocalHeap::RemoveGCEpilogueCallback(GCEpilogueCallback* callback,
+                                         void* data) {
+  DCHECK(!IsParked());
+  std::pair<GCEpilogueCallback*, void*> callback_and_data(callback, data);
+  auto it = std::find(gc_epilogue_callbacks_.begin(),
+                      gc_epilogue_callbacks_.end(), callback_and_data);
+  *it = gc_epilogue_callbacks_.back();
+  gc_epilogue_callbacks_.pop_back();
+}
+
+void LocalHeap::InvokeGCEpilogueCallbacksInSafepoint() {
+  for (auto callback_and_data : gc_epilogue_callbacks_) {
+    callback_and_data.first(callback_and_data.second);
+  }
 }
 
 }  // namespace internal

@@ -1354,6 +1354,49 @@ TEST(BreakPointApiAccessor) {
   CheckDebuggerUnloaded();
 }
 
+TEST(Regress1163547) {
+  LocalContext env;
+  v8::HandleScope scope(env->GetIsolate());
+
+  DebugEventCounter delegate;
+  v8::debug::SetDebugDelegate(env->GetIsolate(), &delegate);
+
+  i::Handle<i::BreakPoint> bp;
+
+  auto constructor_tmpl = v8::FunctionTemplate::New(env->GetIsolate());
+  auto prototype_tmpl = constructor_tmpl->PrototypeTemplate();
+  auto accessor_tmpl =
+      v8::FunctionTemplate::New(env->GetIsolate(), NoOpFunctionCallback);
+  prototype_tmpl->SetAccessorProperty(v8_str("f"), accessor_tmpl);
+
+  auto constructor =
+      constructor_tmpl->GetFunction(env.local()).ToLocalChecked();
+  env->Global()->Set(env.local(), v8_str("C"), constructor).ToChecked();
+
+  CompileRun("o = new C();");
+  v8::Local<v8::Function> function =
+      CompileRun("Object.getOwnPropertyDescriptor(C.prototype, 'f').get")
+          .As<v8::Function>();
+
+  // === Test API accessor ===
+  break_point_hit_count = 0;
+
+  // At this point, the C.prototype - which holds the "f" accessor - is in
+  // dictionary mode.
+  auto constructor_fun =
+      Handle<i::JSFunction>::cast(v8::Utils::OpenHandle(*constructor));
+  CHECK(!i::JSObject::cast(constructor_fun->prototype()).HasFastProperties());
+
+  // Run with breakpoint.
+  bp = SetBreakPoint(function, 0);
+
+  CompileRun("o.f");
+  CHECK_EQ(1, break_point_hit_count);
+
+  v8::debug::SetDebugDelegate(env->GetIsolate(), nullptr);
+  CheckDebuggerUnloaded();
+}
+
 TEST(BreakPointInlineApiFunction) {
   i::FLAG_allow_natives_syntax = true;
   LocalContext env;
@@ -2848,7 +2891,8 @@ TEST(PauseInScript) {
   const char* src = "(function (evt) {})";
   const char* script_name = "StepInHandlerTest";
 
-  v8::ScriptOrigin origin(v8_str(env->GetIsolate(), script_name));
+  v8::ScriptOrigin origin(env->GetIsolate(),
+                          v8_str(env->GetIsolate(), script_name));
   v8::Local<v8::Script> script =
       v8::Script::Compile(context, v8_str(env->GetIsolate(), src), &origin)
           .ToLocalChecked();
@@ -3225,7 +3269,7 @@ TEST(DebugScriptLineEndsAreAscending) {
                                         "  debugger;\n"
                                         "}\n");
 
-  v8::ScriptOrigin origin1 = v8::ScriptOrigin(v8_str(isolate, "name"));
+  v8::ScriptOrigin origin1 = v8::ScriptOrigin(isolate, v8_str(isolate, "name"));
   v8::Local<v8::Script> script1 =
       v8::Script::Compile(env.local(), script, &origin1).ToLocalChecked();
   USE(script1);
@@ -5497,39 +5541,44 @@ TEST(TerminateOnResumeFromMicrotask) {
 
 class FutexInterruptionThread : public v8::base::Thread {
  public:
-  FutexInterruptionThread(v8::Isolate* isolate, v8::base::Semaphore* sem)
+  FutexInterruptionThread(v8::Isolate* isolate, v8::base::Semaphore* enter,
+                          v8::base::Semaphore* exit)
       : Thread(Options("FutexInterruptionThread")),
         isolate_(isolate),
-        sem_(sem) {}
+        enter_(enter),
+        exit_(exit) {}
 
   void Run() override {
-    // Wait a bit before terminating.
-    v8::base::OS::Sleep(v8::base::TimeDelta::FromMilliseconds(100));
-    sem_->Wait();
+    enter_->Wait();
     v8::debug::SetTerminateOnResume(isolate_);
+    exit_->Signal();
   }
 
  private:
   v8::Isolate* isolate_;
-  v8::base::Semaphore* sem_;
+  v8::base::Semaphore* enter_;
+  v8::base::Semaphore* exit_;
 };
 
 namespace {
 class SemaphoreTriggerOnBreak : public v8::debug::DebugDelegate {
  public:
-  SemaphoreTriggerOnBreak() : sem_(0) {}
+  SemaphoreTriggerOnBreak() : enter_(0), exit_(0) {}
   void BreakProgramRequested(v8::Local<v8::Context> paused_context,
                              const std::vector<v8::debug::BreakpointId>&
                                  inspector_break_points_hit) override {
     break_count_++;
-    sem_.Signal();
+    enter_.Signal();
+    exit_.Wait();
   }
 
-  v8::base::Semaphore* semaphore() { return &sem_; }
+  v8::base::Semaphore* enter() { return &enter_; }
+  v8::base::Semaphore* exit() { return &exit_; }
   int break_count() const { return break_count_; }
 
  private:
-  v8::base::Semaphore sem_;
+  v8::base::Semaphore enter_;
+  v8::base::Semaphore exit_;
   int break_count_ = 0;
 };
 }  // anonymous namespace
@@ -5542,8 +5591,8 @@ TEST(TerminateOnResumeFromOtherThread) {
   SemaphoreTriggerOnBreak delegate;
   v8::debug::SetDebugDelegate(env->GetIsolate(), &delegate);
 
-  FutexInterruptionThread timeout_thread(env->GetIsolate(),
-                                         delegate.semaphore());
+  FutexInterruptionThread timeout_thread(env->GetIsolate(), delegate.enter(),
+                                         delegate.exit());
   CHECK(timeout_thread.Start());
 
   v8::Local<v8::Context> context = env.local();
@@ -5574,7 +5623,7 @@ namespace {
 class InterruptionBreakRightNow : public v8::base::Thread {
  public:
   explicit InterruptionBreakRightNow(v8::Isolate* isolate)
-      : Thread(Options("FutexInterruptionThread")), isolate_(isolate) {}
+      : Thread(Options("InterruptionBreakRightNow")), isolate_(isolate) {}
 
   void Run() override {
     // Wait a bit before terminating.

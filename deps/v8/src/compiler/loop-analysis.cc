@@ -39,7 +39,6 @@ struct TempLoopInfo {
   LoopTree::Loop* loop;
 };
 
-
 // Encapsulation of the loop finding algorithm.
 // -----------------------------------------------------------------------------
 // Conceptually, the contents of a loop are those nodes that are "between" the
@@ -54,6 +53,8 @@ struct TempLoopInfo {
 // 1 bit per loop per node per direction are required during the marking phase.
 // To handle nested loops correctly, the algorithm must filter some reachability
 // marks on edges into/out-of the loop header nodes.
+// Note: this algorithm assumes there are no unreachable loop header nodes
+// (including loop phis).
 class LoopFinderImpl {
  public:
   LoopFinderImpl(Graph* graph, LoopTree* loop_tree, TickCounter* tick_counter,
@@ -542,13 +543,119 @@ LoopTree* LoopFinder::BuildLoopTree(Graph* graph, TickCounter* tick_counter,
   return loop_tree;
 }
 
-Node* LoopTree::HeaderNode(Loop* loop) {
+// static
+ZoneUnorderedSet<Node*>* LoopFinder::FindUnnestedLoopFromHeader(
+    Node* loop_header, Zone* zone, size_t max_size) {
+  auto* visited = zone->New<ZoneUnorderedSet<Node*>>(zone);
+
+  std::vector<Node*> queue;
+
+  DCHECK(loop_header->opcode() == IrOpcode::kLoop);
+
+  queue.push_back(loop_header);
+
+  while (!queue.empty()) {
+    Node* node = queue.back();
+    queue.pop_back();
+    // Terminate is not part of the loop, and neither are its uses.
+    if (node->opcode() == IrOpcode::kTerminate) {
+      DCHECK_EQ(node->InputAt(1), loop_header);
+      continue;
+    }
+    visited->insert(node);
+    if (visited->size() > max_size) return nullptr;
+    switch (node->opcode()) {
+      case IrOpcode::kLoopExit:
+        DCHECK_EQ(node->InputAt(1), loop_header);
+        // LoopExitValue/Effect uses are inside the loop. The rest are not.
+        for (Node* use : node->uses()) {
+          if (use->opcode() == IrOpcode::kLoopExitEffect ||
+              use->opcode() == IrOpcode::kLoopExitValue) {
+            if (visited->count(use) == 0) queue.push_back(use);
+          }
+        }
+        break;
+      case IrOpcode::kLoopExitEffect:
+      case IrOpcode::kLoopExitValue:
+        DCHECK_EQ(NodeProperties::GetControlInput(node)->InputAt(1),
+                  loop_header);
+        // All uses are outside the loop, do nothing.
+        break;
+      default:
+        for (Node* use : node->uses()) {
+          if (visited->count(use) == 0) queue.push_back(use);
+        }
+        break;
+    }
+  }
+
+  return visited;
+}
+
+bool LoopFinder::HasMarkedExits(LoopTree* loop_tree,
+                                const LoopTree::Loop* loop) {
+  // Look for returns and if projections that are outside the loop but whose
+  // control input is inside the loop.
+  Node* loop_node = loop_tree->GetLoopControl(loop);
+  for (Node* node : loop_tree->LoopNodes(loop)) {
+    for (Node* use : node->uses()) {
+      if (!loop_tree->Contains(loop, use)) {
+        bool unmarked_exit;
+        switch (node->opcode()) {
+          case IrOpcode::kLoopExit:
+            unmarked_exit = (node->InputAt(1) != loop_node);
+            break;
+          case IrOpcode::kLoopExitValue:
+          case IrOpcode::kLoopExitEffect:
+            unmarked_exit = (node->InputAt(1)->InputAt(1) != loop_node);
+            break;
+          default:
+            unmarked_exit = (use->opcode() != IrOpcode::kTerminate);
+        }
+        if (unmarked_exit) {
+          if (FLAG_trace_turbo_loop) {
+            Node* loop_node = loop_tree->GetLoopControl(loop);
+            PrintF(
+                "Cannot peel loop %i. Loop exit without explicit mark: Node %i "
+                "(%s) is inside loop, but its use %i (%s) is outside.\n",
+                loop_node->id(), node->id(), node->op()->mnemonic(), use->id(),
+                use->op()->mnemonic());
+          }
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
+Node* LoopTree::HeaderNode(const Loop* loop) {
   Node* first = *HeaderNodes(loop).begin();
   if (first->opcode() == IrOpcode::kLoop) return first;
   DCHECK(IrOpcode::IsPhiOpcode(first->opcode()));
   Node* header = NodeProperties::GetControlInput(first);
   DCHECK_EQ(IrOpcode::kLoop, header->opcode());
   return header;
+}
+
+Node* NodeCopier::map(Node* node, uint32_t copy_index) {
+  DCHECK_LT(copy_index, copy_count_);
+  if (node_map_.Get(node) == 0) return node;
+  return copies_->at(node_map_.Get(node) + copy_index);
+}
+
+void NodeCopier::Insert(Node* original, const NodeVector& new_copies) {
+  DCHECK_EQ(new_copies.size(), copy_count_);
+  node_map_.Set(original, copies_->size() + 1);
+  copies_->push_back(original);
+  copies_->insert(copies_->end(), new_copies.begin(), new_copies.end());
+}
+
+void NodeCopier::Insert(Node* original, Node* copy) {
+  DCHECK_EQ(copy_count_, 1);
+  node_map_.Set(original, copies_->size() + 1);
+  copies_->push_back(original);
+  copies_->push_back(copy);
 }
 
 }  // namespace compiler

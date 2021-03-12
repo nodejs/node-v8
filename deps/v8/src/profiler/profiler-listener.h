@@ -43,9 +43,11 @@ class V8_EXPORT_PRIVATE ProfilerListener : public CodeEventListener {
   void CodeCreateEvent(LogEventsAndTags tag, Handle<AbstractCode> code,
                        Handle<SharedFunctionInfo> shared,
                        Handle<Name> script_name, int line, int column) override;
+#if V8_ENABLE_WEBASSEMBLY
   void CodeCreateEvent(LogEventsAndTags tag, const wasm::WasmCode* code,
                        wasm::WasmName name, const char* source_url,
                        int code_offset, int script_id) override;
+#endif  // V8_ENABLE_WEBASSEMBLY
 
   void CallbackEvent(Handle<Name> name, Address entry_point) override;
   void GetterCallbackEvent(Handle<Name> name, Address entry_point) override;
@@ -62,6 +64,7 @@ class V8_EXPORT_PRIVATE ProfilerListener : public CodeEventListener {
   void CodeDependencyChangeEvent(Handle<Code> code,
                                  Handle<SharedFunctionInfo> sfi,
                                  const char* reason) override {}
+  void BytecodeFlushEvent(Address compiled_data_start) override;
 
   const char* GetName(Name name) {
     return function_and_resource_names_.GetName(name);

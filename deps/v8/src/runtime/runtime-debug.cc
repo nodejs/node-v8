@@ -16,12 +16,13 @@
 #include "src/execution/frames-inl.h"
 #include "src/execution/isolate-inl.h"
 #include "src/heap/heap-inl.h"  // For ToBoolean. TODO(jkummerow): Drop.
-#include "src/interpreter/bytecode-array-accessor.h"
+#include "src/interpreter/bytecode-array-iterator.h"
 #include "src/interpreter/bytecodes.h"
 #include "src/interpreter/interpreter.h"
 #include "src/logging/counters.h"
 #include "src/objects/debug-objects-inl.h"
 #include "src/objects/heap-object-inl.h"
+#include "src/objects/js-array-buffer-inl.h"
 #include "src/objects/js-collection-inl.h"
 #include "src/objects/js-generator-inl.h"
 #include "src/objects/js-promise-inl.h"
@@ -29,7 +30,14 @@
 #include "src/runtime/runtime.h"
 #include "src/snapshot/embedded/embedded-data.h"
 #include "src/snapshot/snapshot.h"
+
+#if V8_ENABLE_WEBASSEMBLY
 #include "src/wasm/wasm-objects-inl.h"
+#endif  // V8_ENABLE_WEBASSEMBLY
+
+#if V8_ENABLE_WEBASSEMBLY
+#include "src/debug/debug-wasm-objects.h"
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 namespace v8 {
 namespace internal {
@@ -220,13 +228,16 @@ MaybeHandle<JSArray> Runtime::GetInternalProperties(Isolate* isolate,
         factory->NewJSArrayWithElements(bound_arguments);
     result->set(5, *arguments_array);
     return factory->NewJSArrayWithElements(result);
-  } else if (object->IsJSMapIterator()) {
+  }
+  if (object->IsJSMapIterator()) {
     Handle<JSMapIterator> iterator = Handle<JSMapIterator>::cast(object);
     return GetIteratorInternalProperties(isolate, iterator);
-  } else if (object->IsJSSetIterator()) {
+  }
+  if (object->IsJSSetIterator()) {
     Handle<JSSetIterator> iterator = Handle<JSSetIterator>::cast(object);
     return GetIteratorInternalProperties(isolate, iterator);
-  } else if (object->IsJSGeneratorObject()) {
+  }
+  if (object->IsJSGeneratorObject()) {
     Handle<JSGeneratorObject> generator =
         Handle<JSGeneratorObject>::cast(object);
 
@@ -256,7 +267,8 @@ MaybeHandle<JSArray> Runtime::GetInternalProperties(Isolate* isolate,
     result->set(4, *receiver);
     result->set(5, generator->receiver());
     return factory->NewJSArrayWithElements(result);
-  } else if (object->IsJSPromise()) {
+  }
+  if (object->IsJSPromise()) {
     Handle<JSPromise> promise = Handle<JSPromise>::cast(object);
     const char* status = JSPromise::Status(promise->status());
     Handle<FixedArray> result = factory->NewFixedArray(2 * 2);
@@ -275,7 +287,8 @@ MaybeHandle<JSArray> Runtime::GetInternalProperties(Isolate* isolate,
     result->set(2, *promise_value);
     result->set(3, *value_obj);
     return factory->NewJSArrayWithElements(result);
-  } else if (object->IsJSProxy()) {
+  }
+  if (object->IsJSProxy()) {
     Handle<JSProxy> js_proxy = Handle<JSProxy>::cast(object);
     Handle<FixedArray> result = factory->NewFixedArray(3 * 2);
 
@@ -294,7 +307,8 @@ MaybeHandle<JSArray> Runtime::GetInternalProperties(Isolate* isolate,
     result->set(4, *is_revoked_str);
     result->set(5, isolate->heap()->ToBoolean(js_proxy->IsRevoked()));
     return factory->NewJSArrayWithElements(result);
-  } else if (object->IsJSPrimitiveWrapper()) {
+  }
+  if (object->IsJSPrimitiveWrapper()) {
     Handle<JSPrimitiveWrapper> js_value =
         Handle<JSPrimitiveWrapper>::cast(object);
 
@@ -304,7 +318,8 @@ MaybeHandle<JSArray> Runtime::GetInternalProperties(Isolate* isolate,
     result->set(0, *primitive_value);
     result->set(1, js_value->value());
     return factory->NewJSArrayWithElements(result);
-  } else if (object->IsJSArrayBuffer()) {
+  }
+  if (object->IsJSArrayBuffer()) {
     Handle<JSArrayBuffer> js_array_buffer = Handle<JSArrayBuffer>::cast(object);
     if (js_array_buffer->was_detached()) {
       // Mark a detached JSArrayBuffer and such and don't even try to
@@ -325,7 +340,7 @@ MaybeHandle<JSArray> Runtime::GetInternalProperties(Isolate* isolate,
         kExternalInt32Array,
     };
     Handle<FixedArray> result =
-        factory->NewFixedArray((2 + arraysize(kTypes)) * 2);
+        factory->NewFixedArray((3 + arraysize(kTypes)) * 2);
     int index = 0;
     for (auto type : kTypes) {
       switch (type) {
@@ -349,37 +364,48 @@ MaybeHandle<JSArray> Runtime::GetInternalProperties(Isolate* isolate,
     }
     Handle<String> byte_length_str =
         factory->NewStringFromAsciiChecked("[[ArrayBufferByteLength]]");
-    result->set(index++, *byte_length_str);
     Handle<Object> byte_length_obj = factory->NewNumberFromSize(byte_length);
+    result->set(index++, *byte_length_str);
     result->set(index++, *byte_length_obj);
+
     Handle<String> buffer_data_str =
         factory->NewStringFromAsciiChecked("[[ArrayBufferData]]");
-    result->set(index++, *buffer_data_str);
     // Use the backing store pointer as a unique ID
     EmbeddedVector<char, 32> buffer_data_vec;
     int len =
         SNPrintF(buffer_data_vec, V8PRIxPTR_FMT,
                  reinterpret_cast<Address>(js_array_buffer->backing_store()));
-    Handle<String> buffer_id =
+    Handle<String> buffer_data_obj =
         factory->InternalizeUtf8String(buffer_data_vec.SubVector(0, len));
-    result->set(index++, *buffer_id);
+    result->set(index++, *buffer_data_str);
+    result->set(index++, *buffer_data_obj);
+
+#if V8_ENABLE_WEBASSEMBLY
+    Handle<Symbol> memory_symbol = factory->array_buffer_wasm_memory_symbol();
+    Handle<Object> memory_object =
+        JSObject::GetDataProperty(js_array_buffer, memory_symbol);
+    if (!memory_object->IsUndefined(isolate)) {
+      Handle<String> buffer_memory_str =
+          factory->NewStringFromAsciiChecked("[[WebAssemblyMemory]]");
+      Handle<WasmMemoryObject> buffer_memory_obj =
+          Handle<WasmMemoryObject>::cast(memory_object);
+      result->set(index++, *buffer_memory_str);
+      result->set(index++, *buffer_memory_obj);
+    }
+#endif  // V8_ENABLE_WEBASSEMBLY
 
     return factory->NewJSArrayWithElements(result, PACKED_ELEMENTS, index);
-  } else if (object->IsWasmModuleObject()) {
-    auto module_object = Handle<WasmModuleObject>::cast(object);
-    Handle<FixedArray> result = factory->NewFixedArray(2 * 2);
-    Handle<String> exports_str =
-        factory->NewStringFromStaticChars("[[Exports]]");
-    Handle<JSArray> exports_obj = wasm::GetExports(isolate, module_object);
-    result->set(0, *exports_str);
-    result->set(1, *exports_obj);
-    Handle<String> imports_str =
-        factory->NewStringFromStaticChars("[[Imports]]");
-    Handle<JSArray> imports_obj = wasm::GetImports(isolate, module_object);
-    result->set(2, *imports_str);
-    result->set(3, *imports_obj);
-    return factory->NewJSArrayWithElements(result, PACKED_ELEMENTS);
   }
+#if V8_ENABLE_WEBASSEMBLY
+  if (object->IsWasmInstanceObject()) {
+    return GetWasmInstanceObjectInternalProperties(
+        Handle<WasmInstanceObject>::cast(object));
+  }
+  if (object->IsWasmModuleObject()) {
+    return GetWasmModuleObjectInternalProperties(
+        Handle<WasmModuleObject>::cast(object));
+  }
+#endif  // V8_ENABLE_WEBASSEMBLY
   return factory->NewJSArray(0);
 }
 

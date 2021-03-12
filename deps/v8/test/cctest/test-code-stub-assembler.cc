@@ -65,7 +65,7 @@ TEST(CallCFunction) {
 
     MachineType type_intptr = MachineType::IntPtr();
 
-    Node* const result =
+    TNode<IntPtrT> const result = m.UncheckedCast<IntPtrT>(
         m.CallCFunction(fun_constant, type_intptr,
                         std::make_pair(type_intptr, m.IntPtrConstant(0)),
                         std::make_pair(type_intptr, m.IntPtrConstant(1)),
@@ -76,7 +76,7 @@ TEST(CallCFunction) {
                         std::make_pair(type_intptr, m.IntPtrConstant(6)),
                         std::make_pair(type_intptr, m.IntPtrConstant(7)),
                         std::make_pair(type_intptr, m.IntPtrConstant(8)),
-                        std::make_pair(type_intptr, m.IntPtrConstant(9)));
+                        std::make_pair(type_intptr, m.IntPtrConstant(9))));
     m.Return(m.SmiTag(result));
   }
 
@@ -99,11 +99,12 @@ TEST(CallCFunctionWithCallerSavedRegisters) {
 
     MachineType type_intptr = MachineType::IntPtr();
 
-    Node* const result = m.CallCFunctionWithCallerSavedRegisters(
-        fun_constant, type_intptr, kSaveFPRegs,
-        std::make_pair(type_intptr, m.IntPtrConstant(0)),
-        std::make_pair(type_intptr, m.IntPtrConstant(1)),
-        std::make_pair(type_intptr, m.IntPtrConstant(2)));
+    TNode<IntPtrT> const result =
+        m.UncheckedCast<IntPtrT>(m.CallCFunctionWithCallerSavedRegisters(
+            fun_constant, type_intptr, kSaveFPRegs,
+            std::make_pair(type_intptr, m.IntPtrConstant(0)),
+            std::make_pair(type_intptr, m.IntPtrConstant(1)),
+            std::make_pair(type_intptr, m.IntPtrConstant(2))));
     m.Return(m.SmiTag(result));
   }
 
@@ -881,7 +882,8 @@ void TestNameDictionaryLookup() {
   };
 
   for (size_t i = 0; i < arraysize(keys); i++) {
-    Handle<Object> value = factory->NewPropertyCell(keys[i]);
+    Handle<Object> value =
+        factory->NewPropertyCell(keys[i], fake_details, keys[i]);
     dictionary =
         Dictionary::Add(isolate, dictionary, keys[i], value, fake_details);
   }
@@ -1888,13 +1890,21 @@ TEST(AllocateJSObjectFromMap) {
                                           "object")));
     JSObject::NormalizeProperties(isolate, object, KEEP_INOBJECT_PROPERTIES, 0,
                                   "Normalize");
+    Handle<HeapObject> properties =
+        V8_DICT_MODE_PROTOTYPES_BOOL
+            ? Handle<HeapObject>(object->property_dictionary_swiss(), isolate)
+            : handle(object->property_dictionary(), isolate);
     Handle<JSObject> result = Handle<JSObject>::cast(
-        ft.Call(handle(object->map(), isolate),
-                handle(object->property_dictionary(), isolate),
+        ft.Call(handle(object->map(), isolate), properties,
                 handle(object->elements(), isolate))
             .ToHandleChecked());
     CHECK_EQ(result->map(), object->map());
-    CHECK_EQ(result->property_dictionary(), object->property_dictionary());
+    if (V8_DICT_MODE_PROTOTYPES_BOOL) {
+      CHECK_EQ(result->property_dictionary_swiss(),
+               object->property_dictionary_swiss());
+    } else {
+      CHECK_EQ(result->property_dictionary(), object->property_dictionary());
+    }
     CHECK(!result->HasFastProperties());
 #ifdef VERIFY_HEAP
     isolate->heap()->Verify();
@@ -2747,7 +2757,8 @@ TEST(CreatePromiseResolvingFunctions) {
       m.NewJSPromise(context, m.UndefinedConstant());
   PromiseResolvingFunctions funcs = m.CreatePromiseResolvingFunctions(
       context, promise, m.BooleanConstant(false), native_context);
-  Node *resolve = funcs.resolve, *reject = funcs.reject;
+  TNode<JSFunction> resolve = funcs.resolve;
+  TNode<JSFunction> reject = funcs.reject;
   TNode<IntPtrT> const kSize = m.IntPtrConstant(2);
   TNode<FixedArray> const arr =
       m.Cast(m.AllocateFixedArray(PACKED_ELEMENTS, kSize));
@@ -3132,7 +3143,7 @@ TEST(DirectMemoryTest16BitWord32) {
 
   for (size_t i = 0; i < element_count; ++i) {
     for (size_t j = 0; j < element_count; ++j) {
-      Node* loaded = m.LoadBufferData<Uint16T>(
+      TNode<Uint16T> loaded = m.LoadBufferData<Uint16T>(
           buffer_node1, static_cast<int>(i * sizeof(int16_t)));
       TNode<Word32T> masked = m.Word32And(loaded, constants[j]);
       if ((buffer[j] & buffer[i]) != 0) {
@@ -3853,8 +3864,8 @@ TEST(InstructionSchedulingCallerSavedRegisters) {
   CodeStubAssembler m(asm_tester.state());
 
   {
-    Node* x = m.SmiUntag(m.Parameter<Smi>(1));
-    Node* y = m.WordOr(m.WordShr(x, 1), m.IntPtrConstant(1));
+    TNode<IntPtrT> x = m.SmiUntag(m.Parameter<Smi>(1));
+    TNode<WordT> y = m.WordOr(m.WordShr(x, 1), m.IntPtrConstant(1));
     TNode<ExternalReference> isolate_ptr =
         m.ExternalConstant(ExternalReference::isolate_address(isolate));
     m.CallCFunctionWithCallerSavedRegisters(
@@ -3877,6 +3888,7 @@ TEST(InstructionSchedulingCallerSavedRegisters) {
   FLAG_turbo_instruction_scheduling = old_turbo_instruction_scheduling;
 }
 
+#if V8_ENABLE_WEBASSEMBLY
 TEST(WasmInt32ToHeapNumber) {
   Isolate* isolate(CcTest::InitIsolateOnce());
 
@@ -4103,6 +4115,7 @@ TEST(WasmTaggedToFloat64) {
     }
   }
 }
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 TEST(SmiUntagLeftShiftOptimization) {
   Isolate* isolate(CcTest::InitIsolateOnce());

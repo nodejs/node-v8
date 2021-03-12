@@ -60,10 +60,18 @@ using F0 = int();
 static void EntryCode(MacroAssembler* masm) {
   // Smi constant register is callee save.
   __ pushq(kRootRegister);
+#ifdef V8_COMPRESS_POINTERS_IN_SHARED_CAGE
+  __ pushq(kPointerCageBaseRegister);
+#endif
   __ InitializeRootRegister();
 }
 
-static void ExitCode(MacroAssembler* masm) { __ popq(kRootRegister); }
+static void ExitCode(MacroAssembler* masm) {
+#ifdef V8_COMPRESS_POINTERS_IN_SHARED_CAGE
+  __ popq(kPointerCageBaseRegister);
+#endif
+  __ popq(kRootRegister);
+}
 
 TEST(Smi) {
   // Check that C++ Smi operations work as expected.
@@ -115,13 +123,20 @@ TEST(SmiMove) {
   TestMoveSmi(masm, &exit, 3, Smi::FromInt(128));
   TestMoveSmi(masm, &exit, 4, Smi::FromInt(255));
   TestMoveSmi(masm, &exit, 5, Smi::FromInt(256));
-  TestMoveSmi(masm, &exit, 6, Smi::FromInt(Smi::kMaxValue));
-  TestMoveSmi(masm, &exit, 7, Smi::FromInt(-1));
-  TestMoveSmi(masm, &exit, 8, Smi::FromInt(-128));
-  TestMoveSmi(masm, &exit, 9, Smi::FromInt(-129));
-  TestMoveSmi(masm, &exit, 10, Smi::FromInt(-256));
-  TestMoveSmi(masm, &exit, 11, Smi::FromInt(-257));
-  TestMoveSmi(masm, &exit, 12, Smi::FromInt(Smi::kMinValue));
+  TestMoveSmi(masm, &exit, 6, Smi::FromInt(0xFFFF - 1));
+  TestMoveSmi(masm, &exit, 7, Smi::FromInt(0xFFFF));
+  TestMoveSmi(masm, &exit, 8, Smi::FromInt(0xFFFF + 1));
+  TestMoveSmi(masm, &exit, 9, Smi::FromInt(Smi::kMaxValue));
+
+  TestMoveSmi(masm, &exit, 10, Smi::FromInt(-1));
+  TestMoveSmi(masm, &exit, 11, Smi::FromInt(-128));
+  TestMoveSmi(masm, &exit, 12, Smi::FromInt(-129));
+  TestMoveSmi(masm, &exit, 13, Smi::FromInt(-256));
+  TestMoveSmi(masm, &exit, 14, Smi::FromInt(-257));
+  TestMoveSmi(masm, &exit, 15, Smi::FromInt(-0xFFFF + 1));
+  TestMoveSmi(masm, &exit, 16, Smi::FromInt(-0xFFFF));
+  TestMoveSmi(masm, &exit, 17, Smi::FromInt(-0xFFFF - 1));
+  TestMoveSmi(masm, &exit, 18, Smi::FromInt(Smi::kMinValue));
 
   __ xorq(rax, rax);  // Success.
   __ bind(&exit);

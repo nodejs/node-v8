@@ -7,6 +7,7 @@
 
 #include "src/execution/isolate.h"
 #include "src/objects/cell-inl.h"
+#include "src/objects/contexts-inl.h"
 #include "src/objects/js-function.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/oddball.h"
@@ -112,6 +113,11 @@ Isolate::ExceptionScope::ExceptionScope(Isolate* isolate)
 
 Isolate::ExceptionScope::~ExceptionScope() {
   isolate_->set_pending_exception(*pending_exception_);
+}
+
+bool Isolate::IsAnyInitialArrayPrototype(JSArray array) {
+  DisallowGarbageCollection no_gc;
+  return IsInAnyContext(array, Context::INITIAL_ARRAY_PROTOTYPE_INDEX);
 }
 
 #define NATIVE_CONTEXT_FIELD_ACCESSOR(index, type, name)    \

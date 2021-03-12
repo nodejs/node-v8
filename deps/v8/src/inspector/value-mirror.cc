@@ -43,26 +43,6 @@ V8InternalValueType v8InternalValueTypeFrom(v8::Local<v8::Context> context,
   return inspectedContext->getInternalType(value.As<v8::Object>());
 }
 
-template <typename ResultType>
-ResultType unpackWasmValue(v8::Local<v8::Context> context,
-                           v8::Local<v8::Array> array) {
-  ResultType result;
-  constexpr int kSize = sizeof(result);
-  uint8_t buffer[kSize];
-  for (int i = 0; i < kSize; i++) {
-    v8::Local<v8::Int32> i32 =
-        array->Get(context, i).ToLocalChecked().As<v8::Int32>();
-    buffer[i] = static_cast<uint8_t>(i32->Value());
-  }
-  memcpy(&result, buffer, kSize);
-  return result;
-}
-
-// Partial list of Wasm's ValueType, copied here to avoid including internal
-// header. Using an unscoped enumeration here to allow implicit conversions from
-// int. Keep in sync with ValueType::Kind in wasm/value-type.h.
-enum WasmValueType { kStmt, kI32, kI64, kF32, kF64, kS128, kExternRef };
-
 Response toProtocolValue(v8::Local<v8::Context> context,
                          v8::Local<v8::Value> value, int maxDepth,
                          std::unique_ptr<protocol::Value>* result) {
@@ -324,6 +304,15 @@ String16 descriptionForCollection(v8::Isolate* isolate,
   String16 className = toProtocolString(isolate, object->GetConstructorName());
   return String16::concat(className, '(', String16::fromInteger(length), ')');
 }
+
+#if V8_ENABLE_WEBASSEMBLY
+String16 descriptionForWasmValueObject(
+    v8::Local<v8::Context> context,
+    v8::Local<v8::debug::WasmValueObject> object) {
+  v8::Isolate* isolate = context->GetIsolate();
+  return toProtocolString(isolate, object->type());
+}
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 String16 descriptionForEntry(v8::Local<v8::Context> context,
                              v8::Local<v8::Object> object) {
@@ -813,6 +802,10 @@ bool getPropertiesForPreview(v8::Local<v8::Context> context,
   if (object->IsArray() || isArrayLike(context, object, &length) ||
       object->IsStringObject()) {
     blocklist.push_back("length");
+#if V8_ENABLE_WEBASSEMBLY
+  } else if (v8::debug::WasmValueObject::IsWasmValueObject(object)) {
+    blocklist.push_back("type");
+#endif  // V8_ENABLE_WEBASSEMBLY
   } else {
     auto clientSubtype = clientFor(context)->valueSubtype(object);
     if (clientSubtype && toString16(clientSubtype->string()) == "array") {
@@ -1227,14 +1220,24 @@ bool ValueMirror::getProperties(v8::Local<v8::Context> context,
 
   bool formatAccessorsAsProperties =
       clientFor(context)->formatAccessorsAsProperties(object);
-  for (auto iterator = v8::debug::PropertyIterator::Create(object);
-       !iterator->Done(); iterator->Advance()) {
+  auto iterator = v8::debug::PropertyIterator::Create(context, object);
+  if (!iterator) {
+    CHECK(tryCatch.HasCaught());
+    return false;
+  }
+  while (!iterator->Done()) {
     bool isOwn = iterator->is_own();
     if (!isOwn && ownProperties) break;
     v8::Local<v8::Name> v8Name = iterator->name();
     v8::Maybe<bool> result = set->Has(context, v8Name);
     if (result.IsNothing()) return false;
-    if (result.FromJust()) continue;
+    if (result.FromJust()) {
+      if (!iterator->Advance().FromMaybe(false)) {
+        CHECK(tryCatch.HasCaught());
+        return false;
+      }
+      continue;
+    }
     if (!set->Add(context, v8Name).ToLocal(&set)) return false;
 
     String16 name;
@@ -1330,6 +1333,11 @@ bool ValueMirror::getProperties(v8::Local<v8::Context> context,
                                  std::move(symbolMirror),
                                  std::move(exceptionMirror)};
     if (!accumulator->Add(std::move(mirror))) return true;
+
+    if (!iterator->Advance().FromMaybe(false)) {
+      CHECK(tryCatch.HasCaught());
+      return false;
+    }
   }
   if (!shouldSkipProto && ownProperties && !object->IsProxy() &&
       !accessorPropertiesOnly) {
@@ -1696,6 +1704,15 @@ std::unique_ptr<ValueMirror> ValueMirror::create(v8::Local<v8::Context> context,
         descriptionForCollection(
             isolate, memory, memory->Buffer()->ByteLength() / kWasmPageSize));
   }
+#if V8_ENABLE_WEBASSEMBLY
+  if (v8::debug::WasmValueObject::IsWasmValueObject(value)) {
+    v8::Local<v8::debug::WasmValueObject> object =
+        value.As<v8::debug::WasmValueObject>();
+    return std::make_unique<ObjectMirror>(
+        value, RemoteObject::SubtypeEnum::Wasmvalue,
+        descriptionForWasmValueObject(context, object));
+  }
+#endif  // V8_ENABLE_WEBASSEMBLY
   V8InternalValueType internalType =
       v8InternalValueTypeFrom(context, value.As<v8::Object>());
   if (value->IsArray() && internalType == V8InternalValueType::kScopeList) {

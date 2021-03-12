@@ -60,8 +60,10 @@ int GetMaskForShift(Node* node) {
 }  // anonymous namespace
 
 SimdScalarLowering::SimdScalarLowering(
-    MachineGraph* mcgraph, Signature<MachineRepresentation>* signature)
+    MachineGraph* mcgraph, SimplifiedOperatorBuilder* simplified,
+    Signature<MachineRepresentation>* signature)
     : mcgraph_(mcgraph),
+      simplified_(simplified),
       state_(mcgraph->graph(), 3),
       stack_(mcgraph_->zone()),
       replacements_(nullptr),
@@ -114,6 +116,8 @@ void SimdScalarLowering::LowerGraph() {
   V(I64x2Splat)                   \
   V(I64x2ExtractLane)             \
   V(I64x2ReplaceLane)             \
+  V(I64x2Eq)                      \
+  V(I64x2Ne)                      \
   V(I64x2Neg)                     \
   V(I64x2Shl)                     \
   V(I64x2ShrS)                    \
@@ -138,7 +142,6 @@ void SimdScalarLowering::LowerGraph() {
   V(I32x4Shl)                     \
   V(I32x4ShrS)                    \
   V(I32x4Add)                     \
-  V(I32x4AddHoriz)                \
   V(I32x4Sub)                     \
   V(I32x4Mul)                     \
   V(I32x4MinS)                    \
@@ -166,12 +169,11 @@ void SimdScalarLowering::LowerGraph() {
   V(S128Not)                      \
   V(S128AndNot)                   \
   V(S128Select)                   \
-  V(V32x4AnyTrue)                 \
-  V(V32x4AllTrue)                 \
-  V(V16x8AnyTrue)                 \
-  V(V16x8AllTrue)                 \
-  V(V8x16AnyTrue)                 \
-  V(V8x16AllTrue)                 \
+  V(I64x2AllTrue)                 \
+  V(I32x4AllTrue)                 \
+  V(I16x8AllTrue)                 \
+  V(V128AnyTrue)                  \
+  V(I8x16AllTrue)                 \
   V(I32x4BitMask)                 \
   V(I32x4ExtMulLowI16x8S)         \
   V(I32x4ExtMulLowI16x8U)         \
@@ -210,7 +212,6 @@ void SimdScalarLowering::LowerGraph() {
   V(F32x4RecipApprox)               \
   V(F32x4RecipSqrtApprox)           \
   V(F32x4Add)                       \
-  V(F32x4AddHoriz)                  \
   V(F32x4Sub)                       \
   V(F32x4Mul)                       \
   V(F32x4Div)                       \
@@ -250,7 +251,6 @@ void SimdScalarLowering::LowerGraph() {
   V(I16x8SConvertI32x4)           \
   V(I16x8Add)                     \
   V(I16x8AddSatS)                 \
-  V(I16x8AddHoriz)                \
   V(I16x8Sub)                     \
   V(I16x8SubSatS)                 \
   V(I16x8Mul)                     \
@@ -295,7 +295,6 @@ void SimdScalarLowering::LowerGraph() {
   V(I8x16AddSatS)                 \
   V(I8x16Sub)                     \
   V(I8x16SubSatS)                 \
-  V(I8x16Mul)                     \
   V(I8x16MinS)                    \
   V(I8x16MaxS)                    \
   V(I8x16ShrU)                    \
@@ -544,11 +543,18 @@ void SimdScalarLowering::GetIndexNodes(Node* index, Node** new_indices,
 }
 
 void SimdScalarLowering::LowerLoadOp(Node* node, SimdType type) {
-  MachineRepresentation rep = LoadRepresentationOf(node->op()).representation();
+  MachineRepresentation rep =
+      node->opcode() == IrOpcode::kLoadFromObject
+          ? ObjectAccessOf(node->op()).machine_type.representation()
+          : LoadRepresentationOf(node->op()).representation();
   const Operator* load_op;
   switch (node->opcode()) {
     case IrOpcode::kLoad:
       load_op = machine()->Load(MachineTypeFrom(type));
+      break;
+    case IrOpcode::kLoadFromObject:
+      load_op = simplified()->LoadFromObject(
+          ObjectAccess(MachineTypeFrom(type), kNoWriteBarrier));
       break;
     case IrOpcode::kUnalignedLoad:
       load_op = machine()->UnalignedLoad(MachineTypeFrom(type));
@@ -733,6 +739,14 @@ void SimdScalarLowering::LowerStoreOp(Node* node) {
           StoreRepresentationOf(node->op()).write_barrier_kind();
       store_op = machine()->Store(StoreRepresentation(
           MachineTypeFrom(rep_type).representation(), write_barrier_kind));
+      break;
+    }
+    case IrOpcode::kStoreToObject: {
+      rep = ObjectAccessOf(node->op()).machine_type.representation();
+      WriteBarrierKind write_barrier_kind =
+          ObjectAccessOf(node->op()).write_barrier_kind;
+      store_op = simplified()->StoreToObject(
+          ObjectAccess(MachineTypeFrom(rep_type), write_barrier_kind));
       break;
     }
     case IrOpcode::kUnalignedStore: {
@@ -1188,7 +1202,7 @@ Node* SimdScalarLowering::ConstructPhiForComparison(Diamond d,
                                                     int false_value) {
   // Close the given Diamond d using a Phi node, taking care of constructing the
   // right kind of constants (Int32 or Int64) based on rep_type.
-  if (rep_type == SimdType::kFloat64x2) {
+  if (rep_type == SimdType::kFloat64x2 || rep_type == SimdType::kInt64x2) {
     MachineRepresentation rep = MachineRepresentation::kWord64;
     return d.Phi(rep, mcgraph_->Int64Constant(true_value),
                  mcgraph_->Int64Constant(false_value));
@@ -1261,15 +1275,33 @@ void SimdScalarLowering::LowerAllTrueOp(Node* node, SimdType rep_type) {
   int num_lanes = NumLanes(rep_type);
   DCHECK_EQ(1, node->InputCount());
   Node** rep = GetReplacementsWithType(node->InputAt(0), rep_type);
+  Node* zero;
+  Node* tmp_result;
+  MachineRepresentation result_rep = MachineRepresentation::kWord32;
+  const Operator* equals;
+
+  if (SimdType::kInt64x2 == rep_type) {
+    zero = mcgraph_->Int64Constant(0);
+    tmp_result = mcgraph_->Int64Constant(1);
+    result_rep = MachineRepresentation::kWord64;
+    equals = machine()->Word64Equal();
+  } else {
+    zero = mcgraph_->Int32Constant(0);
+    tmp_result = mcgraph_->Int32Constant(1);
+    equals = machine()->Word32Equal();
+  }
 
   Node** rep_node = zone()->NewArray<Node*>(num_lanes);
-  Node* zero = mcgraph_->Int32Constant(0);
-  Node* tmp_result = mcgraph_->Int32Constant(1);
   for (int i = 0; i < num_lanes; ++i) {
-    Diamond d(graph(), common(),
-              graph()->NewNode(machine()->Word32Equal(), rep[i], zero));
-    tmp_result = d.Phi(MachineRepresentation::kWord32, zero, tmp_result);
+    Diamond d(graph(), common(), graph()->NewNode(equals, rep[i], zero));
+    tmp_result = d.Phi(result_rep, zero, tmp_result);
   }
+
+  if (SimdType::kInt64x2 == rep_type) {
+    tmp_result =
+        graph()->NewNode(machine()->TruncateInt64ToInt32(), tmp_result);
+  }
+
   rep_node[0] = tmp_result;
   ReplaceNode(node, rep_node, 1);
 }
@@ -1437,6 +1469,7 @@ void SimdScalarLowering::LowerNode(Node* node) {
       break;
     }
     case IrOpcode::kLoad:
+    case IrOpcode::kLoadFromObject:
     case IrOpcode::kUnalignedLoad:
     case IrOpcode::kProtectedLoad: {
       LowerLoadOp(node, rep_type);
@@ -1447,6 +1480,7 @@ void SimdScalarLowering::LowerNode(Node* node) {
       break;
     }
     case IrOpcode::kStore:
+    case IrOpcode::kStoreToObject:
     case IrOpcode::kUnalignedStore:
     case IrOpcode::kProtectedStore: {
       LowerStoreOp(node);
@@ -1614,14 +1648,6 @@ void SimdScalarLowering::LowerNode(Node* node) {
       I32X4_BINOP_CASE(kS128Or, Word32Or)
       I32X4_BINOP_CASE(kS128Xor, Word32Xor)
 #undef I32X4_BINOP_CASE
-    case IrOpcode::kI32x4AddHoriz: {
-      LowerBinaryOp(node, rep_type, machine()->Int32Add(), false);
-      break;
-    }
-    case IrOpcode::kI16x8AddHoriz: {
-      LowerBinaryOpForSmallInt(node, rep_type, machine()->Int32Add(), false);
-      break;
-    }
     case IrOpcode::kI16x8Add:
     case IrOpcode::kI8x16Add: {
       LowerBinaryOpForSmallInt(node, rep_type, machine()->Int32Add());
@@ -1632,8 +1658,7 @@ void SimdScalarLowering::LowerNode(Node* node) {
       LowerBinaryOpForSmallInt(node, rep_type, machine()->Int32Sub());
       break;
     }
-    case IrOpcode::kI16x8Mul:
-    case IrOpcode::kI8x16Mul: {
+    case IrOpcode::kI16x8Mul: {
       LowerBinaryOpForSmallInt(node, rep_type, machine()->Int32Mul());
       break;
     }
@@ -1870,10 +1895,6 @@ void SimdScalarLowering::LowerNode(Node* node) {
       LowerShiftOp(node, rep_type);
       break;
     }
-    case IrOpcode::kF32x4AddHoriz: {
-      LowerBinaryOp(node, rep_type, machine()->Float32Add(), false);
-      break;
-    }
 #define F32X4_BINOP_CASE(name)                                 \
   case IrOpcode::kF32x4##name: {                               \
     LowerBinaryOp(node, rep_type, machine()->Float32##name()); \
@@ -2102,6 +2123,7 @@ void SimdScalarLowering::LowerNode(Node* node) {
       COMPARISON_CASE(Float32x4, kF32x4Le, Float32LessThanOrEqual, false)
       COMPARISON_CASE(Float32x4, kF32x4Gt, Float32LessThan, true)
       COMPARISON_CASE(Float32x4, kF32x4Ge, Float32LessThanOrEqual, true)
+      COMPARISON_CASE(Int64x2, kI64x2Eq, Word64Equal, false)
       COMPARISON_CASE(Int32x4, kI32x4Eq, Word32Equal, false)
       COMPARISON_CASE(Int32x4, kI32x4LtS, Int32LessThan, false)
       COMPARISON_CASE(Int32x4, kI32x4LeS, Int32LessThanOrEqual, false)
@@ -2136,6 +2158,10 @@ void SimdScalarLowering::LowerNode(Node* node) {
     }
     case IrOpcode::kF32x4Ne: {
       LowerNotEqual(node, SimdType::kFloat32x4, machine()->Float32Equal());
+      break;
+    }
+    case IrOpcode::kI64x2Ne: {
+      LowerNotEqual(node, SimdType::kInt64x2, machine()->Word64Equal());
       break;
     }
     case IrOpcode::kI32x4Ne: {
@@ -2220,9 +2246,7 @@ void SimdScalarLowering::LowerNode(Node* node) {
       ReplaceNode(node, rep_node, 16);
       break;
     }
-    case IrOpcode::kV32x4AnyTrue:
-    case IrOpcode::kV16x8AnyTrue:
-    case IrOpcode::kV8x16AnyTrue: {
+    case IrOpcode::kV128AnyTrue: {
       DCHECK_EQ(1, node->InputCount());
       // AnyTrue always returns a I32x4, and can work with inputs of any shape,
       // but we still need GetReplacementsWithType if input is float.
@@ -2242,15 +2266,19 @@ void SimdScalarLowering::LowerNode(Node* node) {
       ReplaceNode(node, rep_node, 1);
       break;
     }
-    case IrOpcode::kV32x4AllTrue: {
+    case IrOpcode::kI64x2AllTrue: {
+      LowerAllTrueOp(node, SimdType::kInt64x2);
+      break;
+    }
+    case IrOpcode::kI32x4AllTrue: {
       LowerAllTrueOp(node, SimdType::kInt32x4);
       break;
     }
-    case IrOpcode::kV16x8AllTrue: {
+    case IrOpcode::kI16x8AllTrue: {
       LowerAllTrueOp(node, SimdType::kInt16x8);
       break;
     }
-    case IrOpcode::kV8x16AllTrue: {
+    case IrOpcode::kI8x16AllTrue: {
       LowerAllTrueOp(node, SimdType::kInt8x16);
       break;
     }

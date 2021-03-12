@@ -15,7 +15,11 @@
 #include "src/objects/scope-info.h"
 #include "src/objects/shared-function-info.h"
 #include "src/objects/templates.h"
+
+#if V8_ENABLE_WEBASSEMBLY
+#include "src/wasm/wasm-module.h"
 #include "src/wasm/wasm-objects-inl.h"
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -87,6 +91,8 @@ void PreparseData::set_child(int index, PreparseData value,
 TQ_OBJECT_CONSTRUCTORS_IMPL(UncompiledData)
 TQ_OBJECT_CONSTRUCTORS_IMPL(UncompiledDataWithoutPreparseData)
 TQ_OBJECT_CONSTRUCTORS_IMPL(UncompiledDataWithPreparseData)
+
+TQ_OBJECT_CONSTRUCTORS_IMPL(BaselineData)
 
 OBJECT_CONSTRUCTORS_IMPL(InterpreterData, Struct)
 
@@ -162,6 +168,8 @@ bool SharedFunctionInfo::needs_script_context() const {
 
 template <typename LocalIsolate>
 AbstractCode SharedFunctionInfo::abstract_code(LocalIsolate* isolate) {
+  // TODO(v8:11429): Decide if this return bytecode or baseline code, when the
+  // latter is present.
   if (HasBytecodeArray()) {
     return AbstractCode::cast(GetBytecodeArray(isolate));
   } else {
@@ -227,9 +235,6 @@ BIT_FIELD_ACCESSORS(SharedFunctionInfo, flags2,
                     has_static_private_methods_or_accessors,
                     SharedFunctionInfo::HasStaticPrivateMethodsOrAccessorsBit)
 
-BIT_FIELD_ACCESSORS(SharedFunctionInfo, flags2, has_optimized_at_least_once,
-                    SharedFunctionInfo::HasOptimizedAtLeastOnceBit)
-
 BIT_FIELD_ACCESSORS(SharedFunctionInfo, flags2, may_have_cached_code,
                     SharedFunctionInfo::MayHaveCachedCodeBit)
 
@@ -243,8 +248,10 @@ BIT_FIELD_ACCESSORS(SharedFunctionInfo, flags, has_duplicate_parameters,
 
 BIT_FIELD_ACCESSORS(SharedFunctionInfo, flags, native,
                     SharedFunctionInfo::IsNativeBit)
+#if V8_ENABLE_WEBASSEMBLY
 BIT_FIELD_ACCESSORS(SharedFunctionInfo, flags, is_asm_wasm_broken,
                     SharedFunctionInfo::IsAsmWasmBrokenBit)
+#endif  // V8_ENABLE_WEBASSEMBLY
 BIT_FIELD_ACCESSORS(SharedFunctionInfo, flags,
                     requires_instance_members_initializer,
                     SharedFunctionInfo::RequiresInstanceMembersInitializerBit)
@@ -304,17 +311,6 @@ bool SharedFunctionInfo::is_wrapped() const {
   return syntax_kind() == FunctionSyntaxKind::kWrapped;
 }
 
-bool SharedFunctionInfo::needs_home_object() const {
-  return NeedsHomeObjectBit::decode(flags());
-}
-
-void SharedFunctionInfo::set_needs_home_object(bool value) {
-  int hints = flags();
-  hints = NeedsHomeObjectBit::update(hints, value);
-  set_flags(hints);
-  UpdateFunctionMapIndex();
-}
-
 bool SharedFunctionInfo::construct_as_builtin() const {
   return ConstructAsBuiltinBit::decode(flags());
 }
@@ -358,14 +354,16 @@ void SharedFunctionInfo::clear_padding() {
 }
 
 void SharedFunctionInfo::UpdateFunctionMapIndex() {
-  int map_index = Context::FunctionMapIndex(
-      language_mode(), kind(), HasSharedName(), needs_home_object());
+  int map_index =
+      Context::FunctionMapIndex(language_mode(), kind(), HasSharedName());
   set_function_map_index(map_index);
 }
 
 void SharedFunctionInfo::DontAdaptArguments() {
+#if V8_ENABLE_WEBASSEMBLY
   // TODO(leszeks): Revise this DCHECK now that the code field is gone.
   DCHECK(!HasWasmExportedFunctionData());
+#endif  // V8_ENABLE_WEBASSEMBLY
   set_internal_formal_parameter_count(kDontAdaptArgumentsSentinel);
 }
 
@@ -495,7 +493,8 @@ FunctionTemplateInfo SharedFunctionInfo::get_api_func_data() const {
 
 bool SharedFunctionInfo::HasBytecodeArray() const {
   Object data = function_data(kAcquireLoad);
-  return data.IsBytecodeArray() || data.IsInterpreterData();
+  return data.IsBytecodeArray() || data.IsInterpreterData() ||
+         data.IsBaselineData();
 }
 
 template <typename LocalIsolate>
@@ -509,7 +508,11 @@ BytecodeArray SharedFunctionInfo::GetBytecodeArray(
     return GetDebugInfo().OriginalBytecodeArray();
   }
 
-  Object data = function_data(kAcquireLoad);
+  return GetActiveBytecodeArray();
+}
+
+BytecodeArray BaselineData::GetActiveBytecodeArray() const {
+  Object data = this->data();
   if (data.IsBytecodeArray()) {
     return BytecodeArray::cast(data);
   } else {
@@ -518,10 +521,22 @@ BytecodeArray SharedFunctionInfo::GetBytecodeArray(
   }
 }
 
+void BaselineData::SetActiveBytecodeArray(BytecodeArray bytecode) {
+  Object data = this->data();
+  if (data.IsBytecodeArray()) {
+    set_data(bytecode);
+  } else {
+    DCHECK(data.IsInterpreterData());
+    InterpreterData::cast(data).set_bytecode_array(bytecode);
+  }
+}
+
 BytecodeArray SharedFunctionInfo::GetActiveBytecodeArray() const {
   Object data = function_data(kAcquireLoad);
   if (data.IsBytecodeArray()) {
     return BytecodeArray::cast(data);
+  } else if (data.IsBaselineData()) {
+    return baseline_data().GetActiveBytecodeArray();
   } else {
     DCHECK(data.IsInterpreterData());
     return InterpreterData::cast(data).bytecode_array();
@@ -532,6 +547,8 @@ void SharedFunctionInfo::SetActiveBytecodeArray(BytecodeArray bytecode) {
   Object data = function_data(kAcquireLoad);
   if (data.IsBytecodeArray()) {
     set_function_data(bytecode, kReleaseStore);
+  } else if (data.IsBaselineData()) {
+    baseline_data().SetActiveBytecodeArray(bytecode);
   } else {
     DCHECK(data.IsInterpreterData());
     interpreter_data().set_bytecode_array(bytecode);
@@ -571,22 +588,58 @@ Code SharedFunctionInfo::InterpreterTrampoline() const {
 }
 
 bool SharedFunctionInfo::HasInterpreterData() const {
-  return function_data(kAcquireLoad).IsInterpreterData();
+  Object data = function_data(kAcquireLoad);
+  if (data.IsBaselineData()) data = BaselineData::cast(data).data();
+  return data.IsInterpreterData();
 }
 
 InterpreterData SharedFunctionInfo::interpreter_data() const {
   DCHECK(HasInterpreterData());
-  return InterpreterData::cast(function_data(kAcquireLoad));
+  Object data = function_data(kAcquireLoad);
+  if (data.IsBaselineData()) data = BaselineData::cast(data).data();
+  return InterpreterData::cast(data);
 }
 
 void SharedFunctionInfo::set_interpreter_data(
     InterpreterData interpreter_data) {
   DCHECK(FLAG_interpreted_frames_native_stack);
+  DCHECK(!HasBaselineData());
   set_function_data(interpreter_data, kReleaseStore);
 }
 
+bool SharedFunctionInfo::HasBaselineData() const {
+  return function_data(kAcquireLoad).IsBaselineData();
+}
+
+BaselineData SharedFunctionInfo::baseline_data() const {
+  DCHECK(HasBaselineData());
+  return BaselineData::cast(function_data(kAcquireLoad));
+}
+
+void SharedFunctionInfo::set_baseline_data(BaselineData baseline_data) {
+  set_function_data(baseline_data, kReleaseStore);
+}
+
+void SharedFunctionInfo::flush_baseline_data() {
+  DCHECK(HasBaselineData());
+  set_function_data(baseline_data().data(), kReleaseStore);
+}
+
+#if V8_ENABLE_WEBASSEMBLY
 bool SharedFunctionInfo::HasAsmWasmData() const {
   return function_data(kAcquireLoad).IsAsmWasmData();
+}
+
+bool SharedFunctionInfo::HasWasmExportedFunctionData() const {
+  return function_data(kAcquireLoad).IsWasmExportedFunctionData();
+}
+
+bool SharedFunctionInfo::HasWasmJSFunctionData() const {
+  return function_data(kAcquireLoad).IsWasmJSFunctionData();
+}
+
+bool SharedFunctionInfo::HasWasmCapiFunctionData() const {
+  return function_data(kAcquireLoad).IsWasmCapiFunctionData();
 }
 
 AsmWasmData SharedFunctionInfo::asm_wasm_data() const {
@@ -599,6 +652,23 @@ void SharedFunctionInfo::set_asm_wasm_data(AsmWasmData data) {
          HasUncompiledData() || HasAsmWasmData());
   set_function_data(data, kReleaseStore);
 }
+
+const wasm::WasmModule* SharedFunctionInfo::wasm_module() const {
+  if (!HasWasmExportedFunctionData()) return nullptr;
+  const WasmExportedFunctionData& function_data = wasm_exported_function_data();
+  const WasmInstanceObject& wasm_instance = function_data.instance();
+  const WasmModuleObject& wasm_module_object = wasm_instance.module_object();
+  return wasm_module_object.module();
+}
+
+const wasm::FunctionSig* SharedFunctionInfo::wasm_function_signature() const {
+  const wasm::WasmModule* module = wasm_module();
+  if (!module) return nullptr;
+  const WasmExportedFunctionData& function_data = wasm_exported_function_data();
+  DCHECK_LT(function_data.function_index(), module->functions.size());
+  return module->functions[function_data.function_index()].sig;
+}
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 bool SharedFunctionInfo::HasBuiltinId() const {
   return function_data(kAcquireLoad).IsSmi();
@@ -694,18 +764,6 @@ void UncompiledData::InitAfterBytecodeFlush(
   set_end_position(end_position);
 }
 
-bool SharedFunctionInfo::HasWasmExportedFunctionData() const {
-  return function_data(kAcquireLoad).IsWasmExportedFunctionData();
-}
-
-bool SharedFunctionInfo::HasWasmJSFunctionData() const {
-  return function_data(kAcquireLoad).IsWasmJSFunctionData();
-}
-
-bool SharedFunctionInfo::HasWasmCapiFunctionData() const {
-  return function_data(kAcquireLoad).IsWasmCapiFunctionData();
-}
-
 HeapObject SharedFunctionInfo::script() const {
   HeapObject maybe_script = script_or_debug_info(kAcquireLoad);
   if (maybe_script.IsDebugInfo()) {
@@ -773,13 +831,18 @@ bool SharedFunctionInfo::IsUserJavaScript() const {
 }
 
 bool SharedFunctionInfo::IsSubjectToDebugging() const {
-  return IsUserJavaScript() && !HasAsmWasmData();
+#if V8_ENABLE_WEBASSEMBLY
+  if (HasAsmWasmData()) return false;
+#endif  // V8_ENABLE_WEBASSEMBLY
+  return IsUserJavaScript();
 }
 
 bool SharedFunctionInfo::CanDiscardCompiled() const {
-  bool can_decompile = (HasBytecodeArray() || HasAsmWasmData() ||
-                        HasUncompiledDataWithPreparseData());
-  return can_decompile;
+#if V8_ENABLE_WEBASSEMBLY
+  if (HasAsmWasmData()) return true;
+#endif  // V8_ENABLE_WEBASSEMBLY
+  return HasBytecodeArray() || HasUncompiledDataWithPreparseData() ||
+         HasBaselineData();
 }
 
 bool SharedFunctionInfo::is_class_constructor() const {

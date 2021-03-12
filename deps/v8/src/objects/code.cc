@@ -2,20 +2,22 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <iomanip>
-
-#include "src/execution/isolate-utils.h"
 #include "src/objects/code.h"
+
+#include <iomanip>
 
 #include "src/codegen/assembler-inl.h"
 #include "src/codegen/cpu-features.h"
 #include "src/codegen/reloc-info.h"
 #include "src/codegen/safepoint-table.h"
+#include "src/codegen/source-position.h"
 #include "src/deoptimizer/deoptimizer.h"
+#include "src/execution/isolate-utils.h"
 #include "src/interpreter/bytecode-array-iterator.h"
 #include "src/interpreter/bytecode-decoder.h"
 #include "src/interpreter/interpreter.h"
 #include "src/objects/allocation-site-inl.h"
+#include "src/objects/code-kind.h"
 #include "src/roots/roots-inl.h"
 #include "src/snapshot/embedded/embedded-data.h"
 #include "src/utils/ostreams.h"
@@ -190,8 +192,10 @@ Address Code::OffHeapMetadataEnd() const {
          d.MetadataSizeOfBuiltin(builtin_index());
 }
 
+// TODO(cbruni): Move to BytecodeArray
 int AbstractCode::SourcePosition(int offset) {
-  Object maybe_table = source_position_table();
+  CHECK_NE(kind(), CodeKind::BASELINE);
+  Object maybe_table = SourcePositionTableInternal();
   if (maybe_table.IsException()) return kNoSourcePosition;
 
   ByteArray source_position_table = ByteArray::cast(maybe_table);
@@ -208,13 +212,15 @@ int AbstractCode::SourcePosition(int offset) {
   return position;
 }
 
+// TODO(cbruni): Move to BytecodeArray
 int AbstractCode::SourceStatementPosition(int offset) {
+  CHECK_NE(kind(), CodeKind::BASELINE);
   // First find the closest position.
   int position = SourcePosition(offset);
   // Now find the closest statement position before the position.
   int statement_position = 0;
-  for (SourcePositionTableIterator it(source_position_table()); !it.done();
-       it.Advance()) {
+  for (SourcePositionTableIterator it(SourcePositionTableInternal());
+       !it.done(); it.Advance()) {
     if (it.is_statement()) {
       int p = it.source_position().ScriptOffset();
       if (statement_position < p && p <= position) {
@@ -232,7 +238,8 @@ bool Code::CanDeoptAt(Address pc) {
   for (int i = 0; i < deopt_data.DeoptCount(); i++) {
     if (deopt_data.Pc(i).value() == -1) continue;
     Address address = code_start_address + deopt_data.Pc(i).value();
-    if (address == pc && deopt_data.BytecodeOffset(i) != BailoutId::None()) {
+    if (address == pc &&
+        deopt_data.GetBytecodeOffset(i) != BytecodeOffset::None()) {
       return true;
     }
   }
@@ -259,7 +266,7 @@ bool Code::IsIsolateIndependent(Isolate* isolate) {
                  RelocInfo::ModeMask(RelocInfo::WASM_STUB_CALL)));
 
 #if defined(V8_TARGET_ARCH_PPC) || defined(V8_TARGET_ARCH_PPC64) || \
-    defined(V8_TARGET_ARCH_MIPS64)
+    defined(V8_TARGET_ARCH_MIPS64) || defined(V8_TARGET_ARCH_RISCV64)
   return RelocIterator(*this, kModeMask).done();
 #elif defined(V8_TARGET_ARCH_X64) || defined(V8_TARGET_ARCH_ARM64) || \
     defined(V8_TARGET_ARCH_ARM) || defined(V8_TARGET_ARCH_MIPS) ||    \
@@ -440,7 +447,6 @@ void DeoptimizationData::DeoptimizationDataPrint(std::ostream& os) {  // NOLINT
     return;
   }
 
-  disasm::NameConverter converter;
   int const inlined_function_count = InlinedFunctionCount().value();
   os << "Inlined functions (count = " << inlined_function_count << ")\n";
   for (int id = 0; id < inlined_function_count; ++id) {
@@ -457,7 +463,7 @@ void DeoptimizationData::DeoptimizationDataPrint(std::ostream& os) {  // NOLINT
   }
   for (int i = 0; i < deopt_count; i++) {
     os << std::setw(6) << i << "  " << std::setw(15)
-       << BytecodeOffset(i).ToInt() << "  " << std::setw(4);
+       << GetBytecodeOffset(i).ToInt() << "  " << std::setw(4);
     print_pc(os, Pc(i).value());
     os << std::setw(2);
 
@@ -466,202 +472,9 @@ void DeoptimizationData::DeoptimizationDataPrint(std::ostream& os) {  // NOLINT
       continue;
     }
 
-    // Print details of the frame translation.
-    int translation_index = TranslationIndex(i).value();
-    TranslationIterator iterator(TranslationByteArray(), translation_index);
-    Translation::Opcode opcode =
-        static_cast<Translation::Opcode>(iterator.Next());
-    DCHECK(Translation::BEGIN == opcode);
-    int frame_count = iterator.Next();
-    int jsframe_count = iterator.Next();
-    int update_feedback_count = iterator.Next();
-    os << "  " << Translation::StringFor(opcode)
-       << " {frame count=" << frame_count
-       << ", js frame count=" << jsframe_count
-       << ", update_feedback_count=" << update_feedback_count << "}\n";
-
-    while (iterator.HasNext() &&
-           Translation::BEGIN !=
-               (opcode = static_cast<Translation::Opcode>(iterator.Next()))) {
-      os << std::setw(31) << "    " << Translation::StringFor(opcode) << " ";
-
-      switch (opcode) {
-        case Translation::BEGIN:
-          UNREACHABLE();
-          break;
-
-        case Translation::INTERPRETED_FRAME: {
-          int bytecode_offset = iterator.Next();
-          int shared_info_id = iterator.Next();
-          unsigned height = iterator.Next();
-          int return_value_offset = iterator.Next();
-          int return_value_count = iterator.Next();
-          Object shared_info = LiteralArray().get(shared_info_id);
-          os << "{bytecode_offset=" << bytecode_offset << ", function="
-             << SharedFunctionInfo::cast(shared_info).DebugNameCStr().get()
-             << ", height=" << height << ", retval=@" << return_value_offset
-             << "(#" << return_value_count << ")}";
-          break;
-        }
-
-        case Translation::CONSTRUCT_STUB_FRAME: {
-          int bailout_id = iterator.Next();
-          int shared_info_id = iterator.Next();
-          Object shared_info = LiteralArray().get(shared_info_id);
-          unsigned height = iterator.Next();
-          os << "{bailout_id=" << bailout_id << ", function="
-             << SharedFunctionInfo::cast(shared_info).DebugNameCStr().get()
-             << ", height=" << height << "}";
-          break;
-        }
-
-        case Translation::BUILTIN_CONTINUATION_FRAME:
-        case Translation::JAVA_SCRIPT_BUILTIN_CONTINUATION_FRAME:
-        case Translation::JAVA_SCRIPT_BUILTIN_CONTINUATION_WITH_CATCH_FRAME: {
-          int bailout_id = iterator.Next();
-          int shared_info_id = iterator.Next();
-          Object shared_info = LiteralArray().get(shared_info_id);
-          unsigned height = iterator.Next();
-          os << "{bailout_id=" << bailout_id << ", function="
-             << SharedFunctionInfo::cast(shared_info).DebugNameCStr().get()
-             << ", height=" << height << "}";
-          break;
-        }
-
-        case Translation::ARGUMENTS_ADAPTOR_FRAME: {
-          int shared_info_id = iterator.Next();
-          Object shared_info = LiteralArray().get(shared_info_id);
-          unsigned height = iterator.Next();
-          os << "{function="
-             << SharedFunctionInfo::cast(shared_info).DebugNameCStr().get()
-             << ", height=" << height << "}";
-          break;
-        }
-
-        case Translation::REGISTER: {
-          int reg_code = iterator.Next();
-          os << "{input=" << converter.NameOfCPURegister(reg_code) << "}";
-          break;
-        }
-
-        case Translation::INT32_REGISTER: {
-          int reg_code = iterator.Next();
-          os << "{input=" << converter.NameOfCPURegister(reg_code)
-             << " (int32)}";
-          break;
-        }
-
-        case Translation::INT64_REGISTER: {
-          int reg_code = iterator.Next();
-          os << "{input=" << converter.NameOfCPURegister(reg_code)
-             << " (int64)}";
-          break;
-        }
-
-        case Translation::UINT32_REGISTER: {
-          int reg_code = iterator.Next();
-          os << "{input=" << converter.NameOfCPURegister(reg_code)
-             << " (uint32)}";
-          break;
-        }
-
-        case Translation::BOOL_REGISTER: {
-          int reg_code = iterator.Next();
-          os << "{input=" << converter.NameOfCPURegister(reg_code)
-             << " (bool)}";
-          break;
-        }
-
-        case Translation::FLOAT_REGISTER: {
-          int reg_code = iterator.Next();
-          os << "{input=" << FloatRegister::from_code(reg_code) << "}";
-          break;
-        }
-
-        case Translation::DOUBLE_REGISTER: {
-          int reg_code = iterator.Next();
-          os << "{input=" << DoubleRegister::from_code(reg_code) << "}";
-          break;
-        }
-
-        case Translation::STACK_SLOT: {
-          int input_slot_index = iterator.Next();
-          os << "{input=" << input_slot_index << "}";
-          break;
-        }
-
-        case Translation::INT32_STACK_SLOT: {
-          int input_slot_index = iterator.Next();
-          os << "{input=" << input_slot_index << " (int32)}";
-          break;
-        }
-
-        case Translation::INT64_STACK_SLOT: {
-          int input_slot_index = iterator.Next();
-          os << "{input=" << input_slot_index << " (int64)}";
-          break;
-        }
-
-        case Translation::UINT32_STACK_SLOT: {
-          int input_slot_index = iterator.Next();
-          os << "{input=" << input_slot_index << " (uint32)}";
-          break;
-        }
-
-        case Translation::BOOL_STACK_SLOT: {
-          int input_slot_index = iterator.Next();
-          os << "{input=" << input_slot_index << " (bool)}";
-          break;
-        }
-
-        case Translation::FLOAT_STACK_SLOT:
-        case Translation::DOUBLE_STACK_SLOT: {
-          int input_slot_index = iterator.Next();
-          os << "{input=" << input_slot_index << "}";
-          break;
-        }
-
-        case Translation::LITERAL: {
-          int literal_index = iterator.Next();
-          Object literal_value = LiteralArray().get(literal_index);
-          os << "{literal_id=" << literal_index << " (" << Brief(literal_value)
-             << ")}";
-          break;
-        }
-
-        case Translation::DUPLICATED_OBJECT: {
-          int object_index = iterator.Next();
-          os << "{object_index=" << object_index << "}";
-          break;
-        }
-
-        case Translation::ARGUMENTS_ELEMENTS: {
-          CreateArgumentsType arguments_type =
-              static_cast<CreateArgumentsType>(iterator.Next());
-          os << "{arguments_type=" << arguments_type << "}";
-          break;
-        }
-        case Translation::ARGUMENTS_LENGTH: {
-          os << "{arguments_length}";
-          break;
-        }
-
-        case Translation::CAPTURED_OBJECT: {
-          int args_length = iterator.Next();
-          os << "{length=" << args_length << "}";
-          break;
-        }
-
-        case Translation::UPDATE_FEEDBACK: {
-          int literal_index = iterator.Next();
-          FeedbackSlot slot(iterator.Next());
-          os << "{feedback={vector_index=" << literal_index << ", slot=" << slot
-             << "}}";
-          break;
-        }
-      }
-      os << "\n";
-    }
+    TranslationArrayPrintSingleFrame(os, TranslationByteArray(),
+                                     TranslationIndex(i).value(),
+                                     LiteralArray());
   }
 }
 
@@ -690,10 +503,14 @@ void Code::Disassemble(const char* name, std::ostream& os, Isolate* isolate,
   if ((name != nullptr) && (name[0] != '\0')) {
     os << "name = " << name << "\n";
   }
-  if (CodeKindIsOptimizedJSFunction(kind())) {
+  if (CodeKindIsOptimizedJSFunction(kind()) && kind() != CodeKind::BASELINE) {
     os << "stack_slots = " << stack_slots() << "\n";
   }
-  os << "compiler = " << (is_turbofanned() ? "turbofan" : "unknown") << "\n";
+  os << "compiler = "
+     << (is_turbofanned()
+             ? "turbofan"
+             : kind() == CodeKind::BASELINE ? "baseline" : "unknown")
+     << "\n";
   os << "address = " << reinterpret_cast<void*>(ptr()) << "\n\n";
 
   if (is_off_heap_trampoline()) {
@@ -724,32 +541,36 @@ void Code::Disassemble(const char* name, std::ostream& os, Isolate* isolate,
   }
   os << "\n";
 
-  {
-    SourcePositionTableIterator it(
-        SourcePositionTable(), SourcePositionTableIterator::kJavaScriptOnly);
-    if (!it.done()) {
-      os << "Source positions:\n pc offset  position\n";
-      for (; !it.done(); it.Advance()) {
-        os << std::setw(10) << std::hex << it.code_offset() << std::dec
-           << std::setw(10) << it.source_position().ScriptOffset()
-           << (it.is_statement() ? "  statement" : "") << "\n";
+  // TODO(cbruni): add support for baseline code.
+  if (kind() != CodeKind::BASELINE) {
+    {
+      SourcePositionTableIterator it(
+          source_position_table(),
+          SourcePositionTableIterator::kJavaScriptOnly);
+      if (!it.done()) {
+        os << "Source positions:\n pc offset  position\n";
+        for (; !it.done(); it.Advance()) {
+          os << std::setw(10) << std::hex << it.code_offset() << std::dec
+             << std::setw(10) << it.source_position().ScriptOffset()
+             << (it.is_statement() ? "  statement" : "") << "\n";
+        }
+        os << "\n";
       }
-      os << "\n";
     }
-  }
 
-  {
-    SourcePositionTableIterator it(SourcePositionTable(),
-                                   SourcePositionTableIterator::kExternalOnly);
-    if (!it.done()) {
-      os << "External Source positions:\n pc offset  fileid  line\n";
-      for (; !it.done(); it.Advance()) {
-        DCHECK(it.source_position().IsExternal());
-        os << std::setw(10) << std::hex << it.code_offset() << std::dec
-           << std::setw(10) << it.source_position().ExternalFileId()
-           << std::setw(10) << it.source_position().ExternalLine() << "\n";
+    {
+      SourcePositionTableIterator it(
+          source_position_table(), SourcePositionTableIterator::kExternalOnly);
+      if (!it.done()) {
+        os << "External Source positions:\n pc offset  fileid  line\n";
+        for (; !it.done(); it.Advance()) {
+          DCHECK(it.source_position().IsExternal());
+          os << std::setw(10) << std::hex << it.code_offset() << std::dec
+             << std::setw(10) << it.source_position().ExternalFileId()
+             << std::setw(10) << it.source_position().ExternalLine() << "\n";
+        }
+        os << "\n";
       }
-      os << "\n";
     }
   }
 
@@ -806,10 +627,6 @@ void Code::Disassemble(const char* name, std::ostream& os, Isolate* isolate,
     eh_frame_disassembler.DisassembleToStream(os);
     os << "\n";
   }
-
-  if (has_code_comments()) {
-    PrintCodeCommentsSection(os, code_comments(), code_comments_size());
-  }
 }
 #endif  // ENABLE_DISASSEMBLER
 
@@ -819,6 +636,8 @@ void BytecodeArray::Disassemble(std::ostream& os) {
   os << "Parameter count " << parameter_count() << "\n";
   os << "Register count " << register_count() << "\n";
   os << "Frame size " << frame_size() << "\n";
+  os << "OSR nesting level: " << osr_loop_nesting_level() << "\n";
+  os << "Bytecode Age: " << bytecode_age() << "\n";
 
   Address base_address = GetFirstBytecodeAddress();
   SourcePositionTableIterator source_positions(SourcePositionTable());

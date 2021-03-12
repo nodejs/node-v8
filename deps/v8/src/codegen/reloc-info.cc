@@ -330,7 +330,8 @@ bool RelocInfo::OffHeapTargetIsCodedSpecially() {
   return false;
 #elif defined(V8_TARGET_ARCH_IA32) || defined(V8_TARGET_ARCH_MIPS) || \
     defined(V8_TARGET_ARCH_MIPS64) || defined(V8_TARGET_ARCH_PPC) ||  \
-    defined(V8_TARGET_ARCH_PPC64) || defined(V8_TARGET_ARCH_S390)
+    defined(V8_TARGET_ARCH_PPC64) || defined(V8_TARGET_ARCH_S390) ||  \
+    defined(V8_TARGET_ARCH_RISCV64)
   return true;
 #endif
 }
@@ -525,7 +526,8 @@ void RelocInfo::Verify(Isolate* isolate) {
     case OFF_HEAP_TARGET: {
       Address addr = target_off_heap_target();
       CHECK_NE(addr, kNullAddress);
-      CHECK(!InstructionStream::TryLookupCode(isolate, addr).is_null());
+      CHECK(Builtins::IsBuiltinId(
+          InstructionStream::TryLookupCode(isolate, addr)));
       break;
     }
     case RUNTIME_ENTRY:

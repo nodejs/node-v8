@@ -382,7 +382,7 @@ class SerializerForBackgroundCompilation {
   SerializerForBackgroundCompilation(
       ZoneStats* zone_stats, JSHeapBroker* broker,
       CompilationDependencies* dependencies, Handle<JSFunction> closure,
-      SerializerForBackgroundCompilationFlags flags, BailoutId osr_offset);
+      SerializerForBackgroundCompilationFlags flags, BytecodeOffset osr_offset);
   Hints Run();  // NOTE: Returns empty for an
                 // already-serialized function.
 
@@ -404,6 +404,8 @@ class SerializerForBackgroundCompilation {
   void Visit##name(interpreter::BytecodeArrayIterator* iterator);
   SUPPORTED_BYTECODE_LIST(DECLARE_VISIT_BYTECODE)
 #undef DECLARE_VISIT_BYTECODE
+
+  void VisitShortStar(interpreter::Register reg);
 
   Hints& register_hints(interpreter::Register reg);
 
@@ -555,7 +557,7 @@ class SerializerForBackgroundCompilation {
   Zone* zone() { return zone_scope_.zone(); }
   Environment* environment() const { return environment_; }
   SerializerForBackgroundCompilationFlags flags() const { return flags_; }
-  BailoutId osr_offset() const { return osr_offset_; }
+  BytecodeOffset osr_offset() const { return osr_offset_; }
   const BytecodeAnalysis& bytecode_analysis() { return *bytecode_analysis_; }
 
   JSHeapBroker* const broker_;
@@ -565,7 +567,7 @@ class SerializerForBackgroundCompilation {
   // Instead of storing the virtual_closure here, we could extract it from the
   // {closure_hints_} but that would be cumbersome.
   VirtualClosure const function_;
-  BailoutId const osr_offset_;
+  BytecodeOffset const osr_offset_;
   base::Optional<BytecodeAnalysis> bytecode_analysis_;
   ZoneUnorderedMap<int, Environment*> jump_target_environments_;
   Environment* const environment_;
@@ -579,7 +581,7 @@ class SerializerForBackgroundCompilation {
 void RunSerializerForBackgroundCompilation(
     ZoneStats* zone_stats, JSHeapBroker* broker,
     CompilationDependencies* dependencies, Handle<JSFunction> closure,
-    SerializerForBackgroundCompilationFlags flags, BailoutId osr_offset) {
+    SerializerForBackgroundCompilationFlags flags, BytecodeOffset osr_offset) {
   SerializerForBackgroundCompilation serializer(
       zone_stats, broker, dependencies, closure, flags, osr_offset);
   serializer.Run();
@@ -1056,7 +1058,7 @@ std::ostream& operator<<(
 SerializerForBackgroundCompilation::SerializerForBackgroundCompilation(
     ZoneStats* zone_stats, JSHeapBroker* broker,
     CompilationDependencies* dependencies, Handle<JSFunction> closure,
-    SerializerForBackgroundCompilationFlags flags, BailoutId osr_offset)
+    SerializerForBackgroundCompilationFlags flags, BytecodeOffset osr_offset)
     : broker_(broker),
       dependencies_(dependencies),
       zone_scope_(zone_stats, ZONE_NAME),
@@ -1070,6 +1072,7 @@ SerializerForBackgroundCompilation::SerializerForBackgroundCompilation(
       arguments_(zone()) {
   closure_hints_.AddConstant(closure, zone(), broker_);
   JSFunctionRef(broker, closure).Serialize();
+  JSFunctionRef(broker, closure).SerializeCodeAndFeedback();
 
   TRACE_BROKER(broker_, "Hints for <closure>: " << closure_hints_);
   TRACE_BROKER(broker_, "Initial environment:\n" << *environment_);
@@ -1086,7 +1089,7 @@ SerializerForBackgroundCompilation::SerializerForBackgroundCompilation(
       zone_scope_(zone_stats, ZONE_NAME),
       flags_(flags),
       function_(function.virtual_closure()),
-      osr_offset_(BailoutId::None()),
+      osr_offset_(BytecodeOffset::None()),
       jump_target_environments_(zone()),
       environment_(zone()->New<Environment>(zone(), broker_->isolate(),
                                             function, new_target, arguments,
@@ -1097,6 +1100,7 @@ SerializerForBackgroundCompilation::SerializerForBackgroundCompilation(
   if (function.closure().ToHandle(&closure)) {
     closure_hints_.AddConstant(closure, zone(), broker);
     JSFunctionRef(broker, closure).Serialize();
+    JSFunctionRef(broker, closure).SerializeCodeAndFeedback();
   } else {
     closure_hints_.AddVirtualClosure(function.virtual_closure(), zone(),
                                      broker);
@@ -1263,7 +1267,6 @@ Handle<BytecodeArray> SerializerForBackgroundCompilation::bytecode_array()
 
 void SerializerForBackgroundCompilation::TraverseBytecode() {
   bytecode_analysis_.emplace(bytecode_array(), zone(), osr_offset(), false);
-  BytecodeArrayRef(broker(), bytecode_array()).SerializeForCompilation();
 
   BytecodeArrayIterator iterator(bytecode_array());
   HandlerRangeMatcher try_start_matcher(iterator, bytecode_array());
@@ -1309,13 +1312,20 @@ void SerializerForBackgroundCompilation::TraverseBytecode() {
       }
     }
 
-    switch (iterator.current_bytecode()) {
+    interpreter::Bytecode current_bytecode = iterator.current_bytecode();
+    switch (current_bytecode) {
 #define DEFINE_BYTECODE_CASE(name)     \
   case interpreter::Bytecode::k##name: \
     Visit##name(&iterator);            \
     break;
       SUPPORTED_BYTECODE_LIST(DEFINE_BYTECODE_CASE)
 #undef DEFINE_BYTECODE_CASE
+
+#define DEFINE_SHORT_STAR_CASE(Name, ...) case interpreter::Bytecode::k##Name:
+      SHORT_STAR_BYTECODE_LIST(DEFINE_SHORT_STAR_CASE)
+#undef DEFINE_SHORT_STAR_CASE
+      VisitShortStar(interpreter::Register::FromShortStar(current_bytecode));
+      break;
     }
   }
 
@@ -1521,10 +1531,14 @@ void SerializerForBackgroundCompilation::VisitInvokeIntrinsic(
 
 void SerializerForBackgroundCompilation::VisitLdaConstant(
     BytecodeArrayIterator* iterator) {
-  ObjectRef object(
-      broker(), iterator->GetConstantForIndexOperand(0, broker()->isolate()));
-  environment()->accumulator_hints() =
-      Hints::SingleConstant(object.object(), zone());
+  Handle<Object> constant =
+      iterator->GetConstantForIndexOperand(0, broker()->isolate());
+  // TODO(v8:7790): FixedArrays still need to be serialized until they are
+  // moved to kNeverSerialized.
+  if (!FLAG_turbo_direct_heap_access || constant->IsFixedArray()) {
+    ObjectRef(broker(), constant);
+  }
+  environment()->accumulator_hints() = Hints::SingleConstant(constant, zone());
 }
 
 void SerializerForBackgroundCompilation::VisitPushContext(
@@ -1689,6 +1703,11 @@ void SerializerForBackgroundCompilation::VisitLdar(
 void SerializerForBackgroundCompilation::VisitStar(
     BytecodeArrayIterator* iterator) {
   interpreter::Register reg = iterator->GetRegisterOperand(0);
+  register_hints(reg).Reset(&environment()->accumulator_hints(), zone());
+}
+
+void SerializerForBackgroundCompilation::VisitShortStar(
+    interpreter::Register reg) {
   register_hints(reg).Reset(&environment()->accumulator_hints(), zone());
 }
 
@@ -2136,10 +2155,8 @@ void SerializerForBackgroundCompilation::ProcessCallOrConstruct(
           callee.AddConstant(target->object(), zone(), broker());
         } else {
           // Call; target is feedback cell or callee.
-          if (target->IsFeedbackCell() &&
-              target->AsFeedbackCell().value().IsFeedbackVector()) {
-            FeedbackVectorRef vector =
-                target->AsFeedbackCell().value().AsFeedbackVector();
+          if (target->IsFeedbackCell() && target->AsFeedbackCell().value()) {
+            FeedbackVectorRef vector = *target->AsFeedbackCell().value();
             vector.Serialize();
             VirtualClosure virtual_closure(
                 vector.shared_function_info().object(), vector.object(),
@@ -2255,7 +2272,7 @@ void SerializerForBackgroundCompilation::ProcessApiCall(
 
   FunctionTemplateInfoRef target_template_info(
       broker(),
-      handle(target->function_data(kAcquireLoad), broker()->isolate()));
+      broker()->CanonicalPersistentHandle(target->function_data(kAcquireLoad)));
   if (!target_template_info.has_call_code()) return;
   target_template_info.SerializeCallCode();
 
@@ -2653,12 +2670,12 @@ PropertyAccessInfo SerializerForBackgroundCompilation::ProcessMapForRegExpTest(
       SerializationPolicy::kSerializeIfNeeded);
 
   Handle<JSObject> holder;
-  if (ai_exec.IsDataConstant() && ai_exec.holder().ToHandle(&holder)) {
+  if (ai_exec.IsFastDataConstant() && ai_exec.holder().ToHandle(&holder)) {
     // The property is on the prototype chain.
     JSObjectRef holder_ref(broker(), holder);
-    holder_ref.GetOwnDataProperty(ai_exec.field_representation(),
-                                  ai_exec.field_index(),
-                                  SerializationPolicy::kSerializeIfNeeded);
+    holder_ref.GetOwnFastDataProperty(ai_exec.field_representation(),
+                                      ai_exec.field_index(),
+                                      SerializationPolicy::kSerializeIfNeeded);
   }
   return ai_exec;
 }
@@ -2672,12 +2689,12 @@ void SerializerForBackgroundCompilation::ProcessHintsForRegExpTest(
     PropertyAccessInfo ai_exec =
         ProcessMapForRegExpTest(MapRef(broker(), regexp_map));
     Handle<JSObject> holder;
-    if (ai_exec.IsDataConstant() && !ai_exec.holder().ToHandle(&holder)) {
+    if (ai_exec.IsFastDataConstant() && !ai_exec.holder().ToHandle(&holder)) {
       // The property is on the object itself.
       JSObjectRef holder_ref(broker(), regexp);
-      holder_ref.GetOwnDataProperty(ai_exec.field_representation(),
-                                    ai_exec.field_index(),
-                                    SerializationPolicy::kSerializeIfNeeded);
+      holder_ref.GetOwnFastDataProperty(
+          ai_exec.field_representation(), ai_exec.field_index(),
+          SerializationPolicy::kSerializeIfNeeded);
     }
   }
 
@@ -2987,7 +3004,9 @@ SerializerForBackgroundCompilation::ProcessMapForNamedPropertyAccess(
     base::Optional<PropertyCellRef> cell = global_object.GetPropertyCell(
         name, SerializationPolicy::kSerializeIfNeeded);
     if (access_mode == AccessMode::kLoad && cell.has_value()) {
-      result_hints->AddConstant(cell->value().object(), zone(), broker());
+      result_hints->AddConstant(
+          handle(cell->object()->value(), broker()->isolate()), zone(),
+          broker());
     }
   }
 
@@ -2997,7 +3016,8 @@ SerializerForBackgroundCompilation::ProcessMapForNamedPropertyAccess(
 
   // For JSNativeContextSpecialization::InlinePropertySetterCall
   // and InlinePropertyGetterCall.
-  if (access_info.IsAccessorConstant() && !access_info.constant().is_null()) {
+  if (access_info.IsFastAccessorConstant() &&
+      !access_info.constant().is_null()) {
     if (access_info.constant()->IsJSFunction()) {
       JSFunctionRef function(broker(), access_info.constant());
 
@@ -3017,7 +3037,8 @@ SerializerForBackgroundCompilation::ProcessMapForNamedPropertyAccess(
         Handle<SharedFunctionInfo> sfi = function.shared().object();
         if (sfi->IsApiFunction()) {
           FunctionTemplateInfoRef fti_ref(
-              broker(), handle(sfi->get_api_func_data(), broker()->isolate()));
+              broker(),
+              broker()->CanonicalPersistentHandle(sfi->get_api_func_data()));
           if (fti_ref.has_call_code()) {
             fti_ref.SerializeCallCode();
             ProcessReceiverMapForApiCall(fti_ref, receiver_map->object());
@@ -3030,7 +3051,8 @@ SerializerForBackgroundCompilation::ProcessMapForNamedPropertyAccess(
       // For JSCallReducer::ReduceJSCall.
       function.Serialize();
     } else {
-      FunctionTemplateInfoRef fti(broker(), access_info.constant());
+      FunctionTemplateInfoRef fti(broker(), broker()->CanonicalPersistentHandle(
+                                                access_info.constant()));
       if (fti.has_call_code()) fti.SerializeCallCode();
     }
   } else if (access_info.IsModuleExport()) {
@@ -3042,7 +3064,7 @@ SerializerForBackgroundCompilation::ProcessMapForNamedPropertyAccess(
   switch (access_mode) {
     case AccessMode::kLoad:
       // For PropertyAccessBuilder::TryBuildLoadConstantDataField
-      if (access_info.IsDataConstant()) {
+      if (access_info.IsFastDataConstant()) {
         base::Optional<JSObjectRef> holder;
         Handle<JSObject> prototype;
         if (access_info.holder().ToHandle(&prototype)) {
@@ -3054,7 +3076,7 @@ SerializerForBackgroundCompilation::ProcessMapForNamedPropertyAccess(
         }
 
         if (holder.has_value()) {
-          base::Optional<ObjectRef> constant(holder->GetOwnDataProperty(
+          base::Optional<ObjectRef> constant(holder->GetOwnFastDataProperty(
               access_info.field_representation(), access_info.field_index(),
               SerializationPolicy::kSerializeIfNeeded));
           if (constant.has_value()) {
@@ -3066,7 +3088,7 @@ SerializerForBackgroundCompilation::ProcessMapForNamedPropertyAccess(
     case AccessMode::kStore:
     case AccessMode::kStoreInLiteral:
       // For MapInference (StoreField case).
-      if (access_info.IsDataField() || access_info.IsDataConstant()) {
+      if (access_info.IsDataField() || access_info.IsFastDataConstant()) {
         Handle<Map> transition_map;
         if (access_info.transition_map().ToHandle(&transition_map)) {
           MapRef map_ref(broker(), transition_map);
@@ -3301,14 +3323,22 @@ void SerializerForBackgroundCompilation::ProcessElementAccess(
         ObjectRef key_ref(broker(), hint);
         // TODO(neis): Do this for integer-HeapNumbers too?
         if (key_ref.IsSmi() && key_ref.AsSmi() >= 0) {
-          base::Optional<ObjectRef> element =
-              receiver_ref.GetOwnConstantElement(
-                  key_ref.AsSmi(), SerializationPolicy::kSerializeIfNeeded);
-          if (!element.has_value() && receiver_ref.IsJSArray()) {
-            // We didn't find a constant element, but if the receiver is a
-            // cow-array we can exploit the fact that any future write to the
-            // element will replace the whole elements storage.
-            receiver_ref.AsJSArray().GetOwnCowElement(
+          base::Optional<ObjectRef> element;
+          if (receiver_ref.IsJSObject()) {
+            element = receiver_ref.AsJSObject().GetOwnConstantElement(
+                key_ref.AsSmi(), SerializationPolicy::kSerializeIfNeeded);
+            if (!element.has_value() && receiver_ref.IsJSArray()) {
+              // We didn't find a constant element, but if the receiver is a
+              // cow-array we can exploit the fact that any future write to the
+              // element will replace the whole elements storage.
+              JSArrayRef array_ref = receiver_ref.AsJSArray();
+              array_ref.SerializeElements();
+              array_ref.GetOwnCowElement(
+                  array_ref.elements().value(), key_ref.AsSmi(),
+                  SerializationPolicy::kSerializeIfNeeded);
+            }
+          } else if (receiver_ref.IsString()) {
+            element = receiver_ref.AsString().GetCharAsStringOrUndefined(
                 key_ref.AsSmi(), SerializationPolicy::kSerializeIfNeeded);
           }
         }
@@ -3413,12 +3443,12 @@ void SerializerForBackgroundCompilation::ProcessConstantForInstanceOf(
   if (access_info.IsNotFound()) {
     ProcessConstantForOrdinaryHasInstance(constructor_heap_object,
                                           walk_prototypes);
-  } else if (access_info.IsDataConstant()) {
+  } else if (access_info.IsFastDataConstant()) {
     Handle<JSObject> holder;
     bool found_on_proto = access_info.holder().ToHandle(&holder);
     JSObjectRef holder_ref = found_on_proto ? JSObjectRef(broker(), holder)
                                             : constructor.AsJSObject();
-    base::Optional<ObjectRef> constant = holder_ref.GetOwnDataProperty(
+    base::Optional<ObjectRef> constant = holder_ref.GetOwnFastDataProperty(
         access_info.field_representation(), access_info.field_index(),
         SerializationPolicy::kSerializeIfNeeded);
     CHECK(constant.has_value());

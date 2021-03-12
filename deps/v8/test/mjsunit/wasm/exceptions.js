@@ -7,21 +7,6 @@
 load("test/mjsunit/wasm/wasm-module-builder.js");
 load("test/mjsunit/wasm/exceptions-utils.js");
 
-// First we just test that "exnref" local variables are allowed.
-(function TestLocalExnRef() {
-  print(arguments.callee.name);
-  let builder = new WasmModuleBuilder();
-  builder.addFunction("push_and_drop_exnref", kSig_v_v)
-      .addLocals(kWasmExnRef, 1)
-      .addBody([
-        kExprLocalGet, 0,
-        kExprDrop,
-      ]).exportFunc();
-  let instance = builder.instantiate();
-
-  assertDoesNotThrow(instance.exports.push_and_drop_exnref);
-})();
-
 // The following method doesn't attempt to catch an raised exception.
 (function TestThrowSimple() {
   print(arguments.callee.name);
@@ -249,7 +234,7 @@ load("test/mjsunit/wasm/exceptions-utils.js");
         kExprCatch, except,
         kExprEnd,
         // Calling through JS produces a wrapped exceptions which does not match
-        // the br_on_exn.
+        // the catch.
         kExprTry, kWasmStmt,
           kExprCallFunction, imp,
         kExprCatch, except,
@@ -1046,4 +1031,39 @@ load("test/mjsunit/wasm/exceptions-utils.js");
   instance = builder.instantiate();
   assertTraps(WebAssembly.RuntimeError, () => instance.exports.test());
   assertTraps(WebAssembly.RuntimeError, () => instance.exports.test_unwind());
+})();
+
+(function TestThrowBeforeUnreachable() {
+  print(arguments.callee.name);
+  let builder = new WasmModuleBuilder();
+  let except = builder.addException(kSig_v_v);
+  builder.addFunction('throw_before_unreachable', kSig_i_v)
+      .addBody([
+        kExprTry, kWasmI32,
+          kExprThrow, except,
+          kExprUnreachable,
+        kExprCatchAll,
+          kExprI32Const, 42,
+        kExprEnd,
+      ]).exportFunc();
+
+  let instance = builder.instantiate();
+  assertEquals(42, instance.exports.throw_before_unreachable());
+})();
+
+(function TestUnreachableInCatchAll() {
+  print(arguments.callee.name);
+  let builder = new WasmModuleBuilder();
+  let except = builder.addException(kSig_v_v);
+  builder.addFunction('throw_before_unreachable', kSig_i_v)
+      .addBody([
+        kExprTry, kWasmI32,
+          kExprThrow, except,
+        kExprCatchAll,
+          kExprUnreachable,
+          kExprI32Const, 42,
+        kExprEnd,
+      ]).exportFunc();
+
+  let instance = builder.instantiate();
 })();

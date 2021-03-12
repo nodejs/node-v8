@@ -260,9 +260,14 @@ void Snapshot::ClearReconstructableDataForSerialization(
     }
 #ifdef DEBUG
     if (clear_recompilable_data) {
+#if V8_ENABLE_WEBASSEMBLY
       DCHECK(fun.shared().HasWasmExportedFunctionData() ||
              fun.shared().HasBuiltinId() || fun.shared().IsApiFunction() ||
              fun.shared().HasUncompiledDataWithoutPreparseData());
+#else
+      DCHECK(fun.shared().HasBuiltinId() || fun.shared().IsApiFunction() ||
+             fun.shared().HasUncompiledDataWithoutPreparseData());
+#endif  // V8_ENABLE_WEBASSEMBLY
     }
 #endif  // DEBUG
   }
@@ -628,7 +633,7 @@ bool RunExtraCode(v8::Isolate* isolate, v8::Local<v8::Context> context,
   }
   v8::Local<v8::String> resource_name =
       v8::String::NewFromUtf8(isolate, name).ToLocalChecked();
-  v8::ScriptOrigin origin(resource_name);
+  v8::ScriptOrigin origin(isolate, resource_name);
   v8::ScriptCompiler::Source source(source_string, origin);
   v8::Local<v8::Script> script;
   if (!v8::ScriptCompiler::Compile(context, &source).ToLocal(&script))

@@ -18,6 +18,7 @@
 #include "src/objects/js-array-inl.h"
 #include "src/objects/property-descriptor-object.h"
 #include "src/objects/property-descriptor.h"
+#include "src/objects/swiss-name-dictionary-inl.h"
 #include "src/runtime/runtime-utils.h"
 #include "src/runtime/runtime.h"
 
@@ -110,7 +111,7 @@ bool DeleteObjectPropertyFast(Isolate* isolate, Handle<JSReceiver> receiver,
   if (nof == 0) return false;
   InternalIndex descriptor(nof - 1);
   Handle<DescriptorArray> descriptors(
-      receiver_map->instance_descriptors(kRelaxedLoad), isolate);
+      receiver_map->instance_descriptors(isolate), isolate);
   if (descriptors->GetKey(descriptor) != *key) return false;
   // (3) The property to be deleted must be deletable.
   PropertyDetails details = descriptors->GetDetails(descriptor);
@@ -164,12 +165,12 @@ bool DeleteObjectPropertyFast(Isolate* isolate, Handle<JSReceiver> receiver,
       receiver->SetProperties(ReadOnlyRoots(isolate).empty_fixed_array());
     } else {
       Object filler = ReadOnlyRoots(isolate).one_pointer_filler_map();
-      JSObject::cast(*receiver).RawFastPropertyAtPut(index, filler);
+      JSObject::cast(*receiver).FastPropertyAtPut(index, filler);
       // We must clear any recorded slot for the deleted property, because
       // subsequent object modifications might put a raw double there.
       // Slot clearing is the reason why this entire function cannot currently
       // be implemented in the DeleteProperty stub.
-      if (index.is_inobject() && !receiver_map->IsUnboxedDoubleField(index)) {
+      if (index.is_inobject()) {
         // We need to clear the recorded slot in this case because in-object
         // slack tracking might not be finished. This ensures that we don't
         // have recorded slots in free space.
@@ -324,7 +325,7 @@ RUNTIME_FUNCTION(Runtime_ObjectHasOwnProperty) {
 
     Map map = js_obj->map();
     if (!map.IsJSGlobalProxyMap() &&
-        (key.is_element() && key.index() <= JSArray::kMaxArrayIndex
+        (key.is_element() && key.index() <= JSObject::kMaxElementIndex
              ? !map.has_indexed_interceptor()
              : !map.has_named_interceptor())) {
       return ReadOnlyRoots(isolate).false_value();
@@ -358,6 +359,38 @@ RUNTIME_FUNCTION(Runtime_ObjectHasOwnProperty) {
   return ReadOnlyRoots(isolate).false_value();
 }
 
+RUNTIME_FUNCTION(Runtime_HasOwnConstDataProperty) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(2, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(Object, object, 0);
+  CONVERT_ARG_HANDLE_CHECKED(Object, property, 1);
+
+  bool success;
+  LookupIterator::Key key(isolate, property, &success);
+  if (!success) return ReadOnlyRoots(isolate).undefined_value();
+
+  if (object->IsJSObject()) {
+    Handle<JSObject> js_obj = Handle<JSObject>::cast(object);
+    LookupIterator it(isolate, js_obj, key, js_obj, LookupIterator::OWN);
+
+    switch (it.state()) {
+      case LookupIterator::NOT_FOUND:
+        return isolate->heap()->ToBoolean(false);
+      case LookupIterator::DATA:
+        return isolate->heap()->ToBoolean(it.constness() ==
+                                          PropertyConstness::kConst);
+      default:
+        return ReadOnlyRoots(isolate).undefined_value();
+    }
+  }
+
+  return ReadOnlyRoots(isolate).undefined_value();
+}
+
+RUNTIME_FUNCTION(Runtime_IsDictPropertyConstTrackingEnabled) {
+  return isolate->heap()->ToBoolean(V8_DICT_PROPERTY_CONST_TRACKING_BOOL);
+}
+
 RUNTIME_FUNCTION(Runtime_AddDictionaryProperty) {
   HandleScope scope(isolate);
   Handle<JSObject> receiver = args.at<JSObject>(0);
@@ -366,13 +399,13 @@ RUNTIME_FUNCTION(Runtime_AddDictionaryProperty) {
 
   DCHECK(name->IsUniqueName());
 
-  PropertyDetails property_details(kData, NONE, PropertyCellType::kNoCell);
+  PropertyDetails property_details(
+      kData, NONE, PropertyDetails::kConstIfDictConstnessTracking);
   if (V8_DICT_MODE_PROTOTYPES_BOOL) {
-    Handle<OrderedNameDictionary> dictionary(
-        receiver->property_dictionary_ordered(), isolate);
-    dictionary = OrderedNameDictionary::Add(isolate, dictionary, name, value,
-                                            property_details)
-                     .ToHandleChecked();
+    Handle<SwissNameDictionary> dictionary(
+        receiver->property_dictionary_swiss(), isolate);
+    dictionary = SwissNameDictionary::Add(isolate, dictionary, name, value,
+                                          property_details);
     receiver->SetProperties(*dictionary);
   } else {
     Handle<NameDictionary> dictionary(receiver->property_dictionary(), isolate);
@@ -648,8 +681,7 @@ RUNTIME_FUNCTION(Runtime_GetProperty) {
       } else if (!holder->HasFastProperties()) {
         // Attempt dictionary lookup.
         if (V8_DICT_MODE_PROTOTYPES_BOOL) {
-          OrderedNameDictionary dictionary =
-              holder->property_dictionary_ordered();
+          SwissNameDictionary dictionary = holder->property_dictionary_swiss();
           InternalIndex entry = dictionary.FindEntry(isolate, *key);
           if (entry.is_found() &&
               (dictionary.DetailsAt(entry).kind() == kData)) {
@@ -782,10 +814,10 @@ RUNTIME_FUNCTION(Runtime_ShrinkPropertyDictionary) {
   DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSReceiver, receiver, 0);
   if (V8_DICT_MODE_PROTOTYPES_BOOL) {
-    Handle<OrderedNameDictionary> dictionary(
-        receiver->property_dictionary_ordered(), isolate);
-    Handle<OrderedNameDictionary> new_properties =
-        OrderedNameDictionary::Shrink(isolate, dictionary);
+    Handle<SwissNameDictionary> dictionary(
+        receiver->property_dictionary_swiss(), isolate);
+    Handle<SwissNameDictionary> new_properties =
+        SwissNameDictionary::Shrink(isolate, dictionary);
     receiver->SetProperties(*new_properties);
   } else {
     Handle<NameDictionary> dictionary(receiver->property_dictionary(), isolate);
@@ -1330,6 +1362,113 @@ RUNTIME_FUNCTION(Runtime_AddPrivateField) {
                                 StoreOrigin::kMaybeKeyed)
             .FromJust());
   return ReadOnlyRoots(isolate).undefined_value();
+}
+
+// TODO(v8:11330) This is only here while the CSA/Torque implementaton of
+// SwissNameDictionary is work in progress.
+RUNTIME_FUNCTION(Runtime_SwissTableAllocate) {
+  HandleScope scope(isolate);
+  CONVERT_ARG_HANDLE_CHECKED(Smi, at_least_space_for, 0);
+
+  return *isolate->factory()->NewSwissNameDictionary(
+      at_least_space_for->value(), AllocationType::kYoung);
+}
+
+// TODO(v8:11330) This is only here while the CSA/Torque implementaton of
+// SwissNameDictionary is work in progress.
+RUNTIME_FUNCTION(Runtime_SwissTableAdd) {
+  HandleScope scope(isolate);
+  CONVERT_ARG_HANDLE_CHECKED(SwissNameDictionary, table, 0);
+  CONVERT_ARG_HANDLE_CHECKED(Name, key, 1);
+  CONVERT_ARG_HANDLE_CHECKED(Object, value, 2);
+  CONVERT_ARG_HANDLE_CHECKED(Smi, details_smi, 3);
+
+  DCHECK(key->IsUniqueName());
+
+  return *SwissNameDictionary::Add(isolate, table, key, value,
+                                   PropertyDetails{*details_smi});
+}
+
+// TODO(v8:11330) This is only here while the CSA/Torque implementaton of
+// SwissNameDictionary is work in progress.
+RUNTIME_FUNCTION(Runtime_SwissTableFindEntry) {
+  HandleScope scope(isolate);
+  CONVERT_ARG_HANDLE_CHECKED(SwissNameDictionary, table, 0);
+  CONVERT_ARG_HANDLE_CHECKED(Name, key, 1);
+
+  InternalIndex index = table->FindEntry(isolate, *key);
+  return Smi::FromInt(index.is_found()
+                          ? index.as_int()
+                          : SwissNameDictionary::kNotFoundSentinel);
+}
+
+// TODO(v8:11330) This is only here while the CSA/Torque implementaton of
+// SwissNameDictionary is work in progress.
+RUNTIME_FUNCTION(Runtime_SwissTableUpdate) {
+  HandleScope scope(isolate);
+  CONVERT_ARG_HANDLE_CHECKED(SwissNameDictionary, table, 0);
+  CONVERT_ARG_HANDLE_CHECKED(Smi, index, 1);
+  CONVERT_ARG_HANDLE_CHECKED(Object, value, 2);
+  CONVERT_ARG_HANDLE_CHECKED(Smi, details_smi, 3);
+
+  InternalIndex i(Smi::ToInt(*index));
+
+  table->ValueAtPut(i, *value);
+  table->DetailsAtPut(i, PropertyDetails{*details_smi});
+
+  return ReadOnlyRoots(isolate).undefined_value();
+}
+
+// TODO(v8:11330) This is only here while the CSA/Torque implementaton of
+// SwissNameDictionary is work in progress.
+RUNTIME_FUNCTION(Runtime_SwissTableDelete) {
+  HandleScope scope(isolate);
+  Handle<SwissNameDictionary> table = args.at<SwissNameDictionary>(0);
+  Handle<Smi> index = args.at<Smi>(1);
+
+  InternalIndex i(Smi::ToInt(*index));
+
+  return *SwissNameDictionary::DeleteEntry(isolate, table, i);
+}
+
+// TODO(v8:11330) This is only here while the CSA/Torque implementaton of
+// SwissNameDictionary is work in progress.
+RUNTIME_FUNCTION(Runtime_SwissTableEquals) {
+  HandleScope scope(isolate);
+  Handle<SwissNameDictionary> table = args.at<SwissNameDictionary>(0);
+  Handle<SwissNameDictionary> other = args.at<SwissNameDictionary>(1);
+
+  return Smi::FromInt(table->EqualsForTesting(*other));
+}
+
+// TODO(v8:11330) This is only here while the CSA/Torque implementaton of
+// SwissNameDictionary is work in progress.
+RUNTIME_FUNCTION(Runtime_SwissTableElementsCount) {
+  HandleScope scope(isolate);
+  Handle<SwissNameDictionary> table = args.at<SwissNameDictionary>(0);
+
+  return Smi::FromInt(table->NumberOfElements());
+}
+
+// TODO(v8:11330) This is only here while the CSA/Torque implementaton of
+// SwissNameDictionary is work in progress.
+RUNTIME_FUNCTION(Runtime_SwissTableValueAt) {
+  HandleScope scope(isolate);
+  Handle<SwissNameDictionary> table = args.at<SwissNameDictionary>(0);
+  Handle<Smi> index = args.at<Smi>(1);
+
+  return table->ValueAt(InternalIndex(Smi::ToInt(*index)));
+}
+
+// TODO(v8:11330) This is only here while the CSA/Torque implementaton of
+// SwissNameDictionary is work in progress.
+RUNTIME_FUNCTION(Runtime_SwissTableDetailsAt) {
+  HandleScope scope(isolate);
+  Handle<SwissNameDictionary> table = args.at<SwissNameDictionary>(0);
+  Handle<Smi> index = args.at<Smi>(1);
+
+  PropertyDetails d = table->DetailsAt(InternalIndex(Smi::ToInt(*index)));
+  return d.AsSmi();
 }
 
 }  // namespace internal

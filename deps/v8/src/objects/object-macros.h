@@ -48,9 +48,13 @@
     return GetIsolateFromWritableObject(*this);                            \
   }
 
+#define DECL_PRIMITIVE_GETTER(name, type) inline type name() const;
+
+#define DECL_PRIMITIVE_SETTER(name, type) inline void set_##name(type value);
+
 #define DECL_PRIMITIVE_ACCESSORS(name, type) \
-  inline type name() const;                  \
-  inline void set_##name(type value);
+  DECL_PRIMITIVE_GETTER(name, type)          \
+  DECL_PRIMITIVE_SETTER(name, type)
 
 #define DECL_SYNCHRONIZED_PRIMITIVE_ACCESSORS(name, type) \
   inline type synchronized_##name() const;                \
@@ -126,6 +130,10 @@
 #define DECL_RELEASE_ACQUIRE_ACCESSORS(name, type) \
   DECL_ACQUIRE_GETTER(name, type)                  \
   DECL_RELEASE_SETTER(name, type)
+
+#define DECL_RELEASE_ACQUIRE_WEAK_ACCESSORS(name) \
+  DECL_ACQUIRE_GETTER(name, MaybeObject)          \
+  DECL_RELEASE_SETTER(name, MaybeObject)
 
 #define DECL_CAST(Type)                                 \
   V8_INLINE static Type cast(Object object);            \
@@ -211,14 +219,14 @@
     return holder::name(isolate, tag);                                        \
   }                                                                           \
   type holder::name(IsolateRoot isolate, RelaxedLoadTag) const {              \
-    type value = TaggedField<type, offset>::load(isolate, *this);             \
+    type value = TaggedField<type, offset>::Relaxed_Load(isolate, *this);     \
     DCHECK(get_condition);                                                    \
     return value;                                                             \
   }                                                                           \
   void holder::set_##name(type value, RelaxedStoreTag,                        \
                           WriteBarrierMode mode) {                            \
     DCHECK(set_condition);                                                    \
-    TaggedField<type, offset>::store(*this, value);                           \
+    TaggedField<type, offset>::Relaxed_Store(*this, value);                   \
     CONDITIONAL_WRITE_BARRIER(*this, offset, value, mode);                    \
   }
 
@@ -274,26 +282,32 @@
 #define WEAK_ACCESSORS(holder, name, offset) \
   WEAK_ACCESSORS_CHECKED(holder, name, offset, true)
 
-#define SYNCHRONIZED_WEAK_ACCESSORS_CHECKED2(holder, name, offset,         \
-                                             get_condition, set_condition) \
-  DEF_GETTER(holder, name, MaybeObject) {                                  \
-    MaybeObject value =                                                    \
-        TaggedField<MaybeObject, offset>::Acquire_Load(isolate, *this);    \
-    DCHECK(get_condition);                                                 \
-    return value;                                                          \
-  }                                                                        \
-  void holder::set_##name(MaybeObject value, WriteBarrierMode mode) {      \
-    DCHECK(set_condition);                                                 \
-    TaggedField<MaybeObject, offset>::Release_Store(*this, value);         \
-    CONDITIONAL_WEAK_WRITE_BARRIER(*this, offset, value, mode);            \
+#define RELEASE_ACQUIRE_WEAK_ACCESSORS_CHECKED2(holder, name, offset,         \
+                                                get_condition, set_condition) \
+  MaybeObject holder::name(AcquireLoadTag tag) const {                        \
+    IsolateRoot isolate = GetIsolateForPtrCompr(*this);                       \
+    return holder::name(isolate, tag);                                        \
+  }                                                                           \
+  MaybeObject holder::name(IsolateRoot isolate, AcquireLoadTag) const {       \
+    MaybeObject value =                                                       \
+        TaggedField<MaybeObject, offset>::Acquire_Load(isolate, *this);       \
+    DCHECK(get_condition);                                                    \
+    return value;                                                             \
+  }                                                                           \
+  void holder::set_##name(MaybeObject value, ReleaseStoreTag,                 \
+                          WriteBarrierMode mode) {                            \
+    DCHECK(set_condition);                                                    \
+    TaggedField<MaybeObject, offset>::Release_Store(*this, value);            \
+    CONDITIONAL_WEAK_WRITE_BARRIER(*this, offset, value, mode);               \
   }
 
-#define SYNCHRONIZED_WEAK_ACCESSORS_CHECKED(holder, name, offset, condition) \
-  SYNCHRONIZED_WEAK_ACCESSORS_CHECKED2(holder, name, offset, condition,      \
-                                       condition)
+#define RELEASE_ACQUIRE_WEAK_ACCESSORS_CHECKED(holder, name, offset,       \
+                                               condition)                  \
+  RELEASE_ACQUIRE_WEAK_ACCESSORS_CHECKED2(holder, name, offset, condition, \
+                                          condition)
 
-#define SYNCHRONIZED_WEAK_ACCESSORS(holder, name, offset) \
-  SYNCHRONIZED_WEAK_ACCESSORS_CHECKED(holder, name, offset, true)
+#define RELEASE_ACQUIRE_WEAK_ACCESSORS(holder, name, offset) \
+  RELEASE_ACQUIRE_WEAK_ACCESSORS_CHECKED(holder, name, offset, true)
 
 // Getter that returns a Smi as an int and writes an int as a Smi.
 #define SMI_ACCESSORS_CHECKED(holder, name, offset, condition)   \
@@ -491,6 +505,15 @@
   static_cast<int8_t>(base::Relaxed_Load(  \
       reinterpret_cast<const base::Atomic8*>(FIELD_ADDR(p, offset))))
 
+#define RELAXED_READ_UINT16_FIELD(p, offset) \
+  static_cast<uint16_t>(base::Relaxed_Load(  \
+      reinterpret_cast<const base::Atomic16*>(FIELD_ADDR(p, offset))))
+
+#define RELAXED_WRITE_UINT16_FIELD(p, offset, value)            \
+  base::Relaxed_Store(                                          \
+      reinterpret_cast<base::Atomic16*>(FIELD_ADDR(p, offset)), \
+      static_cast<base::Atomic16>(value));
+
 #define RELAXED_READ_INT16_FIELD(p, offset) \
   static_cast<int16_t>(base::Relaxed_Load(  \
       reinterpret_cast<const base::Atomic16*>(FIELD_ADDR(p, offset))))
@@ -530,7 +553,23 @@
 #define RELAXED_WRITE_INT32_FIELD(p, offset, value)             \
   base::Relaxed_Store(                                          \
       reinterpret_cast<base::Atomic32*>(FIELD_ADDR(p, offset)), \
-      static_cast<base::Atomic32>(value));
+      static_cast<base::Atomic32>(value))
+
+static_assert(sizeof(int) == sizeof(int32_t),
+              "sizeof int must match sizeof int32_t");
+
+#define RELAXED_READ_INT_FIELD(p, offset) RELAXED_READ_INT32_FIELD(p, offset)
+
+#define RELAXED_WRITE_INT_FIELD(p, offset, value) \
+  RELAXED_WRITE_INT32_FIELD(p, offset, value)
+
+static_assert(sizeof(unsigned) == sizeof(uint32_t),
+              "sizeof unsigned must match sizeof uint32_t");
+
+#define RELAXED_READ_UINT_FIELD(p, offset) RELAXED_READ_UINT32_FIELD(p, offset)
+
+#define RELAXED_WRITE_UINT_FIELD(p, offset, value) \
+  RELAXED_WRITE_UINT32_FIELD(p, offset, value)
 
 #define RELAXED_READ_BYTE_FIELD(p, offset) \
   static_cast<byte>(base::Relaxed_Load(    \

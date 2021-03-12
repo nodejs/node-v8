@@ -130,8 +130,7 @@ ACCESSORS(WasmGlobalObject, untagged_buffer, JSArrayBuffer,
           kUntaggedBufferOffset)
 ACCESSORS(WasmGlobalObject, tagged_buffer, FixedArray, kTaggedBufferOffset)
 SMI_ACCESSORS(WasmGlobalObject, offset, kOffsetOffset)
-// TODO(7748): This will not suffice to hold the 32-bit encoding of a ValueType.
-// We need to devise and encoding that does, and also encodes is_mutable.
+// TODO(7748): Try to come up with some encoding that includes is_mutable?
 SMI_ACCESSORS(WasmGlobalObject, raw_type, kRawTypeOffset)
 SMI_ACCESSORS(WasmGlobalObject, is_mutable, kIsMutableOffset)
 
@@ -167,8 +166,8 @@ double WasmGlobalObject::GetF64() {
 }
 
 Handle<Object> WasmGlobalObject::GetRef() {
-  // We use this getter for externref, funcref, and exnref.
-  DCHECK(type().is_reference_type());
+  // We use this getter for externref and funcref.
+  DCHECK(type().is_reference());
   return handle(tagged_buffer().get(offset()), GetIsolate());
 }
 
@@ -190,7 +189,6 @@ void WasmGlobalObject::SetF64(double value) {
 
 void WasmGlobalObject::SetExternRef(Handle<Object> value) {
   DCHECK(type().is_reference_to(wasm::HeapType::kExtern) ||
-         type().is_reference_to(wasm::HeapType::kExn) ||
          type().is_reference_to(wasm::HeapType::kAny));
   tagged_buffer().set(offset(), *value);
 }
@@ -240,6 +238,8 @@ PRIMITIVE_ACCESSORS(WasmInstanceObject, hook_on_function_call_address, Address,
                     kHookOnFunctionCallAddressOffset)
 PRIMITIVE_ACCESSORS(WasmInstanceObject, num_liftoff_function_calls_array,
                     uint32_t*, kNumLiftoffFunctionCallsArrayOffset)
+PRIMITIVE_ACCESSORS(WasmInstanceObject, break_on_entry, uint8_t,
+                    kBreakOnEntryOffset)
 
 ACCESSORS(WasmInstanceObject, module_object, WasmModuleObject,
           kModuleObjectOffset)
@@ -393,8 +393,7 @@ ACCESSORS(WasmIndirectFunctionTable, refs, FixedArray, kRefsOffset)
 #undef PRIMITIVE_ACCESSORS
 
 wasm::ValueType WasmTableObject::type() {
-  // TODO(7748): Support other table types? Wait for spec to clear up.
-  return wasm::ValueType::Ref(raw_type(), wasm::kNullable);
+  return wasm::ValueType::FromRawBitField(raw_type());
 }
 
 bool WasmMemoryObject::has_maximum_pages() { return maximum_pages() >= 0; }
@@ -412,7 +411,7 @@ wasm::StructType* WasmStruct::type(Map map) {
 
 wasm::StructType* WasmStruct::GcSafeType(Map map) {
   DCHECK_EQ(WASM_STRUCT_TYPE, map.instance_type());
-  HeapObject raw = HeapObject::cast(map.constructor_or_backpointer());
+  HeapObject raw = HeapObject::cast(map.constructor_or_back_pointer());
   MapWord map_word = raw.map_word();
   HeapObject forwarded =
       map_word.IsForwardingAddress() ? map_word.ToForwardingAddress() : raw;
@@ -435,7 +434,7 @@ wasm::ArrayType* WasmArray::type(Map map) {
 
 wasm::ArrayType* WasmArray::GcSafeType(Map map) {
   DCHECK_EQ(WASM_ARRAY_TYPE, map.instance_type());
-  HeapObject raw = HeapObject::cast(map.constructor_or_backpointer());
+  HeapObject raw = HeapObject::cast(map.constructor_or_back_pointer());
   MapWord map_word = raw.map_word();
   HeapObject forwarded =
       map_word.IsForwardingAddress() ? map_word.ToForwardingAddress() : raw;

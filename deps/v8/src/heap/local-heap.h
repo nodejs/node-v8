@@ -33,23 +33,21 @@ class LocalHandles;
 //            some time or for blocking operations like locking a mutex.
 class V8_EXPORT_PRIVATE LocalHeap {
  public:
+  using GCEpilogueCallback = void(void* data);
+
   explicit LocalHeap(
       Heap* heap, ThreadKind kind,
       std::unique_ptr<PersistentHandles> persistent_handles = nullptr);
   ~LocalHeap();
 
-  // Invoked by main thread to signal this thread that it needs to halt in a
-  // safepoint.
-  void RequestSafepoint();
-
   // Frequently invoked by local thread to check whether safepoint was requested
   // from the main thread.
   void Safepoint() {
     DCHECK(AllowSafepoints::IsAllowed());
+    ThreadState current = state_relaxed();
 
-    if (IsSafepointRequested()) {
-      ClearSafepointRequested();
-      EnterSafepoint();
+    if (V8_UNLIKELY(current == ThreadState::SafepointRequested)) {
+      SafepointSlowPath();
     }
   }
 
@@ -133,16 +131,35 @@ class V8_EXPORT_PRIVATE LocalHeap {
   // Requests GC and blocks until the collection finishes.
   void PerformCollection();
 
+  // Adds a callback that is invoked with the given |data| after each GC.
+  // The callback is invoked on the main thread before any background thread
+  // resumes. The callback must not allocate or make any other calls that
+  // can trigger GC.
+  void AddGCEpilogueCallback(GCEpilogueCallback* callback, void* data);
+  void RemoveGCEpilogueCallback(GCEpilogueCallback* callback, void* data);
+
  private:
   enum class ThreadState {
-    // Threads in this state need to be stopped in a safepoint.
+    // Threads in this state are allowed to access the heap.
     Running,
     // Thread was parked, which means that the thread is not allowed to access
-    // or manipulate the heap in any way.
+    // or manipulate the heap in any way. This is considered to be a safepoint.
     Parked,
-    // Thread was stopped in a safepoint.
-    Safepoint
+
+    // All other states are needed for stopping-the-world.
+    // SafepointRequested is used for Running threads to force Safepoint() and
+    // Park() into the slow path.
+    SafepointRequested,
+    // A thread transitions into this state from SafepointRequested when it
+    // enters a safepoint.
+    Safepoint,
+    // This state is used for Parked threads and forces Unpark() into the slow
+    // path. It prevents Unpark() to succeed before the safepoint operation is
+    // finished.
+    ParkedSafepoint,
   };
+
+  ThreadState state_relaxed() { return state_.load(std::memory_order_relaxed); }
 
   // Slow path of allocation that performs GC and then retries allocation in
   // loop.
@@ -154,24 +171,16 @@ class V8_EXPORT_PRIVATE LocalHeap {
   void Park();
   void Unpark();
   void EnsureParkedBeforeDestruction();
+  void SafepointSlowPath();
 
   void EnsurePersistentHandles();
 
-  V8_INLINE bool IsSafepointRequested() {
-    return safepoint_requested_.load(std::memory_order_relaxed);
-  }
-  void ClearSafepointRequested();
-
-  void EnterSafepoint();
+  void InvokeGCEpilogueCallbacksInSafepoint();
 
   Heap* heap_;
   bool is_main_thread_;
 
-  base::Mutex state_mutex_;
-  base::ConditionVariable state_change_;
-  ThreadState state_;
-
-  std::atomic<bool> safepoint_requested_;
+  std::atomic<ThreadState> state_;
 
   bool allocation_failed_;
 
@@ -181,6 +190,8 @@ class V8_EXPORT_PRIVATE LocalHeap {
   std::unique_ptr<LocalHandles> handles_;
   std::unique_ptr<PersistentHandles> persistent_handles_;
   std::unique_ptr<MarkingBarrier> marking_barrier_;
+
+  std::vector<std::pair<GCEpilogueCallback*, void*>> gc_epilogue_callbacks_;
 
   ConcurrentAllocator old_space_allocator_;
 

@@ -91,15 +91,19 @@ async function waitForPauseAndStep(stepAction) {
       if (scope.type === 'global' || scope.type === 'module') {
         InspectorTest.logObject('   -- skipped');
       } else {
-        const object = {};
-        const {result: {result: properties}} =
-            await Protocol.Runtime.getProperties({
-              objectId: scope.object.objectId
-            });
-        for (const {name, value: {value}} of properties) {
-          object[name] = value;
+        var { objectId } = scope.object;
+        if (scope.type == 'wasm-expression-stack') {
+          objectId = (await Protocol.Runtime.callFunctionOn({
+            functionDeclaration: 'function() { return this.stack }',
+            objectId
+          })).result.result.objectId;
         }
-        InspectorTest.log(`   ${JSON.stringify(object)}`);
+        let properties = await Protocol.Runtime.getProperties(
+            {objectId});
+        for (let {name, value} of properties.result.result) {
+          value = await WasmInspectorTest.getWasmValue(value);
+          InspectorTest.log(`   ${name}: ${value}`);
+        }
       }
     }
   }

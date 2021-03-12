@@ -1479,7 +1479,7 @@ v8::StartupData CreateCustomSnapshotWithKeep() {
       v8::Local<v8::String> source_str = v8_str(
           "function f() { return Math.abs(1); }\n"
           "function g() { return String.raw(1); }");
-      v8::ScriptOrigin origin(v8_str("test"));
+      v8::ScriptOrigin origin(isolate, v8_str("test"));
       v8::ScriptCompiler::Source source(source_str, origin);
       CompileRun(isolate->GetCurrentContext(), &source,
                  v8::ScriptCompiler::kEagerCompile);
@@ -2114,28 +2114,28 @@ TEST(CodeSerializerExternalString) {
   v8::HandleScope scope(CcTest::isolate());
 
   // Obtain external internalized one-byte string.
-  SerializerOneByteResource one_byte_resource("one_byte_but_long", 17);
+  SerializerOneByteResource one_byte_resource("one_byte", 8);
   Handle<String> one_byte_string =
-      isolate->factory()->NewStringFromAsciiChecked("one_byte_but_long");
+      isolate->factory()->NewStringFromAsciiChecked("one_byte");
   one_byte_string = isolate->factory()->InternalizeString(one_byte_string);
   one_byte_string->MakeExternal(&one_byte_resource);
   CHECK(one_byte_string->IsExternalOneByteString());
   CHECK(one_byte_string->IsInternalizedString());
 
   // Obtain external internalized two-byte string.
-  SerializerTwoByteResource two_byte_resource("two_byte_but_long", 17);
+  SerializerTwoByteResource two_byte_resource("two_byte", 8);
   Handle<String> two_byte_string =
-      isolate->factory()->NewStringFromAsciiChecked("two_byte_but_long");
+      isolate->factory()->NewStringFromAsciiChecked("two_byte");
   two_byte_string = isolate->factory()->InternalizeString(two_byte_string);
   two_byte_string->MakeExternal(&two_byte_resource);
   CHECK(two_byte_string->IsExternalTwoByteString());
   CHECK(two_byte_string->IsInternalizedString());
 
   const char* source =
-      "var o = {}                                 \n"
-      "o.one_byte_but_long = 7;                   \n"
-      "o.two_byte_but_long = 8;                   \n"
-      "o.one_byte_but_long + o.two_byte_but_long; \n";
+      "var o = {}               \n"
+      "o.one_byte = 7;          \n"
+      "o.two_byte = 8;          \n"
+      "o.one_byte + o.two_byte; \n";
   Handle<String> source_string = isolate->factory()
                                      ->NewStringFromUtf8(CStrVector(source))
                                      .ToHandleChecked();
@@ -2311,7 +2311,7 @@ v8::ScriptCompiler::CachedData* CompileRunAndProduceCache(
     v8::Context::Scope context_scope(context);
 
     v8::Local<v8::String> source_str = v8_str(source);
-    v8::ScriptOrigin origin(v8_str("test"));
+    v8::ScriptOrigin origin(isolate1, v8_str("test"));
     v8::ScriptCompiler::Source source(source_str, origin);
     v8::ScriptCompiler::CompileOptions options;
     switch (cacheType) {
@@ -2367,7 +2367,7 @@ TEST(CodeSerializerIsolates) {
     v8::Context::Scope context_scope(context);
 
     v8::Local<v8::String> source_str = v8_str(source);
-    v8::ScriptOrigin origin(v8_str("test"));
+    v8::ScriptOrigin origin(isolate2, v8_str("test"));
     v8::ScriptCompiler::Source source(source_str, origin, cache);
     v8::Local<v8::UnboundScript> script;
     {
@@ -2413,7 +2413,7 @@ TEST(CodeSerializerIsolatesEager) {
     v8::Context::Scope context_scope(context);
 
     v8::Local<v8::String> source_str = v8_str(source);
-    v8::ScriptOrigin origin(v8_str("test"));
+    v8::ScriptOrigin origin(isolate2, v8_str("test"));
     v8::ScriptCompiler::Source source(source_str, origin, cache);
     v8::Local<v8::UnboundScript> script;
     {
@@ -2456,7 +2456,7 @@ TEST(CodeSerializerAfterExecute) {
     v8::Context::Scope context_scope(context);
 
     v8::Local<v8::String> source_str = v8_str(source);
-    v8::ScriptOrigin origin(v8_str("test"));
+    v8::ScriptOrigin origin(isolate2, v8_str("test"));
     v8::ScriptCompiler::Source source(source_str, origin, cache);
     v8::Local<v8::UnboundScript> script;
     {
@@ -2507,7 +2507,7 @@ TEST(CodeSerializerFlagChange) {
     v8::Context::Scope context_scope(context);
 
     v8::Local<v8::String> source_str = v8_str(source);
-    v8::ScriptOrigin origin(v8_str("test"));
+    v8::ScriptOrigin origin(isolate2, v8_str("test"));
     v8::ScriptCompiler::Source source(source_str, origin, cache);
     v8::ScriptCompiler::CompileUnboundScript(
         isolate2, &source, v8::ScriptCompiler::kConsumeCodeCache)
@@ -2536,7 +2536,7 @@ TEST(CodeSerializerBitFlip) {
     v8::Context::Scope context_scope(context);
 
     v8::Local<v8::String> source_str = v8_str(source);
-    v8::ScriptOrigin origin(v8_str("test"));
+    v8::ScriptOrigin origin(isolate2, v8_str("test"));
     v8::ScriptCompiler::Source source(source_str, origin, cache);
     v8::ScriptCompiler::CompileUnboundScript(
         isolate2, &source, v8::ScriptCompiler::kConsumeCodeCache)
@@ -2566,7 +2566,7 @@ TEST(CodeSerializerWithHarmonyScoping) {
     CompileRun(source2);
 
     v8::Local<v8::String> source_str = v8_str(source3);
-    v8::ScriptOrigin origin(v8_str("test"));
+    v8::ScriptOrigin origin(isolate1, v8_str("test"));
     v8::ScriptCompiler::Source source(source_str, origin);
     v8::Local<v8::UnboundScript> script =
         v8::ScriptCompiler::CompileUnboundScript(
@@ -2597,7 +2597,7 @@ TEST(CodeSerializerWithHarmonyScoping) {
     CompileRun(source1);
 
     v8::Local<v8::String> source_str = v8_str(source3);
-    v8::ScriptOrigin origin(v8_str("test"));
+    v8::ScriptOrigin origin(isolate2, v8_str("test"));
     v8::ScriptCompiler::Source source(source_str, origin, cache);
     v8::Local<v8::UnboundScript> script;
     {
@@ -3348,6 +3348,13 @@ UNINITIALIZED_TEST(SnapshotCreatorTemplates) {
   FreeCurrentEmbeddedBlob();
 }
 
+MaybeLocal<v8::Module> ResolveCallback(Local<v8::Context> context,
+                                       Local<v8::String> specifier,
+                                       Local<v8::FixedArray> import_assertions,
+                                       Local<v8::Module> referrer) {
+  return {};
+}
+
 UNINITIALIZED_TEST(SnapshotCreatorAddData) {
   DisableAlwaysOpt();
   DisableEmbeddedBlobRefcounting();
@@ -3397,11 +3404,23 @@ UNINITIALIZED_TEST(SnapshotCreatorAddData) {
           v8::AccessorSignature::New(isolate,
                                      v8::FunctionTemplate::New(isolate));
 
+      v8::ScriptOrigin origin(isolate, v8_str(""), {}, {}, {}, {}, {}, {}, {},
+                              true);
+      v8::ScriptCompiler::Source source(
+          v8::String::NewFromUtf8Literal(
+              isolate, "export let a = 42; globalThis.a = {};"),
+          origin);
+      v8::Local<v8::Module> module =
+          v8::ScriptCompiler::CompileModule(isolate, &source).ToLocalChecked();
+      module->InstantiateModule(context, ResolveCallback).ToChecked();
+      module->Evaluate(context).ToLocalChecked();
+
       CHECK_EQ(0u, creator.AddData(context, object));
       CHECK_EQ(1u, creator.AddData(context, v8_str("context-dependent")));
       CHECK_EQ(2u, creator.AddData(context, persistent_number_1.Get(isolate)));
       CHECK_EQ(3u, creator.AddData(context, object_template));
       CHECK_EQ(4u, creator.AddData(context, persistent_context.Get(isolate)));
+      CHECK_EQ(5u, creator.AddData(context, module));
       creator.AddContext(context);
 
       CHECK_EQ(0u, creator.AddData(v8_str("context-independent")));
@@ -3460,7 +3479,19 @@ UNINITIALIZED_TEST(SnapshotCreatorAddData) {
       CHECK_EQ(*v8::Utils::OpenHandle(*serialized_context),
                *v8::Utils::OpenHandle(*context));
 
-      CHECK(context->GetDataFromSnapshotOnce<v8::Value>(5).IsEmpty());
+      v8::Local<v8::Module> serialized_module =
+          context->GetDataFromSnapshotOnce<v8::Module>(5).ToLocalChecked();
+      CHECK(context->GetDataFromSnapshotOnce<v8::Context>(5).IsEmpty());
+      {
+        v8::Context::Scope context_scope(context);
+        v8::Local<v8::Object> mod_ns =
+            serialized_module->GetModuleNamespace().As<v8::Object>();
+        CHECK(mod_ns->Get(context, v8_str("a"))
+                  .ToLocalChecked()
+                  ->StrictEquals(v8_num(42.0)));
+      }
+
+      CHECK(context->GetDataFromSnapshotOnce<v8::Value>(6).IsEmpty());
 
       // Check serialized data on the isolate.
       string = isolate->GetDataFromSnapshotOnce<v8::String>(0).ToLocalChecked();

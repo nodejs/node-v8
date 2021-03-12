@@ -151,7 +151,7 @@ MachineRepresentation PropertyAccessBuilder::ConvertRepresentation(
 Node* PropertyAccessBuilder::TryBuildLoadConstantDataField(
     NameRef const& name, PropertyAccessInfo const& access_info,
     Node* lookup_start_object) {
-  if (!access_info.IsDataConstant()) return nullptr;
+  if (!access_info.IsFastDataConstant()) return nullptr;
 
   // First, determine if we have a constant holder to load from.
   Handle<JSObject> holder;
@@ -177,7 +177,7 @@ Node* PropertyAccessBuilder::TryBuildLoadConstantDataField(
   }
 
   JSObjectRef holder_ref(broker(), holder);
-  base::Optional<ObjectRef> value = holder_ref.GetOwnDataProperty(
+  base::Optional<ObjectRef> value = holder_ref.GetOwnFastDataProperty(
       access_info.field_representation(), access_info.field_index());
   if (!value.has_value()) {
     return nullptr;
@@ -199,54 +199,49 @@ Node* PropertyAccessBuilder::BuildLoadDataField(NameRef const& name,
   }
   if (field_access.machine_type.representation() ==
       MachineRepresentation::kFloat64) {
-    bool const is_heapnumber = !is_inobject || !FLAG_unbox_double_fields;
-    if (is_heapnumber) {
-      if (dependencies() == nullptr) {
-        FieldAccess const storage_access = {kTaggedBase,
-                                            field_access.offset,
-                                            name.object(),
-                                            MaybeHandle<Map>(),
-                                            Type::Any(),
-                                            MachineType::AnyTagged(),
-                                            kPointerWriteBarrier,
-                                            LoadSensitivity::kCritical,
-                                            field_access.const_field_info};
-        storage = *effect =
-            graph()->NewNode(simplified()->LoadField(storage_access), storage,
-                             *effect, *control);
-        // We expect the loaded value to be a heap number here. With
-        // in-place field representation changes it is possible this is a
-        // no longer a heap number without map transitions. If we haven't taken
-        // a dependency on field representation, we should verify the loaded
-        // value is a heap number.
-        storage = *effect = graph()->NewNode(simplified()->CheckHeapObject(),
-                                             storage, *effect, *control);
-        Node* map = *effect =
-            graph()->NewNode(simplified()->LoadField(AccessBuilder::ForMap()),
-                             storage, *effect, *control);
-        Node* is_heap_number =
-            graph()->NewNode(simplified()->ReferenceEqual(), map,
-                             jsgraph()->HeapNumberMapConstant());
-        *effect = graph()->NewNode(
-            simplified()->CheckIf(DeoptimizeReason::kNotAHeapNumber),
-            is_heap_number, *effect, *control);
-      } else {
-        FieldAccess const storage_access = {kTaggedBase,
-                                            field_access.offset,
-                                            name.object(),
-                                            MaybeHandle<Map>(),
-                                            Type::OtherInternal(),
-                                            MachineType::TaggedPointer(),
-                                            kPointerWriteBarrier,
-                                            LoadSensitivity::kCritical,
-                                            field_access.const_field_info};
-        storage = *effect =
-            graph()->NewNode(simplified()->LoadField(storage_access), storage,
-                             *effect, *control);
-      }
-      field_access.offset = HeapNumber::kValueOffset;
-      field_access.name = MaybeHandle<Name>();
+    if (dependencies() == nullptr) {
+      FieldAccess const storage_access = {kTaggedBase,
+                                          field_access.offset,
+                                          name.object(),
+                                          MaybeHandle<Map>(),
+                                          Type::Any(),
+                                          MachineType::AnyTagged(),
+                                          kPointerWriteBarrier,
+                                          LoadSensitivity::kCritical,
+                                          field_access.const_field_info};
+      storage = *effect = graph()->NewNode(
+          simplified()->LoadField(storage_access), storage, *effect, *control);
+      // We expect the loaded value to be a heap number here. With
+      // in-place field representation changes it is possible this is a
+      // no longer a heap number without map transitions. If we haven't taken
+      // a dependency on field representation, we should verify the loaded
+      // value is a heap number.
+      storage = *effect = graph()->NewNode(simplified()->CheckHeapObject(),
+                                           storage, *effect, *control);
+      Node* map = *effect =
+          graph()->NewNode(simplified()->LoadField(AccessBuilder::ForMap()),
+                           storage, *effect, *control);
+      Node* is_heap_number =
+          graph()->NewNode(simplified()->ReferenceEqual(), map,
+                           jsgraph()->HeapNumberMapConstant());
+      *effect = graph()->NewNode(
+          simplified()->CheckIf(DeoptimizeReason::kNotAHeapNumber),
+          is_heap_number, *effect, *control);
+    } else {
+      FieldAccess const storage_access = {kTaggedBase,
+                                          field_access.offset,
+                                          name.object(),
+                                          MaybeHandle<Map>(),
+                                          Type::OtherInternal(),
+                                          MachineType::TaggedPointer(),
+                                          kPointerWriteBarrier,
+                                          LoadSensitivity::kCritical,
+                                          field_access.const_field_info};
+      storage = *effect = graph()->NewNode(
+          simplified()->LoadField(storage_access), storage, *effect, *control);
     }
+    field_access.offset = HeapNumber::kValueOffset;
+    field_access.name = MaybeHandle<Name>();
   }
   Node* value = *effect = graph()->NewNode(
       simplified()->LoadField(field_access), storage, *effect, *control);
@@ -277,7 +272,8 @@ Node* PropertyAccessBuilder::BuildMinimorphicLoadDataField(
 Node* PropertyAccessBuilder::BuildLoadDataField(
     NameRef const& name, PropertyAccessInfo const& access_info,
     Node* lookup_start_object, Node** effect, Node** control) {
-  DCHECK(access_info.IsDataField() || access_info.IsDataConstant());
+  DCHECK(access_info.IsDataField() || access_info.IsFastDataConstant());
+
   if (Node* value = TryBuildLoadConstantDataField(name, access_info,
                                                   lookup_start_object)) {
     return value;

@@ -558,7 +558,7 @@ v8::CpuProfile* ProfilerHelper::Run(v8::Local<v8::Function> function,
                                     ProfilingMode mode, unsigned max_samples) {
   v8::Local<v8::String> profile_name = v8_str("my_profile");
 
-  profiler_->SetSamplingInterval(100);
+  profiler_->SetSamplingInterval(50);
   profiler_->StartProfiling(profile_name, {mode, max_samples, 0});
 
   v8::internal::CpuProfiler* iprofiler =
@@ -586,6 +586,15 @@ static unsigned TotalHitCount(const v8::CpuProfileNode* node) {
   unsigned hit_count = node->GetHitCount();
   for (int i = 0, count = node->GetChildrenCount(); i < count; ++i)
     hit_count += TotalHitCount(node->GetChild(i));
+  return hit_count;
+}
+
+static unsigned TotalHitCount(const v8::CpuProfileNode* node,
+                              const std::string& name) {
+  if (name.compare(node->GetFunctionNameStr()) == 0) return TotalHitCount(node);
+  unsigned hit_count = 0;
+  for (int i = 0, count = node->GetChildrenCount(); i < count; ++i)
+    hit_count += TotalHitCount(node->GetChild(i), name);
   return hit_count;
 }
 
@@ -2203,16 +2212,22 @@ TEST(FunctionDetails) {
   const v8::CpuProfile* profile = i::ProfilerExtension::last_profile;
   reinterpret_cast<const i::CpuProfile*>(profile)->Print();
   // The tree should look like this:
-  //  0   (root) 0 #1
-  //  0    "" 19 #2 no reason script_b:1
-  //  0      baz 19 #3 TryCatchStatement script_b:3
-  //  0        foo 18 #4 TryCatchStatement script_a:2
-  //  1          bar 18 #5 no reason script_a:3
+  //  0  (root):0 3 0 #1
+  //  0    :0 0 5 #2 script_b:0
+  //  0      baz:3 0 5 #3 script_b:3
+  //             bailed out due to 'Optimization is always disabled'
+  //  0        foo:4 0 4 #4 script_a:4
+  //               bailed out due to 'Optimization is always disabled'
+  //  0          bar:5 0 4 #5 script_a:5
+  //                 bailed out due to 'Optimization is always disabled'
+  //  0            startProfiling:0 2 0 #6
   const v8::CpuProfileNode* root = profile->GetTopDownRoot();
   CHECK_EQ(root->GetParent(), nullptr);
   const v8::CpuProfileNode* script = GetChild(env, root, "");
   CheckFunctionDetails(env->GetIsolate(), script, "", "script_b", true,
-                       script_b->GetUnboundScript()->GetId(), 1, 1, root);
+                       script_b->GetUnboundScript()->GetId(),
+                       v8::CpuProfileNode::kNoLineNumberInfo,
+                       CpuProfileNode::kNoColumnNumberInfo, root);
   const v8::CpuProfileNode* baz = GetChild(env, script, "baz");
   CheckFunctionDetails(env->GetIsolate(), baz, "baz", "script_b", true,
                        script_b->GetUnboundScript()->GetId(), 3, 16, script);
@@ -2281,7 +2296,7 @@ TEST(FunctionDetailsInlining) {
   //   The tree should look like this:
   //  0  (root) 0 #1
   //  5    (program) 0 #6
-  //  2     14 #2 script_a:1
+  //  2     14 #2 script_a:0
   //    ;;; deopted at script_id: 14 position: 299 with reason 'Insufficient
   //    type feedback for call'.
   //  1      alpha 14 #4 script_a:1
@@ -2292,7 +2307,9 @@ TEST(FunctionDetailsInlining) {
   CHECK_EQ(root->GetParent(), nullptr);
   const v8::CpuProfileNode* script = GetChild(env, root, "");
   CheckFunctionDetails(env->GetIsolate(), script, "", "script_a", false,
-                       script_a->GetUnboundScript()->GetId(), 1, 1, root);
+                       script_a->GetUnboundScript()->GetId(),
+                       v8::CpuProfileNode::kNoLineNumberInfo,
+                       v8::CpuProfileNode::kNoColumnNumberInfo, root);
   const v8::CpuProfileNode* alpha = FindChild(env, script, "alpha");
   // Return early if profiling didn't sample alpha.
   if (!alpha) return;
@@ -2916,7 +2933,10 @@ TEST(TracingCpuProfiler) {
           const profile_header = json[0];
           if (typeof profile_header['startTime'] !== 'number')
             return false;
-          return json.some(event => (event.lines || []).some(line => line));
+          return json.some(event => (event.lines || []).some(line => line)) &&
+              json.filter(e => e.cpuProfile && e.cpuProfile.nodes)
+              .some(e => e.cpuProfile.nodes
+                  .some(n => n.callFrame.codeType == "JS"));
         }
         checkProfile()" + profile_json +
                                        ")";
@@ -3269,22 +3289,31 @@ TEST(MultipleIsolates) {
 // wrong if sampling an unlocked frame. We also prevent optimization to prevent
 // inlining so each function call has its own frame.
 const char* varying_frame_size_script = R"(
-    %NeverOptimizeFunction(maybeYield);
+    %NeverOptimizeFunction(maybeYield0);
+    %NeverOptimizeFunction(maybeYield1);
+    %NeverOptimizeFunction(maybeYield2);
     %NeverOptimizeFunction(bar);
     %NeverOptimizeFunction(foo);
-    function maybeYield(n) {
+    function maybeYield0(n) {
       YieldIsolate(Math.random() > yieldLimit);
     }
-    function bar(a, b, c, d) {
-      maybeYield(Math.random());
+    function maybeYield1(n) {
+      YieldIsolate(Math.random() > yieldLimit);
+    }
+    function maybeYield2(n) {
+      YieldIsolate(Math.random() > yieldLimit);
+    }
+    maybeYield = [maybeYield0 ,maybeYield1, maybeYield2];
+    function bar(threadNumber, a, b, c, d) {
+      maybeYield[threadNumber](Math.random());
       return a.length + b.length + c.length + d.length;
     }
-    function foo(timeLimit, yieldProbability) {
+    function foo(timeLimit, yieldProbability, threadNumber) {
       yieldLimit = 1 - yieldProbability;
       const startTime = Date.now();
       for (let i = 0; i < 1e6; i++) {
-        maybeYield(1);
-        bar("Hickory", "Dickory", "Doc", "Mouse");
+        maybeYield[threadNumber](1);
+        bar(threadNumber, "Hickory", "Dickory", "Doc", "Mouse");
         YieldIsolate(Math.random() > 0.999);
         if ((Date.now() - startTime) > timeLimit) break;
       }
@@ -3293,8 +3322,10 @@ const char* varying_frame_size_script = R"(
 
 class UnlockingThread : public v8::base::Thread {
  public:
-  explicit UnlockingThread(v8::Local<v8::Context> env)
-      : Thread(Options("UnlockingThread")), env_(CcTest::isolate(), env) {}
+  explicit UnlockingThread(v8::Local<v8::Context> env, int32_t threadNumber)
+      : Thread(Options("UnlockingThread")),
+        env_(CcTest::isolate(), env),
+        threadNumber_(threadNumber) {}
 
   void Run() override {
     v8::Isolate* isolate = CcTest::isolate();
@@ -3302,10 +3333,11 @@ class UnlockingThread : public v8::base::Thread {
     v8::Isolate::Scope isolate_scope(isolate);
     v8::HandleScope scope(isolate);
     v8::Local<v8::Context> env = v8::Local<v8::Context>::New(isolate, env_);
-    Profile(env);
+    Profile(env, threadNumber_);
   }
 
-  static void Profile(v8::Local<v8::Context> env) {
+  static void Profile(v8::Local<v8::Context> env, int32_t threadNumber) {
+    CHECK_LT(threadNumber, maxThreads_);
     v8::Isolate* isolate = CcTest::isolate();
     v8::Context::Scope context_scope(env);
     v8::CpuProfiler* profiler = v8::CpuProfiler::New(isolate);
@@ -3315,15 +3347,24 @@ class UnlockingThread : public v8::base::Thread {
     int32_t time_limit = 200;
     double yield_probability = 0.001;
     v8::Local<v8::Value> args[] = {v8::Integer::New(isolate, time_limit),
-                                   v8::Number::New(isolate, yield_probability)};
+                                   v8::Number::New(isolate, yield_probability),
+                                   v8::Integer::New(isolate, threadNumber)};
     v8::Local<v8::Function> function = GetFunction(env, "foo");
     function->Call(env, env->Global(), arraysize(args), args).ToLocalChecked();
-    profiler->StopProfiling(profile_name);
+    const v8::CpuProfile* profile = profiler->StopProfiling(profile_name);
+    const CpuProfileNode* root = profile->GetTopDownRoot();
+    for (int32_t number = 0; number < maxThreads_; number++) {
+      std::string maybeYield = "maybeYield" + std::to_string(number);
+      unsigned hit_count = TotalHitCount(root, maybeYield);
+      if (hit_count) CHECK_EQ(number, threadNumber);
+    }
     profiler->Dispose();
   }
 
  private:
   v8::Persistent<v8::Context> env_;
+  int32_t threadNumber_;
+  static const int32_t maxThreads_ = 3;
 };
 
 // Checking for crashes with multiple thread/single Isolate profiling.
@@ -3343,14 +3384,14 @@ TEST(MultipleThreadsSingleIsolate) {
       });
 
   CompileRun(varying_frame_size_script);
-  UnlockingThread thread1(env);
-  UnlockingThread thread2(env);
+  UnlockingThread thread1(env, 1);
+  UnlockingThread thread2(env, 2);
 
   CHECK(thread1.Start());
   CHECK(thread2.Start());
 
   // For good measure, profile on our own thread
-  UnlockingThread::Profile(env);
+  UnlockingThread::Profile(env, 0);
   {
     v8::Unlocker unlocker(isolate);
     thread1.Join();
@@ -3889,10 +3930,12 @@ namespace {
 
 struct FastApiReceiver {
   static void FastCallback(v8::ApiObject receiver, int argument,
-                           int* fallback) {
+                           v8::FastApiCallbackOptions& options) {
+    // TODO(mslekova): The fallback is not used by the test. Replace this
+    // with a CHECK.
     v8::Object* receiver_obj = reinterpret_cast<v8::Object*>(&receiver);
     if (!IsValidUnwrapObject(receiver_obj)) {
-      *fallback = 1;
+      options.fallback = 1;
       return;
     }
     FastApiReceiver* receiver_ptr =
@@ -3945,7 +3988,6 @@ TEST(FastApiCPUProfiler) {
   // None of the following configurations include JSCallReducer.
   if (i::FLAG_jitless) return;
   if (i::FLAG_turboprop) return;
-  if (i::FLAG_turbo_nci_as_midtier) return;
 
   FLAG_SCOPE_EXTERNAL(opt);
   FLAG_SCOPE_EXTERNAL(turbo_fast_api_calls);
@@ -3969,8 +4011,7 @@ TEST(FastApiCPUProfiler) {
 
   v8::TryCatch try_catch(isolate);
 
-  v8::CFunction c_func =
-      v8::CFunction::MakeWithFallbackSupport(FastApiReceiver::FastCallback);
+  v8::CFunction c_func = v8::CFunction::Make(FastApiReceiver::FastCallback);
 
   Local<v8::FunctionTemplate> receiver_templ = v8::FunctionTemplate::New(
       isolate, FastApiReceiver::SlowCallback, v8::Local<v8::Value>(),
@@ -4041,6 +4082,77 @@ TEST(FastApiCPUProfiler) {
 
   profile->Delete();
 #endif
+}
+
+TEST(BytecodeFlushEventsEagerLogging) {
+#ifndef V8_LITE_MODE
+  FLAG_opt = false;
+  FLAG_always_opt = false;
+  i::FLAG_optimize_for_size = false;
+#endif  // V8_LITE_MODE
+  i::FLAG_flush_bytecode = true;
+  i::FLAG_allow_natives_syntax = true;
+
+  TestSetup test_setup;
+  ManualGCScope manual_gc_scope;
+
+  CcTest::InitializeVM();
+  v8::Isolate* isolate = CcTest::isolate();
+  Isolate* i_isolate = CcTest::i_isolate();
+  Factory* factory = i_isolate->factory();
+
+  CpuProfiler profiler(i_isolate, kDebugNaming, kEagerLogging);
+  CodeMap* code_map = profiler.code_map_for_test();
+
+  {
+    v8::HandleScope scope(isolate);
+    v8::Context::New(isolate)->Enter();
+    const char* source =
+        "function foo() {"
+        "  var x = 42;"
+        "  var y = 42;"
+        "  var z = x + y;"
+        "};"
+        "foo()";
+    Handle<String> foo_name = factory->InternalizeUtf8String("foo");
+
+    // This compile will add the code to the compilation cache.
+    {
+      v8::HandleScope scope(isolate);
+      CompileRun(source);
+    }
+
+    // Check function is compiled.
+    Handle<Object> func_value =
+        Object::GetProperty(i_isolate, i_isolate->global_object(), foo_name)
+            .ToHandleChecked();
+    CHECK(func_value->IsJSFunction());
+    Handle<JSFunction> function = Handle<JSFunction>::cast(func_value);
+    CHECK(function->shared().is_compiled());
+
+    i::BytecodeArray compiled_data =
+        function->shared().GetBytecodeArray(i_isolate);
+    i::Address bytecode_start = compiled_data.GetFirstBytecodeAddress();
+
+    CHECK(code_map->FindEntry(bytecode_start));
+
+    // The code will survive at least two GCs.
+    CcTest::CollectAllGarbage();
+    CcTest::CollectAllGarbage();
+    CHECK(function->shared().is_compiled());
+
+    // Simulate several GCs that use full marking.
+    const int kAgingThreshold = 6;
+    for (int i = 0; i < kAgingThreshold; i++) {
+      CcTest::CollectAllGarbage();
+    }
+
+    // foo should no longer be in the compilation cache
+    CHECK(!function->shared().is_compiled());
+    CHECK(!function->is_compiled());
+
+    CHECK(!code_map->FindEntry(bytecode_start));
+  }
 }
 
 }  // namespace test_cpu_profiler

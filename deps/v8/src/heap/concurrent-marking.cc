@@ -27,6 +27,7 @@
 #include "src/objects/data-handler-inl.h"
 #include "src/objects/embedder-data-array-inl.h"
 #include "src/objects/hash-table-inl.h"
+#include "src/objects/js-array-buffer-inl.h"
 #include "src/objects/slots-inl.h"
 #include "src/objects/transitions-inl.h"
 #include "src/utils/utils-inl.h"
@@ -110,9 +111,11 @@ class ConcurrentMarkingVisitor final
     return VisitJSObjectSubclassFast(map, object);
   }
 
+#if V8_ENABLE_WEBASSEMBLY
   int VisitWasmInstanceObject(Map map, WasmInstanceObject object) {
     return VisitJSObjectSubclass(map, object);
   }
+#endif  // V8_ENABLE_WEBASSEMBLY
 
   int VisitJSWeakCollection(Map map, JSWeakCollection object) {
     return VisitJSObjectSubclass(map, object);
@@ -209,19 +212,22 @@ class ConcurrentMarkingVisitor final
 
   template <typename T>
   int VisitJSObjectSubclassFast(Map map, T object) {
-    DCHECK_IMPLIES(FLAG_unbox_double_fields, map.HasFastPointerLayout());
     using TBodyDescriptor = typename T::FastBodyDescriptor;
     return VisitJSObjectSubclass<T, TBodyDescriptor>(map, object);
   }
 
   template <typename T, typename TBodyDescriptor = typename T::BodyDescriptor>
   int VisitJSObjectSubclass(Map map, T object) {
+    if (!ShouldVisit(object)) return 0;
     int size = TBodyDescriptor::SizeOf(map, object);
     int used_size = map.UsedInstanceSize();
     DCHECK_LE(used_size, size);
     DCHECK_GE(used_size, JSObject::GetHeaderSize(map));
-    return VisitPartiallyWithSnapshot<T, TBodyDescriptor>(map, object,
-                                                          used_size, size);
+    this->VisitMapPointer(object);
+    // It is important to visit only the used field and ignore the slack fields
+    // because the slack fields may be trimmed concurrently.
+    TBodyDescriptor::IterateBody(map, object, used_size, this);
+    return size;
   }
 
   template <typename T>
@@ -253,17 +259,11 @@ class ConcurrentMarkingVisitor final
 
   template <typename T>
   int VisitFullyWithSnapshot(Map map, T object) {
+    if (!ShouldVisit(object)) return 0;
     using TBodyDescriptor = typename T::BodyDescriptor;
     int size = TBodyDescriptor::SizeOf(map, object);
-    return VisitPartiallyWithSnapshot<T, TBodyDescriptor>(map, object, size,
-                                                          size);
-  }
-
-  template <typename T, typename TBodyDescriptor = typename T::BodyDescriptor>
-  int VisitPartiallyWithSnapshot(Map map, T object, int used_size, int size) {
     const SlotSnapshot& snapshot =
-        MakeSlotSnapshot<T, TBodyDescriptor>(map, object, used_size);
-    if (!ShouldVisit(object)) return 0;
+        MakeSlotSnapshot<T, TBodyDescriptor>(map, object, size);
     VisitPointersInSnapshot(object, snapshot);
     return size;
   }
@@ -358,9 +358,10 @@ StrongDescriptorArray ConcurrentMarkingVisitor::Cast(HeapObject object) {
 class ConcurrentMarking::JobTask : public v8::JobTask {
  public:
   JobTask(ConcurrentMarking* concurrent_marking, unsigned mark_compact_epoch,
-          bool is_forced_gc)
+          BytecodeFlushMode bytecode_flush_mode, bool is_forced_gc)
       : concurrent_marking_(concurrent_marking),
         mark_compact_epoch_(mark_compact_epoch),
+        bytecode_flush_mode_(bytecode_flush_mode),
         is_forced_gc_(is_forced_gc) {}
 
   ~JobTask() override = default;
@@ -369,7 +370,17 @@ class ConcurrentMarking::JobTask : public v8::JobTask {
 
   // v8::JobTask overrides.
   void Run(JobDelegate* delegate) override {
-    concurrent_marking_->Run(delegate, mark_compact_epoch_, is_forced_gc_);
+    if (delegate->IsJoiningThread()) {
+      // TRACE_GC is not needed here because the caller opens the right scope.
+      concurrent_marking_->Run(delegate, bytecode_flush_mode_,
+                               mark_compact_epoch_, is_forced_gc_);
+    } else {
+      TRACE_GC_EPOCH(concurrent_marking_->heap_->tracer(),
+                     GCTracer::Scope::MC_BACKGROUND_MARKING,
+                     ThreadKind::kBackground);
+      concurrent_marking_->Run(delegate, bytecode_flush_mode_,
+                               mark_compact_epoch_, is_forced_gc_);
+    }
   }
 
   size_t GetMaxConcurrency(size_t worker_count) const override {
@@ -379,6 +390,7 @@ class ConcurrentMarking::JobTask : public v8::JobTask {
  private:
   ConcurrentMarking* concurrent_marking_;
   const unsigned mark_compact_epoch_;
+  BytecodeFlushMode bytecode_flush_mode_;
   const bool is_forced_gc_;
 };
 
@@ -398,10 +410,9 @@ ConcurrentMarking::ConcurrentMarking(Heap* heap,
 #endif
 }
 
-void ConcurrentMarking::Run(JobDelegate* delegate, unsigned mark_compact_epoch,
-                            bool is_forced_gc) {
-  TRACE_GC_EPOCH(heap_->tracer(), GCTracer::Scope::MC_BACKGROUND_MARKING,
-                 ThreadKind::kBackground);
+void ConcurrentMarking::Run(JobDelegate* delegate,
+                            BytecodeFlushMode bytecode_flush_mode,
+                            unsigned mark_compact_epoch, bool is_forced_gc) {
   size_t kBytesUntilInterruptCheck = 64 * KB;
   int kObjectsUntilInterrupCheck = 1000;
   uint8_t task_id = delegate->GetTaskId() + 1;
@@ -409,7 +420,7 @@ void ConcurrentMarking::Run(JobDelegate* delegate, unsigned mark_compact_epoch,
   MarkingWorklists::Local local_marking_worklists(marking_worklists_);
   ConcurrentMarkingVisitor visitor(
       task_id, &local_marking_worklists, weak_objects_, heap_,
-      mark_compact_epoch, Heap::GetBytecodeFlushMode(),
+      mark_compact_epoch, bytecode_flush_mode,
       heap_->local_embedder_heap_tracer()->InUse(), is_forced_gc,
       &task_state->memory_chunk_data);
   NativeContextInferrer& native_context_inferrer =
@@ -537,9 +548,10 @@ void ConcurrentMarking::ScheduleJob(TaskPriority priority) {
   DCHECK(!job_handle_ || !job_handle_->IsValid());
 
   job_handle_ = V8::GetCurrentPlatform()->PostJob(
-      priority,
-      std::make_unique<JobTask>(this, heap_->mark_compact_collector()->epoch(),
-                                heap_->is_current_gc_forced()));
+      priority, std::make_unique<JobTask>(
+                    this, heap_->mark_compact_collector()->epoch(),
+                    heap_->mark_compact_collector()->bytecode_flush_mode(),
+                    heap_->is_current_gc_forced()));
   DCHECK(job_handle_->IsValid());
 }
 

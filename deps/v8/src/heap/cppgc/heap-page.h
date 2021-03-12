@@ -33,8 +33,7 @@ class V8_EXPORT_PRIVATE BasePage {
   BasePage(const BasePage&) = delete;
   BasePage& operator=(const BasePage&) = delete;
 
-  HeapBase* heap() { return heap_; }
-  const HeapBase* heap() const { return heap_; }
+  HeapBase* heap() const { return heap_; }
 
   BaseSpace* space() { return space_; }
   const BaseSpace* space() const { return space_; }
@@ -186,6 +185,8 @@ class V8_EXPORT_PRIVATE NormalPage final : public BasePage {
 
 class V8_EXPORT_PRIVATE LargePage final : public BasePage {
  public:
+  // Returns the allocation size required for a payload of size |size|.
+  static size_t AllocationSize(size_t size);
   // Allocates a new page in the detached state.
   static LargePage* Create(PageBackend*, LargePageSpace*, size_t);
   // Destroys and frees the page. The page must be detached from the
@@ -209,6 +210,7 @@ class V8_EXPORT_PRIVATE LargePage final : public BasePage {
   ConstAddress PayloadEnd() const;
 
   size_t PayloadSize() const { return payload_size_; }
+  size_t ObjectSize() const { return payload_size_ - sizeof(HeapObjectHeader); }
 
   bool PayloadContains(ConstAddress address) const {
     return (PayloadStart() <= address) && (address < PayloadEnd());

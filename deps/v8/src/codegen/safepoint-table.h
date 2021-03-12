@@ -70,7 +70,9 @@ class SafepointEntry {
 class SafepointTable {
  public:
   explicit SafepointTable(Code code);
+#if V8_ENABLE_WEBASSEMBLY
   explicit SafepointTable(const wasm::WasmCode* code);
+#endif  // V8_ENABLE_WEBASSEMBLY
 
   SafepointTable(const SafepointTable&) = delete;
   SafepointTable& operator=(const SafepointTable&) = delete;
@@ -168,8 +170,6 @@ class SafepointTable {
 
 class Safepoint {
  public:
-  enum DeoptMode { kNoLazyDeopt, kLazyDeopt };
-
   static const int kNoDeoptimizationIndex = SafepointEntry::kNoDeoptIndex;
 
   void DefinePointerSlot(int index) { indexes_->push_back(index); }
@@ -195,7 +195,7 @@ class SafepointTableBuilder {
   unsigned GetCodeOffset() const;
 
   // Define a new safepoint for the current position in the body.
-  Safepoint DefineSafepoint(Assembler* assembler, Safepoint::DeoptMode mode);
+  Safepoint DefineSafepoint(Assembler* assembler);
 
   // Emit the safepoint table after the body. The number of bits per
   // entry must be enough to hold all the pointer indexes.
