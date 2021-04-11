@@ -1,4 +1,4 @@
-# node-v8
+# Node.js V8 canary
 
 This is an automatically updated **experimental** version of [Node.js][] with
 the `lkgr` (last known good revision) of V8.
