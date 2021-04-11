@@ -1,0 +1,42 @@
+name: Update canary branch
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  updateCanary:
+    name: Update the canary branch
+    if: github.repository == 'nodejs/node-v8' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone node-v8
+        uses: actions/checkout@v2
+        with:
+          path: node-v8
+          token: ${{ secrets.CANARY_UPDATE }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: 14.x
+
+      - name: Install dependencies
+        run: npm install -g node-core-utils@latest
+
+      - name: Cache V8 clone
+        uses: actions/cache@v2
+        with:
+          path: v8
+          key: v8-clone
+
+      - name: Execute the update script
+        run: ./node-v8/tools/update-canary.sh
+
+      - name: Notify Slack on failure
+        if: ${{ failure() }}
+        run: |
+          ACTIONS_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}?check_suite_focus=true"
+          SLACK_PAYLOAD="{\"username\": \"canary_bot\", \"text\": \"*Canary update failed!*\n\nRun: ${ACTIONS_URL}\", \"icon_emoji\": \":bell:\"}"
+          curl -X POST --data-urlencode "payload=${SLACK_PAYLOAD}" ${{ secrets.SLACK_WEBHOOK }}
