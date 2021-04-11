@@ -12,6 +12,6 @@ with issues.
 
 This project is bound by a [Code of Conduct][].
 
-[Code of Conduct]: https://github.com/nodejs/admin/blob/master/CODE_OF_CONDUCT.md
+[Code of Conduct]: https://github.com/nodejs/admin/blob/HEAD/CODE_OF_CONDUCT.md
 [Node.js]: https://github.com/nodejs/node
 [`v8-canary`]: https://nodejs.org/download/v8-canary/
