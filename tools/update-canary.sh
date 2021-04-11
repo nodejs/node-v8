@@ -8,8 +8,8 @@ git remote add upstream https://github.com/nodejs/node.git
 git fetch upstream master
 git fetch upstream canary-base
 
-git config user.name github-actions
-git config user.email github-actions@github.com
+git config user.name "Node.js GitHub Bot"
+git config user.email github-bot@iojs.org
 
 git reset --hard upstream/master
 
@@ -21,7 +21,7 @@ git-node v8 major --branch=lkgr --base-dir="$GITHUB_WORKSPACE"
 git cherry-pick `git log upstream/canary-base -1 --format=format:%H --grep "src: update NODE_MODULE_VERSION"`...upstream/canary-base
 
 # Verify that Node.js can be compiled and executed
-python ./configure
+python3 ./configure
 make -j $(getconf _NPROCESSORS_ONLN) V=
 out/Release/node test/parallel/test-process-versions.js
 
