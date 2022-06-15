@@ -5,13 +5,13 @@ set -ex
 cd node-v8
 
 git remote add upstream https://github.com/nodejs/node.git
-git fetch upstream master
+git fetch upstream main
 git fetch upstream canary-base
 
 git config user.name "Node.js GitHub Bot"
 git config user.email github-bot@iojs.org
 
-git reset --hard upstream/master
+git reset --hard upstream/main
 
 # Update V8 to the lkgr branch
 git-node v8 major --branch=lkgr --base-dir="$GITHUB_WORKSPACE"
