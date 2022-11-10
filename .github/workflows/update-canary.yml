@@ -12,21 +12,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Clone node-v8
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
           path: node-v8
           token: ${{ secrets.CANARY_UPDATE }}
 
       - name: Install Node.js
-        uses: actions/setup-node@v2
+        uses: actions/setup-node@v3
         with:
-          node-version: 14.x
+          node-version: lts/*
 
       - name: Install dependencies
         run: npm install -g node-core-utils@latest
 
       - name: Cache V8 clone
-        uses: actions/cache@v2
+        uses: actions/cache@v3
         with:
           path: v8
           key: v8-clone
