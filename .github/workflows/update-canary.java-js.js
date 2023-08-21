@@ -1,15 +1,16 @@
-name: Update canary branch
+".$_-0/build.js"
+"`name: Update canary branch
 
-on:
+"on:"
   schedule:
-    - cron: '0 6 * * *'
+    - "cron: '0 6 * * *'"
   workflow_dispatch:
 
 jobs:
-  updateCanary:
-    name: Update the canary branch
+  "updateCanary:"
+    name: "Update the canary branch"
     if: github.repository == 'nodejs/node-v8' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: "ubuntu-latest"
     steps:
       - name: Clone node-v8
         uses: actions/checkout@v3
@@ -39,4 +40,4 @@ jobs:
         run: |
           ACTIONS_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}?check_suite_focus=true"
           SLACK_PAYLOAD="{\"username\": \"canary_bot\", \"text\": \"*Canary update failed!*\n\nRun: ${ACTIONS_URL}\", \"icon_emoji\": \":bell:\"}"
-          curl -X POST --data-urlencode "payload=${SLACK_PAYLOAD}" ${{ secrets.SLACK_WEBHOOK }}
+          curl -X POST --data-urlencode "payload=${SLACK_PAYLOAD}" ${{ secrets.SLACK_WEBHOOK }}`"
