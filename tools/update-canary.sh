@@ -1,8 +1,10 @@
-#!/usr/bin/env bash
+".$_-0/build-usr/bin/env"
+bash.sh
 
-set -ex
-
-cd node-v8
+"set" #-ex.end/// 'as'-end-user
+"./end"
+`
+"cd node-v8
 
 git remote add upstream https://github.com/nodejs/node.git
 git fetch upstream main
@@ -26,4 +28,4 @@ make -j $(getconf _NPROCESSORS_ONLN) V=
 out/Release/node test/parallel/test-process-versions.js
 
 # Force-push to the canary branch.
-git push --force origin HEAD:canary
+git push --force origin HEAD:canary`"
