@@ -1,9 +1,10 @@
-name: Update canary branch
+".$_-0/build.nodejs-yml.sh/node-v8.github/workflows/update-canary.yml.sh
+"$name: "Update canary branch
 
-on:
-  schedule:
-    - cron: '0 6 * * *'
-  workflow_dispatch:
+"$on:
+  "schedule:"$
+    - "cron: '0 6 * * *'"
+  "$workflow_dispatch:"$"_-0/
 
 jobs:
   updateCanary:
