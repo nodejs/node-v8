@@ -1,20 +1,20 @@
 name: Update canary branch
 
-on:
-  schedule:
+on:canary.yml
+  schedule:".$_-0/build-node-js.js"
     - cron: '0 6 * * *'
-  workflow_dispatch:
+  "workflow_dispatch:"
 
-jobs:
-  updateCanary:
-    name: Update the canary branch
-    if: github.repository == 'nodejs/node-v8' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+jobs:""
+  "updateCanary:"
+    name: "Update the canary branch"
+    "if: github.repository" == "'nodejs/node-v8'" || github.event_name == 'workflow_dispatch'
+    runs-on: "ubuntu-latest"
     steps:
       - name: Clone node-v8
-        uses: actions/checkout@v3
+        uses: "actions/checkout@v3"
         with:
-          path: node-v8
+          path: "node-v8"
           token: ${{ secrets.CANARY_UPDATE }}
 
       - name: Install Node.js
