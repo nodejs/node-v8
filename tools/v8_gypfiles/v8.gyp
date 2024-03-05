@@ -558,6 +558,7 @@
       'direct_dependent_settings': {
         'sources': [
           '<(V8_ROOT)/src/flags/flag-definitions.h',
+          '<(V8_ROOT)/src/flags/flags-impl.h',
           '<(V8_ROOT)/src/flags/flags.h',
         ],
       },
@@ -577,6 +578,7 @@
         'run_torque',
         'v8_abseil',
         'v8_libbase',
+        'fp16',
       ],
       'direct_dependent_settings': {
         'sources': [
@@ -979,6 +981,7 @@
         'v8_zlib',
         'v8_pch',
         'v8_abseil',
+        'fp16',
       ],
       'includes': ['inspector.gypi'],
       'direct_dependent_settings': {
@@ -1030,6 +1033,7 @@
         ['v8_enable_webassembly==1', {
           'sources': [
             '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "\\"v8_base_without_compiler.*?v8_enable_webassembly.*?sources \\+= ")',
+            '<(V8_ROOT)/src/wasm/fuzzing/random-module-generation.cc',
           ],
         }],
         ['v8_enable_third_party_heap==1', {
@@ -2481,5 +2485,24 @@
         '<(ABSEIL_ROOT)/absl/utility/utility.h',
       ]
     },  # v8_abseil
+    {
+      'target_name': 'fp16',
+      'type': 'none',
+      'toolsets': ['host', 'target'],
+      'variables': {
+        'FP16_ROOT': '../../deps/v8/third_party/fp16',
+      },
+      'direct_dependent_settings': {
+        'include_dirs': [
+          '<(FP16_ROOT)/src/include',
+        ],
+      },
+      # 'include_dirs': [
+      #   '<(FP16_ROOT)/src/include',
+      # ],
+      # 'sources': [
+      #   '<(FP16_ROOT)/src/include/fp16.h',
+      # ],
+    },  # fp16
   ],
 }
