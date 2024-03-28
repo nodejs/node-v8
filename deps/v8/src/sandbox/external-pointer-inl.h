@@ -7,44 +7,55 @@
 
 #include "include/v8-internal.h"
 #include "src/base/atomic-utils.h"
-#include "src/execution/isolate.h"
+#include "src/objects/slots.h"
 #include "src/sandbox/external-pointer-table-inl.h"
 #include "src/sandbox/external-pointer.h"
+#include "src/sandbox/isolate-inl.h"
+#include "src/sandbox/isolate.h"
 
 namespace v8 {
 namespace internal {
 
-#ifdef V8_ENABLE_SANDBOX
 template <ExternalPointerTag tag>
-const ExternalPointerTable& GetExternalPointerTable(const Isolate* isolate) {
-  return IsSharedExternalPointerType(tag)
-             ? isolate->shared_external_pointer_table()
-             : isolate->external_pointer_table();
+inline void ExternalPointerMember<tag>::Init(IsolateForSandbox isolate,
+                                             Address value) {
+  InitExternalPointerField<tag>(reinterpret_cast<Address>(storage_), isolate,
+                                value);
 }
 
 template <ExternalPointerTag tag>
-ExternalPointerTable& GetExternalPointerTable(Isolate* isolate) {
-  return IsSharedExternalPointerType(tag)
-             ? isolate->shared_external_pointer_table()
-             : isolate->external_pointer_table();
+inline Address ExternalPointerMember<tag>::load(
+    const IsolateForSandbox isolate) const {
+  return ReadExternalPointerField<tag>(reinterpret_cast<Address>(storage_),
+                                       isolate);
 }
 
 template <ExternalPointerTag tag>
-ExternalPointerTable::Space* GetDefaultExternalPointerSpace(Isolate* isolate) {
-  return IsSharedExternalPointerType(tag)
-             ? isolate->shared_external_pointer_space()
-             : isolate->heap()->external_pointer_space();
+inline void ExternalPointerMember<tag>::store(IsolateForSandbox isolate,
+                                              Address value) {
+  WriteExternalPointerField<tag>(reinterpret_cast<Address>(storage_), isolate,
+                                 value);
 }
-#endif  // V8_ENABLE_SANDBOX
 
 template <ExternalPointerTag tag>
-V8_INLINE void InitExternalPointerField(Address field_address, Isolate* isolate,
+inline ExternalPointer_t ExternalPointerMember<tag>::load_encoded() const {
+  return base::bit_cast<ExternalPointer_t>(storage_);
+}
+
+template <ExternalPointerTag tag>
+inline void ExternalPointerMember<tag>::store_encoded(ExternalPointer_t value) {
+  memcpy(storage_, &value, sizeof(ExternalPointer_t));
+}
+
+template <ExternalPointerTag tag>
+V8_INLINE void InitExternalPointerField(Address field_address,
+                                        IsolateForSandbox isolate,
                                         Address value) {
 #ifdef V8_ENABLE_SANDBOX
   static_assert(tag != kExternalPointerNullTag);
-  ExternalPointerTable& table = GetExternalPointerTable<tag>(isolate);
+  ExternalPointerTable& table = isolate.GetExternalPointerTableFor(tag);
   ExternalPointerHandle handle = table.AllocateAndInitializeEntry(
-      GetDefaultExternalPointerSpace<tag>(isolate), value, tag);
+      isolate.GetExternalPointerTableSpaceFor(tag, field_address), value, tag);
   // Use a Release_Store to ensure that the store of the pointer into the
   // table is not reordered after the store of the handle. Otherwise, other
   // threads may access an uninitialized table entry and crash.
@@ -57,7 +68,7 @@ V8_INLINE void InitExternalPointerField(Address field_address, Isolate* isolate,
 
 template <ExternalPointerTag tag>
 V8_INLINE Address ReadExternalPointerField(Address field_address,
-                                           const Isolate* isolate) {
+                                           IsolateForSandbox isolate) {
 #ifdef V8_ENABLE_SANDBOX
   static_assert(tag != kExternalPointerNullTag);
   // Handles may be written to objects from other threads so the handle needs
@@ -67,40 +78,85 @@ V8_INLINE Address ReadExternalPointerField(Address field_address,
   // technically we should use memory_order_consume here.
   auto location = reinterpret_cast<ExternalPointerHandle*>(field_address);
   ExternalPointerHandle handle = base::AsAtomic32::Relaxed_Load(location);
-  return GetExternalPointerTable<tag>(isolate).Get(handle, tag);
+  return isolate.GetExternalPointerTableFor(tag).Get(handle, tag);
 #else
   return ReadMaybeUnalignedValue<Address>(field_address);
 #endif  // V8_ENABLE_SANDBOX
 }
 
 template <ExternalPointerTag tag>
+V8_INLINE Address TryReadCppHeapPointerField(
+    Address field_address, IsolateForPointerCompression isolate) {
+  CppHeapPointerSlot slot(field_address, tag);
+#ifdef V8_COMPRESS_POINTERS
+  static_assert(tag != kExternalPointerNullTag);
+  // Handles may be written to objects from other threads so the handle needs
+  // to be loaded atomically. We assume that the load from the table cannot
+  // be reordered before the load of the handle due to the data dependency
+  // between the two loads and therefore use relaxed memory ordering, but
+  // technically we should use memory_order_consume here.
+  CppHeapPointerHandle handle = slot.Relaxed_LoadHandle();
+  if (handle == 0) {
+    return kNullAddress;
+  }
+  return isolate.GetCppHeapPointerTable().Get(handle, tag);
+#else   // !V8_COMPRESS_POINTERS
+  return slot.try_load(isolate);
+#endif  // !V8_COMPRESS_POINTERS
+}
+
+template <ExternalPointerTag tag>
+V8_INLINE void WriteLazilyInitializedCppHeapPointerField(
+    Address field_address, IsolateForPointerCompression isolate,
+    Address value) {
+  CppHeapPointerSlot slot(field_address, tag);
+#ifdef V8_COMPRESS_POINTERS
+  static_assert(tag != kExternalPointerNullTag);
+  // See comment above for why this uses a Relaxed_Load and Release_Store.
+  ExternalPointerTable& table = isolate.GetCppHeapPointerTable();
+  const CppHeapPointerHandle handle = slot.Relaxed_LoadHandle();
+  if (handle == kNullCppHeapPointerHandle) {
+    // Field has not been initialized yet.
+    const CppHeapPointerHandle new_handle = table.AllocateAndInitializeEntry(
+        isolate.GetCppHeapPointerTableSpace(), value, tag);
+    slot.Release_StoreHandle(new_handle);
+  } else {
+    table.Set(handle, value, tag);
+  }
+#else   // !V8_COMPRESS_POINTERS
+  slot.store(isolate, value);
+#endif  // !V8_COMPRESS_POINTERS
+}
+
+template <ExternalPointerTag tag>
 V8_INLINE void WriteExternalPointerField(Address field_address,
-                                         Isolate* isolate, Address value) {
+                                         IsolateForSandbox isolate,
+                                         Address value) {
 #ifdef V8_ENABLE_SANDBOX
   static_assert(tag != kExternalPointerNullTag);
   // See comment above for why this is a Relaxed_Load.
   auto location = reinterpret_cast<ExternalPointerHandle*>(field_address);
   ExternalPointerHandle handle = base::AsAtomic32::Relaxed_Load(location);
-  GetExternalPointerTable<tag>(isolate).Set(handle, value, tag);
+  isolate.GetExternalPointerTableFor(tag).Set(handle, value, tag);
 #else
   WriteMaybeUnalignedValue<Address>(field_address, value);
 #endif  // V8_ENABLE_SANDBOX
 }
 
 template <ExternalPointerTag tag>
-V8_INLINE void WriteLazilyInitializedExternalPointerField(Address field_address,
-                                                          Isolate* isolate,
-                                                          Address value) {
+V8_INLINE void WriteLazilyInitializedExternalPointerField(
+    Address field_address, IsolateForSandbox isolate, Address value) {
 #ifdef V8_ENABLE_SANDBOX
   static_assert(tag != kExternalPointerNullTag);
   // See comment above for why this uses a Relaxed_Load and Release_Store.
-  ExternalPointerTable& table = GetExternalPointerTable<tag>(isolate);
+  ExternalPointerTable& table = isolate.GetExternalPointerTableFor(tag);
   auto location = reinterpret_cast<ExternalPointerHandle*>(field_address);
   ExternalPointerHandle handle = base::AsAtomic32::Relaxed_Load(location);
   if (handle == kNullExternalPointerHandle) {
     // Field has not been initialized yet.
     ExternalPointerHandle handle = table.AllocateAndInitializeEntry(
-        GetDefaultExternalPointerSpace<tag>(isolate), value, tag);
+        isolate.GetExternalPointerTableSpaceFor(tag, field_address), value,
+        tag);
     base::AsAtomic32::Release_Store(location, handle);
   } else {
     table.Set(handle, value, tag);

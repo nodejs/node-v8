@@ -373,6 +373,11 @@ void BaselineAssembler::TryLoadOptimizedOsrCode(Register scratch_and_result,
   // Is it marked_for_deoptimization? If yes, clear the slot.
   {
     ScratchRegisterScope temps(this);
+
+    // The entry references a CodeWrapper object. Unwrap it now.
+    __ Ld(scratch_and_result,
+          FieldMemOperand(scratch_and_result, CodeWrapper::kCodeOffset));
+
     Register scratch = temps.AcquireScratch();
     __ TestCodeIsMarkedForDeoptimizationAndJump(scratch_and_result, scratch, eq,
                                                 on_result);
@@ -471,8 +476,18 @@ void BaselineAssembler::StaModuleVariable(Register context, Register value,
   StoreTaggedFieldWithWriteBarrier(context, Cell::kValueOffset, value);
 }
 
-void BaselineAssembler::AddSmi(Register lhs, Tagged<Smi> rhs) {
-  __ Daddu(lhs, lhs, Operand(rhs));
+void BaselineAssembler::IncrementSmi(MemOperand lhs) {
+  BaselineAssembler::ScratchRegisterScope temps(this);
+  Register tmp = temps.AcquireScratch();
+  if (SmiValuesAre31Bits()) {
+    __ Lw(tmp, lhs);
+    __ Addu(tmp, tmp, Operand(Smi::FromInt(1)));
+    __ Sw(tmp, lhs);
+  } else {
+    __ Ld(tmp, lhs);
+    __ Daddu(tmp, tmp, Operand(Smi::FromInt(1)));
+    __ Sd(tmp, lhs);
+  }
 }
 
 void BaselineAssembler::Word32And(Register output, Register lhs, int rhs) {

@@ -73,6 +73,11 @@ constexpr unsigned CpuFeaturesFromCompiler() {
 #if defined(__ARM_FEATURE_ATOMICS)
   features |= 1u << LSE;
 #endif
+// There is no __ARM_FEATURE_PMULL macro; instead, __ARM_FEATURE_AES
+// covers the FEAT_PMULL feature too.
+#if defined(__ARM_FEATURE_AES)
+  features |= 1u << PMULL1Q;
+#endif
   return features;
 }
 
@@ -84,6 +89,7 @@ constexpr unsigned CpuFeaturesFromTargetOS() {
   features |= 1u << JSCVT;
   features |= 1u << DOTPROD;
   features |= 1u << LSE;
+  features |= 1u << PMULL1Q;
 #endif
   return features;
 }
@@ -120,6 +126,9 @@ void CpuFeatures::ProbeImpl(bool cross_compile) {
   }
   if (cpu.has_lse()) {
     runtime |= 1u << LSE;
+  }
+  if (cpu.has_pmull1q()) {
+    runtime |= 1u << PMULL1Q;
   }
 
   // Use the best of the features found by CPU detection and those inferred from
@@ -523,8 +532,7 @@ void Assembler::RemoveBranchFromLabelLinkChain(Instruction* branch,
       // currently referring to this label.
       label->Unuse();
     } else {
-      label->link_to(static_cast<int>(reinterpret_cast<uint8_t*>(next_link) -
-                                      buffer_start_));
+      label->link_to(static_cast<int>(InstructionOffset(next_link)));
     }
 
   } else if (branch == next_link) {
@@ -545,6 +553,26 @@ void Assembler::RemoveBranchFromLabelLinkChain(Instruction* branch,
         next_link = link->ImmPCOffsetTarget();
         end_of_chain = (link == next_link);
         link->SetImmPCOffsetTarget(options(), label_veneer);
+        // {link} is now resolved; remove it from {unresolved_branches_} so
+        // we won't later try to process it again, which would fail because
+        // by walking the chain of its label's unresolved branch instructions,
+        // we won't find it: {prev_link} is now the end of that chain after
+        // its update above.
+        if (link->IsCondBranchImm() || link->IsCompareBranch()) {
+          static_assert(Instruction::ImmBranchRange(CondBranchType) ==
+                        Instruction::ImmBranchRange(CompareBranchType));
+          int max_reachable_pc = static_cast<int>(InstructionOffset(link)) +
+                                 Instruction::ImmBranchRange(CondBranchType);
+          unresolved_branches_.erase(max_reachable_pc);
+        } else if (link->IsTestBranch()) {
+          // Add 1 to account for branch type tag bit.
+          int max_reachable_pc = static_cast<int>(InstructionOffset(link)) +
+                                 Instruction::ImmBranchRange(TestBranchType) +
+                                 1;
+          unresolved_branches_.erase(max_reachable_pc);
+        } else {
+          // Other branch types are not handled by veneers.
+        }
         link = next_link;
       }
     } else {
@@ -1638,8 +1666,6 @@ void Assembler::NEON3DifferentHN(const VRegister& vd, const VRegister& vn,
 }
 
 #define NEON_3DIFF_LONG_LIST(V)                                                \
-  V(pmull, NEON_PMULL, vn.IsVector() && vn.Is8B())                             \
-  V(pmull2, NEON_PMULL2, vn.IsVector() && vn.Is16B())                          \
   V(saddl, NEON_SADDL, vn.IsVector() && vn.IsD())                              \
   V(saddl2, NEON_SADDL2, vn.IsVector() && vn.IsQ())                            \
   V(sabal, NEON_SABAL, vn.IsVector() && vn.IsD())                              \
@@ -4154,6 +4180,22 @@ void Assembler::LoadStore(const CPURegister& rt, const MemOperand& addr,
   }
 }
 
+void Assembler::pmull(const VRegister& vd, const VRegister& vn,
+                      const VRegister& vm) {
+  DCHECK(AreSameFormat(vn, vm));
+  DCHECK((vn.Is8B() && vd.Is8H()) || (vn.Is1D() && vd.Is1Q()));
+  DCHECK(IsEnabled(PMULL1Q) || vd.Is8H());
+  Emit(VFormat(vn) | NEON_PMULL | Rm(vm) | Rn(vn) | Rd(vd));
+}
+
+void Assembler::pmull2(const VRegister& vd, const VRegister& vn,
+                       const VRegister& vm) {
+  DCHECK(AreSameFormat(vn, vm));
+  DCHECK((vn.Is16B() && vd.Is8H()) || (vn.Is2D() && vd.Is1Q()));
+  DCHECK(IsEnabled(PMULL1Q) || vd.Is8H());
+  Emit(VFormat(vn) | NEON_PMULL2 | Rm(vm) | Rn(vn) | Rd(vd));
+}
+
 bool Assembler::IsImmLSPair(int64_t offset, unsigned size) {
   bool offset_is_size_multiple =
       (static_cast<int64_t>(static_cast<uint64_t>(offset >> size) << size) ==
@@ -4709,17 +4751,8 @@ void Assembler::EmitVeneers(bool force_emit, bool need_protection,
         pc_offset -= Instruction::ImmBranchRange(CondBranchType);
       }
       tasks.emplace_back(FarBranchInfo{pc_offset, it->second});
-      auto eraser_it = it++;
-      unresolved_branches_.erase(eraser_it);
+      it = unresolved_branches_.erase(it);
     }
-  }
-
-  // Update next_veneer_pool_check_ (tightly coupled with unresolved_branches_).
-  if (unresolved_branches_.empty()) {
-    next_veneer_pool_check_ = kMaxInt;
-  } else {
-    next_veneer_pool_check_ =
-        unresolved_branches_first_limit() - kVeneerDistanceCheckMargin;
   }
 
   // Reminder: We iterate in reverse order to avoid duplicate linked-list
@@ -4732,6 +4765,16 @@ void Assembler::EmitVeneers(bool force_emit, bool need_protection,
     Instruction* veneer = reinterpret_cast<Instruction*>(
         reinterpret_cast<uintptr_t>(pc_) + i * kVeneerCodeSize);
     RemoveBranchFromLabelLinkChain(branch, tasks[i].label_, veneer);
+  }
+
+  // Update next_veneer_pool_check_ (tightly coupled with unresolved_branches_).
+  // This must happen after the calls to {RemoveBranchFromLabelLinkChain},
+  // because that function can resolve additional branches.
+  if (unresolved_branches_.empty()) {
+    next_veneer_pool_check_ = kMaxInt;
+  } else {
+    next_veneer_pool_check_ =
+        unresolved_branches_first_limit() - kVeneerDistanceCheckMargin;
   }
 
   // Now emit the actual veneer and patch up the incoming branch.

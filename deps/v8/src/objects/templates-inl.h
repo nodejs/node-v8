@@ -23,9 +23,16 @@ TQ_OBJECT_CONSTRUCTORS_IMPL(TemplateInfo)
 TQ_OBJECT_CONSTRUCTORS_IMPL(FunctionTemplateInfo)
 TQ_OBJECT_CONSTRUCTORS_IMPL(ObjectTemplateInfo)
 TQ_OBJECT_CONSTRUCTORS_IMPL(FunctionTemplateRareData)
+TQ_OBJECT_CONSTRUCTORS_IMPL(DictionaryTemplateInfo)
 
+NEVER_READ_ONLY_SPACE_IMPL(DictionaryTemplateInfo)
 NEVER_READ_ONLY_SPACE_IMPL(ObjectTemplateInfo)
 
+BOOL_ACCESSORS(FunctionTemplateInfo, relaxed_flag,
+               is_object_template_call_handler,
+               IsObjectTemplateCallHandlerBit::kShift)
+BOOL_ACCESSORS(FunctionTemplateInfo, relaxed_flag, has_side_effects,
+               HasSideEffectsBit::kShift)
 BOOL_ACCESSORS(FunctionTemplateInfo, relaxed_flag, undetectable,
                UndetectableBit::kShift)
 BOOL_ACCESSORS(FunctionTemplateInfo, relaxed_flag, needs_access_check,
@@ -48,11 +55,63 @@ BIT_FIELD_ACCESSORS(
     allowed_receiver_instance_type_range_end,
     FunctionTemplateInfo::AllowedReceiverInstanceTypeRangeEndBits)
 
+RELAXED_UINT32_ACCESSORS(FunctionTemplateInfo, flag,
+                         FunctionTemplateInfo::kFlagOffset)
+
 int32_t FunctionTemplateInfo::relaxed_flag() const {
   return flag(kRelaxedLoad);
 }
 void FunctionTemplateInfo::set_relaxed_flag(int32_t flags) {
   return set_flag(flags, kRelaxedStore);
+}
+
+Address FunctionTemplateInfo::callback(i::IsolateForSandbox isolate) const {
+  Address result = maybe_redirected_callback(isolate);
+  if (!USE_SIMULATOR_BOOL) return result;
+  if (result == kNullAddress) return kNullAddress;
+  return ExternalReference::UnwrapRedirection(result);
+}
+
+void FunctionTemplateInfo::init_callback(i::IsolateForSandbox isolate,
+                                         Address initial_value) {
+  init_maybe_redirected_callback(isolate, initial_value);
+  if (USE_SIMULATOR_BOOL) {
+    init_callback_redirection(isolate);
+  }
+}
+
+void FunctionTemplateInfo::set_callback(i::IsolateForSandbox isolate,
+                                        Address value) {
+  set_maybe_redirected_callback(isolate, value);
+  if (USE_SIMULATOR_BOOL) {
+    init_callback_redirection(isolate);
+  }
+}
+
+void FunctionTemplateInfo::init_callback_redirection(
+    i::IsolateForSandbox isolate) {
+  CHECK(USE_SIMULATOR_BOOL);
+  Address value = maybe_redirected_callback(isolate);
+  if (value == kNullAddress) return;
+  value =
+      ExternalReference::Redirect(value, ExternalReference::DIRECT_API_CALL);
+  set_maybe_redirected_callback(isolate, value);
+}
+
+void FunctionTemplateInfo::remove_callback_redirection(
+    i::IsolateForSandbox isolate) {
+  CHECK(USE_SIMULATOR_BOOL);
+  Address value = callback(isolate);
+  set_maybe_redirected_callback(isolate, value);
+}
+
+EXTERNAL_POINTER_ACCESSORS_MAYBE_READ_ONLY_HOST(
+    FunctionTemplateInfo, maybe_redirected_callback, Address,
+    kMaybeRedirectedCallbackOffset, kFunctionTemplateInfoCallbackTag)
+
+template <class IsolateT>
+bool FunctionTemplateInfo::has_callback(IsolateT* isolate) const {
+  return !IsTheHole(callback_data(kAcquireLoad), isolate);
 }
 
 // static
@@ -100,24 +159,53 @@ RARE_ACCESSORS(c_function_overloads, CFunctionOverloads, FixedArray,
                GetReadOnlyRoots(cage_base).empty_fixed_array())
 #undef RARE_ACCESSORS
 
-int FunctionTemplateInfo::InstanceType() const {
+InstanceType FunctionTemplateInfo::GetInstanceType() const {
   int type = instance_type();
-  DCHECK(type == kNoJSApiObjectType ||
-         (type >= Internals::kFirstJSApiObjectType &&
-          type <= Internals::kLastJSApiObjectType));
-  return type;
+  DCHECK(base::IsInRange(type, Internals::kFirstJSApiObjectType,
+                         Internals::kLastJSApiObjectType));
+  return static_cast<InstanceType>(type);
 }
 
-void FunctionTemplateInfo::SetInstanceType(int instance_type) {
-  if (instance_type == 0) {
-    set_instance_type(kNoJSApiObjectType);
-  } else {
-    DCHECK_GT(instance_type, 0);
-    DCHECK_LT(Internals::kFirstJSApiObjectType + instance_type,
-              Internals::kLastJSApiObjectType);
-    set_instance_type(Internals::kFirstJSApiObjectType + instance_type);
-  }
+void FunctionTemplateInfo::SetInstanceType(int api_instance_type) {
+  // Translate |api_instance_type| value from range
+  // [Internals::kFirstEmbedderJSApiObjectType,
+  //  Internals::kLastEmbedderJSApiObjectType] to range
+  // [Internals::kFirstJSApiObjectType, Internals::kLastJSApiObjectType].
+  DCHECK_LE(Internals::kFirstEmbedderJSApiObjectType, api_instance_type);
+  DCHECK_LE(api_instance_type, Internals::kLastEmbedderJSApiObjectType);
+  // kNoJSApiObjectType must correspond to JS_API_OBJECT_TYPE.
+  static_assert(kNoJSApiObjectType == 0);
+  static_assert(JS_API_OBJECT_TYPE == Internals::kFirstJSApiObjectType);
+  set_instance_type(static_cast<InstanceType>(
+      api_instance_type + Internals::kFirstJSApiObjectType));
 }
+
+void FunctionTemplateInfo::SetAllowedReceiverInstanceTypeRange(
+    int api_instance_type_start, int api_instance_type_end) {
+  // Translate |api_instance_type_start| and |api_instance_type_end| values
+  // from range [Internals::kFirstEmbedderJSApiObjectType,
+  //             Internals::kLastEmbedderJSApiObjectType] to range
+  // [Internals::kFirstJSApiObjectType, Internals::kLastJSApiObjectType].
+  DCHECK_LE(Internals::kFirstEmbedderJSApiObjectType, api_instance_type_start);
+  DCHECK_LE(api_instance_type_start, api_instance_type_end);
+  DCHECK_LE(api_instance_type_end, Internals::kLastEmbedderJSApiObjectType);
+  // kNoJSApiObjectType must correspond to JS_API_OBJECT_TYPE.
+  static_assert(kNoJSApiObjectType == 0);
+  static_assert(JS_API_OBJECT_TYPE == Internals::kFirstJSApiObjectType);
+  set_allowed_receiver_instance_type_range_start(static_cast<InstanceType>(
+      api_instance_type_start + Internals::kFirstJSApiObjectType));
+  set_allowed_receiver_instance_type_range_end(static_cast<InstanceType>(
+      api_instance_type_end + Internals::kFirstJSApiObjectType));
+}
+
+// Ensure that instance type fields in FunctionTemplateInfo are big enough
+// to fit the whole JSApiObject type range.
+static_assert(
+    FunctionTemplateInfo::AllowedReceiverInstanceTypeRangeStartBits::is_valid(
+        LAST_JS_API_OBJECT_TYPE));
+static_assert(
+    FunctionTemplateInfo::AllowedReceiverInstanceTypeRangeEndBits::is_valid(
+        LAST_JS_API_OBJECT_TYPE));
 
 bool TemplateInfo::should_cache() const {
   return serial_number() != kDoNotCache;

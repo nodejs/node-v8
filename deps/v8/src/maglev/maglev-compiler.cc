@@ -4,9 +4,11 @@
 
 #include "src/maglev/maglev-compiler.h"
 
+#include <algorithm>
 #include <iomanip>
 #include <ostream>
 #include <type_traits>
+#include <unordered_map>
 
 #include "src/base/iterator.h"
 #include "src/base/logging.h"
@@ -167,16 +169,24 @@ class MaxCallDepthProcessor {
 
 thread_local MaglevGraphLabeller* labeller_;
 
+template <typename NodeT>
+constexpr bool CanBeStoreToNonEscapedObject() {
+  return std::is_same_v<NodeT, StoreMap> ||
+         std::is_same_v<NodeT, StoreTaggedFieldWithWriteBarrier> ||
+         std::is_same_v<NodeT, StoreTaggedFieldNoWriteBarrier> ||
+         std::is_same_v<NodeT, StoreFloat64>;
+}
+
 class AnyUseMarkingProcessor {
  public:
   void PreProcessGraph(Graph* graph) {}
-  void PostProcessGraph(Graph* graph) {}
   void PreProcessBasicBlock(BasicBlock* block) {}
 
   template <typename NodeT>
   ProcessResult Process(NodeT* node, const ProcessingState& state) {
     if constexpr (IsValueNode(Node::opcode_of<NodeT>) &&
-                  !NodeT::kProperties.is_required_when_unused()) {
+                  (!NodeT::kProperties.is_required_when_unused() ||
+                   std::is_same_v<ArgumentsElements, NodeT>)) {
       if (!node->is_used()) {
         if (!node->unused_inputs_were_visited()) {
           DropInputUses(node);
@@ -184,18 +194,82 @@ class AnyUseMarkingProcessor {
         return ProcessResult::kRemove;
       }
     }
+
+    if constexpr (CanBeStoreToNonEscapedObject<NodeT>()) {
+      if (InlinedAllocation* object =
+              node->input(0).node()->template TryCast<InlinedAllocation>()) {
+        stores_to_allocations_.push_back(node);
+      }
+    }
+
     return ProcessResult::kContinue;
   }
 
+  void PostProcessGraph(Graph* graph) {
+    EscapeDependentAllocationsIfNeeded(graph->allocations());
+    DropUseOfValueInStoresToNonEscapingAllocations();
+  }
+
  private:
+  std::vector<Node*> stores_to_allocations_;
+
+  void EscapeDependentAllocationsIfNeeded(
+      DisjointZoneSet<InlinedAllocation*>& allocations) {
+    // Create a map from root to strongly connected components.
+    std::unordered_map<InlinedAllocation*, std::vector<InlinedAllocation*>>
+        components;
+    for (auto it : allocations.parent()) {
+      InlinedAllocation* root = allocations.Find(it.first);
+      components[root].push_back(it.first);
+    }
+    // If all nodes are not escaping in a strong connected set, then set all of
+    // them as not escaped.
+    for (auto component : components) {
+      auto& elements = component.second;
+      bool are_not_escaping = std::all_of(
+          elements.begin(), elements.end(),
+          [](InlinedAllocation* alloc) { return !alloc->IsEscaping(); });
+      if (are_not_escaping) {
+        for (auto alloc : elements) {
+          if (v8_flags.trace_maglev_escape_analysis) {
+            std::cout << "* Allocation " << PrintNodeLabel(labeller_, alloc)
+                      << " has not escaped" << std::endl;
+          }
+          alloc->SetHasEscaped(false);
+        }
+      }
+    }
+  }
+
+  void DropUseOfValueInStoresToNonEscapingAllocations() {
+    for (Node* node : stores_to_allocations_) {
+      InlinedAllocation* alloc =
+          node->input(0).node()->Cast<InlinedAllocation>();
+      // Since we don't analyze if allocations will escape until a fixpoint,
+      // this could drop an use of an allocation and turn it non-escaping.
+      if (!alloc->HasEscaped()) {
+        // Skip first input.
+        for (int i = 1; i < node->input_count(); i++) {
+          DropInputUses(node->input(i));
+        }
+      }
+    }
+  }
+
+  void DropInputUses(Input& input) {
+    ValueNode* input_node = input.node();
+    if (input_node->properties().is_required_when_unused() &&
+        !input_node->Is<ArgumentsElements>())
+      return;
+    input_node->remove_use();
+    if (!input_node->is_used() && !input_node->unused_inputs_were_visited()) {
+      DropInputUses(input_node);
+    }
+  }
+
   void DropInputUses(ValueNode* node) {
     for (Input& input : *node) {
-      ValueNode* input_node = input.node();
-      if (input_node->properties().is_required_when_unused()) continue;
-      input_node->remove_use();
-      if (!input_node->is_used() && !input_node->unused_inputs_were_visited()) {
-        DropInputUses(input_node);
-      }
+      DropInputUses(input);
     }
     DCHECK(!node->properties().can_eager_deopt());
     DCHECK(!node->properties().can_lazy_deopt());
@@ -209,18 +283,65 @@ class DeadNodeSweepingProcessor {
   void PostProcessGraph(Graph* graph) {}
   void PreProcessBasicBlock(BasicBlock* block) {}
 
-  ProcessResult Process(NodeBase* node, const ProcessingState& state) {
+  ProcessResult Process(AllocationBlock* node, const ProcessingState& state) {
+    // Note: this need to be done before ValueLocationConstraintProcessor, since
+    // it access the allocation offsets.
+    int size = 0;
+    for (auto alloc : node->allocation_list()) {
+      if (alloc->HasEscaped()) {
+        alloc->set_offset(size);
+        size += alloc->size();
+      }
+    }
+    // ... and update its size.
+    node->set_size(size);
+    // If size is zero, then none of the inlined allocations have escaped, we
+    // can remove the allocation block.
+    if (size == 0) return ProcessResult::kRemove;
     return ProcessResult::kContinue;
   }
 
-  ProcessResult Process(ValueNode* node, const ProcessingState& state) {
-    if (!node->is_used() && !node->properties().is_required_when_unused()) {
-      // The UseMarkingProcessor will clear dead forward jump Phis eagerly, so
-      // the only dead phis that should remain are loop and exception phis.
-      DCHECK_IMPLIES(node->Is<Phi>(),
-                     node->Cast<Phi>()->is_loop_phi() ||
-                         node->Cast<Phi>()->is_exception_phi());
+  ProcessResult Process(InlinedAllocation* node, const ProcessingState& state) {
+    // Remove inlined allocation that became non-escaping.
+    if (!node->HasEscaped()) {
+      if (v8_flags.trace_maglev_escape_analysis) {
+        std::cout << "* Removing allocation node "
+                  << PrintNodeLabel(labeller_, node) << std::endl;
+      }
       return ProcessResult::kRemove;
+    }
+    return ProcessResult::kContinue;
+  }
+
+  template <typename NodeT>
+  ProcessResult Process(NodeT* node, const ProcessingState& state) {
+    if constexpr (IsValueNode(Node::opcode_of<NodeT>) &&
+                  (!NodeT::kProperties.is_required_when_unused() ||
+                   std::is_same_v<ArgumentsElements, NodeT>)) {
+      if (!node->is_used()) {
+        if constexpr (std::is_same_v<NodeT, Phi>) {
+          // The UseMarkingProcessor will clear dead forward jump Phis eagerly,
+          // so the only dead phis that should remain are loop and exception
+          // phis.
+          DCHECK(node->is_loop_phi() || node->is_exception_phi());
+        }
+        return ProcessResult::kRemove;
+      }
+      return ProcessResult::kContinue;
+    }
+
+    if constexpr (CanBeStoreToNonEscapedObject<NodeT>()) {
+      if (InlinedAllocation* object =
+              node->input(0).node()->template TryCast<InlinedAllocation>()) {
+        if (!object->HasEscaped()) {
+          if (v8_flags.trace_maglev_escape_analysis) {
+            std::cout << "* Removing store node "
+                      << PrintNodeLabel(labeller_, node) << " to allocation "
+                      << PrintNodeLabel(labeller_, object) << std::endl;
+          }
+          return ProcessResult::kRemove;
+        }
+      }
     }
     return ProcessResult::kContinue;
   }
@@ -345,10 +466,15 @@ class LiveRangeAndNextUseProcessor {
     }
   }
   void MarkInputUses(Jump* node, const ProcessingState& state) {
+    MarkJumpInputUses(node->id(), node->target(), state);
+  }
+  void MarkInputUses(CheckpointedJump* node, const ProcessingState& state) {
+    MarkJumpInputUses(node->id(), node->target(), state);
+  }
+  void MarkJumpInputUses(uint32_t use, BasicBlock* target,
+                         const ProcessingState& state) {
     int i = state.block()->predecessor_id();
-    BasicBlock* target = node->target();
     if (!target->has_phi()) return;
-    uint32_t use = node->id();
     LoopUsedNodes* loop_used_nodes = GetCurrentLoopUsedNodes();
     Phi::List& phis = *target->phis();
     for (auto it = phis.begin(); it != phis.end();) {
@@ -388,6 +514,14 @@ class LiveRangeAndNextUseProcessor {
 
   void MarkUse(ValueNode* node, uint32_t use_id, InputLocation* input,
                LoopUsedNodes* loop_used_nodes) {
+    DCHECK(!node->Is<Identity>());
+    if (InlinedAllocation* alloc = node->TryCast<InlinedAllocation>()) {
+      if (!alloc->HasEscaped()) {
+        // No need to mark use. The allocation has survived as a deopt input.
+        return;
+      }
+    }
+
     node->record_next_use(use_id, input);
 
     // If we are in a loop, loop_used_nodes is non-null. In this case, check if
@@ -416,21 +550,27 @@ class LiveRangeAndNextUseProcessor {
     }
   }
 
-  void MarkCheckpointNodes(NodeBase* node, const EagerDeoptInfo* deopt_info,
+  void MarkCheckpointNodes(NodeBase* node, EagerDeoptInfo* deopt_info,
                            LoopUsedNodes* loop_used_nodes,
                            const ProcessingState& state) {
     int use_id = node->id();
     detail::DeepForEachInput(deopt_info,
-                             [&](ValueNode* node, InputLocation* input) {
+                             [&](ValueNode*& node, InputLocation* input) {
+                               if (node->Is<Identity>()) {
+                                 node = node->input(0).node();
+                               }
                                MarkUse(node, use_id, input, loop_used_nodes);
                              });
   }
-  void MarkCheckpointNodes(NodeBase* node, const LazyDeoptInfo* deopt_info,
+  void MarkCheckpointNodes(NodeBase* node, LazyDeoptInfo* deopt_info,
                            LoopUsedNodes* loop_used_nodes,
                            const ProcessingState& state) {
     int use_id = node->id();
     detail::DeepForEachInput(deopt_info,
-                             [&](ValueNode* node, InputLocation* input) {
+                             [&](ValueNode*& node, InputLocation* input) {
+                               if (node->Is<Identity>()) {
+                                 node = node->input(0).node();
+                               }
                                MarkUse(node, use_id, input, loop_used_nodes);
                              });
   }
@@ -452,6 +592,7 @@ bool MaglevCompiler::Compile(LocalIsolate* local_isolate,
   if (v8_flags.print_maglev_code || v8_flags.code_comments ||
       v8_flags.print_maglev_graph || v8_flags.print_maglev_graphs ||
       v8_flags.trace_maglev_graph_building ||
+      v8_flags.trace_maglev_escape_analysis ||
       v8_flags.trace_maglev_phi_untagging || v8_flags.trace_maglev_regalloc) {
     compilation_info->set_graph_labeller(labeller_ = new MaglevGraphLabeller());
   }

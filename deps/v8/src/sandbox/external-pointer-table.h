@@ -5,12 +5,14 @@
 #ifndef V8_SANDBOX_EXTERNAL_POINTER_TABLE_H_
 #define V8_SANDBOX_EXTERNAL_POINTER_TABLE_H_
 
+#include <vector>
+
 #include "include/v8config.h"
 #include "src/base/atomicops.h"
 #include "src/base/memory.h"
 #include "src/base/platform/mutex.h"
 #include "src/common/globals.h"
-#include "src/sandbox/external-entity-table.h"
+#include "src/sandbox/compactible-external-entity-table.h"
 
 #ifdef V8_COMPRESS_POINTERS
 
@@ -72,6 +74,9 @@ struct ExternalPointerTableEntry {
   // Make this entry an evacuation entry containing the address of the handle to
   // the entry being evacuated.
   inline void MakeEvacuationEntry(Address handle_location);
+
+  // Returns true if this entry contains an evacuation entry.
+  inline bool HasEvacuationEntry() const;
 
   // Move the content of this entry into the provided entry while also clearing
   // the marking bit. Used during table compaction. This invalidates the entry.
@@ -217,11 +222,7 @@ static_assert(sizeof(ExternalPointerTableEntry) == 8);
  *
  * Table memory management:
  * ------------------------
- * For the purpose of memory management, the table is partitioned into Segments
- * (for example 64kb memory chunks) that are grouped together in "Spaces". All
- * segments in a space share a freelist, and so entry allocation and garbage
- * collection happen on the level of spaces. The garbage collection algorithm
- * then works as follows:
+ * The garbage collection algorithm works as follows:
  *  - One bit of every entry is reserved for the marking bit.
  *  - Every store to an entry automatically sets the marking bit when ORing
  *    with the tag. This avoids the need for write barriers.
@@ -236,59 +237,13 @@ static_assert(sizeof(ExternalPointerTableEntry) == 8);
  *
  * Table compaction:
  * -----------------
- * The table's spaces are to some degree self-compacting: since the freelists
- * are sorted in ascending order (see SweepAndCompact()), segments at the start
- * of the table will usually be fairly well utilized, while later segments
- * might become completely free, in which case they will be deallocated.
- * However, as a single live entry may keep an entire segment alive, the
- * following simple algorithm is used to compact a space if that is deemed
- * necessary:
- *  - At the start of the GC marking phase, determine if a space needs to be
- *    compacted. This decisiont is mostly based on the absolute and relative
- *    size of the freelist.
- *  - If compaction is needed, this algorithm determines by how many segments
- *    it would like to shrink the space (N). It will then attempts to move all
- *    live entries out of these segments so that they can be deallocated
- *    afterwards during sweeping.
- *  - The algorithm then simply selects the last N segments for evacuation, and
- *    it "marks" them for evacuation simply by remembering the start of the
- *    first selected segment. Everything after this threshold value then
- *    becomes the evacuation area. In this way, it becomes very cheap to test
- *    if an entry or segment should be evacuated: only a single integer
- *    comparison against the threshold is required. It also establishes a
- *    simple compaction invariant that can be verified with a few DCHECKs:
- *    compaction always moves an entry at or above the threshold to a new
- *    position before the threshold.
- *  - During marking, whenever a live entry inside the evacuation area is
- *    found, a new "evacuation entry" is allocated from the freelist (which is
- *    assumed to have enough free slots) and the address of the handle in the
- *    object owning the table entry is written into it.
- *  - During sweeping, these evacuation entries are resolved: the content of
- *    the old entry is copied into the new entry and the handle in the object
- *    is updated to point to the new entry.
- *
- * When compacting, it is expected that the evacuation area contains few live
- * entries and that the freelist will be able to serve all evacuation entry
- * allocations. In that case, compaction is essentially free (very little
- * marking overhead, no memory overhead). However, it can happen that the
- * application allocates a large number of table entries during marking, in
- * which case we might end up allocating new entries inside the evacuation area
- * or even allocate entire new segments for the space that's being compacted.
- * If that situation is detected, compaction is aborted during marking.
- *
- * This algorithm assumes that table entries (except for the null entry) are
- * never shared between multiple objects. Otherwise, the following could
- * happen: object A initially has handle H1 and is scanned during incremental
- * marking. Next, object B with handle H2 is scanned and marked for
- * evacuation. Afterwards, object A copies the handle H2 from object B.
- * During sweeping, only object B's handle will be updated to point to the
- * new entry while object A's handle is now dangling. If shared entries ever
- * become necessary, setting external pointer handles would have to be
- * guarded by write barriers to avoid this scenario.
+ * Additionally, the external pointer table supports compaction.
+ * For details about the compaction algorithm see the
+ * CompactibleExternalEntityTable class.
  */
 class V8_EXPORT_PRIVATE ExternalPointerTable
-    : public ExternalEntityTable<ExternalPointerTableEntry,
-                                 kExternalPointerTableReservationSize> {
+    : public CompactibleExternalEntityTable<
+          ExternalPointerTableEntry, kExternalPointerTableReservationSize> {
 #if defined(LEAK_SANITIZER)
   //  When LSan is active, we use "fat" entries, see above.
   static_assert(kMaxExternalPointers == kMaxCapacity * 2);
@@ -306,53 +261,20 @@ class V8_EXPORT_PRIVATE ExternalPointerTable
 
   // The Spaces used by an ExternalPointerTable also contain the state related
   // to compaction.
-  struct Space : public ExternalEntityTable<
-                     ExternalPointerTableEntry,
-                     kExternalPointerTableReservationSize>::Space {
+  using CompactibleSpace = CompactibleExternalEntityTable<
+      ExternalPointerTableEntry, kExternalPointerTableReservationSize>::Space;
+  struct Space : public CompactibleSpace {
    public:
-    Space() : start_of_evacuation_area_(kNotCompactingMarker) {}
-
-    // Determine if compaction is needed and if so start the compaction.
-    // This is expected to be called at the start of the GC marking phase.
-    void StartCompactingIfNeeded();
-
-   private:
-    friend class ExternalPointerTable;
-
-    // Routines for compaction. See the comment about table compaction above.
-    inline bool IsCompacting();
-    inline void StartCompacting(uint32_t start_of_evacuation_area);
-    inline void StopCompacting();
-    inline void AbortCompacting(uint32_t start_of_evacuation_area);
-    inline bool CompactingWasAborted();
-
-    // This value indicates that this space is not currently being compacted. It
-    // is set to uint32_t max so that determining whether an entry should be
-    // evacuated becomes a single comparison:
-    // `bool should_be_evacuated = index >= start_of_evacuation_area`.
-    static constexpr uint32_t kNotCompactingMarker =
-        std::numeric_limits<uint32_t>::max();
-
-    // This value may be ORed into the start of evacuation area threshold
-    // during the GC marking phase to indicate that compaction has been
-    // aborted because the freelist grew to short and so evacuation entry
-    // allocation is no longer possible. This will prevent any further
-    // evacuation attempts as entries will be evacuated if their index is at or
-    // above the start of the evacuation area, which is now a huge value.
-    static constexpr uint32_t kCompactionAbortedMarker = 0xf0000000;
-
-    // When compacting this space, this field contains the index of the first
-    // entry in the evacuation area. The evacuation area then consists of all
-    // segments above this threshold, and the goal of compaction is to move all
-    // live entries out of these segments so that they can be deallocated after
-    // sweeping. The field can have the following values:
-    // - kNotCompactingMarker: compaction is not currently running.
-    // - A kEntriesPerSegment aligned value within: compaction is running and
-    //   all entries after this value should be evacuated.
-    // - A value that has kCompactionAbortedMarker in its top bits:
-    //   compaction has been aborted during marking. The original start of the
-    //   evacuation area is still contained in the lower bits.
-    std::atomic<uint32_t> start_of_evacuation_area_;
+    // During table compaction, we may record the addresses of fields
+    // containing external pointer handles (if they are evacuation candidates).
+    // As such, if such a field is invalidated (for example because the host
+    // object is converted to another object type), we need to be notified of
+    // that. Note that we do not need to care about "re-validated" fields here:
+    // if an external pointer field is first converted to different kind of
+    // field, then again converted to a external pointer field, then it will be
+    // re-initialized, at which point it will obtain a new entry in the
+    // external pointer table which cannot be a candidate for evacuation.
+    inline void NotifyExternalPointerFieldInvalidated(Address field_address);
   };
 
   // Initializes all slots in the RO space from pre-existing artifacts.
@@ -406,31 +328,13 @@ class V8_EXPORT_PRIVATE ExternalPointerTable
   uint32_t SweepAndCompact(Space* space, Counters* counters);
 
  private:
-  inline bool IsValidHandle(ExternalPointerHandle handle) const;
-  inline uint32_t HandleToIndex(ExternalPointerHandle handle) const;
-  inline ExternalPointerHandle IndexToHandle(uint32_t index) const;
+  static inline bool IsValidHandle(ExternalPointerHandle handle);
+  static inline uint32_t HandleToIndex(ExternalPointerHandle handle);
+  static inline ExternalPointerHandle IndexToHandle(uint32_t index);
 
-  inline void MaybeCreateEvacuationEntry(Space* space, uint32_t index,
-                                         Address handle_location);
-
-  void ResolveEvacuationEntryDuringSweeping(
+  bool TryResolveEvacuationEntryDuringSweeping(
       uint32_t index, ExternalPointerHandle* handle_location,
       uint32_t start_of_evacuation_area);
-
-#ifdef DEBUG
-  // In debug builds during GC marking, this value is ORed into
-  // ExternalPointerHandles whose entries are marked for evacuation. During
-  // sweeping, the Handles for evacuated entries are checked to have this
-  // marker value. This allows detecting re-initialized entries, which are
-  // problematic for compaction. This is only possible for entries marked for
-  // evacuation as the location of the Handle is only known for those.
-  static constexpr uint32_t kVisitedHandleMarker = 0x1;
-  static_assert(kExternalPointerIndexShift >= 1);
-
-  inline bool HandleWasVisitedDuringMarking(ExternalPointerHandle handle) {
-    return (handle & kVisitedHandleMarker) == kVisitedHandleMarker;
-  }
-#endif  // DEBUG
 
   // Outcome of external pointer table compaction to use for the
   // ExternalPointerTableCompactionOutcome histogram.

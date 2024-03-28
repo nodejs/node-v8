@@ -91,6 +91,16 @@ struct RuntimeCallDescriptor {
         Operator::kNoDeopt | Operator::kNoThrow;
   };
 
+  struct StackGuardWithGap : public Descriptor<StackGuardWithGap> {
+    static constexpr auto kFunction = Runtime::kStackGuardWithGap;
+    using arguments_t = std::tuple<V<Smi>>;
+    using result_t = V<Object>;
+
+    static constexpr bool kNeedsFrameState = false;
+    // TODO(nicohartmann@): Verify this.
+    static constexpr Operator::Properties kProperties = Operator::kNoProperties;
+  };
+
   struct StringCharCodeAt : public Descriptor<StringCharCodeAt> {
     static constexpr auto kFunction = Runtime::kStringCharCodeAt;
     using arguments_t = std::tuple<V<String>, V<Number>>;
@@ -140,6 +150,19 @@ struct RuntimeCallDescriptor {
     static constexpr bool kNeedsFrameState = false;
     static constexpr Operator::Properties kProperties =
         Operator::kNoDeopt | Operator::kNoThrow;
+  };
+
+  struct ThrowAccessedUninitializedVariable
+      : public Descriptor<ThrowAccessedUninitializedVariable> {
+    static constexpr auto kFunction =
+        Runtime::kThrowAccessedUninitializedVariable;
+    using arguments_t = std::tuple<V<Object>>;
+    // Doesn't actually return something, but the actual runtime call descriptor
+    // (returned by Linkage::GetRuntimeCallDescriptor) returns 1 instead of 0.
+    using result_t = V<Object>;
+
+    static constexpr bool kNeedsFrameState = true;
+    static constexpr Operator::Properties kProperties = Operator::kNoProperties;
   };
 };
 

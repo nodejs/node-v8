@@ -380,6 +380,8 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
     return private_name_lookup_skips_outer_class_;
   }
 
+  bool has_using_declaration() const { return has_using_declaration_; }
+
 #if V8_ENABLE_WEBASSEMBLY
   bool IsAsmModule() const;
   // Returns true if this scope or any inner scopes that might be eagerly
@@ -486,6 +488,7 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
     switch (scope_type_) {
       case MODULE_SCOPE:
       case WITH_SCOPE:  // DebugEvaluateContext as well
+      case SCRIPT_SCOPE:  // Side data for const tracking let.
         return true;
       default:
         DCHECK_IMPLIES(sloppy_eval_can_extend_vars_,
@@ -603,10 +606,6 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
     needs_home_object_ = true;
   }
 
-  VariableProxy* NewHomeObjectVariableProxy(AstNodeFactory* factory,
-                                            const AstRawString* name,
-                                            int start_pos);
-
   bool RemoveInnerScope(Scope* inner_scope) {
     DCHECK_NOT_NULL(inner_scope);
     if (inner_scope == inner_scope_) {
@@ -654,6 +653,7 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
     Variable* result = variables_.Declare(
         zone, this, name, mode, kind, initialization_flag, maybe_assigned_flag,
         IsStaticFlag::kNotStatic, was_added);
+    if (mode == VariableMode::kUsing) has_using_declaration_ = true;
     if (*was_added) locals_.Add(result);
     return result;
   }
@@ -849,6 +849,9 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
 
   bool needs_home_object_ : 1;
   bool is_block_scope_for_object_literal_ : 1;
+
+  // If declarations include any `using` declarations.
+  bool has_using_declaration_ : 1;
 };
 
 class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
@@ -865,7 +868,7 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
   FunctionKind function_kind() const { return function_kind_; }
 
   // Inform the scope that the corresponding code uses "super".
-  Scope* RecordSuperPropertyUsage() {
+  void RecordSuperPropertyUsage() {
     DCHECK(IsConciseMethod(function_kind()) ||
            IsAccessorFunction(function_kind()) ||
            IsClassConstructor(function_kind()));
@@ -873,7 +876,6 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
     Scope* home_object_scope = GetHomeObjectScope();
     DCHECK_NOT_NULL(home_object_scope);
     home_object_scope->set_needs_home_object();
-    return home_object_scope;
   }
 
   bool uses_super_property() const { return uses_super_property_; }

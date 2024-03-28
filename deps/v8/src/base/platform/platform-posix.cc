@@ -36,10 +36,9 @@
 #include <cmath>
 #include <cstdlib>
 
-#include "src/base/platform/platform-posix.h"
-
 #include "src/base/lazy-instance.h"
 #include "src/base/macros.h"
+#include "src/base/platform/platform-posix.h"
 #include "src/base/platform/platform.h"
 #include "src/base/platform/time.h"
 #include "src/base/utils/random-number-generator.h"
@@ -101,8 +100,6 @@ namespace {
 // 0 is never a valid thread id.
 const pthread_t kNoThread = static_cast<pthread_t>(0);
 
-bool g_hard_abort = false;
-
 const char* g_gc_fake_mmap = nullptr;
 
 DEFINE_LAZY_LEAKY_OBJECT_GETTER(RandomNumberGenerator,
@@ -134,7 +131,8 @@ int GetFlagsForMemoryPermission(OS::MemoryPermission access,
                                 PageType page_type) {
   int flags = MAP_ANONYMOUS;
   flags |= (page_type == PageType::kShared) ? MAP_SHARED : MAP_PRIVATE;
-  if (access == OS::MemoryPermission::kNoAccess) {
+  if (access == OS::MemoryPermission::kNoAccess ||
+      access == OS::MemoryPermission::kNoAccessWillJitLater) {
 #if !V8_OS_AIX && !V8_OS_FREEBSD && !V8_OS_QNX
     flags |= MAP_NORESERVE;
 #endif  // !V8_OS_AIX && !V8_OS_FREEBSD && !V8_OS_QNX
@@ -147,7 +145,8 @@ int GetFlagsForMemoryPermission(OS::MemoryPermission access,
   // hardened runtime/memory protection is enabled, which is optional (via code
   // signing) on Intel-based Macs but mandatory on Apple silicon ones. See also
   // https://developer.apple.com/documentation/apple-silicon/porting-just-in-time-compilers-to-apple-silicon.
-  if (access == OS::MemoryPermission::kNoAccessWillJitLater) {
+  if (access == OS::MemoryPermission::kNoAccessWillJitLater ||
+      access == OS::MemoryPermission::kReadWriteExecute) {
     flags |= MAP_JIT;
   }
 #endif  // V8_OS_DARWIN
@@ -251,14 +250,15 @@ bool OS::ArmUsingHardFloat() {
 #endif  // def __arm__
 #endif
 
-void PosixInitializeCommon(bool hard_abort, const char* const gc_fake_mmap) {
-  g_hard_abort = hard_abort;
+void PosixInitializeCommon(AbortMode abort_mode,
+                           const char* const gc_fake_mmap) {
+  g_abort_mode = abort_mode;
   g_gc_fake_mmap = gc_fake_mmap;
 }
 
 #if !V8_OS_FUCHSIA
-void OS::Initialize(bool hard_abort, const char* const gc_fake_mmap) {
-  PosixInitializeCommon(hard_abort, gc_fake_mmap);
+void OS::Initialize(AbortMode abort_mode, const char* const gc_fake_mmap) {
+  PosixInitializeCommon(abort_mode, gc_fake_mmap);
 }
 #endif  // !V8_OS_FUCHSIA
 
@@ -541,10 +541,8 @@ bool OS::RecommitPages(void* address, size_t size, MemoryPermission access) {
 #if defined(V8_OS_DARWIN)
   while (madvise(address, size, MADV_FREE_REUSE) == -1 && errno == EAGAIN) {
   }
-  return true;
-#else
-  return SetPermissions(address, size, access);
 #endif  // defined(V8_OS_DARWIN)
+  return true;
 }
 
 // static
@@ -694,8 +692,13 @@ void OS::Sleep(TimeDelta interval) {
 
 
 void OS::Abort() {
-  if (g_hard_abort) {
-    IMMEDIATE_CRASH();
+  switch (g_abort_mode) {
+    case AbortMode::kSoft:
+      _exit(-1);
+    case AbortMode::kHard:
+      IMMEDIATE_CRASH();
+    case AbortMode::kDefault:
+      break;
   }
   // Redirect to std abort to signal abnormal program termination.
   abort();
@@ -964,6 +967,7 @@ void OS::PrintError(const char* format, ...) {
   va_start(args, format);
   VPrintError(format, args);
   va_end(args);
+  fflush(stderr);
 }
 
 

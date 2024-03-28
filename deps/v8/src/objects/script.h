@@ -14,6 +14,7 @@
 #include "src/heap/local-factory.h"
 #include "src/objects/fixed-array.h"
 #include "src/objects/objects.h"
+#include "src/objects/string.h"
 #include "src/objects/struct.h"
 #include "torque-generated/bit-fields.h"
 
@@ -124,6 +125,9 @@ class Script : public TorqueGeneratedScript<Script, Struct> {
   inline bool produce_compile_hints() const;
   inline void set_produce_compile_hints(bool produce_compile_hints);
 
+  inline bool deserialized() const;
+  inline void set_deserialized(bool value);
+
   // [compilation_state]: determines whether the script has already been
   // compiled. Encoded in the 'flags' field.
   inline CompilationState compilation_state();
@@ -165,6 +169,10 @@ class Script : public TorqueGeneratedScript<Script, Struct> {
   // it doesn't exist yet.
   static inline void InitLineEnds(Isolate* isolate, Handle<Script> script);
   static inline void InitLineEnds(LocalIsolate* isolate, Handle<Script> script);
+
+  // Obtain line ends as a vector, without modifying the script object
+  static String::LineEndsVector GetLineEnds(Isolate* isolate,
+                                            Handle<Script> script);
 
   inline bool has_line_ends() const;
 

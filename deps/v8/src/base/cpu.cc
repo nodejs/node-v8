@@ -175,7 +175,7 @@ static V8_INLINE void __cpuid(int cpu_info[4], int info_type) {
 static std::tuple<uint32_t, uint32_t> ReadELFHWCaps() {
   uint32_t hwcap = 0;
   uint32_t hwcap2 = 0;
-#if defined(AT_HWCAP)
+#if (V8_GLIBC_PREREQ(2, 16) || V8_OS_ANDROID) && defined(AT_HWCAP)
   hwcap = static_cast<uint32_t>(getauxval(AT_HWCAP));
 #if defined(AT_HWCAP2)
   hwcap2 = static_cast<uint32_t>(getauxval(AT_HWCAP2));
@@ -196,7 +196,7 @@ static std::tuple<uint32_t, uint32_t> ReadELFHWCaps() {
         break;
       }
       if (entry.tag == AT_HWCAP) {
-        result = entry.value;
+        hwcap = entry.value;
         break;
       }
     }
@@ -399,6 +399,7 @@ CPU::CPU()
       has_sse41_(false),
       has_sse42_(false),
       is_atom_(false),
+      has_intel_jcc_erratum_(false),
       has_osxsave_(false),
       has_avx_(false),
       has_avx2_(false),
@@ -417,6 +418,7 @@ CPU::CPU()
       has_dot_prod_(false),
       has_lse_(false),
       has_mte_(false),
+      has_pmull1q_(false),
       is_fp64_mode_(false),
       has_non_stop_time_stamp_counter_(false),
       is_running_in_vm_(false),
@@ -499,6 +501,34 @@ CPU::CPU()
         case 0x4C:  // AMT
         case 0x6E:
           is_atom_ = true;
+      }
+
+      // CPUs that are affected by Intel JCC erratum:
+      // https://www.intel.com/content/dam/support/us/en/documents/processors/mitigations-jump-conditional-code-erratum.pdf
+      switch (model_) {
+        case 0x4E:
+          has_intel_jcc_erratum_ = stepping_ == 0x3;
+          break;
+        case 0x55:
+          has_intel_jcc_erratum_ = stepping_ == 0x4 || stepping_ == 0x7;
+          break;
+        case 0x5E:
+          has_intel_jcc_erratum_ = stepping_ == 0x3;
+          break;
+        case 0x8E:
+          has_intel_jcc_erratum_ = stepping_ == 0x9 || stepping_ == 0xA ||
+                                   stepping_ == 0xB || stepping_ == 0xC;
+          break;
+        case 0x9E:
+          has_intel_jcc_erratum_ = stepping_ == 0x9 || stepping_ == 0xA ||
+                                   stepping_ == 0xB || stepping_ == 0xD;
+          break;
+        case 0xA6:
+          has_intel_jcc_erratum_ = stepping_ == 0x0;
+          break;
+        case 0xAE:
+          has_intel_jcc_erratum_ = stepping_ == 0xA;
+          break;
       }
     }
   }
@@ -744,11 +774,21 @@ CPU::CPU()
 #if !defined(PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE)
   constexpr int PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE = 43;
 #endif
+#if !defined(PF_ARM_V81_ATOMIC_INSTRUCTIONS_AVAILABLE)
+  constexpr int PF_ARM_V81_ATOMIC_INSTRUCTIONS_AVAILABLE = 34;
+#endif
+#if !defined(PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE)
+  constexpr int PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE = 30;
+#endif
 
   has_jscvt_ =
       IsProcessorFeaturePresent(PF_ARM_V83_JSCVT_INSTRUCTIONS_AVAILABLE);
   has_dot_prod_ =
       IsProcessorFeaturePresent(PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE);
+  has_lse_ =
+      IsProcessorFeaturePresent(PF_ARM_V81_ATOMIC_INSTRUCTIONS_AVAILABLE);
+  has_pmull1q_ =
+      IsProcessorFeaturePresent(PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE);
 
 #elif V8_OS_LINUX
   // Try to extract the list of CPU features from ELF hwcaps.
@@ -759,6 +799,7 @@ CPU::CPU()
     has_jscvt_ = (hwcaps & HWCAP_JSCVT) != 0;
     has_dot_prod_ = (hwcaps & HWCAP_ASIMDDP) != 0;
     has_lse_ = (hwcaps & HWCAP_ATOMICS) != 0;
+    has_pmull1q_ = (hwcaps & HWCAP_PMULL) != 0;
   } else {
     // Try to fallback to "Features" CPUInfo field
     CPUInfo cpu_info;
@@ -766,6 +807,7 @@ CPU::CPU()
     has_jscvt_ = HasListItem(features, "jscvt");
     has_dot_prod_ = HasListItem(features, "asimddp");
     has_lse_ = HasListItem(features, "atomics");
+    has_pmull1q_ = HasListItem(features, "pmull");
     delete[] features;
   }
 #elif V8_OS_DARWIN
@@ -794,11 +836,20 @@ CPU::CPU()
   } else {
     has_lse_ = feat_lse;
   }
+  int64_t feat_pmull = 0;
+  size_t feat_pmull_size = sizeof(feat_pmull);
+  if (sysctlbyname("hw.optional.arm.FEAT_PMULL", &feat_pmull, &feat_pmull_size,
+                   nullptr, 0) == -1) {
+    has_pmull1q_ = false;
+  } else {
+    has_pmull1q_ = feat_pmull;
+  }
 #else
   // ARM64 Macs always have JSCVT, ASIMDDP and LSE.
   has_jscvt_ = true;
   has_dot_prod_ = true;
   has_lse_ = true;
+  has_pmull1q_ = true;
 #endif  // V8_OS_IOS
 #endif  // V8_OS_WIN
 

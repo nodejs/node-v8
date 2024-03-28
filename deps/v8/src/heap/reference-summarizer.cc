@@ -126,6 +126,14 @@ class ReferenceSummarizerMarkingVisitor
   bool TryMark(Tagged<HeapObject> obj) { return true; }
   bool IsMarked(Tagged<HeapObject> obj) const { return false; }
 
+  void MarkPointerTableEntry(Tagged<HeapObject> host,
+                             IndirectPointerSlot slot) {}
+
+  void VisitExternalPointer(Tagged<HeapObject> host,
+                            ExternalPointerSlot slot) override {}
+  void VisitCppHeapPointer(Tagged<HeapObject> host,
+                           CppHeapPointerSlot slot) override {}
+
  private:
   ReferenceSummarizerMarkingState* marking_state_;
 };

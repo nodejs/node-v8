@@ -81,6 +81,7 @@ bool Simulator::ProbeMemory(uintptr_t address, uintptr_t access_size) {
       trap_handler::ProbeMemory(last_accessed_byte, current_pc);
   if (!landing_pad) return true;
   set_pc(landing_pad);
+  set_reg(kWasmTrapHandlerFaultAddressRegister.code(), current_pc);
   return false;
 #else
   return true;
@@ -367,7 +368,7 @@ void Simulator::Init(FILE* stream) {
   // Allocate and setup the simulator stack.
   size_t stack_size = AllocatedStackSize();
 
-  stack_ = reinterpret_cast<uintptr_t>(new uint8_t[stack_size]);
+  stack_ = reinterpret_cast<uintptr_t>(new uint8_t[stack_size]());
   stack_limit_ = stack_ + kStackProtectionSize;
   uintptr_t tos = stack_ + stack_size - kStackProtectionSize;
   // The stack pointer must be 16-byte aligned.
@@ -1078,6 +1079,32 @@ void Simulator::AddSubWithCarry(Instruction* instr) {
   set_reg<T>(instr->Rd(), new_val);
 }
 
+sim_uint128_t Simulator::PolynomialMult128(uint64_t op1, uint64_t op2,
+                                           int lane_size_in_bits) const {
+  DCHECK_LE(static_cast<unsigned>(lane_size_in_bits), kDRegSizeInBits);
+  sim_uint128_t result = std::make_pair(0, 0);
+  sim_uint128_t op2q = std::make_pair(0, op2);
+  for (int i = 0; i < lane_size_in_bits; i++) {
+    if ((op1 >> i) & 1) {
+      result = Eor128(result, Lsl128(op2q, i));
+    }
+  }
+  return result;
+}
+
+sim_uint128_t Simulator::Lsl128(sim_uint128_t x, unsigned shift) const {
+  DCHECK_LE(shift, 64);
+  if (shift == 0) return x;
+  if (shift == 64) return std::make_pair(x.second, 0);
+  uint64_t lo = x.second << shift;
+  uint64_t hi = (x.first << shift) | (x.second >> (64 - shift));
+  return std::make_pair(hi, lo);
+}
+
+sim_uint128_t Simulator::Eor128(sim_uint128_t x, sim_uint128_t y) const {
+  return std::make_pair(x.first ^ y.first, x.second ^ y.second);
+}
+
 template <typename T>
 T Simulator::ShiftOperand(T value, Shift shift_type, unsigned amount) {
   using unsignedT = typename std::make_unsigned<T>::type;
@@ -1685,7 +1712,7 @@ void Simulator::VisitUnconditionalBranch(Instruction* instr) {
   switch (instr->Mask(UnconditionalBranchMask)) {
     case BL:
       set_lr(instr->following());
-      V8_FALLTHROUGH;
+      [[fallthrough]];
     case B:
       set_pc(instr->ImmPCOffsetTarget());
       break;
@@ -1725,7 +1752,7 @@ void Simulator::VisitUnconditionalBranchToRegister(Instruction* instr) {
         // this, but if we do trap to allow debugging.
         Debug();
       }
-      V8_FALLTHROUGH;
+      [[fallthrough]];
     }
     case BR:
     case RET:
@@ -1884,7 +1911,7 @@ void Simulator::LogicalHelper(Instruction* instr, T op2) {
   switch (instr->Mask(LogicalOpMask & ~NOT)) {
     case ANDS:
       update_flags = true;
-      V8_FALLTHROUGH;
+      [[fallthrough]];
     case AND:
       result = op1 & op2;
       break;
@@ -3714,6 +3741,7 @@ void Simulator::VisitSystem(Instruction* instr) {
     DCHECK(instr->Mask(SystemHintMask) == HINT);
     switch (instr->ImmHint()) {
       case NOP:
+      case YIELD:
       case CSDB:
       case BTI_jc:
       case BTI:
@@ -4776,13 +4804,24 @@ void Simulator::VisitNEON3Different(Instruction* instr) {
   SimVRegister& rd = vreg(instr->Rd());
   SimVRegister& rn = vreg(instr->Rn());
   SimVRegister& rm = vreg(instr->Rm());
+  int size = instr->NEONSize();
 
   switch (instr->Mask(NEON3DifferentMask)) {
     case NEON_PMULL:
-      pmull(vf_l, rd, rn, rm);
+      if ((size == 1) || (size == 2)) {  // S/D reserved.
+        VisitUnallocated(instr);
+      } else {
+        if (size == 3) vf_l = kFormat1Q;
+        pmull(vf_l, rd, rn, rm);
+      }
       break;
     case NEON_PMULL2:
-      pmull2(vf_l, rd, rn, rm);
+      if ((size == 1) || (size == 2)) {  // S/D reserved.
+        VisitUnallocated(instr);
+      } else {
+        if (size == 3) vf_l = kFormat1Q;
+        pmull2(vf_l, rd, rn, rm);
+      }
       break;
     case NEON_UADDL:
       uaddl(vf_l, rd, rn, rm);
@@ -5209,17 +5248,17 @@ void Simulator::NEONLoadStoreMultiStructHelper(const Instruction* instr,
     case NEON_LD1_4v_post:
       ld1(vf, vreg(reg[3]), addr[3]);
       count++;
-      V8_FALLTHROUGH;
+      [[fallthrough]];
     case NEON_LD1_3v:
     case NEON_LD1_3v_post:
       ld1(vf, vreg(reg[2]), addr[2]);
       count++;
-      V8_FALLTHROUGH;
+      [[fallthrough]];
     case NEON_LD1_2v:
     case NEON_LD1_2v_post:
       ld1(vf, vreg(reg[1]), addr[1]);
       count++;
-      V8_FALLTHROUGH;
+      [[fallthrough]];
     case NEON_LD1_1v:
     case NEON_LD1_1v_post:
       ld1(vf, vreg(reg[0]), addr[0]);
@@ -5228,17 +5267,17 @@ void Simulator::NEONLoadStoreMultiStructHelper(const Instruction* instr,
     case NEON_ST1_4v_post:
       st1(vf, vreg(reg[3]), addr[3]);
       count++;
-      V8_FALLTHROUGH;
+      [[fallthrough]];
     case NEON_ST1_3v:
     case NEON_ST1_3v_post:
       st1(vf, vreg(reg[2]), addr[2]);
       count++;
-      V8_FALLTHROUGH;
+      [[fallthrough]];
     case NEON_ST1_2v:
     case NEON_ST1_2v_post:
       st1(vf, vreg(reg[1]), addr[1]);
       count++;
-      V8_FALLTHROUGH;
+      [[fallthrough]];
     case NEON_ST1_1v:
     case NEON_ST1_1v_post:
       st1(vf, vreg(reg[0]), addr[0]);
@@ -5352,7 +5391,7 @@ void Simulator::NEONLoadStoreSingleStructHelper(const Instruction* instr,
     case NEON_LD4_b:
     case NEON_LD4_b_post:
       do_load = true;
-      V8_FALLTHROUGH;
+      [[fallthrough]];
     case NEON_ST1_b:
     case NEON_ST1_b_post:
     case NEON_ST2_b:
@@ -5372,7 +5411,7 @@ void Simulator::NEONLoadStoreSingleStructHelper(const Instruction* instr,
     case NEON_LD4_h:
     case NEON_LD4_h_post:
       do_load = true;
-      V8_FALLTHROUGH;
+      [[fallthrough]];
     case NEON_ST1_h:
     case NEON_ST1_h_post:
     case NEON_ST2_h:
@@ -5393,7 +5432,7 @@ void Simulator::NEONLoadStoreSingleStructHelper(const Instruction* instr,
     case NEON_LD4_s:
     case NEON_LD4_s_post:
       do_load = true;
-      V8_FALLTHROUGH;
+      [[fallthrough]];
     case NEON_ST1_s:
     case NEON_ST1_s_post:
     case NEON_ST2_s:

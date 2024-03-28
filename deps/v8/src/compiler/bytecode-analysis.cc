@@ -106,7 +106,8 @@ template <Bytecode bytecode, OperandType operand_type, size_t i>
 void UpdateInLivenessForOutOperand(
     BytecodeLivenessState* in_liveness,
     const interpreter::BytecodeArrayIterator& iterator) {
-  if constexpr (operand_type == OperandType::kRegOut) {
+  if constexpr (operand_type == OperandType::kRegOut ||
+                operand_type == OperandType::kRegInOut) {
     Register r = iterator.GetRegisterOperand(i);
     if (!r.is_parameter()) {
       in_liveness->MarkRegisterDead(r.index());
@@ -145,7 +146,8 @@ template <Bytecode bytecode, OperandType operand_type, size_t i>
 void UpdateInLivenessForInOperand(
     BytecodeLivenessState* in_liveness,
     const interpreter::BytecodeArrayIterator& iterator) {
-  if constexpr (operand_type == OperandType::kReg) {
+  if constexpr (operand_type == OperandType::kReg ||
+                operand_type == OperandType::kRegInOut) {
     Register r = iterator.GetRegisterOperand(i);
     if (!r.is_parameter()) {
       in_liveness->MarkRegisterLive(r.index());
@@ -435,6 +437,7 @@ void UpdateAssignments(Bytecode bytecode, BytecodeLoopAssignments* assignments,
 
   for (int i = 0; i < num_operands; ++i) {
     switch (operand_types[i]) {
+      case OperandType::kRegInOut:
       case OperandType::kRegOut: {
         assignments->Add(iterator.GetRegisterOperand(i));
         break;
@@ -596,6 +599,19 @@ void BytecodeAnalysis::Analyze() {
           ResumeJumpTarget::Leaf(suspend_id, resume_offset));
     }
 
+    if (loop_stack_.size() > 1) {
+      auto& loop = loop_stack_.top();
+      if (Bytecodes::IsCallOrConstruct(bytecode)) {
+        loop.loop_info->mark_non_trivial();
+      } else if (Bytecodes::IsUnconditionalJump(bytecode) &&
+                 bytecode != Bytecode::kJumpLoop) {
+        int target = iterator.GetJumpTargetOffset();
+        if (target < loop.loop_info->loop_end()) {
+          loop.loop_info->mark_non_trivial();
+        }
+      }
+    }
+
     if (analyze_liveness_) {
       BytecodeLiveness& liveness =
           liveness_map().InsertNewLiveness(current_offset);
@@ -698,6 +714,7 @@ void BytecodeAnalysis::PushLoop(int loop_header, int loop_end) {
 
   if (loop_stack_.top().loop_info) {
     loop_stack_.top().loop_info->mark_not_innermost();
+    loop_stack_.top().loop_info->mark_non_trivial();
   }
   loop_stack_.push({loop_header, loop_info});
 }

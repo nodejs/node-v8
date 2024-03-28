@@ -127,14 +127,14 @@ void ProfilerListener::CodeCreateEvent(CodeTag tag,
     is_shared_cross_origin = script->origin_options().IsSharedCrossOrigin();
 
     bool is_baseline = abstract_code->kind(cage_base) == CodeKind::BASELINE;
-    Handle<ByteArray> source_position_table(
+    Handle<TrustedByteArray> source_position_table(
         abstract_code->SourcePositionTable(isolate_, *shared), isolate_);
     std::unique_ptr<baseline::BytecodeOffsetIterator> baseline_iterator;
     if (is_baseline) {
       Handle<BytecodeArray> bytecodes(shared->GetBytecodeArray(isolate_),
                                       isolate_);
-      Handle<ByteArray> bytecode_offsets(
-          abstract_code->GetCode()->bytecode_offset_table(cage_base), isolate_);
+      Handle<TrustedByteArray> bytecode_offsets(
+          abstract_code->GetCode()->bytecode_offset_table(), isolate_);
       baseline_iterator = std::make_unique<baseline::BytecodeOffsetIterator>(
           bytecode_offsets, bytecodes);
     }
@@ -363,6 +363,10 @@ const char* ProfilerListener::GetName(base::Vector<const char> name) {
   // TODO(all): Change {StringsStorage} to accept non-null-terminated strings.
   base::OwnedVector<char> null_terminated =
       base::OwnedVector<char>::New(name.size() + 1);
+#if defined(__GNUC__) && !defined(__clang__)
+  // Work around a spurious GCC-12 warning (-Werror=array-bounds).
+  if (name.end() < name.begin()) return nullptr;
+#endif
   std::copy(name.begin(), name.end(), null_terminated.begin());
   null_terminated[name.size()] = '\0';
   return GetName(null_terminated.begin());

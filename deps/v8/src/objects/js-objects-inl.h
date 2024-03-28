@@ -15,6 +15,8 @@
 #include "src/objects/fixed-array.h"
 #include "src/objects/hash-table-inl.h"
 #include "src/objects/heap-number-inl.h"
+#include "src/objects/heap-object-inl.h"
+#include "src/objects/heap-object.h"
 #include "src/objects/instance-type-inl.h"
 #include "src/objects/js-objects.h"
 #include "src/objects/keys.h"
@@ -39,6 +41,7 @@ namespace internal {
 TQ_OBJECT_CONSTRUCTORS_IMPL(JSReceiver)
 TQ_OBJECT_CONSTRUCTORS_IMPL(JSObject)
 TQ_OBJECT_CONSTRUCTORS_IMPL(JSObjectWithEmbedderSlots)
+TQ_OBJECT_CONSTRUCTORS_IMPL(JSAPIObjectWithEmbedderSlots)
 TQ_OBJECT_CONSTRUCTORS_IMPL(JSCustomElementsObject)
 TQ_OBJECT_CONSTRUCTORS_IMPL(JSSpecialObject)
 TQ_OBJECT_CONSTRUCTORS_IMPL(JSAsyncFromSyncIterator)
@@ -224,7 +227,7 @@ void JSObject::EnsureCanContainElements(Handle<JSObject> object,
       mode = DONT_ALLOW_DOUBLE_ELEMENTS;
     }
     ObjectSlot objects =
-        Handle<FixedArray>::cast(elements)->GetFirstElementAddress();
+        Handle<FixedArray>::cast(elements)->RawFieldOfFirstElement();
     EnsureCanContainElements(object, objects, length, mode);
     return;
   }
@@ -298,9 +301,10 @@ int JSObject::GetEmbedderFieldsStartOffset() {
 bool JSObject::MayHaveEmbedderFields(Tagged<Map> map) {
   InstanceType instance_type = map->instance_type();
   // TODO(v8) It'd be nice if all objects with embedder data slots inherited
-  // from JSObjectWithEmbedderSlots, but this is currently not possible due to
-  // instance_type constraints.
+  // from JSObjectJSAPIObjectWithEmbedderSlotsWithEmbedderSlots, but this is
+  // currently not possible due to instance_type constraints.
   return InstanceTypeChecker::IsJSObjectWithEmbedderSlots(instance_type) ||
+         InstanceTypeChecker::IsJSAPIObjectWithEmbedderSlots(instance_type) ||
          InstanceTypeChecker::IsJSSpecialObject(instance_type);
 }
 
@@ -345,10 +349,15 @@ void JSObject::SetEmbedderField(int index, Tagged<Smi> value) {
   EmbedderDataSlot(Tagged(*this), index).store_smi(value);
 }
 
-bool JSObject::IsDroppableApiObject() const {
-  auto instance_type = map()->instance_type();
+// static
+bool JSObject::IsDroppableApiObject(const Tagged<Map> map) {
+  auto instance_type = map->instance_type();
   return InstanceTypeChecker::IsJSApiObject(instance_type) ||
          instance_type == JS_SPECIAL_API_OBJECT_TYPE;
+}
+
+bool JSObject::IsDroppableApiObject() const {
+  return IsDroppableApiObject(map());
 }
 
 // Access fast-case object properties at index. The use of these routines
@@ -480,10 +489,10 @@ void JSObject::WriteToField(InternalIndex descriptor, PropertyDetails details,
       bits = kHoleNanInt64;
     } else {
       DCHECK(IsHeapNumber(value));
-      bits = HeapNumber::cast(value)->value_as_bits(kRelaxedLoad);
+      bits = HeapNumber::cast(value)->value_as_bits();
     }
     auto box = HeapNumber::cast(RawFastPropertyAt(index));
-    box->set_value_as_bits(bits, kRelaxedStore);
+    box->set_value_as_bits(bits);
   } else {
     FastPropertyAtPut(index, value);
   }
@@ -612,9 +621,29 @@ TQ_OBJECT_CONSTRUCTORS_IMPL(JSExternalObject)
 EXTERNAL_POINTER_ACCESSORS(JSExternalObject, value, void*, kValueOffset,
                            kExternalObjectValueTag)
 
-DEF_GETTER(JSGlobalObject, native_context_unchecked, Tagged<Object>) {
-  return TaggedField<Object, kNativeContextOffset>::Relaxed_Load(cage_base,
-                                                                 *this);
+JSApiWrapper::JSApiWrapper(Tagged<JSObject> object) : object_(object) {
+  DCHECK(IsJSAPIObjectWithEmbedderSlots(object) || IsJSSpecialObject(object));
+}
+
+template <ExternalPointerTag tag>
+void* JSApiWrapper::GetCppHeapWrappable(
+    IsolateForPointerCompression isolate) const {
+  return reinterpret_cast<void*>(object_->TryReadCppHeapPointerField<tag>(
+      kCppHeapWrappableOffset, isolate));
+}
+
+template <ExternalPointerTag tag>
+void JSApiWrapper::SetCppHeapWrappable(IsolateForPointerCompression isolate,
+                                       void* instance) {
+  if (instance == nullptr) {
+    object_->ResetLazilyInitializedCppHeapPointerField(
+        JSAPIObjectWithEmbedderSlots::kCppHeapWrappableOffset);
+    return;
+  }
+  object_->WriteLazilyInitializedCppHeapPointerField<tag>(
+      JSAPIObjectWithEmbedderSlots::kCppHeapWrappableOffset, isolate,
+      reinterpret_cast<Address>(instance));
+  WriteBarrier::MarkingFromCppHeapWrappable(object_, instance);
 }
 
 bool JSMessageObject::DidEnsureSourcePositionsAvailable() const {
@@ -824,8 +853,7 @@ DEF_GETTER(JSReceiver, HasFastProperties, bool) {
       raw_properties_or_hash(cage_base, kRelaxedLoad);
   DCHECK(IsSmi(raw_properties_or_hash_obj) ||
          ((IsGlobalDictionary(raw_properties_or_hash_obj, cage_base) ||
-           IsNameDictionary(raw_properties_or_hash_obj, cage_base) ||
-           IsSwissNameDictionary(raw_properties_or_hash_obj, cage_base)) ==
+           IsPropertyDictionary(raw_properties_or_hash_obj, cage_base)) ==
           map(cage_base)->is_dictionary_map()));
   USE(raw_properties_or_hash_obj);
   return !map(cage_base)->is_dictionary_map();
@@ -864,6 +892,23 @@ DEF_GETTER(JSReceiver, property_array, Tagged<PropertyArray>) {
     return GetReadOnlyRoots(cage_base).empty_property_array();
   }
   return PropertyArray::cast(prop);
+}
+
+base::Optional<Tagged<NativeContext>> JSReceiver::GetCreationContext() {
+  DisallowGarbageCollection no_gc;
+  Tagged<Map> meta_map = map()->map();
+  DCHECK(IsMapMap(meta_map));
+  Tagged<Object> maybe_native_context = meta_map->native_context_or_null();
+  if (IsNull(maybe_native_context)) return {};
+  DCHECK(IsNativeContext(maybe_native_context));
+  return NativeContext::cast(maybe_native_context);
+}
+
+MaybeHandle<NativeContext> JSReceiver::GetCreationContext(Isolate* isolate) {
+  DisallowGarbageCollection no_gc;
+  base::Optional<Tagged<NativeContext>> maybe_context = GetCreationContext();
+  if (!maybe_context.has_value()) return {};
+  return handle(maybe_context.value(), isolate);
 }
 
 Maybe<bool> JSReceiver::HasProperty(Isolate* isolate, Handle<JSReceiver> object,
@@ -928,6 +973,10 @@ Maybe<PropertyAttributes> JSReceiver::GetOwnElementAttributes(
   Isolate* isolate = object->GetIsolate();
   LookupIterator it(isolate, object, index, object, LookupIterator::OWN);
   return GetPropertyAttributes(&it);
+}
+
+Tagged<NativeContext> JSGlobalObject::native_context() {
+  return *GetCreationContext();
 }
 
 bool JSGlobalObject::IsDetached() {

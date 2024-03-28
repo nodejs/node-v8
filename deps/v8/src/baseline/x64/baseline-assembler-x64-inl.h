@@ -77,7 +77,9 @@ MemOperand BaselineAssembler::FeedbackCellOperand() {
 void BaselineAssembler::Bind(Label* label) { __ bind(label); }
 
 void BaselineAssembler::JumpTarget() {
-  // NOP on x64.
+#ifdef V8_ENABLE_CET_IBT
+  __ endbr64();
+#endif
 }
 
 void BaselineAssembler::Jump(Label* target, Label::Distance distance) {
@@ -517,16 +519,8 @@ void BaselineAssembler::StaModuleVariable(Register context, Register value,
   StoreTaggedFieldWithWriteBarrier(context, Cell::kValueOffset, value);
 }
 
-void BaselineAssembler::AddSmi(Register lhs, Tagged<Smi> rhs) {
-  if (rhs.value() == 0) return;
-  if (SmiValuesAre31Bits()) {
-    __ addl(lhs, Immediate(rhs));
-  } else {
-    ScratchRegisterScope scratch_scope(this);
-    Register rhs_reg = scratch_scope.AcquireScratch();
-    __ Move(rhs_reg, rhs);
-    __ addq(lhs, rhs_reg);
-  }
+void BaselineAssembler::IncrementSmi(MemOperand lhs) {
+  __ SmiAddConstant(lhs, Smi::FromInt(1));
 }
 
 void BaselineAssembler::Word32And(Register output, Register lhs, int rhs) {

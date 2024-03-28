@@ -5,6 +5,7 @@
 #ifndef V8_HEAP_FACTORY_INL_H_
 #define V8_HEAP_FACTORY_INL_H_
 
+#include "src/common/globals.h"
 #include "src/heap/factory.h"
 
 // Clients of this interface shouldn't depend on lots of heap internals.
@@ -16,6 +17,7 @@
 #include "src/heap/heap-inl.h"  // For MaxNumberToStringCacheSize.
 #include "src/objects/feedback-cell.h"
 #include "src/objects/heap-number-inl.h"
+#include "src/objects/heap-object.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/oddball.h"
 #include "src/objects/string-inl.h"
@@ -62,27 +64,29 @@ Handle<String> Factory::NewSubString(Handle<String> str, int begin, int end) {
   return NewProperSubString(str, begin, end);
 }
 
-Handle<JSArray> Factory::NewJSArrayWithElements(Handle<FixedArrayBase> elements,
-                                                ElementsKind elements_kind,
-                                                AllocationType allocation) {
+Handle<JSArray> Factory::NewJSArrayWithElements(
+    DirectHandle<FixedArrayBase> elements, ElementsKind elements_kind,
+    AllocationType allocation) {
   return NewJSArrayWithElements(elements, elements_kind, elements->length(),
                                 allocation);
 }
 
 Handle<JSObject> Factory::NewFastOrSlowJSObjectFromMap(
-    Handle<Map> map, int number_of_slow_properties, AllocationType allocation,
-    Handle<AllocationSite> allocation_site) {
-  return map->is_dictionary_map()
-             ? NewSlowJSObjectFromMap(map, number_of_slow_properties,
-                                      allocation, allocation_site)
-             : NewJSObjectFromMap(map, allocation, allocation_site);
+    DirectHandle<Map> map, int number_of_slow_properties,
+    AllocationType allocation, DirectHandle<AllocationSite> allocation_site,
+    NewJSObjectType new_js_object_type) {
+  auto js_object =
+      map->is_dictionary_map()
+          ? NewSlowJSObjectFromMap(map, number_of_slow_properties, allocation,
+                                   allocation_site, new_js_object_type)
+          : NewJSObjectFromMap(map, allocation, allocation_site,
+                               new_js_object_type);
+  return js_object;
 }
 
-Handle<JSObject> Factory::NewFastOrSlowJSObjectFromMap(Handle<Map> map) {
-  return NewFastOrSlowJSObjectFromMap(
-      map, V8_ENABLE_SWISS_NAME_DICTIONARY_BOOL
-               ? SwissNameDictionary::kInitialCapacity
-               : NameDictionary::kInitialCapacity);
+Handle<JSObject> Factory::NewFastOrSlowJSObjectFromMap(DirectHandle<Map> map) {
+  return NewFastOrSlowJSObjectFromMap(map,
+                                      PropertyDictionary::kInitialCapacity);
 }
 
 Handle<Object> Factory::NewURIError() {
@@ -98,8 +102,13 @@ HeapAllocator* Factory::allocator() const {
   return isolate()->heap()->allocator();
 }
 
+Factory::CodeBuilder& Factory::CodeBuilder::set_empty_source_position_table() {
+  return set_source_position_table(
+      isolate_->factory()->empty_trusted_byte_array());
+}
+
 Factory::CodeBuilder& Factory::CodeBuilder::set_interpreter_data(
-    Handle<HeapObject> interpreter_data) {
+    Handle<TrustedObject> interpreter_data) {
   // This DCHECK requires this function to be in -inl.h.
   DCHECK(IsInterpreterData(*interpreter_data) ||
          IsBytecodeArray(*interpreter_data));
@@ -107,8 +116,8 @@ Factory::CodeBuilder& Factory::CodeBuilder::set_interpreter_data(
   return *this;
 }
 
-void Factory::NumberToStringCacheSet(Handle<Object> number, int hash,
-                                     Handle<String> js_string) {
+void Factory::NumberToStringCacheSet(DirectHandle<Object> number, int hash,
+                                     DirectHandle<String> js_string) {
   if (!IsUndefined(number_string_cache()->get(hash * 2), isolate()) &&
       !v8_flags.optimize_for_size) {
     int full_size = isolate()->heap()->MaxNumberToStringCacheSize();
