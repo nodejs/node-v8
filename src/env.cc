@@ -524,7 +524,7 @@ void IsolateData::CreateProperties() {
 // Now V8 has deprecated this layout-based tracing enablement, embeders
 // should simply use v8::Object::Wrap() and v8::Object::Unwrap(). We preserve
 // this layout only to distinguish internally how the memory of a Node.js
-// wrapper is managed.
+// wrapper is managed or whether a wrapper is managed by Node.js.
 constexpr uint16_t kDefaultCppGCEmebdderID = 0x90de;
 Mutex IsolateData::isolate_data_mutex_;
 std::unordered_map<uint16_t, std::unique_ptr<PerIsolateWrapperData>>
