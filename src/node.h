@@ -1563,6 +1563,9 @@ void RegisterSignalHandler(int signal,
                            bool reset_handler = false);
 #endif  // _WIN32
 
+// This is kept as a compatibility layer for addons to wrap cppgc-managed objects
+// on Node.js versions without v8::Object::Wrap(). Addons created to work with
+// only Node.js versions with v8::Object::Wrap() should use that instead.
 NODE_DEPRECATED("Use v8::Object::Wrap()",
                 NODE_EXTERN void SetCppgcReference(v8::Isolate* isolate,
                                                    v8::Local<v8::Object> object,

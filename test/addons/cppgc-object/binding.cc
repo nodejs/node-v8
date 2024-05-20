@@ -21,8 +21,7 @@ class CppGCed : public cppgc::GarbageCollected<CppGCed> {
     assert(heap != nullptr);
     CppGCed* gc_object =
         cppgc::MakeGarbageCollected<CppGCed>(heap->GetAllocationHandle());
-    v8::Object::Wrap<v8::CppHeapPointerTag::kDefaultTag>(
-        isolate, js_object, gc_object);
+    node::SetCppgcReference(isolate, js_object, gc_object);
     args.GetReturnValue().Set(js_object);
   }
 

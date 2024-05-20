@@ -23,8 +23,7 @@ class CppGCed : public cppgc::GarbageCollected<CppGCed> {
     CHECK_NOT_NULL(heap);
     CppGCed* gc_object =
         cppgc::MakeGarbageCollected<CppGCed>(heap->GetAllocationHandle());
-    v8::Object::Wrap<v8::CppHeapPointerTag::kDefaultTag>(
-        isolate, js_object, gc_object);
+    node::SetCppgcReference(isolate, js_object, gc_object);
     kConstructCount++;
     args.GetReturnValue().Set(js_object);
   }
