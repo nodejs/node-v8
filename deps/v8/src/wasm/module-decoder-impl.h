@@ -303,15 +303,12 @@ class ModuleDecoderImpl : public Decoder {
  public:
   ModuleDecoderImpl(WasmFeatures enabled_features,
                     base::Vector<const uint8_t> wire_bytes, ModuleOrigin origin,
-                    PopulateExplicitRecGroups populate_explicit_rec_groups =
-                        kDoNotPopulateExplicitRecGroups,
                     ITracer* tracer = ITracer::NoTrace)
       : Decoder(wire_bytes),
         enabled_features_(enabled_features),
         module_(std::make_shared<WasmModule>(origin)),
         module_start_(wire_bytes.begin()),
         module_end_(wire_bytes.end()),
-        populate_explicit_rec_groups_(populate_explicit_rec_groups),
         tracer_(tracer) {}
 
   void onFirstError() override {
@@ -559,6 +556,7 @@ class ModuleDecoderImpl : public Decoder {
         return {};
       }
       shared = true;
+      module_->has_shared_part = true;
       kind = consume_u8("shared ", tracer_);
     }
     if (tracer_) tracer_->Description(TypeKindName(kind));
@@ -638,10 +636,6 @@ class ModuleDecoderImpl : public Decoder {
           errorf(pc(), "Type definition count exceeds maximum %zu",
                  kV8MaxWasmTypes);
           return;
-        }
-        if (populate_explicit_rec_groups_ == kPopulateExplicitRecGroups) {
-          module_->explicit_recursive_type_groups.emplace(
-              static_cast<uint32_t>(module_->types.size()), group_size);
         }
         // We need to resize types before decoding the type definitions in this
         // group, so that the correct type size is visible to type definitions.
@@ -767,6 +761,7 @@ class ModuleDecoderImpl : public Decoder {
           auto [has_maximum, shared] = consume_table_flags("element count");
           table->has_maximum_size = has_maximum;
           table->shared = shared;
+          if (shared) module_->has_shared_part = true;
           consume_resizable_limits(
               "element count", "elements", std::numeric_limits<uint32_t>::max(),
               &table->initial_size, table->has_maximum_size,
@@ -826,6 +821,7 @@ class ModuleDecoderImpl : public Decoder {
           }
           global->mutability = mutability;
           global->shared = shared;
+          if (shared) module_->has_shared_part = true;
           if (global->mutability) {
             module_->num_imported_mutable_globals++;
           }
@@ -922,6 +918,7 @@ class ModuleDecoderImpl : public Decoder {
       auto [has_maximum, shared] = consume_table_flags("table elements");
       table->has_maximum_size = has_maximum;
       table->shared = shared;
+      if (shared) module_->has_shared_part = true;
       consume_resizable_limits("table elements", "elements",
                                std::numeric_limits<uint32_t>::max(),
                                &table->initial_size, table->has_maximum_size,
@@ -1001,6 +998,7 @@ class ModuleDecoderImpl : public Decoder {
       ConstantExpression init = consume_init_expr(module_.get(), type, shared);
       module_->globals.push_back(
           {type, mutability, init, {0}, shared, false, false});
+      if (shared) module_->has_shared_part = true;
     }
   }
 
@@ -1954,6 +1952,12 @@ class ModuleDecoderImpl : public Decoder {
              flags);
     }
 
+    if (is_shared && v8_flags.experimental_wasm_shared) {
+      error(pc() - 1,
+            "shared memories are not supported with "
+            "--experimental-wasm-shared yet.");
+    }
+
     // Tracing.
     if (tracer_) {
       if (is_shared) tracer_->Description(" shared");
@@ -2333,6 +2337,7 @@ class ModuleDecoderImpl : public Decoder {
              flag);
       return {};
     }
+    if (is_shared) module_->has_shared_part = true;
 
     const WasmElemSegment::Status status =
         (flag & kNonActiveMask) ? (flag & kHasTableIndexOrIsDeclarativeMask)
@@ -2365,9 +2370,6 @@ class ModuleDecoderImpl : public Decoder {
       return {};
     }
 
-    // TODO(14616): What is the interaction between shared tables and non-shared
-    // elements?
-
     ValueType table_type =
         is_active ? module_->tables[table_index].type : kWasmBottom;
 
@@ -2394,14 +2396,6 @@ class ModuleDecoderImpl : public Decoder {
         type = consume_value_type();
         if (failed()) return {};
       }
-      if (V8_UNLIKELY(is_active &&
-                      !IsSubtypeOf(type, table_type, this->module_.get()))) {
-        errorf(pos,
-               "Element segment of type %s is not a subtype of referenced "
-               "table %u (of type %s)",
-               type.name().c_str(), table_index, table_type.name().c_str());
-        return {};
-      }
     } else {
       if (!backwards_compatible_mode) {
         // We have to check that there is an element kind of type Function. All
@@ -2414,25 +2408,25 @@ class ModuleDecoderImpl : public Decoder {
           return {};
         }
       }
-      if (!is_active) {
-        // Declarative and passive segments without explicit type are funcref.
-        type = kWasmFuncRef;
-      } else {
-        type = table_type;
-        // Active segments with function indices must reference a function
-        // table. (Using struct / array indices doesn't provide any value
-        // as such an index doesn't refer to a unique object instance unlike
-        // functions.)
-        if (V8_UNLIKELY(
-                !IsSubtypeOf(table_type, kWasmFuncRef, this->module_.get()))) {
-          errorf(pos,
-                 "An active element segment with function indices as elements "
-                 "must reference a table of a subtype of type funcref. "
-                 "Instead, table %u of type %s is referenced.",
-                 table_index, table_type.name().c_str());
-          return {};
-        }
-      }
+      type = kWasmFuncRef.AsNonNull();
+    }
+
+    if (V8_UNLIKELY(is_active &&
+                    !IsSubtypeOf(type, table_type, this->module_.get()))) {
+      errorf(pos,
+             "Element segment of type %s is not a subtype of referenced "
+             "table %u (of type %s)",
+             type.name().c_str(), table_index, table_type.name().c_str());
+      return {};
+    }
+
+    // TODO(14616): Is this too restrictive?
+    if (V8_UNLIKELY(is_active &&
+                    (is_shared != module_->tables[table_index].shared))) {
+      error(pos,
+            "Shared (resp. non-shared) element segments must refer to shared "
+            "(resp. non-shared) tables");
+      return {};
     }
 
     uint32_t num_elem =
@@ -2481,6 +2475,8 @@ class ModuleDecoderImpl : public Decoder {
       return {};
     }
 
+    if (is_shared) module_->has_shared_part = true;
+
     if (tracer_) {
       if (is_shared) tracer_->Description(" shared");
       tracer_->NextLine();
@@ -2518,7 +2514,8 @@ class ModuleDecoderImpl : public Decoder {
     DCHECK_NOT_NULL(func);
     DCHECK_EQ(index, func->func_index);
     ValueType entry_type = ValueType::Ref(func->sig_index);
-    if (V8_LIKELY(expected == kWasmFuncRef)) {
+    if (V8_LIKELY(expected == kWasmFuncRef &&
+                  !v8_flags.experimental_wasm_shared)) {
       DCHECK(IsSubtypeOf(entry_type, expected, module));
     } else if (V8_UNLIKELY(!IsSubtypeOf(entry_type, expected, module))) {
       errorf(initial_pc,
@@ -2534,7 +2531,6 @@ class ModuleDecoderImpl : public Decoder {
   const std::shared_ptr<WasmModule> module_;
   const uint8_t* module_start_ = nullptr;
   const uint8_t* module_end_ = nullptr;
-  PopulateExplicitRecGroups populate_explicit_rec_groups_;
   ITracer* tracer_;
   // The type section is the first section in a module.
   uint8_t next_ordered_section_ = kFirstSectionInModule;

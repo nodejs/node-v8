@@ -116,10 +116,6 @@ class ReferenceSummarizerMarkingVisitor
     marking_state_->AddWeakReferenceForReferenceSummarizer(host, obj);
   }
 
-  TraceRetainingPathMode retaining_path_mode() {
-    return TraceRetainingPathMode::kDisabled;
-  }
-
   constexpr bool CanUpdateValuesInHeap() { return false; }
 
   // Standard marking visitor functions:
@@ -128,6 +124,11 @@ class ReferenceSummarizerMarkingVisitor
 
   void MarkPointerTableEntry(Tagged<HeapObject> host,
                              IndirectPointerSlot slot) {}
+
+  void VisitExternalPointer(Tagged<HeapObject> host,
+                            ExternalPointerSlot slot) override {}
+  void VisitCppHeapPointer(Tagged<HeapObject> host,
+                           CppHeapPointerSlot slot) override {}
 
  private:
   ReferenceSummarizerMarkingState* marking_state_;

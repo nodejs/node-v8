@@ -2241,6 +2241,8 @@ TEST_F(DisasmArm64Test, barriers) {
   V(V4S(), "4s")
 
 #define NEON_FORMAT_LIST_FP(V) \
+  V(V4H(), "4h")               \
+  V(V8H(), "8h")               \
   V(V2S(), "2s")               \
   V(V4S(), "4s")               \
   V(V2D(), "2d")
@@ -4038,6 +4040,12 @@ TEST_F(DisasmArm64Test, neon_3different) {
   COMPARE(Pmull(v0.V8H(), v1.V8B(), v2.V8B()), "pmull v0.8h, v1.8b, v2.8b");
   COMPARE(Pmull2(v2.V8H(), v3.V16B(), v4.V16B()),
           "pmull2 v2.8h, v3.16b, v4.16b");
+
+  CpuFeatureScope feature_scope(assm, PMULL1Q,
+                                CpuFeatureScope::kDontCheckSupported);
+
+  COMPARE(Pmull(v5.V1Q(), v6.V1D(), v7.V1D()), "pmull v5.1q, v6.1d, v7.1d");
+  COMPARE(Pmull2(v8.V1Q(), v9.V2D(), v10.V2D()), "pmull2 v8.1q, v9.2d, v10.2d");
 
   CLEANUP();
 }

@@ -15,14 +15,10 @@ namespace v8::internal::wasm {
 
 namespace liftoff {
 
-// fp-8 holds the stack marker, fp-16 is the instance parameter.
-constexpr int kInstanceDataOffset = 2 * kSystemPointerSize;
-constexpr int kFeedbackVectorOffset = 3 * kSystemPointerSize;
-
 inline MemOperand GetStackSlot(int offset) { return MemOperand(fp, -offset); }
 
 inline MemOperand GetInstanceDataOperand() {
-  return GetStackSlot(kInstanceDataOffset);
+  return GetStackSlot(WasmLiftoffFrameConstants::kInstanceDataOffset);
 }
 
 }  // namespace liftoff
@@ -174,7 +170,7 @@ void LiftoffAssembler::AbortCompilation() { AbortedCodeGeneration(); }
 
 // static
 constexpr int LiftoffAssembler::StaticStackFrameSize() {
-  return liftoff::kFeedbackVectorOffset;
+  return WasmLiftoffFrameConstants::kFeedbackVectorOffset;
 }
 
 int LiftoffAssembler::SlotSizeForType(ValueKind kind) {
@@ -203,7 +199,7 @@ void LiftoffAssembler::LoadInstanceDataFromFrame(Register dst) {
 void LiftoffAssembler::LoadTrustedPointer(Register dst, Register src_addr,
                                           int offset, IndirectPointerTag tag) {
   MemOperand src{src_addr, offset};
-  LoadTrustedPointerField(dst, src, kWasmTrustedInstanceDataIndirectPointerTag);
+  LoadTrustedPointerField(dst, src, tag);
 }
 
 void LiftoffAssembler::LoadFromInstance(Register dst, Register instance,
@@ -2198,8 +2194,8 @@ void LiftoffAssembler::emit_f64x2_qfms(LiftoffRegister dst,
   vmv_vv(dst.fp().toV(), src1.fp().toV());
 }
 
-void LiftoffAssembler::set_trap_on_oob_mem64(Register index, int oob_shift,
-                                             MemOperand oob_offset) {
+void LiftoffAssembler::set_trap_on_oob_mem64(Register index, uint64_t oob_size,
+                                             uint64_t oob_index) {
   UNREACHABLE();
 }
 

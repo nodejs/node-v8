@@ -20,6 +20,14 @@ namespace {
 thread_local MarkingBarrier* current_marking_barrier = nullptr;
 }  // namespace
 
+bool HeapObjectInYoungGenerationSticky(MemoryChunk* chunk,
+                                       Tagged<HeapObject> object) {
+  DCHECK(v8_flags.sticky_mark_bits);
+  return !chunk->IsOnlyOldOrMajorMarkingOn() &&
+         !MarkingBitmap::MarkBitFromAddress(object.address())
+              .template Get<AccessMode::ATOMIC>();
+}
+
 MarkingBarrier* WriteBarrier::CurrentMarkingBarrier(
     Tagged<HeapObject> verification_candidate) {
   MarkingBarrier* marking_barrier = current_marking_barrier;
@@ -60,6 +68,13 @@ void WriteBarrier::MarkingSlowFromInternalFields(Heap* heap,
                                                  Tagged<JSObject> host) {
   if (auto* cpp_heap = heap->cpp_heap()) {
     CppHeap::From(cpp_heap)->WriteBarrier(host);
+  }
+}
+
+// static
+void WriteBarrier::MarkingSlowFromCppHeapWrappable(Heap* heap, void* object) {
+  if (auto* cpp_heap = heap->cpp_heap()) {
+    CppHeap::From(cpp_heap)->WriteBarrier(object);
   }
 }
 

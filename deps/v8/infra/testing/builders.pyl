@@ -649,9 +649,27 @@
       {'name': 'v8testing', 'variant': 'default'},
     ],
   },
+  'v8_linux64_sandbox_testing_rel': {
+    'swarming_dimensions' : {
+      'cpu': 'x86-64',
+      'os': 'Ubuntu-22.04',
+    },
+    'tests': [
+      {'name': 'mjsunit', 'variant': 'default'},
+    ],
+  },
   'v8_linux64_single_generation_dbg': {
     'swarming_dimensions' : {
       'os': 'Ubuntu-22.04',
+    },
+    'tests': [
+      {'name': 'v8testing', 'shards': 3},
+    ],
+  },
+  'v8_linux64_sticky_mark_bits_dbg': {
+    'swarming_dimensions' : {
+      'os': 'Ubuntu-22.04',
+      'cpu': 'x86-64',
     },
     'tests': [
       {'name': 'v8testing', 'shards': 3},
@@ -733,6 +751,7 @@
       {'name': 'v8testing', 'variant': 'extra', 'shards': 6},
       {'name': 'v8testing', 'variant': 'slow_path', 'shards': 2},
       {'name': 'v8testing', 'variant': 'stress_concurrent_allocation', 'shards': 2},
+      {'name': 'v8testing', 'variant': 'minor_ms', 'shards': 2},
     ],
   },
   'v8_linux64_tsan_dbg': {
@@ -1698,6 +1717,15 @@
       {'name': 'v8testing', 'shards': 2},
     ],
   },
+  'V8 Linux64 - sandbox testing': {
+    'swarming_dimensions' : {
+      'cpu': 'x86-64',
+      'os': 'Ubuntu-22.04',
+    },
+    'tests': [
+      {'name': 'mjsunit', 'variant': 'default'},
+    ],
+  },
   'V8 Linux64 - shared': {
     'swarming_dimensions' : {
       'os': 'Ubuntu-22.04',
@@ -1706,6 +1734,15 @@
       {'name': 'mozilla'},
       {'name': 'test262', 'variant': 'default', 'shards': 2},
       {'name': 'v8testing'},
+    ],
+  },
+  'V8 Linux64 - sticky mark bits - debug': {
+    'swarming_dimensions' : {
+      'os': 'Ubuntu-22.04',
+      'cpu': 'x86-64',
+    },
+    'tests': [
+      {'name': 'v8testing', 'shards': 3},
     ],
   },
   'V8 Linux64 - verify csa': {
@@ -1770,6 +1807,7 @@
       {'name': 'v8testing', 'variant': 'extra', 'shards': 5},
       {'name': 'v8testing', 'variant': 'slow_path', 'shards': 2},
       {'name': 'v8testing', 'variant': 'stress_concurrent_allocation', 'shards': 2},
+      {'name': 'v8testing', 'variant': 'minor_ms', 'shards': 2},
     ],
   },
   'V8 Linux64 TSAN - debug': {

@@ -51,7 +51,7 @@ inline bool HasOnlySimpleElements(Isolate* isolate,
   DisallowGarbageCollection no_gc;
   PrototypeIterator iter(isolate, receiver, kStartAtReceiver);
   for (; !iter.IsAtEnd(); iter.Advance()) {
-    if (IsJSProxy(iter.GetCurrent())) return false;
+    if (!IsJSObject(iter.GetCurrent())) return false;
     Tagged<JSObject> current = iter.GetCurrent<JSObject>();
     if (!HasSimpleElements(current)) return false;
   }
@@ -704,9 +704,10 @@ class ArrayConcatVisitor {
     }
 
     if (!is_fixed_array()) {
-      LookupIterator it(isolate_, storage_, index, LookupIterator::OWN);
-      MAYBE_RETURN(
-          JSReceiver::CreateDataProperty(&it, elm, Just(kThrowOnError)), false);
+      MAYBE_RETURN(JSReceiver::CreateDataProperty(isolate_, storage_,
+                                                  PropertyKey(isolate_, index),
+                                                  elm, Just(kThrowOnError)),
+                   false);
       return true;
     }
 
@@ -1073,6 +1074,8 @@ void CollectElementIndices(Isolate* isolate, Handle<JSObject> object,
   if (!iter.IsAtEnd()) {
     // The prototype will usually have no inherited element indices,
     // but we have to check.
+    // Casting to JSObject is safe because we ran {HasOnlySimpleElements} on
+    // the receiver before, which checks the prototype chain.
     CollectElementIndices(
         isolate, PrototypeIterator::GetCurrent<JSObject>(iter), range, indices);
   }

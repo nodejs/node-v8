@@ -10,6 +10,7 @@
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "src/base/optional.h"
@@ -77,14 +78,25 @@ class Sweeper {
     bool ParallelSweepSpace(
         AllocationSpace identity, SweepingMode sweeping_mode,
         uint32_t max_pages = std::numeric_limits<uint32_t>::max());
-    void ContributeAndWaitForPromotedPagesIteration();
+    // Intended to be called either with a JobDelegate from a job. Returns true
+    // if iteration is finished.
+    bool ContributeAndWaitForPromotedPagesIteration(JobDelegate* delegate);
+    bool ContributeAndWaitForPromotedPagesIteration();
 
    private:
     void ParallelSweepPage(PageMetadata* page, AllocationSpace identity,
                            SweepingMode sweeping_mode);
 
-    void ParallelIterateAndSweepPromotedPages();
+    bool ParallelIterateAndSweepPromotedPages(JobDelegate* delegate);
+    bool ParallelIterateAndSweepPromotedPages();
     void ParallelIterateAndSweepPromotedPage(MutablePageMetadata* page);
+
+    template <typename ShouldYieldCallback>
+    bool ContributeAndWaitForPromotedPagesIterationImpl(
+        ShouldYieldCallback should_yield_callback);
+    template <typename ShouldYieldCallback>
+    bool ParallelIterateAndSweepPromotedPagesImpl(
+        ShouldYieldCallback should_yield_callback);
 
     Sweeper* const sweeper_;
 
@@ -288,6 +300,7 @@ class Sweeper {
     void Resume();
 
     uint64_t trace_id() const { return trace_id_; }
+    uint64_t background_trace_id() const { return background_trace_id_; }
 
    private:
     Sweeper* sweeper_;
@@ -298,6 +311,7 @@ class Sweeper {
     std::unique_ptr<JobHandle> job_handle_;
     std::vector<ConcurrentSweeper> concurrent_sweepers_;
     uint64_t trace_id_ = 0;
+    uint64_t background_trace_id_ = 0;
     bool should_reduce_memory_ = false;
   };
 
@@ -323,6 +337,36 @@ class Sweeper {
   std::atomic<bool> promoted_page_iteration_in_progress_{false};
   bool should_iterate_promoted_pages_ = false;
 };
+
+template <typename ShouldYieldCallback>
+bool Sweeper::LocalSweeper::ContributeAndWaitForPromotedPagesIterationImpl(
+    ShouldYieldCallback should_yield_callback) {
+  if (!sweeper_->sweeping_in_progress()) return true;
+  if (!sweeper_->IsIteratingPromotedPages()) return true;
+  if (!ParallelIterateAndSweepPromotedPagesImpl(should_yield_callback))
+    return false;
+  base::MutexGuard guard(
+      &sweeper_->promoted_pages_iteration_notification_mutex_);
+  // Check again that iteration is not yet finished.
+  if (!sweeper_->IsIteratingPromotedPages()) return true;
+  if (should_yield_callback()) {
+    return false;
+  }
+  sweeper_->promoted_pages_iteration_notification_variable_.Wait(
+      &sweeper_->promoted_pages_iteration_notification_mutex_);
+  return true;
+}
+
+template <typename ShouldYieldCallback>
+bool Sweeper::LocalSweeper::ParallelIterateAndSweepPromotedPagesImpl(
+    ShouldYieldCallback should_yield_callback) {
+  while (!should_yield_callback()) {
+    MutablePageMetadata* chunk = sweeper_->GetPromotedPageSafe();
+    if (chunk == nullptr) return true;
+    ParallelIterateAndSweepPromotedPage(chunk);
+  }
+  return false;
+}
 
 }  // namespace internal
 }  // namespace v8

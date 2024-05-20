@@ -142,6 +142,7 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64Uint64ToFloat64:
     case kArm64Float64ExtractLowWord32:
     case kArm64Float64ExtractHighWord32:
+    case kArm64Float64FromWord32Pair:
     case kArm64Float64InsertLowWord32:
     case kArm64Float64InsertHighWord32:
     case kArm64Float64Mod:
@@ -319,6 +320,7 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64Ldr:
     case kArm64LdrDecompressTaggedSigned:
     case kArm64LdrDecompressTagged:
+    case kArm64LdrDecompressProtected:
     case kArm64LdarDecompressTaggedSigned:
     case kArm64LdarDecompressTagged:
     case kArm64LdrDecodeSandboxedPointer:
@@ -440,6 +442,7 @@ int InstructionScheduler::GetInstructionLatency(const Instruction* instr) {
 
     case kArm64LdrDecompressTaggedSigned:
     case kArm64LdrDecompressTagged:
+    case kArm64LdrDecompressProtected:
     case kArm64Ldr:
     case kArm64LdrD:
     case kArm64LdrS:

@@ -412,7 +412,6 @@ namespace {
 
 class GCedWithJSRef : public cppgc::GarbageCollected<GCedWithJSRef> {
  public:
-  static uint16_t kWrappableType;
   static constexpr const char kExpectedName[] =
       "v8::internal::(anonymous namespace)::GCedWithJSRef";
 
@@ -438,9 +437,6 @@ class GCedWithJSRef : public cppgc::GarbageCollected<GCedWithJSRef> {
 };
 
 constexpr const char GCedWithJSRef::kExpectedName[];
-
-// static
-uint16_t GCedWithJSRef::kWrappableType = WrapperHelper::kTracedEmbedderId;
 
 class V8_NODISCARD JsTestingScope {
  public:
@@ -468,8 +464,7 @@ cppgc::Persistent<GCedWithJSRef> SetupWrapperWrappablePair(
   cppgc::Persistent<GCedWithJSRef> gc_w_js_ref =
       cppgc::MakeGarbageCollected<GCedWithJSRef>(allocation_handle);
   v8::Local<v8::Object> wrapper_object = WrapperHelper::CreateWrapper(
-      testing_scope.context(), &GCedWithJSRef::kWrappableType,
-      gc_w_js_ref.Get(), name);
+      testing_scope.context(), gc_w_js_ref.Get(), name);
   gc_w_js_ref->SetV8Object(testing_scope.isolate(), wrapper_object);
   gc_w_js_ref->set_detachedness(detachedness);
   return gc_w_js_ref;
@@ -497,7 +492,7 @@ TEST_F(UnifiedHeapSnapshotTest, JSReferenceForcesVisibleObject) {
       testing_scope, allocation_handle(), "LeafJSObject");
   // Reset the JS->C++ ref or otherwise the nodes would be merged.
   WrapperHelper::ResetWrappableConnection(
-      gc_w_js_ref->wrapper().Get(v8_isolate()));
+      v8_isolate(), gc_w_js_ref->wrapper().Get(v8_isolate()));
   const v8::HeapSnapshot* snapshot = TakeHeapSnapshot();
   EXPECT_TRUE(IsValidSnapshot(snapshot));
   EXPECT_TRUE(ContainsRetainingPath(
@@ -514,7 +509,7 @@ TEST_F(UnifiedHeapSnapshotTest, MergedWrapperNode) {
   cppgc::Persistent<GCedWithJSRef> gc_w_js_ref = SetupWrapperWrappablePair(
       testing_scope, allocation_handle(), "MergedObject");
   v8::Local<v8::Object> next_object = WrapperHelper::CreateWrapper(
-      testing_scope.context(), nullptr, nullptr, "NextObject");
+      testing_scope.context(), nullptr, "NextObject");
   v8::Local<v8::Object> wrapper_object =
       gc_w_js_ref->wrapper().Get(v8_isolate());
   // Chain another object to `wrapper_object`. Since `wrapper_object` should be
@@ -560,7 +555,8 @@ class DetachednessHandler {
       v8::Isolate* isolate, const v8::Local<v8::Value>& v8_value, uint16_t,
       void*) {
     callback_count++;
-    return WrapperHelper::UnwrapAs<GCedWithJSRef>(v8_value.As<v8::Object>())
+    return WrapperHelper::UnwrapAs<GCedWithJSRef>(isolate,
+                                                  v8_value.As<v8::Object>())
         ->detachedness();
   }
 
@@ -591,7 +587,7 @@ TEST_F(UnifiedHeapSnapshotTest, NoTriggerForStandAloneTracedReference) {
   v8_isolate()->GetHeapProfiler()->SetGetDetachednessCallback(
       DetachednessHandler::GetDetachedness, nullptr);
   WrapperHelper::ResetWrappableConnection(
-      gc_w_js_ref->wrapper().Get(v8_isolate()));
+      v8_isolate(), gc_w_js_ref->wrapper().Get(v8_isolate()));
   const v8::HeapSnapshot* snapshot = TakeHeapSnapshot();
   EXPECT_EQ(0u, DetachednessHandler::callback_count);
   EXPECT_TRUE(IsValidSnapshot(snapshot));
@@ -652,6 +648,100 @@ TEST_F(UnifiedHeapSnapshotTest, TriggerDetachednessCallbackSettingDetached) {
                                        }));
   ForEachEntryWithName(
       snapshot, GetExpectedName<GCedWithJSRef>(), [](const HeapEntry& entry) {
+        EXPECT_EQ(kExpectedDetachedValueForDetached, entry.detachedness());
+      });
+}
+
+namespace {
+class WrappedContext : public cppgc::GarbageCollected<WrappedContext>,
+                       public cppgc::NameProvider {
+ public:
+  static constexpr const char kExpectedName[] = "cppgc WrappedContext";
+
+  // Cycle:
+  // Context -> EmbdderData -> WrappedContext JS object -> WrappedContext cppgc
+  // object -> Context
+  static cppgc::Persistent<WrappedContext> New(v8::Isolate* isolate) {
+    v8::Local<v8::Context> context = v8::Context::New(isolate);
+    v8::Local<v8::Object> obj =
+        WrapperHelper::CreateWrapper(context, nullptr, "js WrappedContext");
+    context->SetEmbedderData(kContextDataIndex, obj);
+    cppgc::Persistent<WrappedContext> ref =
+        cppgc::MakeGarbageCollected<WrappedContext>(
+            isolate->GetCppHeap()->GetAllocationHandle(), isolate, obj,
+            context);
+    WrapperHelper::SetWrappableConnection(isolate, obj, ref.Get());
+    return ref;
+  }
+
+  static v8::EmbedderGraph::Node::Detachedness GetDetachedness(
+      v8::Isolate* isolate, const v8::Local<v8::Value>& v8_value, uint16_t,
+      void*) {
+    return WrapperHelper::UnwrapAs<WrappedContext>(isolate,
+                                                   v8_value.As<v8::Object>())
+        ->detachedness();
+  }
+
+  const char* GetHumanReadableName() const final { return kExpectedName; }
+
+  virtual void Trace(cppgc::Visitor* v) const {
+    v->Trace(object_);
+    v->Trace(context_);
+  }
+
+  WrappedContext(v8::Isolate* isolate, v8::Local<v8::Object> object,
+                 v8::Local<v8::Context> context) {
+    object_.Reset(isolate, object);
+    context_.Reset(isolate, context);
+  }
+
+  v8::Local<v8::Context> context(v8::Isolate* isolate) {
+    return context_.Get(isolate);
+  }
+
+  void set_detachedness(v8::EmbedderGraph::Node::Detachedness detachedness) {
+    detachedness_ = detachedness;
+  }
+  v8::EmbedderGraph::Node::Detachedness detachedness() const {
+    return detachedness_;
+  }
+
+ private:
+  static constexpr int kContextDataIndex = 0;
+  // This is needed to merge the nodes in the heap snapshot.
+  TracedReference<v8::Object> object_;
+  TracedReference<v8::Context> context_;
+  v8::EmbedderGraph::Node::Detachedness detachedness_ =
+      v8::EmbedderGraph::Node::Detachedness::kUnknown;
+};
+}  // anonymous namespace
+
+TEST_F(UnifiedHeapSnapshotTest, WrappedContext) {
+  JsTestingScope testing_scope(v8_isolate());
+  v8_isolate()->GetHeapProfiler()->SetGetDetachednessCallback(
+      WrappedContext::GetDetachedness, nullptr);
+  cppgc::Persistent<WrappedContext> wrapped = WrappedContext::New(v8_isolate());
+  const v8::HeapSnapshot* snapshot = TakeHeapSnapshot();
+  EXPECT_TRUE(IsValidSnapshot(snapshot));
+  EXPECT_TRUE(ContainsRetainingPath(
+      *snapshot,
+      {kExpectedCppRootsName, wrapped->GetHumanReadableName(),
+       "system / NativeContext", "system / EmbedderDataArray",
+       wrapped->GetHumanReadableName()},
+      true));
+
+  wrapped->set_detachedness(v8::EmbedderGraph::Node::Detachedness::kDetached);
+  v8_isolate()->GetHeapProfiler()->DeleteAllHeapSnapshots();
+  snapshot = TakeHeapSnapshot();
+  EXPECT_TRUE(IsValidSnapshot(snapshot));
+  EXPECT_TRUE(ContainsRetainingPath(
+      *snapshot,
+      {kExpectedCppRootsName, wrapped->GetHumanReadableName(),
+       "system / NativeContext", "system / EmbedderDataArray",
+       wrapped->GetHumanReadableName()},
+      true));
+  ForEachEntryWithName(
+      snapshot, wrapped->GetHumanReadableName(), [](const HeapEntry& entry) {
         EXPECT_EQ(kExpectedDetachedValueForDetached, entry.detachedness());
       });
 }

@@ -1542,6 +1542,8 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
                         const MemOperand& field_operand);
   void DecompressTagged(const Register& destination, const Register& source);
   void DecompressTagged(const Register& destination, Tagged_t immediate);
+  void DecompressProtected(const Register& destination,
+                           const MemOperand& field_operand);
 
   void AtomicDecompressTaggedSigned(const Register& destination,
                                     const Register& base, const Register& index,
@@ -1561,7 +1563,7 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   // to native instructions. These helpers allow us to define the optimal code
   // sequence, and be used in both TurboFan and Liftoff.
   void PopcntHelper(Register dst, Register src);
-  void I8x16BitMask(Register dst, VRegister src);
+  void I8x16BitMask(Register dst, VRegister src, VRegister temp = NoVReg);
   void I16x8BitMask(Register dst, VRegister src);
   void I32x4BitMask(Register dst, VRegister src);
   void I64x2BitMask(Register dst, VRegister src);

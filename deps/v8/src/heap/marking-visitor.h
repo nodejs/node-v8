@@ -36,7 +36,6 @@ struct EphemeronMarking {
 // - TryMark
 // - IsMarked
 // - MarkPointerTableEntry
-// - retaining_path_mode
 // - RecordSlot
 // - RecordRelocSlot
 //
@@ -65,14 +64,18 @@ class MarkingVisitorBase : public ConcurrentHeapVisitor<int, ConcreteVisitor> {
         should_keep_ages_unchanged_(should_keep_ages_unchanged),
         should_mark_shared_heap_(heap->isolate()->is_shared_space_isolate()),
         code_flushing_increase_(code_flushing_increase),
-        isolate_in_background_(heap->isolate()->IsIsolateInBackground())
-#ifdef V8_ENABLE_SANDBOX
+        isolate_in_background_(heap->isolate()->is_backgrounded())
+#ifdef V8_COMPRESS_POINTERS
         ,
         external_pointer_table_(&heap->isolate()->external_pointer_table()),
         shared_external_pointer_table_(
             &heap->isolate()->shared_external_pointer_table()),
         shared_external_pointer_space_(
             heap->isolate()->shared_external_pointer_space()),
+        cpp_heap_pointer_table_(&heap->isolate()->cpp_heap_pointer_table())
+#endif  // V8_COMPRESS_POINTERS
+#ifdef V8_ENABLE_SANDBOX
+        ,
         trusted_pointer_table_(&heap->isolate()->trusted_pointer_table())
 #endif  // V8_ENABLE_SANDBOX
   {
@@ -137,7 +140,9 @@ class MarkingVisitorBase : public ConcurrentHeapVisitor<int, ConcreteVisitor> {
   }
 
   V8_INLINE void VisitExternalPointer(Tagged<HeapObject> host,
-                                      ExternalPointerSlot slot) final;
+                                      ExternalPointerSlot slot) override;
+  V8_INLINE void VisitCppHeapPointer(Tagged<HeapObject> host,
+                                     CppHeapPointerSlot slot) override;
   V8_INLINE void VisitIndirectPointer(Tagged<HeapObject> host,
                                       IndirectPointerSlot slot,
                                       IndirectPointerMode mode) final;
@@ -164,8 +169,11 @@ class MarkingVisitorBase : public ConcurrentHeapVisitor<int, ConcreteVisitor> {
     return !InAnySharedSpace(object);
   }
 
-  // Marks the object grey and pushes it on the marking work list.
-  V8_INLINE void MarkObject(Tagged<HeapObject> host, Tagged<HeapObject> obj);
+  // Marks the object  and pushes it on the marking work list. The `retainer` is
+  // used for the reference summarizer to valide that the heap snapshot is in
+  // sync with the marker.
+  V8_INLINE bool MarkObject(Tagged<HeapObject> retainer,
+                            Tagged<HeapObject> obj);
 
   V8_INLINE static constexpr bool ShouldVisitReadOnlyMapPointer() {
     return false;
@@ -195,12 +203,12 @@ class MarkingVisitorBase : public ConcurrentHeapVisitor<int, ConcreteVisitor> {
 
   V8_INLINE void VisitDescriptorsForMap(Tagged<Map> map);
 
-  template <typename T>
+  template <typename T, typename TBodyDescriptor = typename T::BodyDescriptor>
   int VisitEmbedderTracingSubclass(Tagged<Map> map, Tagged<T> object);
-  template <typename T>
+  template <typename T, typename TBodyDescriptor>
   int VisitEmbedderTracingSubClassWithEmbedderTracing(Tagged<Map> map,
                                                       Tagged<T> object);
-  template <typename T>
+  template <typename T, typename TBodyDescriptor>
   int VisitEmbedderTracingSubClassNoEmbedderTracing(Tagged<Map> map,
                                                     Tagged<T> object);
 
@@ -228,10 +236,13 @@ class MarkingVisitorBase : public ConcurrentHeapVisitor<int, ConcreteVisitor> {
   const bool should_mark_shared_heap_;
   const uint16_t code_flushing_increase_;
   const bool isolate_in_background_;
-#ifdef V8_ENABLE_SANDBOX
+#ifdef V8_COMPRESS_POINTERS
   ExternalPointerTable* const external_pointer_table_;
   ExternalPointerTable* const shared_external_pointer_table_;
   ExternalPointerTable::Space* const shared_external_pointer_space_;
+  ExternalPointerTable* const cpp_heap_pointer_table_;
+#endif  // V8_COMPRESS_POINTERS
+#ifdef V8_ENABLE_SANDBOX
   TrustedPointerTable* const trusted_pointer_table_;
 #endif  // V8_ENABLE_SANDBOX
 };

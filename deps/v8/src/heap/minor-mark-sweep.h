@@ -79,6 +79,7 @@ class YoungGenerationRememberedSetsMarkingWorklist {
     template <typename Visitor>
     void Process(Visitor* visitor);
     void MergeAndDeleteRememberedSets();
+    void DeleteRememberedSets();
 
     void DeleteSetsOnTearDown();
 
@@ -195,6 +196,7 @@ class MinorMarkSweepCollector final {
       YoungGenerationRootMarkingVisitor& root_visitor);
   void MarkRootsFromConservativeStack(
       YoungGenerationRootMarkingVisitor& root_visitor);
+  void EvacuateExternalPointerReferences(MutablePageMetadata* p);
 
   void TraceFragmentation();
   void ClearNonLiveReferences();
@@ -206,6 +208,7 @@ class MinorMarkSweepCollector final {
   // 'StartSweepNewSpace' and 'SweepNewLargeSpace' return true if any pages were
   // promoted.
   bool StartSweepNewSpace();
+  void StartSweepNewSpaceWithStickyBits();
   bool SweepNewLargeSpace();
 
   void Finish();

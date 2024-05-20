@@ -257,18 +257,25 @@ class PipelineData {
   Graph* graph() const { return graph_; }
   void set_graph(Graph* graph) { graph_ = graph; }
   turboshaft::PipelineData& GetTurboshaftPipelineData(
-      turboshaft::TurboshaftPipelineKind kind) {
-    if (!ts_data_.has_value()) {
-      ts_data_.emplace(kind, info_, schedule_, graph_zone_, info_->zone(),
-                       broker_, isolate_, source_positions_, node_origins_,
-                       sequence_, frame_, assembler_options_,
-                       &max_unoptimized_frame_height_,
-                       &max_pushed_argument_count_, instruction_zone_);
+      turboshaft::TurboshaftPipelineKind kind,
+      turboshaft::Graph* graph = nullptr) {
+    if (!ts_data_) {
+      ts_data_ = std::make_unique<turboshaft::PipelineData>(
+          kind, info_, schedule_, graph_zone_, info_->zone(), broker_, isolate_,
+          source_positions_, node_origins_, sequence_, frame_,
+          assembler_options_, &max_unoptimized_frame_height_,
+          &max_pushed_argument_count_, instruction_zone_, graph);
     }
-    return ts_data_.value();
+    return *ts_data_;
+  }
+  turboshaft::PipelineData* turboshaft_data() {
+    return ts_data_ ? ts_data_.get() : nullptr;
   }
   SourcePositionTable* source_positions() const { return source_positions_; }
   NodeOriginTable* node_origins() const { return node_origins_; }
+  void set_node_origins(NodeOriginTable* node_origins) {
+    node_origins_ = node_origins;
+  }
   MachineOperatorBuilder* machine() const { return machine_; }
   SimplifiedOperatorBuilder* simplified() const { return simplified_; }
   CommonOperatorBuilder* common() const { return common_; }
@@ -558,7 +565,7 @@ class PipelineData {
   MachineGraph* mcgraph_ = nullptr;
   Schedule* schedule_ = nullptr;
   ObserveNodeManager* observe_node_manager_ = nullptr;
-  base::Optional<turboshaft::PipelineData> ts_data_;
+  std::unique_ptr<turboshaft::PipelineData> ts_data_;
 
   // All objects in the following group of fields are allocated in
   // instruction_zone_. They are all set to nullptr when the instruction_zone_

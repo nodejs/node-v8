@@ -41,7 +41,6 @@ class DataHolder {
                        AssemblerOptions::Default(isolate), nullptr),
         ts_pipeline_data_(pipeline_data_.GetTurboshaftPipelineData(
             turboshaft::TurboshaftPipelineKind::kJS)),
-        ts_data_scope_(ts_pipeline_data_),
         descriptor_(Linkage::GetSimplifiedCDescriptor(
             zone, CSignature::New(zone, return_type, p...),
             CallDescriptor::kInitializeRootRegister)) {
@@ -73,7 +72,6 @@ class DataHolder {
   ZoneStats zone_stats_;
   compiler::PipelineData pipeline_data_;
   turboshaft::PipelineData& ts_pipeline_data_;
-  turboshaft::PipelineData::Scope ts_data_scope_;
   CallDescriptor* descriptor_;
 };
 
@@ -91,7 +89,8 @@ class RawMachineAssemblerTester : public HandleAndZoneScope,
             CSignature::New(main_zone(), MachineTypeForC<ReturnType>(), p...)),
         DataHolder(main_isolate(), main_zone(), MachineTypeForC<ReturnType>(),
                    p...),
-        BaseAssembler(graph(), graph(), zone()) {
+        BaseAssembler(&DataHolder::ts_pipeline_data(), graph(), graph(),
+                      zone()) {
     Init();
   }
 
@@ -103,7 +102,8 @@ class RawMachineAssemblerTester : public HandleAndZoneScope,
             CSignature::New(main_zone(), MachineTypeForC<ReturnType>(), p...)),
         DataHolder(main_isolate(), main_zone(), MachineTypeForC<ReturnType>(),
                    p...),
-        BaseAssembler(graph(), graph(), zone()),
+        BaseAssembler(&DataHolder::ts_pipeline_data(), graph(), graph(),
+                      zone()),
         kind_(kind) {
     Init();
   }
@@ -194,6 +194,15 @@ class RawMachineAssemblerTester : public HandleAndZoneScope,
     // operations without always needing to bind a block first.
     Block* start_block = NewBlock();
     Bind(start_block);
+
+    // We emit the parameters now so that they appear at the begining of the
+    // graph (because the register allocator doesn't like it when Parameters are
+    // not in the 1st block). Subsequent calls to `m.Parameter()` will reuse the
+    // Parameters created here, thanks to Turboshaft's parameter cache (see
+    // TurboshaftAssemblerOpInterface::Parameter).
+    for (size_t i = 0; i < call_descriptor()->ParameterCount(); i++) {
+      Parameter(static_cast<int>(i));
+    }
   }
 
   CodeKind kind_ = CodeKind::FOR_TESTING;

@@ -156,6 +156,8 @@ enum CatchKind : uint8_t {
   kLastCatchKind = kCatchAllRef,
 };
 
+constexpr char kMagicStringConstantsModuleName = '\'';
+
 constexpr size_t kWasmPageSize = 0x10000;
 constexpr uint32_t kWasmPageSizeLog2 = 16;
 static_assert(kWasmPageSize == size_t{1} << kWasmPageSizeLog2, "consistency");
@@ -197,11 +199,6 @@ constexpr int kMaxStructFieldIndexForImplicitNullCheck = 4000;
 #if V8_TARGET_ARCH_X64
 constexpr int32_t kOSRTargetOffset = 4 * kSystemPointerSize;
 #endif
-
-enum FPRelativeScope {
-  kEnterFPRelativeOnlyScope,
-  kLeaveFPRelativeOnlyScope,
-};
 
 }  // namespace wasm
 }  // namespace internal

@@ -2417,6 +2417,19 @@ Simulator::Simulator(Isolate* isolate) : isolate_(isolate), builtins_(isolate) {
   registers_[ra] = bad_ra;
 
   last_debugger_input_ = nullptr;
+#ifdef CAN_USE_RVV_INSTRUCTIONS
+  for (int i = 0; i < kNumVRegisters; ++i) {
+    Vregister_[i] = 0;
+  }
+  vxrm_ = 0;
+  vstart_ = 0;
+  vxsat_ = 0;
+  vxrm_ = 0;
+  vcsr_ = 0;
+  vtype_ = 0;
+  vl_ = 0;
+  vlenb_ = 0;
+#endif
 }
 
 Simulator::~Simulator() {
@@ -2931,12 +2944,8 @@ void Simulator::TraceMemWr(sreg_t addr, T value) {
                    static_cast<uint64_t>(value), addr);
         } else {
           SNPrintF(trace_buf_,
-                   "                    (%" PRIu64
-#if V8_TARGET_ARCH_RISCV64
-                   ")    dbl:%e bit:%lx --> [addr: %" REGIx_FORMAT "]",
-#elif V8_TARGET_ARCH_RISCV32
-                   ")    dbl:%e bit:%llx --> [addr: %" REGIx_FORMAT "]",
-#endif
+                   "                    (%" PRIu64 ")    dbl:%e bit:%" PRIx64
+                   " --> [addr: %" REGIx_FORMAT "]",
                    icount_, static_cast<double>(value),
                    base::bit_cast<int64_t, double>(value), addr);
         }
@@ -2950,12 +2959,8 @@ void Simulator::TraceMemWr(sreg_t addr, T value) {
 void Simulator::TraceMemWrDouble(sreg_t addr, double value) {
   if (v8_flags.trace_sim) {
     SNPrintF(trace_buf_,
-             "                    (%" PRIu64
-#if V8_TARGET_ARCH_RISCV64
-             ")    dbl:%e bit:%lx--> [addr: %" REGIx_FORMAT "]",
-#elif V8_TARGET_ARCH_RISCV32
-             ")    dbl:%e bit:%llx--> [addr: %" REGIx_FORMAT "]",
-#endif
+             "                    (%" PRIu64 ")    dbl:%e bit:%" PRIx64
+             "--> [addr: %" REGIx_FORMAT "]",
              icount_, value, base::bit_cast<int64_t, double>(value), addr);
   }
 }
