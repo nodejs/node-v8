@@ -35,6 +35,7 @@
 #include "util-inl.h"
 #include "uv.h"
 #include "v8-cppgc.h"
+#include "v8-sandbox.h"
 #include "v8.h"
 
 #include <cstddef>
@@ -60,31 +61,6 @@ inline v8::Isolate* IsolateData::isolate() const {
 
 inline uv_loop_t* IsolateData::event_loop() const {
   return event_loop_;
-}
-
-inline void IsolateData::SetCppgcReference(v8::Isolate* isolate,
-                                           v8::Local<v8::Object> object,
-                                           void* wrappable) {
-  v8::CppHeap* heap = isolate->GetCppHeap();
-  CHECK_NOT_NULL(heap);
-  v8::WrapperDescriptor descriptor = heap->wrapper_descriptor();
-  uint16_t required_size = std::max(descriptor.wrappable_instance_index,
-                                    descriptor.wrappable_type_index);
-  CHECK_GT(object->InternalFieldCount(), required_size);
-
-  uint16_t* id_ptr = nullptr;
-  {
-    Mutex::ScopedLock lock(isolate_data_mutex_);
-    auto it =
-        wrapper_data_map_.find(descriptor.embedder_id_for_garbage_collected);
-    CHECK_NE(it, wrapper_data_map_.end());
-    id_ptr = &(it->second->cppgc_id);
-  }
-
-  object->SetAlignedPointerInInternalField(descriptor.wrappable_type_index,
-                                           id_ptr);
-  object->SetAlignedPointerInInternalField(descriptor.wrappable_instance_index,
-                                           wrappable);
 }
 
 inline uint16_t* IsolateData::embedder_id_for_cppgc() const {
