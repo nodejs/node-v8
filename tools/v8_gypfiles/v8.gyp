@@ -249,6 +249,7 @@
         'v8_initializers',
         'v8_maybe_icu',
         'v8_abseil',
+        'fp16',
       ],
       'sources': [
         '<(V8_ROOT)/src/init/setup-isolate-full.cc',
@@ -265,6 +266,7 @@
         'generate_bytecode_builtins_list',
         'run_torque',
         'v8_abseil',
+        'fp16',
       ],
       'cflags!': ['-O3'],
       'cflags': ['-O1'],
@@ -293,6 +295,7 @@
         'v8_shared_internal_headers',
         'v8_pch',
         'v8_abseil',
+        'fp16',
       ],
       'include_dirs': [
         '<(SHARED_INTERMEDIATE_DIR)',
@@ -916,6 +919,7 @@
         'v8_turboshaft',
         'v8_pch',
         'v8_abseil',
+        'fp16',
       ],
       'conditions': [
         ['v8_enable_turbofan==1', {
@@ -939,6 +943,7 @@
         'v8_shared_internal_headers',
         'v8_pch',
         'v8_abseil',
+        'fp16',
       ],
       'sources': [
         '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "v8_source_set.\\"v8_turboshaft.*?sources = ")',
@@ -1674,6 +1679,7 @@
         'v8_turboshaft',
         'v8_pch',
         'v8_abseil',
+        'fp16',
         # "build/win:default_exe_manifest",
       ],
       'sources': [
