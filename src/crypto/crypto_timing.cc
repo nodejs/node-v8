@@ -57,7 +57,8 @@ bool FastTimingSafeEqual(Local<Value> receiver,
   uint8_t* data_b;
   if (a.length() != b.length() || !a.getStorageIfAligned(&data_a) ||
       !b.getStorageIfAligned(&data_b)) {
-    options.fallback = true;
+    Environment* env = Environment::GetCurrent(options.isolate);
+    THROW_ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH(env);
     return false;
   }
 
