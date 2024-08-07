@@ -34,19 +34,6 @@ class Smi : public AllStatic {
     return Tagged<Smi>(object.ptr()).value();
   }
 
-  // Convert a value to a Smi object.
-  static inline constexpr Tagged<Smi> FromInt(int value) {
-    DCHECK(Smi::IsValid(value));
-    return Tagged<Smi>(Internals::IntegralToSmi(value));
-  }
-
-  static inline constexpr Tagged<Smi> FromIntptr(intptr_t value) {
-    DCHECK(Smi::IsValid(value));
-    int smi_shift_bits = kSmiTagSize + kSmiShiftSize;
-    return Tagged<Smi>((static_cast<Address>(value) << smi_shift_bits) |
-                       kSmiTag);
-  }
-
   // Given {value} in [0, 2^31-1], force it into Smi range by changing at most
   // the MSB (leaving the lower 31 bit unchanged).
   static inline constexpr Tagged<Smi> From31BitPattern(int value) {
@@ -62,9 +49,11 @@ class Smi : public AllStatic {
   }
 
   // Returns whether value can be represented in a Smi.
+
   template <typename T>
-  static inline std::enable_if_t<std::is_integral_v<T> && std::is_signed_v<T>,
-                                 bool> constexpr IsValid(T value) {
+  static inline std::enable_if_t<
+      (std::is_integral_v<T> && std::is_signed_v<T>) || std::is_same_v<T, intptr_t>, 
+      bool> constexpr IsValid(T value) {
     DCHECK_EQ(Internals::IsValidSmi(value),
               value >= kMinValue && value <= kMaxValue);
     return Internals::IsValidSmi(value);
@@ -74,6 +63,19 @@ class Smi : public AllStatic {
                                  bool> constexpr IsValid(T value) {
     DCHECK_EQ(Internals::IsValidSmi(value), value <= kMaxValue);
     return Internals::IsValidSmi(value);
+  }
+
+  // Convert a value to a Smi object.
+  static inline constexpr Tagged<Smi> FromInt(int value) {
+    DCHECK(Smi::IsValid(value));
+    return Tagged<Smi>(Internals::IntegralToSmi(value));
+  }
+
+  static inline constexpr Tagged<Smi> FromIntptr(intptr_t value) {
+    DCHECK(Smi::IsValid(value));
+    int smi_shift_bits = kSmiTagSize + kSmiShiftSize;
+    return Tagged<Smi>((static_cast<Address>(value) << smi_shift_bits) |
+                       kSmiTag);
   }
 
   // Compare two Smis x, y as if they were converted to strings and then
