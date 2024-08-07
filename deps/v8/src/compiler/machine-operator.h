@@ -5,6 +5,8 @@
 #ifndef V8_COMPILER_MACHINE_OPERATOR_H_
 #define V8_COMPILER_MACHINE_OPERATOR_H_
 
+#include <optional>
+
 #include "src/base/compiler-specific.h"
 #include "src/base/enum-set.h"
 #include "src/base/flags.h"
@@ -407,6 +409,7 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
     kWord32Select = 1u << 27,
     kWord64Select = 1u << 28,
     kLoadStorePairs = 1u << 29,
+    kFloat16 = 1u << 30,
     kAllOptionalOps =
         kFloat32RoundDown | kFloat64RoundDown | kFloat32RoundUp |
         kFloat64RoundUp | kFloat32RoundTruncate | kFloat64RoundTruncate |
@@ -416,7 +419,7 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
         kInt32AbsWithOverflow | kInt64AbsWithOverflow | kWord32Rol |
         kWord64Rol | kWord64RolLowerable | kSatConversionIsSafe |
         kFloat32Select | kFloat64Select | kWord32Select | kWord64Select |
-        kLoadStorePairs
+        kLoadStorePairs | kFloat16
   };
   using Flags = base::Flags<Flag, unsigned>;
 
@@ -848,6 +851,10 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
   const Operator* F32x4NearestInt();
   const Operator* F32x4DemoteF64x2Zero();
 
+  const Operator* F16x8Splat();
+  const Operator* F16x8ExtractLane(int32_t);
+  const Operator* F16x8ReplaceLane(int32_t);
+
   const Operator* I64x2Splat();
   const Operator* I64x2SplatI32Pair();
   const Operator* I64x2ExtractLane(int32_t);
@@ -1104,6 +1111,7 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
   const Operator* I8x32GtU();
   const Operator* I8x32GeS();
   const Operator* I8x32GeU();
+  const Operator* I32x8SConvertF32x8();
   const Operator* I32x8UConvertF32x8();
   const Operator* F64x4ConvertI32x4S();
   const Operator* F32x8SConvertI32x8();
@@ -1165,6 +1173,21 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
   const Operator* S256Not();
   const Operator* S256Select();
   const Operator* S256AndNot();
+  // 256-bit relaxed SIMD
+  const Operator* F32x8Qfma();
+  const Operator* F32x8Qfms();
+  const Operator* F64x4Qfma();
+  const Operator* F64x4Qfms();
+  const Operator* I64x4RelaxedLaneSelect();
+  const Operator* I32x8RelaxedLaneSelect();
+  const Operator* I16x16RelaxedLaneSelect();
+  const Operator* I8x32RelaxedLaneSelect();
+  const Operator* I32x8DotI8x32I7x32AddS();
+  const Operator* I16x16DotI8x32I7x32S();
+  const Operator* F32x8RelaxedMin();
+  const Operator* F32x8RelaxedMax();
+  const Operator* F64x4RelaxedMin();
+  const Operator* F64x4RelaxedMax();
 
   const Operator* LoadTransform(MemoryAccessKind kind,
                                 LoadTransformation transform);
@@ -1189,8 +1212,8 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
 
   // store [base + index], value
   const Operator* Store(StoreRepresentation rep);
-  base::Optional<const Operator*> TryStorePair(StoreRepresentation rep1,
-                                               StoreRepresentation rep2);
+  std::optional<const Operator*> TryStorePair(StoreRepresentation rep1,
+                                              StoreRepresentation rep2);
   const Operator* StoreIndirectPointer(WriteBarrierKind write_barrier_kind);
   const Operator* ProtectedStore(MachineRepresentation rep);
   const Operator* StoreTrapOnNull(StoreRepresentation rep);
@@ -1216,7 +1239,7 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
   const Operator* LoadParentFramePointer();
 #if V8_ENABLE_WEBASSEMBLY
   const Operator* LoadStackPointer();
-  const Operator* SetStackPointer(wasm::FPRelativeScope fp_scope);
+  const Operator* SetStackPointer();
 #endif
 
   // Compares: stack_pointer [- offset] > value. The offset is optionally

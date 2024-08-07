@@ -5,6 +5,7 @@
 #ifndef V8_MAGLEV_MAGLEV_GRAPH_PROCESSOR_H_
 #define V8_MAGLEV_MAGLEV_GRAPH_PROCESSOR_H_
 
+#include "src/base/macros.h"
 #include "src/compiler/bytecode-analysis.h"
 #include "src/maglev/maglev-basic-block.h"
 #include "src/maglev/maglev-compilation-info.h"
@@ -46,8 +47,10 @@ class GraphProcessor;
 enum class ProcessResult {
   kContinue,  // Process exited normally, and the following processors will be
               // called on the node.
-  kRemove     // Remove the current node from the graph (and do not call the
+  kRemove,    // Remove the current node from the graph (and do not call the
               // following processors).
+  kAbort,     // Stop processing now, do not process subsequent nodes/blocks.
+              // Should not be used when processing Constants.
 };
 
 class ProcessingState {
@@ -89,6 +92,7 @@ class GraphProcessor {
       for (auto it = map.begin(); it != map.end();) {
         ProcessResult result =
             node_processor_.Process(it->second, GetCurrentState());
+        DCHECK_NE(result, ProcessResult::kAbort);
         if (V8_UNLIKELY(result == ProcessResult::kRemove)) {
           it = map.erase(it);
         } else {
@@ -104,6 +108,7 @@ class GraphProcessor {
     process_constants(graph->uint32());
     process_constants(graph->float64());
     process_constants(graph->external_references());
+    process_constants(graph->trusted_constants());
 
     for (block_it_ = graph->begin(); block_it_ != graph->end(); ++block_it_) {
       BasicBlock* block = *block_it_;
@@ -116,26 +121,39 @@ class GraphProcessor {
           Phi* phi = *it;
           ProcessResult result =
               node_processor_.Process(phi, GetCurrentState());
-          if (V8_UNLIKELY(result == ProcessResult::kRemove)) {
+          if (V8_LIKELY(result == ProcessResult::kContinue)) {
+            ++it;
+          } else if (result == ProcessResult::kRemove) {
             it = phis.RemoveAt(it);
           } else {
-            ++it;
+            DCHECK_EQ(result, ProcessResult::kAbort);
+            return;
           }
         }
       }
+
+      node_processor_.PostPhiProcessing();
 
       for (node_it_ = block->nodes().begin();
            node_it_ != block->nodes().end();) {
         Node* node = *node_it_;
         ProcessResult result = ProcessNodeBase(node, GetCurrentState());
-        if (V8_UNLIKELY(result == ProcessResult::kRemove)) {
+        if (V8_LIKELY(result == ProcessResult::kContinue)) {
+          ++node_it_;
+        } else if (result == ProcessResult::kRemove) {
           node_it_ = block->nodes().RemoveAt(node_it_);
         } else {
-          ++node_it_;
+          DCHECK_EQ(result, ProcessResult::kAbort);
+          return;
         }
       }
 
-      ProcessNodeBase(block->control_node(), GetCurrentState());
+      ProcessResult control_result =
+          ProcessNodeBase(block->control_node(), GetCurrentState());
+      DCHECK_NE(control_result, ProcessResult::kRemove);
+      if (V8_UNLIKELY(control_result == ProcessResult::kAbort)) {
+        return;
+      }
     }
 
     node_processor_.PostProcessGraph(graph);
@@ -184,9 +202,11 @@ class NodeMultiProcessor<> {
   void PreProcessGraph(Graph* graph) {}
   void PostProcessGraph(Graph* graph) {}
   void PreProcessBasicBlock(BasicBlock* block) {}
-  ProcessResult Process(NodeBase* node, const ProcessingState& state) {
+  V8_INLINE ProcessResult Process(NodeBase* node,
+                                  const ProcessingState& state) {
     return ProcessResult::kContinue;
   }
+  void PostPhiProcessing() {}
 };
 
 template <typename Processor, typename... Processors>
@@ -223,6 +243,10 @@ class NodeMultiProcessor<Processor, Processors...>
   void PreProcessBasicBlock(BasicBlock* block) {
     processor_.PreProcessBasicBlock(block);
     Base::PreProcessBasicBlock(block);
+  }
+  void PostPhiProcessing() {
+    processor_.PostPhiProcessing();
+    Base::PostPhiProcessing();
   }
 
  private:

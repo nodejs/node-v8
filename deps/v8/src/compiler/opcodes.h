@@ -48,7 +48,8 @@
   V(ExternalConstant)                \
   V(NumberConstant)                  \
   V(PointerConstant)                 \
-  V(HeapConstant)
+  V(HeapConstant)                    \
+  V(TrustedHeapConstant)
 
 // Opcodes for constant operators.
 #define CONSTANT_OP_LIST(V)    \
@@ -173,6 +174,7 @@
   V(JSCreateLiteralObject)       \
   V(JSCreateLiteralRegExp)       \
   V(JSCreateObject)              \
+  V(JSCreateStringWrapper)       \
   V(JSCreatePromise)             \
   V(JSCreateStringIterator)      \
   V(JSCreateTypedArray)          \
@@ -918,6 +920,9 @@
   IF_WASM(V, F32x4Trunc)                  \
   IF_WASM(V, F32x4NearestInt)             \
   IF_WASM(V, F32x4DemoteF64x2Zero)        \
+  IF_WASM(V, F16x8Splat)                  \
+  IF_WASM(V, F16x8ExtractLane)            \
+  IF_WASM(V, F16x8ReplaceLane)            \
   IF_WASM(V, I64x2Splat)                  \
   IF_WASM(V, I64x2SplatI32Pair)           \
   IF_WASM(V, I64x2ExtractLane)            \
@@ -1088,6 +1093,12 @@
   IF_WASM(V, I16x8RelaxedQ15MulRS)        \
   IF_WASM(V, I16x8DotI8x16I7x16S)         \
   IF_WASM(V, I32x4DotI8x16I7x16AddS)      \
+  IF_WASM(V, I8x16AddReduce)              \
+  IF_WASM(V, I16x8AddReduce)              \
+  IF_WASM(V, I32x4AddReduce)              \
+  IF_WASM(V, I64x2AddReduce)              \
+  IF_WASM(V, F32x4AddReduce)              \
+  IF_WASM(V, F64x2AddReduce)              \
   IF_WASM(V, I8x16Shuffle)                \
   IF_WASM(V, V128AnyTrue)                 \
   IF_WASM(V, I64x2AllTrue)                \
@@ -1176,6 +1187,7 @@
   V(I8x32GtU)                      \
   V(I8x32GeS)                      \
   V(I8x32GeU)                      \
+  V(I32x8SConvertF32x8)            \
   V(I32x8UConvertF32x8)            \
   V(F64x4ConvertI32x4S)            \
   V(F32x8SConvertI32x8)            \
@@ -1238,7 +1250,21 @@
   V(F64x4Pmax)                     \
   V(F64x4Splat)                    \
   V(F32x8Splat)                    \
-  V(I8x32Shuffle)
+  V(I8x32Shuffle)                  \
+  V(F32x8Qfma)                     \
+  V(F32x8Qfms)                     \
+  V(F64x4Qfma)                     \
+  V(F64x4Qfms)                     \
+  V(I64x4RelaxedLaneSelect)        \
+  V(I32x8RelaxedLaneSelect)        \
+  V(I16x16RelaxedLaneSelect)       \
+  V(I8x32RelaxedLaneSelect)        \
+  V(I32x8DotI8x32I7x32AddS)        \
+  V(I16x16DotI8x32I7x32S)          \
+  V(F32x8RelaxedMin)               \
+  V(F32x8RelaxedMax)               \
+  V(F64x4RelaxedMin)               \
+  V(F64x4RelaxedMax)
 
 #define VALUE_OP_LIST(V)              \
   COMMON_OP_LIST(V)                   \

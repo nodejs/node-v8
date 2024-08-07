@@ -46,6 +46,7 @@ namespace compiler {
   V(Arm64StrWPair)                                         \
   V(Arm64LdrDecompressTaggedSigned)                        \
   V(Arm64LdrDecompressTagged)                              \
+  V(Arm64LdrDecompressProtected)                           \
   V(Arm64StrCompressTagged)                                \
   V(Arm64Word64AtomicLoadUint64)                           \
   V(Arm64Word64AtomicStoreWord64)
@@ -148,6 +149,12 @@ namespace compiler {
   V(Arm64I32x4DotI16x8S)                \
   V(Arm64I16x8DotI8x16S)                \
   V(Arm64I32x4DotI8x16AddS)             \
+  V(Arm64I8x16Addv)                     \
+  V(Arm64I16x8Addv)                     \
+  V(Arm64I32x4Addv)                     \
+  V(Arm64I64x2AddPair)                  \
+  V(Arm64F32x4AddReducePairwise)        \
+  V(Arm64F64x2AddPair)                  \
   V(Arm64I32x4TruncSatF64x2SZero)       \
   V(Arm64I32x4TruncSatF64x2UZero)       \
   V(Arm64IExtractLaneU)                 \

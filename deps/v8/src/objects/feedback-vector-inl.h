@@ -5,6 +5,8 @@
 #ifndef V8_OBJECTS_FEEDBACK_VECTOR_INL_H_
 #define V8_OBJECTS_FEEDBACK_VECTOR_INL_H_
 
+#include <optional>
+
 #include "src/common/globals.h"
 #include "src/heap/heap-write-barrier-inl.h"
 #include "src/objects/code-inl.h"
@@ -20,8 +22,7 @@
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
 
-namespace v8 {
-namespace internal {
+namespace v8::internal {
 
 #include "torque-generated/src/objects/feedback-vector-tq-inl.inc"
 
@@ -32,9 +33,6 @@ OBJECT_CONSTRUCTORS_IMPL(ClosureFeedbackCellArray,
 
 NEVER_READ_ONLY_SPACE_IMPL(FeedbackVector)
 NEVER_READ_ONLY_SPACE_IMPL(ClosureFeedbackCellArray)
-
-CAST_ACCESSOR(FeedbackMetadata)
-CAST_ACCESSOR(ClosureFeedbackCellArray)
 
 INT32_ACCESSORS(FeedbackMetadata, slot_count, kSlotCountOffset)
 
@@ -67,6 +65,7 @@ int FeedbackMetadata::GetSlotSize(FeedbackSlotKind kind) {
   switch (kind) {
     case FeedbackSlotKind::kForIn:
     case FeedbackSlotKind::kInstanceOf:
+    case FeedbackSlotKind::kTypeOf:
     case FeedbackSlotKind::kCompareOp:
     case FeedbackSlotKind::kBinaryOp:
     case FeedbackSlotKind::kLiteral:
@@ -116,8 +115,8 @@ void FeedbackVector::clear_invocation_count(RelaxedStoreTag tag) {
   set_invocation_count(0, tag);
 }
 
-UINT8_ACCESSORS(FeedbackVector, invocation_count_before_stable,
-                kInvocationCountBeforeStableOffset)
+RELAXED_UINT8_ACCESSORS(FeedbackVector, invocation_count_before_stable,
+                        kInvocationCountBeforeStableOffset)
 
 int FeedbackVector::osr_urgency() const {
   return OsrUrgencyBits::decode(osr_state());
@@ -166,7 +165,7 @@ Tagged<Code> FeedbackVector::optimized_code(IsolateForSandbox isolate) const {
   Tagged<HeapObject> heap_object;
   Tagged<Code> code;
   if (slot.GetHeapObject(&heap_object)) {
-    code = CodeWrapper::cast(heap_object)->code(isolate);
+    code = Cast<CodeWrapper>(heap_object)->code(isolate);
   }
   // It is possible that the maybe_optimized_code slot is cleared but the flags
   // haven't been updated yet. We update them when we execute the function next
@@ -223,13 +222,13 @@ void FeedbackVector::set_interrupt_budget_reset_by_ic_change(bool value) {
   set_flags(InterruptBudgetResetByIcChangeBit::update(flags(), value));
 }
 
-base::Optional<Tagged<Code>> FeedbackVector::GetOptimizedOsrCode(
+std::optional<Tagged<Code>> FeedbackVector::GetOptimizedOsrCode(
     Isolate* isolate, FeedbackSlot slot) {
   Tagged<MaybeObject> maybe_code = Get(isolate, slot);
   if (maybe_code.IsCleared()) return {};
 
   Tagged<Code> code =
-      CodeWrapper::cast(maybe_code.GetHeapObject())->code(isolate);
+      Cast<CodeWrapper>(maybe_code.GetHeapObject())->code(isolate);
   if (code->marked_for_deoptimization()) {
     // Clear the cached Code object if deoptimized.
     // TODO(jgruber): Add tracing.
@@ -452,15 +451,15 @@ void NexusConfig::SetFeedback(Tagged<FeedbackVector> vector, FeedbackSlot slot,
 }
 
 Tagged<MaybeObject> FeedbackNexus::UninitializedSentinel() const {
-  return *FeedbackVector::UninitializedSentinel(GetIsolate());
+  return *FeedbackVector::UninitializedSentinel(config()->isolate());
 }
 
 Tagged<MaybeObject> FeedbackNexus::MegamorphicSentinel() const {
-  return *FeedbackVector::MegamorphicSentinel(GetIsolate());
+  return *FeedbackVector::MegamorphicSentinel(config()->isolate());
 }
 
 Tagged<MaybeObject> FeedbackNexus::MegaDOMSentinel() const {
-  return *FeedbackVector::MegaDOMSentinel(GetIsolate());
+  return *FeedbackVector::MegaDOMSentinel(config()->isolate());
 }
 
 Tagged<MaybeObject> FeedbackNexus::FromHandle(MaybeObjectHandle slot) const {
@@ -516,9 +515,7 @@ void FeedbackNexus::SetFeedback(Tagged<FeedbackType> feedback,
                             mode_extra);
 }
 
-Isolate* FeedbackNexus::GetIsolate() const { return vector()->GetIsolate(); }
-}  // namespace internal
-}  // namespace v8
+}  // namespace v8::internal
 
 #include "src/objects/object-macros-undef.h"
 
