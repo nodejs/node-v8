@@ -30,10 +30,10 @@ enum class DeoptFrameVisitMode {
 
 template <DeoptFrameVisitMode mode, typename T>
 using const_if_default =
-    std::conditional<mode == DeoptFrameVisitMode::kDefault, const T, T>::type;
+    typename std::conditional<mode == DeoptFrameVisitMode::kDefault, const T, T>::type;
 
 template <DeoptFrameVisitMode mode>
-using ValueNodeT = std::conditional<mode == DeoptFrameVisitMode::kDefault,
+using ValueNodeT = typename std::conditional<mode == DeoptFrameVisitMode::kDefault,
                                     ValueNode*, ValueNode*&>::type;
 
 template <DeoptFrameVisitMode mode, typename Function>
