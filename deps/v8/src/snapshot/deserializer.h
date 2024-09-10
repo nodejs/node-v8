@@ -30,10 +30,9 @@ class Object;
 
 // Used for platforms with embedded constant pools to trigger deserialization
 // of objects found in code.
-#if defined(V8_TARGET_ARCH_MIPS64) || defined(V8_TARGET_ARCH_PPC) ||      \
-    defined(V8_TARGET_ARCH_S390) || defined(V8_TARGET_ARCH_PPC64) ||      \
-    defined(V8_TARGET_ARCH_RISCV32) || defined(V8_TARGET_ARCH_RISCV64) || \
-    V8_EMBEDDED_CONSTANT_POOL_BOOL
+#if defined(V8_TARGET_ARCH_MIPS64) || defined(V8_TARGET_ARCH_S390) ||   \
+    defined(V8_TARGET_ARCH_PPC64) || defined(V8_TARGET_ARCH_RISCV32) || \
+    defined(V8_TARGET_ARCH_RISCV64) || V8_EMBEDDED_CONSTANT_POOL_BOOL
 #define V8_CODE_EMBEDS_OBJECT_POINTER 1
 #else
 #define V8_CODE_EMBEDS_OBJECT_POINTER 0
@@ -225,6 +224,8 @@ class Deserializer : public SerializerDeserializer {
   int ReadInitializeSelfIndirectPointer(uint8_t data,
                                         SlotAccessor slot_accessor);
   template <typename SlotAccessor>
+  int ReadAllocateJSDispatchEntry(uint8_t data, SlotAccessor slot_accessor);
+  template <typename SlotAccessor>
   int ReadProtectedPointerPrefix(uint8_t data, SlotAccessor slot_accessor);
   template <typename SlotAccessor>
   int ReadRootArrayConstants(uint8_t data, SlotAccessor slot_accessor);
@@ -283,6 +284,11 @@ class Deserializer : public SerializerDeserializer {
 
   // Vector of allocated objects that can be accessed by a backref, by index.
   std::vector<Handle<HeapObject>> back_refs_;
+
+  // Map of JSDispatchTable entries. When such an entry is serialized, we also
+  // serialize an ID of the entry, which then allows the deserializer to
+  // correctly reconstruct shared table entries.
+  std::unordered_map<int, JSDispatchHandle> js_dispatch_entries_map_;
 
   // Unresolved forward references (registered with kRegisterPendingForwardRef)
   // are collected in order as (object, field offset) pairs. The subsequent

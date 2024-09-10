@@ -41,7 +41,7 @@ class WireBytesStorage;
 class TurboshaftGraphBuildingInterface;
 struct CompilationEnv;
 
-V8_EXPORT_PRIVATE bool BuildTSGraph(
+V8_EXPORT_PRIVATE void BuildTSGraph(
     compiler::turboshaft::PipelineData* data, AccountingAllocator* allocator,
     CompilationEnv* env, WasmDetectedFeatures* detected,
     compiler::turboshaft::Graph& graph, const FunctionBody& func_body,
@@ -91,10 +91,6 @@ class V8_EXPORT_PRIVATE WasmGraphBuilderBase {
   template <typename T>
   using ConstOrV = compiler::turboshaft::ConstOrV<T>;
 
-  using ValidationTag = Decoder::FullValidationTag;
-  using FullDecoder =
-      WasmFullDecoder<ValidationTag, TurboshaftGraphBuildingInterface>;
-
   OpIndex CallRuntime(Zone* zone, Runtime::FunctionId f,
                       std::initializer_list<const OpIndex> args,
                       V<Context> context);
@@ -103,12 +99,14 @@ class V8_EXPORT_PRIVATE WasmGraphBuilderBase {
   V<WordPtr> GetTargetForBuiltinCall(Builtin builtin, StubCallMode stub_mode);
   V<BigInt> BuildChangeInt64ToBigInt(V<Word64> input, StubCallMode stub_mode);
 
-  std::pair<V<WordPtr>, V<HeapObject>> BuildImportedFunctionTargetAndRef(
+  std::pair<V<WordPtr>, V<HeapObject>>
+  BuildImportedFunctionTargetAndImplicitArg(
       ConstOrV<Word32> func_index,
       V<WasmTrustedInstanceData> trusted_instance_data);
 
-  std::pair<V<WordPtr>, V<ExposedTrustedObject>> BuildFunctionTargetAndRef(
-      V<WasmInternalFunction> internal_function, uint64_t expected_sig_hash);
+  std::pair<V<WordPtr>, V<ExposedTrustedObject>>
+  BuildFunctionTargetAndImplicitArg(V<WasmInternalFunction> internal_function,
+                                    uint64_t expected_sig_hash);
 
   RegisterRepresentation RepresentationFor(ValueType type);
   V<WasmTrustedInstanceData> LoadTrustedDataFromInstanceObject(

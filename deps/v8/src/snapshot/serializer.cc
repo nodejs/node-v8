@@ -21,6 +21,7 @@
 #include "src/objects/slots-inl.h"
 #include "src/objects/slots.h"
 #include "src/objects/smi.h"
+#include "src/sandbox/js-dispatch-table-inl.h"
 #include "src/snapshot/embedded/embedded-data.h"
 #include "src/snapshot/serializer-deserializer.h"
 #include "src/snapshot/serializer-inl.h"
@@ -855,15 +856,7 @@ void Serializer::ObjectSerializer::Serialize(SlotType slot_type) {
 
 namespace {
 SnapshotSpace GetSnapshotSpace(Tagged<HeapObject> object) {
-  if (V8_ENABLE_THIRD_PARTY_HEAP_BOOL) {
-    if (IsInstructionStream(object)) {
-      return SnapshotSpace::kCode;
-    } else if (ReadOnlyHeap::Contains(object)) {
-      return SnapshotSpace::kReadOnlyHeap;
-    } else {
-      return SnapshotSpace::kOld;
-    }
-  } else if (ReadOnlyHeap::Contains(object)) {
+  if (ReadOnlyHeap::Contains(object)) {
     return SnapshotSpace::kReadOnlyHeap;
   } else {
     AllocationSpace heap_space =
@@ -1256,6 +1249,34 @@ void Serializer::ObjectSerializer::VisitProtectedPointer(
   CHECK(!serializer_->SerializePendingObject(*object));
   sink_->Put(kProtectedPointerPrefix, "ProtectedPointer");
   serializer_->SerializeObject(object, SlotType::kAnySlot);
+}
+
+void Serializer::ObjectSerializer::VisitJSDispatchTableEntry(
+    Tagged<HeapObject> host, JSDispatchHandle handle) {
+#ifdef V8_ENABLE_LEAPTIERING
+  JSDispatchTable* jdt = GetProcessWideJSDispatchTable();
+  // If the slot is empty, we will skip it here and then just serialize the
+  // null handle as raw data.
+  if (handle == kNullJSDispatchHandle) return;
+
+  // TODO(saelo): we might want to call OutputRawData here, but for that we
+  // first need to pass the slot address to this method (e.g. as part of a
+  // JSDispatchHandleSlot struct).
+
+  bytes_processed_so_far_ += kJSDispatchHandleSize;
+
+  sink_->Put(kAllocateJSDispatchEntry, "AllocateJSDispatchEntry");
+  sink_->PutUint30(handle >> kJSDispatchHandleShift, "EntryID");
+  sink_->PutUint30(jdt->GetParameterCount(handle), "ParameterCount");
+
+  // Currently we cannot see pending objects here, but we may need to support
+  // them in the future. They should already be supported by the deserializer.
+  Handle<Code> code(jdt->GetCode(handle), isolate());
+  CHECK(!serializer_->SerializePendingObject(*code));
+  serializer_->SerializeObject(code, SlotType::kAnySlot);
+#else
+  UNREACHABLE();
+#endif  // V8_ENABLE_LEAPTIERING
 }
 namespace {
 

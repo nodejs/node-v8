@@ -407,7 +407,7 @@ void SemiSpace::VerifyPageMetadata() const {
       // The pointers-from-here-are-interesting flag isn't updated dynamically
       // on from-space pages, so it might be out of sync with the marking state.
       if (page->heap()->incremental_marking()->IsMarking()) {
-        DCHECK(page->heap()->incremental_marking()->IsMajorMarking());
+        CHECK(page->heap()->incremental_marking()->IsMajorMarking());
         CHECK(
             chunk->IsFlagSet(MemoryChunk::POINTERS_FROM_HERE_ARE_INTERESTING));
       } else {
@@ -756,15 +756,15 @@ size_t SemiSpaceNewSpace::AllocatedSinceLastGC() const {
 }
 
 void SemiSpaceNewSpace::GarbageCollectionPrologue() {
+  ResetParkedAllocationBuffers();
+
   // We need to commit from space here to be able to check for from/to space
   // pages later on in the GC. We need to commit before sweeping starts to avoid
   // empty pages being reused for commiting from space and thus ending up with
   // remembered set entries that point to from space instead of freed memory.
-
-  if (from_space_.IsCommitted() || from_space_.Commit()) {
-    return;
+  if (!from_space_.IsCommitted() && !from_space_.Commit()) {
+    heap_->FatalProcessOutOfMemory("Committing semi space failed.");
   }
-  heap_->FatalProcessOutOfMemory("Committing semi space failed.");
 }
 
 void SemiSpaceNewSpace::EvacuatePrologue() {
@@ -844,7 +844,7 @@ std::optional<std::pair<Address, Address>> SemiSpaceNewSpace::Allocate(
     return std::pair(start, end);
   }
 
-  return base::nullopt;
+  return std::nullopt;
 }
 
 void SemiSpaceNewSpace::Free(Address start, Address end) {

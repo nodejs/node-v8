@@ -26,6 +26,7 @@
 #include "src/objects/slots.h"
 #include "src/objects/string.h"
 #include "src/roots/roots.h"
+#include "src/sandbox/js-dispatch-table-inl.h"
 #include "src/snapshot/embedded/embedded-data-inl.h"
 #include "src/snapshot/references.h"
 #include "src/snapshot/serializer-deserializer.h"
@@ -622,16 +623,6 @@ void Deserializer<IsolateT>::PostProcessNewObject(DirectHandle<Map> map,
                                                        nullptr);
   } else if (InstanceTypeChecker::IsScript(instance_type)) {
     LogScriptEvents(Cast<Script>(*obj));
-  } else if (InstanceTypeChecker::IsFeedbackCell(instance_type)) {
-#ifdef V8_ENABLE_LEAPTIERING
-    // This is only needed for some serializer tests. Normally we will only see
-    // JSFunctions referencing the ManyClosuresCell here, which always has a
-    // null dispatch handle.
-    // For now it's fine to just clear the handle here. In the future, we may
-    // have to correctly copy the entry here, or when deserializing the
-    // corresponding JSFunction.
-    Cast<FeedbackCell>(raw_obj)->clear_dispatch_handle();
-#endif  // V8_ENABLE_LEAPTIERING
   }
 }
 
@@ -954,6 +945,8 @@ int Deserializer<IsolateT>::ReadSingleBytecodeData(uint8_t data,
       return ReadIndirectPointerPrefix(data, slot_accessor);
     case kInitializeSelfIndirectPointer:
       return ReadInitializeSelfIndirectPointer(data, slot_accessor);
+    case kAllocateJSDispatchEntry:
+      return ReadAllocateJSDispatchEntry(data, slot_accessor);
     case kProtectedPointerPrefix:
       return ReadProtectedPointerPrefix(data, slot_accessor);
     case CASE_RANGE(kRootArrayConstants, 32):
@@ -1285,6 +1278,44 @@ int Deserializer<IsolateT>::ReadInitializeSelfIndirectPointer(
   Tagged<ExposedTrustedObject> host =
       Cast<ExposedTrustedObject>(*slot_accessor.object());
   host->init_self_indirect_pointer(isolate());
+
+  return 1;
+#else
+  UNREACHABLE();
+#endif  // V8_ENABLE_SANDBOX
+}
+
+template <typename IsolateT>
+template <typename SlotAccessor>
+int Deserializer<IsolateT>::ReadAllocateJSDispatchEntry(
+    uint8_t data, SlotAccessor slot_accessor) {
+#ifdef V8_ENABLE_LEAPTIERING
+  DCHECK_NE(slot_accessor.object()->address(), kNullAddress);
+  JSDispatchTable* jdt = GetProcessWideJSDispatchTable();
+  Handle<HeapObject> host = slot_accessor.object();
+
+  uint32_t entry_id = source_.GetUint30();
+  uint32_t parameter_count = source_.GetUint30();
+  DCHECK_LE(parameter_count, kMaxUInt16);
+  Handle<Code> code = Cast<Code>(ReadObject());
+
+  JSDispatchHandle handle;
+  auto it = js_dispatch_entries_map_.find(entry_id);
+  if (it != js_dispatch_entries_map_.end()) {
+    handle = it->second;
+    DCHECK_EQ(parameter_count, jdt->GetParameterCount(handle));
+    DCHECK_EQ(*code, jdt->GetCode(handle));
+  } else {
+    JSDispatchTable::Space* space =
+        IsolateForSandbox(isolate()).GetJSDispatchTableSpaceFor(
+            host->address());
+    handle = jdt->AllocateAndInitializeEntry(space, parameter_count);
+    js_dispatch_entries_map_[entry_id] = handle;
+    jdt->SetCode(handle, *code);
+  }
+
+  host->Relaxed_WriteField<JSDispatchHandle>(slot_accessor.offset(), handle);
+  JS_DISPATCH_HANDLE_WRITE_BARRIER(*host, handle);
 
   return 1;
 #else
