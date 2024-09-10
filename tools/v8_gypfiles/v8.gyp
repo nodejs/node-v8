@@ -504,12 +504,7 @@
           ],
         }],
         ['OS in "aix os400"', {
-          'variables': {
-            'FP16_ROOT': '../../deps/v8/third_party/fp16',
-          },
-          'include_dirs': [
-            '<(FP16_ROOT)/src/include',
-          ],
+          'dependencies': ['fp16'],
         }],
       ],
     },  # v8_snapshot
