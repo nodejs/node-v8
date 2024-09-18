@@ -11,6 +11,7 @@
 #include "src/execution/thread-id.h"
 #include "src/handles/handles-inl.h"
 #include "src/heap/heap-inl.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/heap/local-factory-inl.h"
 #include "src/heap/local-heap-inl.h"
 #include "src/heap/mutable-page-metadata.h"
@@ -35,7 +36,7 @@ namespace internal {
 Handle<String> String::SlowFlatten(Isolate* isolate, Handle<ConsString> cons,
                                    AllocationType allocation) {
   DCHECK_NE(cons->second()->length(), 0);
-  DCHECK(!InAnySharedSpace(*cons));
+  DCHECK(!HeapLayout::InAnySharedSpace(*cons));
 
   // TurboFan can create cons strings with empty first parts.
   while (cons->first()->length() == 0) {
@@ -114,7 +115,7 @@ Handle<String> String::SlowShare(Isolate* isolate, Handle<String> source) {
     case StringTransitionStrategy::kInPlace:
       // A relaxed write is sufficient here, because at this point the string
       // has not yet escaped the current thread.
-      DCHECK(InAnySharedSpace(*flat));
+      DCHECK(HeapLayout::InAnySharedSpace(*flat));
       flat->set_map_no_write_barrier(*new_map.ToHandleChecked());
       return flat;
     case StringTransitionStrategy::kAlreadyTransitioned:
@@ -421,13 +422,13 @@ bool String::MakeExternal(v8::String::ExternalStringResource* resource) {
   if (size < static_cast<int>(sizeof(UncachedExternalString))) return false;
   // Read-only strings cannot be made external, since that would mutate the
   // string.
-  if (IsReadOnlyHeapObject(this)) return false;
+  if (HeapLayout::InReadOnlySpace(this)) return false;
   Isolate* isolate = GetIsolateFromWritableObject(this);
   if (IsShared()) {
     DCHECK(isolate->is_shared_space_isolate());
     return MarkForExternalizationDuringGC(isolate, resource);
   }
-  DCHECK_IMPLIES(InWritableSharedSpace(this),
+  DCHECK_IMPLIES(HeapLayout::InWritableSharedSpace(this),
                  isolate->is_shared_space_isolate());
   bool is_internalized = IsInternalizedString(this);
   bool has_pointers = StringShape(this).IsIndirect();
@@ -512,13 +513,13 @@ bool String::MakeExternal(v8::String::ExternalOneByteStringResource* resource) {
   if (size < static_cast<int>(sizeof(UncachedExternalString))) return false;
   // Read-only strings cannot be made external, since that would mutate the
   // string.
-  if (IsReadOnlyHeapObject(this)) return false;
+  if (HeapLayout::InReadOnlySpace(this)) return false;
   Isolate* isolate = GetIsolateFromWritableObject(this);
   if (IsShared()) {
     DCHECK(isolate->is_shared_space_isolate());
     return MarkForExternalizationDuringGC(isolate, resource);
   }
-  DCHECK_IMPLIES(InWritableSharedSpace(this),
+  DCHECK_IMPLIES(HeapLayout::InWritableSharedSpace(this),
                  isolate->is_shared_space_isolate());
   bool is_internalized = IsInternalizedString(this);
   bool has_pointers = StringShape(this).IsIndirect();
@@ -540,7 +541,7 @@ bool String::MakeExternal(v8::String::ExternalOneByteStringResource* resource) {
     int new_size = this->SizeFromMap(new_map);
 
     if (has_pointers) {
-      DCHECK(!InWritableSharedSpace(this));
+      DCHECK(!HeapLayout::InWritableSharedSpace(this));
       isolate->heap()->NotifyObjectLayoutChange(
           this, no_gc, InvalidateRecordedSlots::kYes,
           InvalidateExternalPointerSlots::kNo, new_size);
@@ -581,7 +582,7 @@ bool String::SupportsExternalization(v8::String::Encoding encoding) {
   }
 
   // RO_SPACE strings cannot be externalized.
-  if (IsReadOnlyHeapObject(this)) {
+  if (HeapLayout::InReadOnlySpace(this)) {
     return false;
   }
 
@@ -712,93 +713,16 @@ bool String::LooksValid() {
   // TODO(leszeks): Maybe remove this check entirely, Heap::Contains uses
   // basically the same logic as the way we access the heap in the first place.
   // RO_SPACE objects should always be valid.
-  if (V8_ENABLE_THIRD_PARTY_HEAP_BOOL) return true;
   if (ReadOnlyHeap::Contains(this)) return true;
   MemoryChunkMetadata* chunk = MemoryChunkMetadata::FromHeapObject(this);
   if (chunk->heap() == nullptr) return false;
   return chunk->heap()->Contains(this);
 }
 
-namespace {
-
-bool AreDigits(const uint8_t* s, int from, int to) {
-  for (int i = from; i < to; i++) {
-    if (s[i] < '0' || s[i] > '9') return false;
-  }
-
-  return true;
-}
-
-int ParseDecimalInteger(const uint8_t* s, int from, int to) {
-  DCHECK_LT(to - from, 10);  // Overflow is not possible.
-  DCHECK(from < to);
-  int d = s[from] - '0';
-
-  for (int i = from + 1; i < to; i++) {
-    d = 10 * d + (s[i] - '0');
-  }
-
-  return d;
-}
-
-}  // namespace
-
 // static
 Handle<Number> String::ToNumber(Isolate* isolate, Handle<String> subject) {
-  // Flatten {subject} string first.
-  subject = String::Flatten(isolate, subject);
-
-  // Fast array index case.
-  uint32_t index;
-  if (subject->AsArrayIndex(&index)) {
-    return isolate->factory()->NewNumberFromUint(index);
-  }
-
-  // Fast case: short integer or some sorts of junk values.
-  if (IsSeqOneByteString(*subject)) {
-    int len = subject->length();
-    if (len == 0) return handle(Smi::zero(), isolate);
-
-    DisallowGarbageCollection no_gc;
-    uint8_t const* data = Cast<SeqOneByteString>(subject)->GetChars(no_gc);
-    bool minus = (data[0] == '-');
-    int start_pos = (minus ? 1 : 0);
-
-    if (start_pos == len) {
-      return isolate->factory()->nan_value();
-    } else if (data[start_pos] > '9') {
-      // Fast check for a junk value. A valid string may start from a
-      // whitespace, a sign ('+' or '-'), the decimal point, a decimal digit
-      // or the 'I' character ('Infinity'). All of that have codes not greater
-      // than '9' except 'I' and &nbsp;.
-      if (data[start_pos] != 'I' && data[start_pos] != 0xA0) {
-        return isolate->factory()->nan_value();
-      }
-    } else if (len - start_pos < 10 && AreDigits(data, start_pos, len)) {
-      // The maximal/minimal smi has 10 digits. If the string has less digits
-      // we know it will fit into the smi-data type.
-      int d = ParseDecimalInteger(data, start_pos, len);
-      if (minus) {
-        if (d == 0) return isolate->factory()->minus_zero_value();
-        d = -d;
-      } else if (!subject->HasHashCode() && len <= String::kMaxArrayIndexSize &&
-                 (len == 1 || data[0] != '0')) {
-        // String hash is not calculated yet but all the data are present.
-        // Update the hash field to speed up sequential convertions.
-        uint32_t raw_hash_field = StringHasher::MakeArrayIndexHash(d, len);
-#ifdef DEBUG
-        subject->EnsureHash();  // Force hash calculation.
-        DCHECK_EQ(subject->raw_hash_field(), raw_hash_field);
-#endif
-        subject->set_raw_hash_field_if_empty(raw_hash_field);
-      }
-      return handle(Smi::FromInt(d), isolate);
-    }
-  }
-
-  // Slower case.
-  int flags = ALLOW_HEX | ALLOW_OCTAL | ALLOW_BINARY;
-  return isolate->factory()->NewNumber(StringToDouble(isolate, subject, flags));
+  return isolate->factory()->NewNumber(
+      StringToDouble(isolate, subject, ALLOW_NON_DECIMAL_PREFIX));
 }
 
 String::FlatContent String::SlowGetFlatContent(

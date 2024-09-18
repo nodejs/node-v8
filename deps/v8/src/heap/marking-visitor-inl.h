@@ -7,6 +7,7 @@
 
 #include "src/common/globals.h"
 #include "src/heap/ephemeron-remembered-set.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/heap/marking-state-inl.h"
 #include "src/heap/marking-visitor.h"
 #include "src/heap/marking-worklist-inl.h"
@@ -18,6 +19,7 @@
 #include "src/heap/spaces.h"
 #include "src/objects/compressed-slots.h"
 #include "src/objects/descriptor-array.h"
+#include "src/objects/heap-object.h"
 #include "src/objects/js-objects.h"
 #include "src/objects/objects.h"
 #include "src/objects/property-details.h"
@@ -25,6 +27,7 @@
 #include "src/objects/smi.h"
 #include "src/objects/string.h"
 #include "src/sandbox/external-pointer-inl.h"
+#include "src/sandbox/indirect-pointer-tag.h"
 #include "src/sandbox/js-dispatch-table-inl.h"
 
 // Has to be the last include (doesn't have include guards):
@@ -294,11 +297,21 @@ void MarkingVisitorBase<ConcreteVisitor>::VisitTrustedPointerTableEntry(
 template <typename ConcreteVisitor>
 void MarkingVisitorBase<ConcreteVisitor>::VisitJSDispatchTableEntry(
     Tagged<HeapObject> host, JSDispatchHandle handle) {
-#ifdef V8_ENABLE_SANDBOX
+#ifdef V8_ENABLE_LEAPTIERING
   JSDispatchTable* table = GetProcessWideJSDispatchTable();
+#ifdef DEBUG
   JSDispatchTable::Space* space = heap_->js_dispatch_table_space();
-  table->Mark(space, handle);
-#endif  // V8_ENABLE_SANDBOX
+  JSDispatchTable::Space* ro_space =
+      heap_->isolate()->read_only_heap()->js_dispatch_table_space();
+  table->VerifyEntry(handle, space, ro_space);
+#endif  // DEBUG
+
+  table->Mark(handle);
+
+  // The code objects referenced from a dispatch table entry are treated as weak
+  // references for the purpose of bytecode/baseline flushing, so they are not
+  // marked here. See also VisitJSFunction below.
+#endif  // V8_ENABLE_LEAPTIERING
 }
 
 // ===========================================================================
@@ -311,23 +324,44 @@ int MarkingVisitorBase<ConcreteVisitor>::VisitJSFunction(
   if (ShouldFlushBaselineCode(js_function)) {
     DCHECK(IsBaselineCodeFlushingEnabled(code_flush_mode_));
     local_weak_objects_->baseline_flushing_candidates_local.Push(js_function);
-  } else {
-#ifdef V8_ENABLE_SANDBOX
-    VisitIndirectPointer(js_function,
-                         js_function->RawIndirectPointerField(
-                             JSFunction::kCodeOffset, kCodeIndirectPointerTag),
-                         IndirectPointerMode::kStrong);
-#else
-    VisitPointer(js_function, js_function->RawField(JSFunction::kCodeOffset));
-#endif  // V8_ENABLE_SANDBOX
-    // TODO(mythria): Consider updating the check for ShouldFlushBaselineCode to
-    // also include cases where there is old bytecode even when there is no
-    // baseline code and remove this check here.
-    if (IsByteCodeFlushingEnabled(code_flush_mode_) &&
-        js_function->NeedsResetDueToFlushedBytecode(heap_->isolate())) {
-      local_weak_objects_->flushed_js_functions_local.Push(js_function);
+    return Base::VisitJSFunction(map, js_function);
+  }
+
+  // We're not flushing the Code, so mark it as alive.
+#ifdef V8_ENABLE_LEAPTIERING
+  // Here we can see JSFunctions that aren't fully initialized (e.g. during
+  // deserialization) so we need to check for the null handle.
+  JSDispatchHandle handle = js_function->Relaxed_ReadField<JSDispatchHandle>(
+      JSFunction::kDispatchHandleOffset);
+  if (handle != kNullJSDispatchHandle) {
+    Tagged<HeapObject> obj = GetProcessWideJSDispatchTable()->GetCode(handle);
+    // TODO(saelo): maybe factor out common code with VisitIndirectPointer
+    // into a helper routine?
+    SynchronizePageAccess(obj);
+    const auto target_worklist = MarkingHelper::ShouldMarkObject(heap_, obj);
+    if (target_worklist) {
+      MarkObject(js_function, obj, target_worklist.value());
     }
   }
+#else
+#ifdef V8_ENABLE_SANDBOX
+  VisitIndirectPointer(js_function,
+                       js_function->RawIndirectPointerField(
+                           JSFunction::kCodeOffset, kCodeIndirectPointerTag),
+                       IndirectPointerMode::kStrong);
+#else
+  VisitPointer(js_function, js_function->RawField(JSFunction::kCodeOffset));
+#endif  // V8_ENABLE_SANDBOX
+#endif  // V8_ENABLE_LEAPTIERING
+
+  // TODO(mythria): Consider updating the check for ShouldFlushBaselineCode to
+  // also include cases where there is old bytecode even when there is no
+  // baseline code and remove this check here.
+  if (IsByteCodeFlushingEnabled(code_flush_mode_) &&
+      js_function->NeedsResetDueToFlushedBytecode(heap_->isolate())) {
+    local_weak_objects_->flushed_js_functions_local.Push(js_function);
+  }
+
   return Base::VisitJSFunction(map, js_function);
 }
 
@@ -350,9 +384,14 @@ int MarkingVisitorBase<ConcreteVisitor>::VisitSharedFunctionInfo(
                              SharedFunctionInfo::kTrustedFunctionDataOffset,
                              kUnknownIndirectPointerTag),
                          IndirectPointerMode::kStrong);
+#else
+    VisitPointer(
+        shared_info,
+        shared_info->RawField(SharedFunctionInfo::kTrustedFunctionDataOffset));
 #endif
-    VisitPointer(shared_info, shared_info->RawField(
-                                  SharedFunctionInfo::kFunctionDataOffset));
+    VisitPointer(shared_info,
+                 shared_info->RawField(
+                     SharedFunctionInfo::kUntrustedFunctionDataOffset));
   } else if (!IsByteCodeFlushingEnabled(code_flush_mode_)) {
     // If bytecode flushing is disabled but baseline code flushing is enabled
     // then we have to visit the bytecode but not the baseline code.
@@ -384,7 +423,7 @@ bool MarkingVisitorBase<ConcreteVisitor>::HasBytecodeArrayForFlushing(
   // Get a snapshot of the function data field, and if it is a bytecode array,
   // check if it is old. Note, this is done this way since this function can be
   // called by the concurrent marker.
-  Tagged<Object> data = sfi->GetData(heap_->isolate());
+  Tagged<Object> data = sfi->GetTrustedData(heap_->isolate());
   if (IsCode(data)) {
     Tagged<Code> baseline_code = Cast<Code>(data);
     DCHECK_EQ(baseline_code->kind(), CodeKind::BASELINE);
@@ -568,9 +607,9 @@ int MarkingVisitorBase<ConcreteVisitor>::VisitEphemeronHashTable(
     // Objects in the shared heap are prohibited from being used as keys in
     // WeakMaps and WeakSets and therefore cannot be ephemeron keys. See also
     // MarkCompactCollector::ProcessEphemeron.
-    DCHECK(!InWritableSharedSpace(key));
-    if (InReadOnlySpace(key) ||
-        concrete_visitor()->marking_state()->IsMarked(key)) {
+    DCHECK(!HeapLayout::InWritableSharedSpace(key));
+    if (MarkingHelper::IsMarkedOrAlwaysLive(
+            heap_, concrete_visitor()->marking_state(), key)) {
       VisitPointer(table, value_slot);
     } else {
       Tagged<Object> value_obj = table->ValueAt(i);
@@ -608,8 +647,8 @@ int MarkingVisitorBase<ConcreteVisitor>::VisitJSWeakRef(
     SynchronizePageAccess(target);
     concrete_visitor()->AddWeakReferenceForReferenceSummarizer(weak_ref,
                                                                target);
-    if (InReadOnlySpace(target) ||
-        concrete_visitor()->marking_state()->IsMarked(target)) {
+    if (MarkingHelper::IsMarkedOrAlwaysLive(
+            heap_, concrete_visitor()->marking_state(), target)) {
       // Record the slot inside the JSWeakRef, since the VisitJSWeakRef above
       // didn't visit it.
       ObjectSlot slot = weak_ref->RawField(JSWeakRef::kTargetOffset);
@@ -630,10 +669,10 @@ int MarkingVisitorBase<ConcreteVisitor>::VisitWeakCell(
   Tagged<HeapObject> unregister_token = weak_cell->relaxed_unregister_token();
   SynchronizePageAccess(target);
   SynchronizePageAccess(unregister_token);
-  if ((InReadOnlySpace(target) ||
-       concrete_visitor()->marking_state()->IsMarked(target)) &&
-      (InReadOnlySpace(unregister_token) ||
-       concrete_visitor()->marking_state()->IsMarked(unregister_token))) {
+  if (MarkingHelper::IsMarkedOrAlwaysLive(
+          heap_, concrete_visitor()->marking_state(), target) &&
+      MarkingHelper::IsMarkedOrAlwaysLive(
+          heap_, concrete_visitor()->marking_state(), unregister_token)) {
     // Record the slots inside the WeakCell, since its IterateBody doesn't visit
     // it.
     ObjectSlot slot = weak_cell->RawField(WeakCell::kTargetOffset);
@@ -738,7 +777,8 @@ void MarkingVisitorBase<ConcreteVisitor>::VisitDescriptorsForMap(
   // follows this call:
   // - Array in read only space;
   // - StrongDescriptor array;
-  if (InReadOnlySpace(descriptors) || IsStrongDescriptorArray(descriptors)) {
+  if (HeapLayout::InReadOnlySpace(descriptors) ||
+      IsStrongDescriptorArray(descriptors)) {
     return;
   }
 
@@ -788,7 +828,8 @@ template <typename ConcreteVisitor>
 void FullMarkingVisitorBase<ConcreteVisitor>::MarkPointerTableEntry(
     Tagged<HeapObject> host, IndirectPointerSlot slot) {
 #ifdef V8_ENABLE_SANDBOX
-  DCHECK_NE(slot.tag(), kUnknownIndirectPointerTag);
+  IndirectPointerTag tag = slot.tag();
+  DCHECK_NE(tag, kUnknownIndirectPointerTag);
 
   IndirectPointerHandle handle = slot.Relaxed_LoadHandle();
 
@@ -796,13 +837,20 @@ void FullMarkingVisitorBase<ConcreteVisitor>::MarkPointerTableEntry(
   // otherwise fail to mark the table entry as alive.
   DCHECK_NE(handle, kNullIndirectPointerHandle);
 
-  if (slot.tag() == kCodeIndirectPointerTag) {
+  if (tag == kCodeIndirectPointerTag) {
     CodePointerTable* table = GetProcessWideCodePointerTable();
     CodePointerTable::Space* space = this->heap_->code_pointer_space();
     table->Mark(space, handle);
   } else {
-    TrustedPointerTable* table = this->trusted_pointer_table_;
-    TrustedPointerTable::Space* space = this->heap_->trusted_pointer_space();
+    bool use_shared_table = IsSharedTrustedPointerType(tag);
+    DCHECK_EQ(use_shared_table, HeapLayout::InWritableSharedSpace(host));
+    TrustedPointerTable* table = use_shared_table
+                                     ? this->shared_trusted_pointer_table_
+                                     : this->trusted_pointer_table_;
+    TrustedPointerTable::Space* space =
+        use_shared_table
+            ? this->heap_->isolate()->shared_trusted_pointer_space()
+            : this->heap_->trusted_pointer_space();
     table->Mark(space, handle);
   }
 #else

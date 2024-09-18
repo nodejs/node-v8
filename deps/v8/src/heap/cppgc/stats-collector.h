@@ -67,7 +67,8 @@ namespace internal {
 #define CPPGC_FOR_ALL_HISTOGRAM_CONCURRENT_SCOPES(V) \
   V(ConcurrentMark)                                  \
   V(ConcurrentSweep)                                 \
-  V(ConcurrentWeakCallback)
+  V(ConcurrentWeakCallback)                          \
+  V(ConcurrentWeakPersistent)
 
 #define CPPGC_FOR_ALL_CONCURRENT_SCOPES(V) V(ConcurrentMarkProcessEphemerons)
 
@@ -109,7 +110,7 @@ class V8_EXPORT_PRIVATE StatsCollector final {
     V8_EXPORT_PRIVATE explicit Event();
 
     v8::base::TimeDelta scope_data[kNumHistogramScopeIds];
-    v8::base::Atomic32 concurrent_scope_data[kNumHistogramConcurrentScopeIds]{
+    v8::base::AtomicWord concurrent_scope_data[kNumHistogramConcurrentScopeIds]{
         0};
 
     size_t epoch = -1;
@@ -504,12 +505,11 @@ void StatsCollector::InternalScope<trace_category,
     return;
   }
   // scope_category == StatsCollector::ScopeContext::kConcurrentThread
-  using Atomic32 = v8::base::Atomic32;
+  using AtomicWord = v8::base::AtomicWord;
   const int64_t us = time.InMicroseconds();
-  DCHECK_LE(us, std::numeric_limits<Atomic32>::max());
   v8::base::Relaxed_AtomicIncrement(
       &stats_collector_->current_.concurrent_scope_data[scope_id_],
-      static_cast<Atomic32>(us));
+      static_cast<AtomicWord>(us));
 }
 
 }  // namespace internal

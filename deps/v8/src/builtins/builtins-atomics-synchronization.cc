@@ -230,7 +230,7 @@ BUILTIN(AtomicsMutexAsyncUnlockResolveHandler) {
   DCHECK(v8_flags.harmony_struct);
   HandleScope scope(isolate);
 
-  Handle<Object> previous_result = args.atOrUndefined(isolate, 1);
+  DirectHandle<Object> previous_result = args.atOrUndefined(isolate, 1);
   Handle<JSPromise> js_unlock_promise =
       UnlockAsyncLockedMutexFromPromiseHandler(isolate);
 
@@ -327,8 +327,8 @@ BUILTIN(AtomicsConditionNotify) {
     ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, count_obj,
                                        Object::ToInteger(isolate, count_obj));
     double count_double = Object::NumberValue(*count_obj);
-    if (count_double < 0) {
-      count_double = 0;
+    if (count_double <= 0) {
+      return Smi::zero();
     } else if (count_double > JSAtomicsCondition::kAllWaiters) {
       count_double = JSAtomicsCondition::kAllWaiters;
     }

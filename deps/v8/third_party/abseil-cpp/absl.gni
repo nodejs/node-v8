@@ -83,9 +83,6 @@ template("absl_source_set") {
             # Not used by Chromium directly.
             "//chromecast/internal/*",
             "//libassistant/*",
-
-            # Not built into Chrome.
-            "//components/optimization_guide/internal/*",
           ]
         } else {
           visibility = [ "*" ]

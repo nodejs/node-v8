@@ -120,7 +120,7 @@ inline void Code::clear_deoptimization_data_and_interpreter_data() {
 }
 
 inline bool Code::has_deoptimization_data_or_interpreter_data() const {
-  return !IsProtectedPointerFieldCleared(
+  return !IsProtectedPointerFieldEmpty(
       kDeoptimizationDataOrInterpreterDataOffset);
 }
 
@@ -414,6 +414,10 @@ inline bool Code::has_tagged_outgoing_params() const {
 #endif
 }
 
+inline bool Code::is_context_specialized() const {
+  return IsContextSpecializedField::decode(flags(kRelaxedLoad));
+}
+
 inline bool Code::is_turbofanned() const {
   return IsTurbofannedField::decode(flags(kRelaxedLoad));
 }
@@ -536,10 +540,39 @@ Address Code::code_comments() const {
 }
 
 int Code::code_comments_size() const {
-  return unwinding_info_offset() - code_comments_offset();
+  return builtin_jump_table_info_offset() - code_comments_offset();
 }
 
 bool Code::has_code_comments() const { return code_comments_size() > 0; }
+
+int32_t Code::builtin_jump_table_info_offset() const {
+  if (!V8_BUILTIN_JUMP_TABLE_INFO_BOOL) {
+    // Redirection needed since the field doesn't exist in this case.
+    return unwinding_info_offset();
+  }
+  return ReadField<int32_t>(kBuiltinJumpTableInfoOffsetOffset);
+}
+
+void Code::set_builtin_jump_table_info_offset(int32_t value) {
+  if (!V8_BUILTIN_JUMP_TABLE_INFO_BOOL) {
+    // Redirection needed since the field doesn't exist in this case.
+    return;
+  }
+  DCHECK_LE(value, metadata_size());
+  WriteField<int32_t>(kBuiltinJumpTableInfoOffsetOffset, value);
+}
+
+Address Code::builtin_jump_table_info() const {
+  return metadata_start() + builtin_jump_table_info_offset();
+}
+
+int Code::builtin_jump_table_info_size() const {
+  return unwinding_info_offset() - builtin_jump_table_info_offset();
+}
+
+bool Code::has_builtin_jump_table_info() const {
+  return builtin_jump_table_info_size() > 0;
+}
 
 Address Code::unwinding_info_start() const {
   return metadata_start() + unwinding_info_offset();
@@ -628,7 +661,7 @@ bool Code::has_instruction_stream() const {
 #else
   const uint64_t value = ReadField<uint64_t>(kInstructionStreamOffset);
 #endif
-  SLOW_DCHECK(value == 0 || !InReadOnlySpace(*this));
+  SLOW_DCHECK(value == 0 || !HeapLayout::InReadOnlySpace(*this));
   return value != 0;
 }
 
@@ -640,7 +673,7 @@ bool Code::has_instruction_stream(RelaxedLoadTag tag) const {
   const uint64_t value =
       RELAXED_READ_INT64_FIELD(*this, kInstructionStreamOffset);
 #endif
-  SLOW_DCHECK(value == 0 || !InReadOnlySpace(*this));
+  SLOW_DCHECK(value == 0 || !HeapLayout::InReadOnlySpace(*this));
   return value != 0;
 }
 
@@ -765,11 +798,12 @@ void Code::clear_padding() {
 
 RELAXED_UINT32_ACCESSORS(Code, flags, kFlagsOffset)
 
-void Code::initialize_flags(CodeKind kind, bool is_turbofanned,
-                            int stack_slots) {
-  CHECK(0 <= stack_slots && stack_slots < StackSlotsField::kMax);
+void Code::initialize_flags(CodeKind kind, bool is_context_specialized,
+                            bool is_turbofanned, int stack_slots) {
+  CHECK(StackSlotsField::is_valid(stack_slots));
   DCHECK(!CodeKindIsInterpretedJSFunction(kind));
   uint32_t value = KindField::encode(kind) |
+                   IsContextSpecializedField::encode(is_context_specialized) |
                    IsTurbofannedField::encode(is_turbofanned) |
                    StackSlotsField::encode(stack_slots);
   static_assert(FIELD_SIZE(kFlagsOffset) == kInt32Size);

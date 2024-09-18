@@ -4,6 +4,7 @@
 
 #include "src/objects/js-struct.h"
 
+#include "src/heap/heap-layout-inl.h"
 #include "src/objects/lookup-inl.h"
 #include "src/objects/map-inl.h"
 #include "src/objects/off-heap-hash-table-inl.h"
@@ -179,7 +180,7 @@ Handle<Map> JSSharedStruct::CreateInstanceMap(
   if (!maybe_registry_key.is_null()) num_descriptors++;
 
   // Create the DescriptorArray if there are fields or elements.
-  Handle<DescriptorArray> descriptors;
+  DirectHandle<DescriptorArray> descriptors;
   if (num_descriptors != 0) {
     descriptors = factory->NewDescriptorArray(num_descriptors, 0,
                                               AllocationType::kSharedOld);
@@ -213,7 +214,7 @@ Handle<Map> JSSharedStruct::CreateInstanceMap(
             ReadOnlyRoots(isolate).undefined_value_handle(), details);
       }
       elements_template->SetInitialNumberOfElements(num_elements);
-      DCHECK(InAnySharedSpace(*elements_template));
+      DCHECK(HeapLayout::InAnySharedSpace(*elements_template));
 
       Descriptor d = Descriptor::DataConstant(
           factory->shared_struct_map_elements_template_symbol(),

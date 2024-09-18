@@ -7,6 +7,7 @@
 
 #include "src/execution/isolate.h"
 #include "src/heap/heap-write-barrier-inl.h"
+#include "src/sandbox/indirect-pointer-tag.h"
 
 namespace v8 {
 namespace internal {
@@ -36,22 +37,12 @@ ExternalPointerTable::Space* IsolateForSandbox::GetExternalPointerTableSpaceFor(
 
 ExternalBufferTable& IsolateForSandbox::GetExternalBufferTableFor(
     ExternalBufferTag tag) {
-  DCHECK_NE(tag, kExternalBufferNullTag);
-  return IsSharedExternalBufferType(tag)
-             ? isolate_->shared_external_buffer_table()
-             : isolate_->external_buffer_table();
+  UNIMPLEMENTED();
 }
 
 ExternalBufferTable::Space* IsolateForSandbox::GetExternalBufferTableSpaceFor(
     ExternalBufferTag tag, Address host) {
-  DCHECK_NE(tag, kExternalBufferNullTag);
-
-  if (V8_UNLIKELY(IsSharedExternalBufferType(tag))) {
-    DCHECK(!ReadOnlyHeap::Contains(host));
-    return isolate_->shared_external_buffer_space();
-  }
-
-  return isolate_->heap()->external_buffer_space();
+  UNIMPLEMENTED();
 }
 
 CodePointerTable::Space* IsolateForSandbox::GetCodePointerTableSpaceFor(
@@ -61,20 +52,29 @@ CodePointerTable::Space* IsolateForSandbox::GetCodePointerTableSpaceFor(
              : isolate_->heap()->code_pointer_space();
 }
 
-JSDispatchTable::Space* IsolateForSandbox::GetJSDispatchTableSpaceFor(
-    Address owning_slot) {
-  return isolate_->heap()->js_dispatch_table_space();
+TrustedPointerTable& IsolateForSandbox::GetTrustedPointerTableFor(
+    IndirectPointerTag tag) {
+  return IsSharedTrustedPointerType(tag)
+             ? isolate_->shared_trusted_pointer_table()
+             : isolate_->trusted_pointer_table();
 }
 
-TrustedPointerTable& IsolateForSandbox::GetTrustedPointerTable() {
-  return isolate_->trusted_pointer_table();
-}
-
-TrustedPointerTable::Space* IsolateForSandbox::GetTrustedPointerTableSpace() {
-  return isolate_->heap()->trusted_pointer_space();
+TrustedPointerTable::Space* IsolateForSandbox::GetTrustedPointerTableSpaceFor(
+    IndirectPointerTag tag) {
+  return IsSharedTrustedPointerType(tag)
+             ? isolate_->shared_trusted_pointer_space()
+             : isolate_->heap()->trusted_pointer_space();
 }
 
 #endif  // V8_ENABLE_SANDBOX
+
+#ifdef V8_ENABLE_LEAPTIERING
+JSDispatchTable::Space* IsolateForSandbox::GetJSDispatchTableSpaceFor(
+    Address owning_slot) {
+  DCHECK(!ReadOnlyHeap::Contains(owning_slot));
+  return isolate_->heap()->js_dispatch_table_space();
+}
+#endif  // V8_ENABLE_LEAPTIERING
 
 template <typename IsolateT>
 IsolateForPointerCompression::IsolateForPointerCompression(IsolateT* isolate)

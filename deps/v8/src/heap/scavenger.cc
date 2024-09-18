@@ -15,6 +15,7 @@
 #include "src/heap/gc-tracer-inl.h"
 #include "src/heap/gc-tracer.h"
 #include "src/heap/heap-inl.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/heap/heap.h"
 #include "src/heap/large-page-metadata-inl.h"
 #include "src/heap/mark-compact-inl.h"
@@ -185,7 +186,7 @@ class IterateAndScavengePromotedObjectsVisitor final : public ObjectVisitor {
           page, chunk->Offset(slot.address()));
     }
 
-    if (InWritableSharedSpace(target)) {
+    if (HeapLayout::InWritableSharedSpace(target)) {
       MemoryChunk* chunk = MemoryChunk::FromHeapObject(host);
       MutablePageMetadata* page = MutablePageMetadata::cast(chunk->Metadata());
       RememberedSet<OLD_TO_SHARED>::Insert<AccessMode::ATOMIC>(
@@ -529,8 +530,8 @@ void ScavengerCollector::CollectGarbage() {
 
   // Need to free new space LAB that was allocated during scavenge.
   heap_->allocator()->new_space_allocator()->FreeLinearAllocationArea();
-  // Now that the LAB was freed, set age mark.
-  semi_space_new_space->set_age_mark_to_top();
+
+  new_space->GarbageCollectionEpilogue();
 
   // Since we promote all surviving large objects immediately, all remaining
   // large objects must be dead.
@@ -675,17 +676,6 @@ Scavenger::PromotionList::Local::Local(Scavenger::PromotionList* promotion_list)
       large_object_promotion_list_local_(
           promotion_list->large_object_promotion_list_) {}
 
-namespace {
-MainAllocator* CreateSharedOldAllocator(Heap* heap) {
-  if (v8_flags.shared_string_table && heap->isolate()->has_shared_space()) {
-    return new MainAllocator(heap, heap->shared_allocation_space(),
-                             MainAllocator::kInGC);
-  }
-  return nullptr;
-}
-
-}  // namespace
-
 Scavenger::Scavenger(ScavengerCollector* collector, Heap* heap, bool is_logging,
                      EmptyChunksList* empty_chunks, CopiedList* copied_list,
                      PromotionList* promotion_list,
@@ -700,11 +690,11 @@ Scavenger::Scavenger(ScavengerCollector* collector, Heap* heap, bool is_logging,
       pretenuring_handler_(heap_->pretenuring_handler()),
       local_pretenuring_feedback_(PretenuringHandler::kInitialFeedbackCapacity),
       allocator_(heap, CompactionSpaceKind::kCompactionSpaceForScavenge),
-      shared_old_allocator_(CreateSharedOldAllocator(heap_)),
       is_logging_(is_logging),
       is_incremental_marking_(heap->incremental_marking()->IsMarking()),
       is_compacting_(heap->incremental_marking()->IsCompacting()),
-      shared_string_table_(shared_old_allocator_ != nullptr),
+      shared_string_table_(v8_flags.shared_string_table &&
+                           heap->isolate()->has_shared_space()),
       mark_shared_heap_(heap->isolate()->is_shared_space_isolate()),
       shortcut_strings_(
           heap->CanShortcutStringsDuringGC(GarbageCollector::SCAVENGER)) {
@@ -924,7 +914,6 @@ void Scavenger::Finalize() {
   heap()->IncrementPromotedObjectsSize(promoted_size_);
   collector_->MergeSurvivingNewLargeObjects(surviving_new_large_objects_);
   allocator_.Finalize();
-  if (shared_old_allocator_) shared_old_allocator_->FreeLinearAllocationArea();
   empty_chunks_local_.Publish();
   ephemeron_table_list_local_.Publish();
   for (auto it = ephemeron_remembered_set_.begin();
@@ -953,7 +942,7 @@ void Scavenger::CheckOldToNewSlotForSharedUntyped(MemoryChunk* chunk,
   Tagged<HeapObject> heap_object;
 
   if (object.GetHeapObject(&heap_object) &&
-      InWritableSharedSpace(heap_object)) {
+      HeapLayout::InWritableSharedSpace(heap_object)) {
     RememberedSet<OLD_TO_SHARED>::Insert<AccessMode::ATOMIC>(
         page, chunk->Offset(slot.address()));
   }
@@ -965,7 +954,7 @@ void Scavenger::CheckOldToNewSlotForSharedTyped(
   Tagged<HeapObject> heap_object;
 
   if (new_target.GetHeapObject(&heap_object) &&
-      InWritableSharedSpace(heap_object)) {
+      HeapLayout::InWritableSharedSpace(heap_object)) {
     const uintptr_t offset = chunk->Offset(slot_address);
     DCHECK_LT(offset, static_cast<uintptr_t>(TypedSlotSet::kMaxOffset));
 

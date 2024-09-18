@@ -112,6 +112,9 @@ class HandleBase {
 template <typename T>
 class Handle final : public HandleBase {
  public:
+  // Handles denote strong references.
+  static_assert(!is_maybe_weak_v<T>);
+
   V8_INLINE Handle() : HandleBase(nullptr) {}
 
   V8_INLINE explicit Handle(Address* location) : HandleBase(location) {
@@ -447,11 +450,13 @@ class V8_TRIVIAL_ABI DirectHandleBase :
 template <typename T>
 class DirectHandle : public DirectHandleBase {
  public:
+  // Handles denote strong references.
+  static_assert(!is_maybe_weak_v<T>);
+
   V8_INLINE DirectHandle() : DirectHandle(kTaggedNullAddress) {}
 
   V8_INLINE explicit DirectHandle(Address object) : DirectHandleBase(object) {}
 
-  V8_INLINE explicit DirectHandle(Tagged<T> object);
   V8_INLINE DirectHandle(Tagged<T> object, Isolate* isolate)
       : DirectHandle(object) {}
   V8_INLINE DirectHandle(Tagged<T> object, LocalIsolate* isolate)
@@ -534,6 +539,8 @@ class DirectHandle : public DirectHandleBase {
   template <typename To, typename From>
   friend inline DirectHandle<To> Cast(DirectHandle<From> value,
                                       const v8::SourceLocation& loc);
+
+  V8_INLINE explicit DirectHandle(Tagged<T> object);
 
   explicit DirectHandle(no_checking_tag do_not_check)
       : DirectHandleBase(kTaggedNullAddress, do_not_check) {}

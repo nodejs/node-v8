@@ -20,6 +20,7 @@
 #include "src/heap/gc-tracer-inl.h"
 #include "src/heap/gc-tracer.h"
 #include "src/heap/heap-inl.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/heap/heap.h"
 #include "src/heap/incremental-marking-job.h"
 #include "src/heap/mark-compact.h"
@@ -407,17 +408,28 @@ void IncrementalMarking::FinishBlackAllocation() {
 void IncrementalMarking::StartPointerTableBlackAllocation() {
 #ifdef V8_ENABLE_SANDBOX
   heap()->code_pointer_space()->set_allocate_black(true);
-  heap()->js_dispatch_table_space()->set_allocate_black(true);
   heap()->trusted_pointer_space()->set_allocate_black(true);
+  if (isolate()->is_shared_space_isolate()) {
+    isolate()->shared_trusted_pointer_space()->set_allocate_black(true);
+  }
 #endif  // V8_ENABLE_SANDBOX
+#ifdef V8_ENABLE_LEAPTIERING
+  heap()->js_dispatch_table_space()->set_allocate_black(true);
+#endif  // V8_ENABLE_LEAPTIERING
 }
 
 void IncrementalMarking::StopPointerTableBlackAllocation() {
 #ifdef V8_ENABLE_SANDBOX
   heap()->code_pointer_space()->set_allocate_black(false);
-  heap()->js_dispatch_table_space()->set_allocate_black(false);
   heap()->trusted_pointer_space()->set_allocate_black(false);
+  if (isolate()->is_shared_space_isolate()) {
+    heap()->isolate()->shared_trusted_pointer_space()->set_allocate_black(
+        false);
+  }
 #endif  // V8_ENABLE_SANDBOX
+#ifdef V8_ENABLE_LEAPTIERING
+  heap()->js_dispatch_table_space()->set_allocate_black(false);
+#endif  // V8_ENABLE_LEAPTIERING
 }
 
 void IncrementalMarking::UpdateMarkingWorklistAfterScavenge() {
@@ -460,7 +472,7 @@ void IncrementalMarking::UpdateMarkingWorklistAfterScavenge() {
       DCHECK(!Heap::IsLargeObject(obj));
       Tagged<HeapObject> dest = map_word.ToForwardingAddress(obj);
       DCHECK_IMPLIES(marking_state->IsUnmarked(obj), IsFreeSpaceOrFiller(obj));
-      if (InWritableSharedSpace(dest) &&
+      if (HeapLayout::InWritableSharedSpace(dest) &&
           !isolate()->is_shared_space_isolate()) {
         // Object got promoted into the shared heap. Drop it from the client
         // heap marking worklist.

@@ -258,12 +258,12 @@ v8_source_set("cctest_sources") {
     if (is_win) {
       sources += [ "test-stack-unwinding-win64.cc" ]
     }
-  } else if (v8_current_cpu == "ppc" || v8_current_cpu == "ppc64") {
+  } else if (v8_current_cpu == "ppc64") {
     sources += [
       ### gcmole(ppc) ###
       "test-assembler-ppc.cc",
     ]
-  } else if (v8_current_cpu == "s390" || v8_current_cpu == "s390x") {
+  } else if (v8_current_cpu == "s390x") {
     sources += [
       ### gcmole(s390) ###
       "test-assembler-s390.cc",
@@ -385,9 +385,8 @@ v8_source_set("cctest_sources") {
   }
 
   cflags = []
-  if (v8_current_cpu == "ppc" || v8_current_cpu == "ppc64" ||
-      v8_current_cpu == "arm" || v8_current_cpu == "arm64" ||
-      v8_current_cpu == "s390" || v8_current_cpu == "s390x" ||
+  if (v8_current_cpu == "ppc64" || v8_current_cpu == "arm" ||
+      v8_current_cpu == "arm64" || v8_current_cpu == "s390x" ||
       v8_current_cpu == "mips64" || v8_current_cpu == "mips64el" ||
       v8_current_cpu == "riscv64" || v8_current_cpu == "loong64" ||
       v8_current_cpu == "riscv32") {

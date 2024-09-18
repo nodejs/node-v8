@@ -5,11 +5,14 @@
 #ifndef V8_OBJECTS_STRING_INL_H_
 #define V8_OBJECTS_STRING_INL_H_
 
+#include <optional>
+
 #include "src/common/assert-scope.h"
 #include "src/common/globals.h"
 #include "src/execution/isolate-utils.h"
 #include "src/handles/handles-inl.h"
 #include "src/heap/factory.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/numbers/hash-seed-inl.h"
 #include "src/objects/instance-type-inl.h"
 #include "src/objects/name-inl.h"
@@ -28,8 +31,7 @@
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
 
-namespace v8 {
-namespace internal {
+namespace v8::internal {
 
 class V8_NODISCARD SharedStringAccessGuardIfNeeded {
  public:
@@ -112,7 +114,7 @@ class V8_NODISCARD SharedStringAccessGuardIfNeeded {
     return isolate;
   }
 
-  base::Optional<base::SharedMutexGuard<base::kShared>> mutex_guard;
+  std::optional<base::SharedMutexGuard<base::kShared>> mutex_guard;
 };
 
 int32_t String::length() const { return length_; }
@@ -658,7 +660,7 @@ Handle<String> String::Flatten(Isolate* isolate, Handle<String> string,
   if (V8_LIKELY(shape.IsDirect())) return string;
 
   if (shape.IsCons()) {
-    DCHECK(!InAnySharedSpace(s));
+    DCHECK(!HeapLayout::InAnySharedSpace(s));
     Tagged<ConsString> cons = Cast<ConsString>(s);
     if (!cons->IsFlat()) {
       AllowGarbageCollection yes_gc;
@@ -685,7 +687,7 @@ Handle<String> String::Flatten(LocalIsolate* isolate, Handle<String> string,
 }
 
 // static
-base::Optional<String::FlatContent> String::TryGetFlatContentFromDirectString(
+std::optional<String::FlatContent> String::TryGetFlatContentFromDirectString(
     const DisallowGarbageCollection& no_gc, Tagged<String> string, int offset,
     int length, const SharedStringAccessGuardIfNeeded& access_guard) {
   DCHECK_GE(offset, 0);
@@ -769,7 +771,7 @@ uint32_t String::FlatContent::ComputeChecksum() const {
 String::FlatContent String::GetFlatContent(
     const DisallowGarbageCollection& no_gc,
     const SharedStringAccessGuardIfNeeded& access_guard) {
-  base::Optional<FlatContent> flat_content =
+  std::optional<FlatContent> flat_content =
       TryGetFlatContentFromDirectString(no_gc, this, 0, length(), access_guard);
   if (flat_content.has_value()) return flat_content.value();
   return SlowGetFlatContent(no_gc, access_guard);
@@ -785,7 +787,7 @@ Handle<String> String::Share(Isolate* isolate, Handle<String> string) {
     case StringTransitionStrategy::kInPlace:
       // A relaxed write is sufficient here, because at this point the string
       // has not yet escaped the current thread.
-      DCHECK(InAnySharedSpace(*string));
+      DCHECK(HeapLayout::InAnySharedSpace(*string));
       string->set_map_no_write_barrier(*new_map.ToHandleChecked());
       return string;
     case StringTransitionStrategy::kAlreadyTransitioned:
@@ -855,7 +857,7 @@ bool String::IsFlat() const {
 
 bool String::IsShared() const {
   const bool result = StringShape(this).IsShared();
-  DCHECK_IMPLIES(result, InAnySharedSpace(this));
+  DCHECK_IMPLIES(result, HeapLayout::InAnySharedSpace(this));
   return result;
 }
 
@@ -1549,8 +1551,7 @@ class SeqTwoByteString::BodyDescriptor final : public DataOnlyBodyDescriptor {
   }
 };
 
-}  // namespace internal
-}  // namespace v8
+}  // namespace v8::internal
 
 #include "src/objects/object-macros-undef.h"
 

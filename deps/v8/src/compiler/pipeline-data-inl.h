@@ -6,6 +6,8 @@
 #ifndef V8_COMPILER_PIPELINE_DATA_INL_H_
 #define V8_COMPILER_PIPELINE_DATA_INL_H_
 
+#include <optional>
+
 #include "src/builtins/profile-data-reader.h"
 #include "src/codegen/assembler.h"
 #include "src/codegen/optimized-compilation-info.h"
@@ -19,6 +21,7 @@
 #include "src/compiler/compiler-source-position-table.h"
 #include "src/compiler/js-context-specialization.h"
 #include "src/compiler/js-heap-broker.h"
+#include "src/compiler/js-inlining.h"
 #include "src/compiler/js-operator.h"
 #include "src/compiler/machine-graph.h"
 #include "src/compiler/machine-operator.h"
@@ -87,6 +90,10 @@ class TFPipelineData {
     node_origins_ = info->trace_turbo_json()
                         ? graph_zone_->New<NodeOriginTable>(graph_)
                         : nullptr;
+#if V8_ENABLE_WEBASSEMBLY
+    js_wasm_calls_sidetable_ =
+        graph_zone_->New<JsWasmCallsSidetable>(graph_zone_);
+#endif  // V8_ENABLE_WEBASSEMBLY
     simplified_ = graph_zone_->New<SimplifiedOperatorBuilder>(graph_zone_);
     machine_ = graph_zone_->New<MachineOperatorBuilder>(
         graph_zone_, MachineType::PointerRepresentation(),
@@ -113,7 +120,6 @@ class TFPipelineData {
                  NodeOriginTable* node_origins,
                  const AssemblerOptions& assembler_options)
       : isolate_(nullptr),
-        wasm_engine_(wasm_engine),
         allocator_(wasm_engine->allocator()),
         info_(info),
         debug_name_(info_->GetDebugName()),
@@ -151,11 +157,6 @@ class TFPipelineData {
                  const AssemblerOptions& assembler_options,
                  const ProfileDataFromFile* profile_data)
       : isolate_(isolate),
-#if V8_ENABLE_WEBASSEMBLY
-        // TODO(clemensb): Remove this field, use GetWasmEngine directly
-        // instead.
-        wasm_engine_(wasm::GetWasmEngine()),
-#endif  // V8_ENABLE_WEBASSEMBLY
         allocator_(allocator),
         info_(info),
         debug_name_(info_->GetDebugName()),
@@ -380,7 +381,7 @@ class TFPipelineData {
 
   CodeTracer* GetCodeTracer() const {
 #if V8_ENABLE_WEBASSEMBLY
-    if (wasm_engine_) return wasm_engine_->GetCodeTracer();
+    if (info_->IsWasm()) return wasm::GetWasmEngine()->GetCodeTracer();
 #endif  // V8_ENABLE_WEBASSEMBLY
     return isolate_->GetCodeTracer();
   }
@@ -403,6 +404,9 @@ class TFPipelineData {
   }
 
   void DeleteGraphZone() {
+#ifdef V8_ENABLE_WEBASSEMBLY
+    js_wasm_calls_sidetable_ = nullptr;
+#endif  // V8_ENABLE_WEBASSEMBLY
     graph_ = nullptr;
     source_positions_ = nullptr;
     node_origins_ = nullptr;
@@ -492,7 +496,7 @@ class TFPipelineData {
     assembler_options_.is_wasm =
         this->info()->IsWasm() || this->info()->IsWasmBuiltin();
 #endif
-    base::Optional<OsrHelper> osr_helper;
+    std::optional<OsrHelper> osr_helper;
     if (osr_helper_) osr_helper = *osr_helper_;
     code_generator_ = new CodeGenerator(
         codegen_zone(), frame(), linkage, sequence(), info(), isolate(),
@@ -531,30 +535,40 @@ class TFPipelineData {
     runtime_call_stats_ = stats;
   }
 
-  // Used to skip the "wasm-inlining" phase when there are no JS-to-Wasm calls.
-  bool has_js_wasm_calls() const { return has_js_wasm_calls_; }
-  void set_has_js_wasm_calls(bool has_js_wasm_calls) {
-    has_js_wasm_calls_ = has_js_wasm_calls;
-  }
-
 #if V8_ENABLE_WEBASSEMBLY
+  bool has_js_wasm_calls() const {
+    return wasm_module_for_inlining_ != nullptr;
+  }
   const wasm::WasmModule* wasm_module_for_inlining() const {
     return wasm_module_for_inlining_;
   }
   void set_wasm_module_for_inlining(const wasm::WasmModule* module) {
+    // We may only inline Wasm functions from at most one module, see below.
+    DCHECK_NULL(wasm_module_for_inlining_);
     wasm_module_for_inlining_ = module;
   }
-#endif
+  JsWasmCallsSidetable* js_wasm_calls_sidetable() {
+    return js_wasm_calls_sidetable_;
+  }
+#endif  // V8_ENABLE_WEBASSEMBLY
 
  private:
   Isolate* const isolate_;
 #if V8_ENABLE_WEBASSEMBLY
-  wasm::WasmEngine* const wasm_engine_ = nullptr;
   // The wasm module to be used for inlining wasm functions into JS.
   // The first module wins and inlining of different modules into the same
   // JS function is not supported. This is necessary because the wasm
   // instructions use module-specific (non-canonicalized) type indices.
+  // TODO(353475584): Long-term we might want to lift this restriction, i.e.,
+  // support inlining Wasm functions from different Wasm modules in the
+  // Turboshaft implementation to avoid a surprising performance cliff.
   const wasm::WasmModule* wasm_module_for_inlining_ = nullptr;
+  // Sidetable for storing/passing information about the to-be-inlined calls to
+  // Wasm functions through the JS Turbofan frontend to the Turboshaft backend.
+  // This should go away once we not only inline the Wasm body in Turboshaft but
+  // also the JS-to-Wasm wrapper (which is currently inlined in Turbofan still).
+  // See https://crbug.com/353475584.
+  JsWasmCallsSidetable* js_wasm_calls_sidetable_ = nullptr;
 #endif  // V8_ENABLE_WEBASSEMBLY
   AccountingAllocator* const allocator_;
   OptimizedCompilationInfo* const info_;
@@ -624,8 +638,6 @@ class TFPipelineData {
 
   RuntimeCallStats* runtime_call_stats_ = nullptr;
   const ProfileDataFromFile* profile_data_ = nullptr;
-
-  bool has_js_wasm_calls_ = false;
 };
 
 }  // namespace v8::internal::compiler

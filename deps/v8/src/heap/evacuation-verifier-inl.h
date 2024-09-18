@@ -7,6 +7,7 @@
 
 #include "src/heap/evacuation-verifier.h"
 #include "src/heap/heap-inl.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/heap/mark-compact.h"
 
 namespace v8 {
@@ -23,7 +24,7 @@ void EvacuationVerifier::VerifyHeapObjectImpl(Tagged<HeapObject> heap_object) {
 }
 
 bool EvacuationVerifier::ShouldVerifyObject(Tagged<HeapObject> heap_object) {
-  const bool in_shared_heap = InWritableSharedSpace(heap_object);
+  const bool in_shared_heap = HeapLayout::InWritableSharedSpace(heap_object);
   return heap_->isolate()->is_shared_space_isolate() ? in_shared_heap
                                                      : !in_shared_heap;
 }
@@ -32,7 +33,7 @@ template <typename TSlot>
 void EvacuationVerifier::VerifyPointersImpl(TSlot start, TSlot end) {
   for (TSlot current = start; current < end; ++current) {
     typename TSlot::TObject object = current.load(cage_base());
-#ifdef V8_ENABLE_DIRECT_LOCAL
+#ifdef V8_ENABLE_DIRECT_HANDLE
     if (object.ptr() == kTaggedNullAddress) continue;
 #endif
     Tagged<HeapObject> heap_object;

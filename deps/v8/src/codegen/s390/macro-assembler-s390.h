@@ -128,6 +128,7 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   void JumpIfCodeIsTurbofanned(Register code, Register scratch,
                                Label* if_turbofanned);
   void LoadMap(Register destination, Register object);
+  void LoadCompressedMap(Register destination, Register object);
 
   void LoadFeedbackVector(Register dst, Register closure, Register scratch,
                           Label* fbv_undef);
@@ -625,18 +626,10 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   void Not64(Register dst, Register src = no_reg);
   void NotP(Register dst, Register src = no_reg);
 
-#ifdef V8_TARGET_ARCH_S390X
   void Popcnt64(Register dst, Register src);
-#endif
 
   void mov(Register dst, const Operand& src);
   void mov(Register dst, Register src);
-
-  void CleanUInt32(Register x) {
-#ifdef V8_TARGET_ARCH_S390X
-    llgfr(x, x);
-#endif
-  }
 
   void push(DoubleRegister src) {
     lay(sp, MemOperand(sp, -kSystemPointerSize));
@@ -917,14 +910,6 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
                    Simd128Register scratch);
   void SwapSimd128(MemOperand src, MemOperand dst, Simd128Register scratch);
 
-  // Cleanse pointer address on 31bit by zero out top  bit.
-  // This is a NOP on 64-bit.
-  void CleanseP(Register src) {
-#if (V8_HOST_ARCH_S390 && !(V8_TARGET_ARCH_S390X))
-    nilh(src, Operand(0x7FFF));
-#endif
-  }
-
   // ---------------------------------------------------------------------------
   // Runtime calls
 
@@ -1034,15 +1019,10 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
       else if (dst != src)  // If we didn't shift, we might need to copy
         mov(dst, src);
       int width = rangeStart - rangeEnd + 1;
-#if V8_TARGET_ARCH_S390X
       uint64_t mask = (static_cast<uint64_t>(1) << width) - 1;
       nihf(dst, Operand(mask >> 32));
       nilf(dst, Operand(mask & 0xFFFFFFFF));
       ltgr(dst, dst);
-#else
-      uint32_t mask = (1 << width) - 1;
-      AndP(dst, Operand(mask));
-#endif
     }
   }
 
@@ -1610,6 +1590,14 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
     LoadMap(map, heap_object);
     CompareInstanceType<use_unsigned_cmp>(map, temp, type);
   }
+  // Variant of the above, which compares against a type range rather than a
+  // single type (lower_limit and higher_limit are inclusive).
+  //
+  // Always use unsigned comparisons: ls for a positive result.
+  void CompareObjectTypeRange(Register heap_object, Register map,
+                              Register type_reg, Register scratch,
+                              InstanceType lower_limit,
+                              InstanceType higher_limit);
 
   // Compare instance type in a map.  map contains a valid map object whose
   // object type should be compared with the given type.  This both
@@ -1618,10 +1606,11 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   void CompareInstanceType(Register map, Register type_reg, InstanceType type) {
     static_assert(Map::kInstanceTypeOffset < 4096);
     static_assert(LAST_TYPE <= 0xFFFF);
-    LoadS16(type_reg, FieldMemOperand(map, Map::kInstanceTypeOffset));
     if (use_unsigned_cmp) {
+      LoadU16(type_reg, FieldMemOperand(map, Map::kInstanceTypeOffset));
       CmpU64(type_reg, Operand(type));
     } else {
+      LoadS16(type_reg, FieldMemOperand(map, Map::kInstanceTypeOffset));
       CmpS64(type_reg, Operand(type));
     }
   }
@@ -1631,7 +1620,7 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   //
   // Always use unsigned comparisons: ls for a positive result.
   void CompareInstanceTypeRange(Register map, Register type_reg,
-                                InstanceType lower_limit,
+                                Register scratch, InstanceType lower_limit,
                                 InstanceType higher_limit);
 
   // Compare the object in a register to a value from the root list.
@@ -1676,9 +1665,9 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
 
   // Checks if value is in range [lower_limit, higher_limit] using a single
   // comparison.
-  void CompareRange(Register value, unsigned lower_limit,
+  void CompareRange(Register value, Register scratch, unsigned lower_limit,
                     unsigned higher_limit);
-  void JumpIfIsInRange(Register value, unsigned lower_limit,
+  void JumpIfIsInRange(Register value, Register scratch, unsigned lower_limit,
                        unsigned higher_limit, Label* on_in_range);
 
   // ---------------------------------------------------------------------------

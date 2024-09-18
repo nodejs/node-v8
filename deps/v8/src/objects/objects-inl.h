@@ -21,6 +21,7 @@
 #include "src/common/ptr-compr-inl.h"
 #include "src/handles/handles-inl.h"
 #include "src/heap/factory.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/heap/heap-verifier.h"
 #include "src/heap/heap-write-barrier-inl.h"
 #include "src/heap/read-only-heap-inl.h"
@@ -293,11 +294,10 @@ template <>
 struct CastTraits<DeoptimizationFrameTranslation>
     : public CastTraits<TrustedByteArray> {};
 
-template <class T,
-          typename std::enable_if<(std::is_arithmetic<T>::value ||
-                                   std::is_enum<T>::value) &&
-                                      !std::is_floating_point<T>::value,
-                                  int>::type>
+template <class T, typename std::enable_if_t<
+                       (std::is_arithmetic_v<T> ||
+                        std::is_enum_v<T>)&&!std::is_floating_point_v<T>,
+                       int>>
 T HeapObject::Relaxed_ReadField(size_t offset) const {
   // Pointer compression causes types larger than kTaggedSize to be
   // unaligned. Atomic loads must be aligned.
@@ -307,11 +307,10 @@ T HeapObject::Relaxed_ReadField(size_t offset) const {
       reinterpret_cast<AtomicT*>(field_address(offset))));
 }
 
-template <class T,
-          typename std::enable_if<(std::is_arithmetic<T>::value ||
-                                   std::is_enum<T>::value) &&
-                                      !std::is_floating_point<T>::value,
-                                  int>::type>
+template <class T, typename std::enable_if_t<
+                       (std::is_arithmetic_v<T> ||
+                        std::is_enum_v<T>)&&!std::is_floating_point_v<T>,
+                       int>>
 void HeapObject::Relaxed_WriteField(size_t offset, T value) {
   // Pointer compression causes types larger than kTaggedSize to be
   // unaligned. Atomic stores must be aligned.
@@ -320,6 +319,19 @@ void HeapObject::Relaxed_WriteField(size_t offset, T value) {
   base::AsAtomicImpl<AtomicT>::Relaxed_Store(
       reinterpret_cast<AtomicT*>(field_address(offset)),
       static_cast<AtomicT>(value));
+}
+
+template <class T, typename std::enable_if_t<
+                       (std::is_arithmetic_v<T> ||
+                        std::is_enum_v<T>)&&!std::is_floating_point_v<T>,
+                       int>>
+T HeapObject::Acquire_ReadField(size_t offset) const {
+  // Pointer compression causes types larger than kTaggedSize to be
+  // unaligned. Atomic loads must be aligned.
+  DCHECK_IMPLIES(COMPRESS_POINTERS_BOOL, sizeof(T) <= kTaggedSize);
+  using AtomicT = typename base::AtomicTypeFromByteWidth<sizeof(T)>::type;
+  return static_cast<T>(base::AsAtomicImpl<AtomicT>::Acquire_Load(
+      reinterpret_cast<AtomicT*>(field_address(offset))));
 }
 
 // static
@@ -346,19 +358,6 @@ Tagged<Object> HeapObject::SeqCst_CompareAndSwapField(
   } while (true);
 }
 
-bool InAnySharedSpace(Tagged<HeapObject> obj) {
-  if (IsReadOnlyHeapObject(obj)) return V8_SHARED_RO_HEAP_BOOL;
-  return InWritableSharedSpace(obj);
-}
-
-bool InWritableSharedSpace(Tagged<HeapObject> obj) {
-  return MemoryChunk::FromHeapObject(obj)->InWritableSharedSpace();
-}
-
-bool InReadOnlySpace(Tagged<HeapObject> obj) {
-  return IsReadOnlyHeapObject(obj);
-}
-
 constexpr bool FastInReadOnlySpaceOrSmallSmi(Tagged_t obj) {
 #if V8_STATIC_ROOTS_BOOL
   // The following assert ensures that the page size check covers all our static
@@ -370,6 +369,17 @@ constexpr bool FastInReadOnlySpaceOrSmallSmi(Tagged_t obj) {
 #else   // !V8_STATIC_ROOTS_BOOL
   return false;
 #endif  // !V8_STATIC_ROOTS_BOOL
+}
+
+constexpr bool FastInReadOnlySpaceOrSmallSmi(Tagged<MaybeObject> obj) {
+#ifdef V8_COMPRESS_POINTERS
+  // This check is only valid for objects in the main cage.
+  DCHECK(obj.IsSmi() || obj.IsInMainCageBase());
+  return FastInReadOnlySpaceOrSmallSmi(
+      V8HeapCompressionScheme::CompressAny(obj.ptr()));
+#else   // V8_COMPRESS_POINTERS
+  return false;
+#endif  // V8_COMPRESS_POINTERS
 }
 
 bool OutsideSandboxOrInReadonlySpace(Tagged<HeapObject> obj) {
@@ -385,7 +395,7 @@ bool IsJSObjectThatCanBeTrackedAsPrototype(Tagged<HeapObject> obj) {
   // Do not optimize objects in the shared heap because it is not
   // threadsafe. Objects in the shared heap have fixed layouts and their maps
   // never change.
-  return IsJSObject(obj) && !InWritableSharedSpace(*obj);
+  return IsJSObject(obj) && !HeapLayout::InWritableSharedSpace(*obj);
 }
 
 bool IsJSApiWrapperObject(Tagged<Map> map) {
@@ -980,43 +990,50 @@ void HeapObject::InitSelfIndirectPointerField(size_t offset,
 }
 
 template <IndirectPointerTag tag>
-Tagged<Object> HeapObject::ReadIndirectPointerField(
+Tagged<ExposedTrustedObject> HeapObject::ReadTrustedPointerField(
     size_t offset, IsolateForSandbox isolate) const {
-  return i::ReadIndirectPointerField<tag>(field_address(offset), isolate);
-}
-
-template <IndirectPointerTag tag>
-void HeapObject::WriteIndirectPointerField(size_t offset,
-                                           Tagged<ExposedTrustedObject> value) {
-  return i::WriteIndirectPointerField<tag>(field_address(offset), value);
+  // Currently, trusted pointer loads always use acquire semantics as the
+  // under-the-hood indirect pointer loads use acquire loads anyway.
+  return ReadTrustedPointerField<tag>(offset, isolate, kAcquireLoad);
 }
 
 template <IndirectPointerTag tag>
 Tagged<ExposedTrustedObject> HeapObject::ReadTrustedPointerField(
-    size_t offset, IsolateForSandbox isolate) const {
-#ifdef V8_ENABLE_SANDBOX
-  Tagged<Object> object = ReadIndirectPointerField<tag>(offset, isolate);
+    size_t offset, IsolateForSandbox isolate,
+    AcquireLoadTag acquire_load) const {
+  Tagged<Object> object =
+      ReadMaybeEmptyTrustedPointerField<tag>(offset, isolate, acquire_load);
   DCHECK(IsExposedTrustedObject(object));
   return Cast<ExposedTrustedObject>(object);
+}
+
+template <IndirectPointerTag tag>
+Tagged<Object> HeapObject::ReadMaybeEmptyTrustedPointerField(
+    size_t offset, IsolateForSandbox isolate,
+    AcquireLoadTag acquire_load) const {
+#ifdef V8_ENABLE_SANDBOX
+  return i::ReadIndirectPointerField<tag>(field_address(offset), isolate,
+                                          acquire_load);
 #else
-  PtrComprCageBase cage_base = GetPtrComprCageBase(*this);
-  return TaggedField<ExposedTrustedObject>::Acquire_Load(
-      cage_base, *this, static_cast<int>(offset));
+  return TaggedField<Object>::Acquire_Load(*this, static_cast<int>(offset));
 #endif
 }
 
 template <IndirectPointerTag tag>
 void HeapObject::WriteTrustedPointerField(size_t offset,
                                           Tagged<ExposedTrustedObject> value) {
+  // Currently, trusted pointer stores always use release semantics as the
+  // under-the-hood indirect pointer stores use release stores anyway.
 #ifdef V8_ENABLE_SANDBOX
-  WriteIndirectPointerField<tag>(offset, value);
+  i::WriteIndirectPointerField<tag>(field_address(offset), value,
+                                    kReleaseStore);
 #else
   TaggedField<ExposedTrustedObject>::Release_Store(
       *this, static_cast<int>(offset), value);
 #endif
 }
 
-bool HeapObject::IsTrustedPointerFieldCleared(size_t offset) const {
+bool HeapObject::IsTrustedPointerFieldEmpty(size_t offset) const {
 #ifdef V8_ENABLE_SANDBOX
   IndirectPointerHandle handle = ACQUIRE_READ_UINT32_FIELD(*this, offset);
   return handle == kNullIndirectPointerHandle;
@@ -1035,6 +1052,10 @@ void HeapObject::ClearTrustedPointerField(size_t offset) {
 #endif
 }
 
+void HeapObject::ClearTrustedPointerField(size_t offset, ReleaseStoreTag) {
+  return ClearTrustedPointerField(offset);
+}
+
 Tagged<Code> HeapObject::ReadCodePointerField(size_t offset,
                                               IsolateForSandbox isolate) const {
   return Cast<Code>(
@@ -1045,8 +1066,8 @@ void HeapObject::WriteCodePointerField(size_t offset, Tagged<Code> value) {
   WriteTrustedPointerField<kCodeIndirectPointerTag>(offset, value);
 }
 
-bool HeapObject::IsCodePointerFieldCleared(size_t offset) const {
-  return IsTrustedPointerFieldCleared(offset);
+bool HeapObject::IsCodePointerFieldEmpty(size_t offset) const {
+  return IsTrustedPointerFieldEmpty(offset);
 }
 
 void HeapObject::ClearCodePointerField(size_t offset) {
@@ -1064,21 +1085,24 @@ void HeapObject::WriteCodeEntrypointViaCodePointerField(size_t offset,
   i::WriteCodeEntrypointViaCodePointerField(field_address(offset), value, tag);
 }
 
-void HeapObject::InitJSDispatchHandleField(size_t offset,
-                                           IsolateForSandbox isolate,
-                                           uint16_t parameter_count) {
+void HeapObject::AllocateAndInstallJSDispatchHandle(size_t offset,
+                                                    IsolateForSandbox isolate,
+                                                    uint16_t parameter_count,
+                                                    Tagged<Code> code,
+                                                    WriteBarrierMode mode) {
 #ifdef V8_ENABLE_LEAPTIERING
+  JSDispatchTable* jdt = GetProcessWideJSDispatchTable();
   JSDispatchTable::Space* space =
       isolate.GetJSDispatchTableSpaceFor(field_address(offset));
   JSDispatchHandle handle =
-      GetProcessWideJSDispatchTable()->AllocateAndInitializeEntry(
-          space, parameter_count);
+      jdt->AllocateAndInitializeEntry(space, parameter_count, code);
 
   // Use a Release_Store to ensure that the store of the pointer into the table
   // is not reordered after the store of the handle. Otherwise, other threads
   // may access an uninitialized table entry and crash.
   auto location = reinterpret_cast<JSDispatchHandle*>(field_address(offset));
   base::AsAtomic32::Release_Store(location, handle);
+  CONDITIONAL_JS_DISPATCH_HANDLE_WRITE_BARRIER(*this, handle, mode);
 #else
   UNREACHABLE();
 #endif  // V8_ENABLE_LEAPTIERING
@@ -1341,7 +1365,7 @@ void HeapObject::set_map(Tagged<Map> value, MemoryOrder order,
 #ifndef V8_DISABLE_WRITE_BARRIERS
   if (!value.is_null()) {
     if (emit_write_barrier == EmitWriteBarrier::kYes) {
-      CombinedWriteBarrier(*this, map_slot(), value, UPDATE_WRITE_BARRIER);
+      WriteBarrier::ForValue(*this, map_slot(), value, UPDATE_WRITE_BARRIER);
     } else {
       DCHECK_EQ(emit_write_barrier, EmitWriteBarrier::kNo);
       SLOW_DCHECK(!WriteBarrier::IsRequired(*this, value));
@@ -1362,7 +1386,7 @@ void HeapObject::set_map_after_allocation(Tagged<Map> value,
 #ifndef V8_DISABLE_WRITE_BARRIERS
   if (mode != SKIP_WRITE_BARRIER) {
     DCHECK(!value.is_null());
-    CombinedWriteBarrier(*this, map_slot(), value, mode);
+    WriteBarrier::ForValue(*this, map_slot(), value, mode);
   } else {
     SLOW_DCHECK(
         // We allow writes of a null map before root initialisation.
@@ -1519,12 +1543,12 @@ bool Object::ToIntegerIndex(Tagged<Object> obj, size_t* index) {
 
 WriteBarrierMode HeapObjectLayout::GetWriteBarrierMode(
     const DisallowGarbageCollection& promise) {
-  return GetWriteBarrierModeForObject(this, &promise);
+  return WriteBarrier::GetWriteBarrierModeForObject(this, promise);
 }
 
 WriteBarrierMode HeapObject::GetWriteBarrierMode(
     const DisallowGarbageCollection& promise) {
-  return GetWriteBarrierModeForObject(*this, &promise);
+  return WriteBarrier::GetWriteBarrierModeForObject(*this, promise);
 }
 
 // static
@@ -1722,14 +1746,14 @@ bool IsShared(Tagged<Object> obj) {
   Tagged<HeapObject> object = Cast<HeapObject>(obj);
 
   // RO objects are shared when the RO space is shared.
-  if (IsReadOnlyHeapObject(object)) {
+  if (HeapLayout::InReadOnlySpace(object)) {
     return ReadOnlyHeap::IsReadOnlySpaceShared();
   }
 
   // Check if this object is already shared.
   InstanceType instance_type = object->map()->instance_type();
   if (InstanceTypeChecker::IsAlwaysSharedSpaceJSObject(instance_type)) {
-    DCHECK(InAnySharedSpace(object));
+    DCHECK(HeapLayout::InAnySharedSpace(object));
     return true;
   }
   switch (instance_type) {
@@ -1739,7 +1763,7 @@ bool IsShared(Tagged<Object> obj) {
     case SHARED_EXTERNAL_ONE_BYTE_STRING_TYPE:
     case SHARED_UNCACHED_EXTERNAL_TWO_BYTE_STRING_TYPE:
     case SHARED_UNCACHED_EXTERNAL_ONE_BYTE_STRING_TYPE:
-      DCHECK(InAnySharedSpace(object));
+      DCHECK(HeapLayout::InAnySharedSpace(object));
       return true;
     case INTERNALIZED_TWO_BYTE_STRING_TYPE:
     case INTERNALIZED_ONE_BYTE_STRING_TYPE:
@@ -1748,12 +1772,12 @@ bool IsShared(Tagged<Object> obj) {
     case UNCACHED_EXTERNAL_INTERNALIZED_TWO_BYTE_STRING_TYPE:
     case UNCACHED_EXTERNAL_INTERNALIZED_ONE_BYTE_STRING_TYPE:
       if (v8_flags.shared_string_table) {
-        DCHECK(InAnySharedSpace(object));
+        DCHECK(HeapLayout::InAnySharedSpace(object));
         return true;
       }
       return false;
     case HEAP_NUMBER_TYPE:
-      return InWritableSharedSpace(object);
+      return HeapLayout::InWritableSharedSpace(object);
     default:
       return false;
   }

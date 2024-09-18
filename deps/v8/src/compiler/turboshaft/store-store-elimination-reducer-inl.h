@@ -5,12 +5,15 @@
 #ifndef V8_COMPILER_TURBOSHAFT_STORE_STORE_ELIMINATION_REDUCER_INL_H_
 #define V8_COMPILER_TURBOSHAFT_STORE_STORE_ELIMINATION_REDUCER_INL_H_
 
+#include <optional>
+
 #include "src/compiler/turboshaft/assembler.h"
 #include "src/compiler/turboshaft/graph.h"
 #include "src/compiler/turboshaft/operations.h"
 #include "src/compiler/turboshaft/sidetable.h"
 #include "src/compiler/turboshaft/snapshot-table.h"
 #include "src/compiler/turboshaft/uniform-reducer-adapter.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/objects/heap-object-inl.h"
 
 namespace v8::internal::compiler::turboshaft {
@@ -144,7 +147,7 @@ class MaybeRedundantStoresTable
       auto successors = SuccessorBlocks(block->LastOperation(graph_));
       successor_snapshots_.clear();
       for (const Block* s : successors) {
-        base::Optional<Snapshot> s_snapshot =
+        std::optional<Snapshot> s_snapshot =
             block_to_snapshot_mapping_[s->index()];
         // When we visit the loop for the first time, the loop header hasn't
         // been visited yet, so we ignore it.
@@ -262,7 +265,7 @@ class MaybeRedundantStoresTable
   };
 
   const Graph& graph_;
-  GrowingBlockSidetable<base::Optional<Snapshot>> block_to_snapshot_mapping_;
+  GrowingBlockSidetable<std::optional<Snapshot>> block_to_snapshot_mapping_;
   ZoneAbslFlatHashMap<std::pair<OpIndex, int32_t>, Key> key_mapping_;
   // In `active_keys_`, we track the keys of all stores that arge gc-observable
   // or unobservable. Keys that are mapped to the default value (observable) are
@@ -385,8 +388,8 @@ class RedundantStoreAnalysis {
                 if (c0 && c1 && c0->kind == ConstantOp::Kind::kHeapObject &&
                     c1->kind == ConstantOp::Kind::kHeapObject &&
                     store1.offset - store0.offset == 4 &&
-                    InReadOnlySpace(*c0->handle()) &&
-                    InReadOnlySpace(*c1->handle())) {
+                    HeapLayout::InReadOnlySpace(*c0->handle()) &&
+                    HeapLayout::InReadOnlySpace(*c1->handle())) {
                   uint32_t high = static_cast<uint32_t>(c1->handle()->ptr());
                   uint32_t low = static_cast<uint32_t>(c0->handle()->ptr());
 #if V8_TARGET_BIG_ENDIAN

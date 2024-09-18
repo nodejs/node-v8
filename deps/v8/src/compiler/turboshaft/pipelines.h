@@ -5,6 +5,8 @@
 #ifndef V8_COMPILER_TURBOSHAFT_PIPELINES_H_
 #define V8_COMPILER_TURBOSHAFT_PIPELINES_H_
 
+#include <optional>
+
 #include "src/codegen/optimized-compilation-info.h"
 #include "src/compiler/backend/register-allocator-verifier.h"
 #include "src/compiler/basic-block-instrumentor.h"
@@ -29,6 +31,10 @@
 #include "src/compiler/turboshaft/tracing.h"
 #include "src/compiler/turboshaft/type-assertions-phase.h"
 #include "src/compiler/turboshaft/typed-optimizations-phase.h"
+
+#if V8_ENABLE_WEBASSEMBLY
+#include "src/compiler/turboshaft/wasm-in-js-inlining-phase.h"
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 namespace v8::internal::compiler::turboshaft {
 
@@ -123,7 +129,7 @@ class Pipeline {
 
     BeginPhaseKind("V8.TFGraphCreation");
     turboshaft::Tracing::Scope tracing_scope(data_->info());
-    base::Optional<BailoutReason> bailout =
+    std::optional<BailoutReason> bailout =
         Run<turboshaft::MaglevGraphBuildingPhase>();
     EndPhaseKind();
 
@@ -146,7 +152,7 @@ class Pipeline {
     turboshaft::Tracing::Scope tracing_scope(data_->info());
 
     DCHECK(!v8_flags.turboshaft_from_maglev);
-    if (base::Optional<BailoutReason> bailout =
+    if (std::optional<BailoutReason> bailout =
             Run<turboshaft::BuildGraphPhase>(turbofan_data, linkage)) {
       info()->AbortOptimization(*bailout);
       return false;
@@ -165,6 +171,16 @@ class Pipeline {
     if (v8_flags.turboshaft_frontend) {
       Run<turboshaft::SimplifiedLoweringPhase>();
     }
+
+#ifdef V8_ENABLE_WEBASSEMBLY
+    // TODO(dlehmann,353475584): Once the Wasm-in-JS TS inlining MVP is feature-
+    // complete and cleaned-up, move its reducer into the beginning of the
+    // `MachineLoweringPhase` since we can reuse the `DataViewLoweringReducer`
+    // there and avoid a separate phase.
+    if (v8_flags.turboshaft_wasm_in_js_inlining) {
+      Run<turboshaft::WasmInJSInliningPhase>();
+    }
+#endif  // !V8_ENABLE_WEBASSEMBLY
 
     Run<turboshaft::MachineLoweringPhase>();
 
@@ -287,7 +303,7 @@ class Pipeline {
       code_tracer = data_->GetCodeTracer();
     }
 
-    if (base::Optional<BailoutReason> bailout = Run<InstructionSelectionPhase>(
+    if (std::optional<BailoutReason> bailout = Run<InstructionSelectionPhase>(
             call_descriptor, linkage, code_tracer)) {
       data_->info()->AbortOptimization(*bailout);
       EndPhaseKind();

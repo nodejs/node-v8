@@ -4,11 +4,13 @@
 
 #include "src/compiler/compilation-dependencies.h"
 
+#include <optional>
+
 #include "src/base/hashmap.h"
-#include "src/base/optional.h"
 #include "src/common/assert-scope.h"
 #include "src/execution/protectors.h"
 #include "src/handles/handles-inl.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/objects/allocation-site-inl.h"
 #include "src/objects/internal-index.h"
 #include "src/objects/js-array-inl.h"
@@ -127,7 +129,9 @@ class PendingDependencies final {
     // to never invalidate assumptions. E.g., maps for shared structs do not
     // have transitions or change the shape of their fields. See
     // DependentCode::DeoptimizeDependencyGroups for corresponding DCHECK.
-    if (InWritableSharedSpace(*object) || InReadOnlySpace(*object)) return;
+    if (HeapLayout::InWritableSharedSpace(*object) ||
+        HeapLayout::InReadOnlySpace(*object))
+      return;
     deps_.LookupOrInsert(object, HandleValueHash(object))->value |= group;
   }
 
@@ -576,7 +580,7 @@ class OwnConstantDictionaryPropertyDependency final
       return false;
     }
 
-    base::Optional<Tagged<Object>> maybe_value = JSObject::DictionaryPropertyAt(
+    std::optional<Tagged<Object>> maybe_value = JSObject::DictionaryPropertyAt(
         holder_.object(), index_, broker->isolate()->heap());
 
     if (!maybe_value) {
@@ -1052,7 +1056,7 @@ class OwnConstantElementDependency final : public CompilationDependency {
   bool IsValid(JSHeapBroker* broker) const override {
     DisallowGarbageCollection no_gc;
     Tagged<JSObject> holder = *holder_.object();
-    base::Optional<Tagged<Object>> maybe_element =
+    std::optional<Tagged<Object>> maybe_element =
         holder_.GetOwnConstantElementFromHeap(
             broker, holder->elements(), holder->GetElementsKind(), index_);
     if (!maybe_element.has_value()) return false;

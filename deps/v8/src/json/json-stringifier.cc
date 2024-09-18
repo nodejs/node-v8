@@ -47,7 +47,8 @@ class JsonStringifier {
   V8_WARN_UNUSED_RESULT MaybeHandle<Object> ApplyToJsonFunction(
       Handle<Object> object, Handle<Object> key);
   V8_WARN_UNUSED_RESULT MaybeHandle<Object> ApplyReplacerFunction(
-      Handle<Object> value, Handle<Object> key, Handle<Object> initial_holder);
+      Handle<Object> value, Handle<Object> key,
+      DirectHandle<Object> initial_holder);
 
   // Entry point to serialize the object.
   V8_INLINE Result SerializeObject(Handle<Object> obj) {
@@ -62,7 +63,7 @@ class JsonStringifier {
                              Handle<Object>(Smi::FromInt(i), isolate));
   }
 
-  // Serialize a object property.
+  // Serialize an object property.
   // The key may or may not be serialized depending on the property.
   // The key may also serve as argument for the toJSON function.
   V8_INLINE Result SerializeProperty(Handle<Object> object, bool deferred_comma,
@@ -142,7 +143,7 @@ class JsonStringifier {
     DCHECK(encoding_ == String::TWO_BYTE_ENCODING ||
            (string->IsFlat() &&
             String::IsOneByteRepresentationUnderneath(string)));
-    DCHECK(CurrentPartCanFit(string->length()));
+    DCHECK(CurrentPartCanFit(string->length() + 1));
     if (encoding_ == String::ONE_BYTE_ENCODING) {
       if (String::IsOneByteRepresentationUnderneath(string)) {
         CopyChars<uint8_t, uint8_t>(
@@ -167,7 +168,6 @@ class JsonStringifier {
     }
     current_index_ += string->length();
     DCHECK(current_index_ <= part_length_);
-    if (current_index_ == part_length_) Extend();
   }
 
   V8_NOINLINE void AppendString(Handle<String> string_handle) {
@@ -179,12 +179,40 @@ class JsonStringifier {
           (string->IsFlat() &&
            String::IsOneByteRepresentationUnderneath(string));
       if (representation_ok) {
-        while (!CurrentPartCanFit(string->length())) Extend();
+        while (!CurrentPartCanFit(string->length() + 1)) Extend();
         AppendStringByCopy(string, no_gc);
         return;
       }
     }
     SerializeString<true>(string_handle);
+  }
+
+  template <typename SrcChar>
+  void AppendSubstringByCopy(const SrcChar* src, int count) {
+    DCHECK(CurrentPartCanFit(count + 1));
+    if (encoding_ == String::ONE_BYTE_ENCODING) {
+      if (sizeof(SrcChar) == 1) {
+        CopyChars<SrcChar, uint8_t>(one_byte_ptr_ + current_index_, src, count);
+      } else {
+        ChangeEncoding();
+        CopyChars<SrcChar, base::uc16>(two_byte_ptr_ + current_index_, src,
+                                       count);
+      }
+    } else {
+      CopyChars<SrcChar, base::uc16>(two_byte_ptr_ + current_index_, src,
+                                     count);
+    }
+    current_index_ += count;
+    DCHECK_LE(current_index_, part_length_);
+  }
+
+  template <typename SrcChar>
+  V8_NOINLINE void AppendSubstring(const SrcChar* src, size_t from, size_t to) {
+    if (from == to) return;
+    DCHECK_LT(from, to);
+    int count = static_cast<int>(to - from);
+    while (!CurrentPartCanFit(count + 1)) Extend();
+    AppendSubstringByCopy(src + from, count);
   }
 
   bool HasValidCurrentIndex() const { return current_index_ < part_length_; }
@@ -213,7 +241,7 @@ class JsonStringifier {
   Result SerializeJSReceiverSlow(Handle<JSReceiver> object);
   template <ElementsKind kind>
   V8_INLINE Result SerializeFixedArrayWithInterruptCheck(
-      Handle<JSArray> array, uint32_t length, uint32_t* slow_path_index);
+      DirectHandle<JSArray> array, uint32_t length, uint32_t* slow_path_index);
   template <ElementsKind kind>
   V8_INLINE Result SerializeFixedArrayWithPossibleTransitions(
       DirectHandle<JSArray> array, uint32_t length, uint32_t* slow_path_index);
@@ -251,6 +279,15 @@ class JsonStringifier {
       DCHECK_GE(chars.size(), length);
       CopyChars(cursor_, chars.begin(), chars.size());
       cursor_ += length;
+    }
+
+    template <typename SrcChar>
+    V8_INLINE void AppendSubstring(const SrcChar* src, size_t from, size_t to) {
+      if (from == to) return;
+      DCHECK_LT(from, to);
+      int count = static_cast<int>(to - from);
+      CopyChars(cursor_, src + from, count);
+      cursor_ += count;
     }
 
    private:
@@ -349,7 +386,7 @@ class JsonStringifier {
   V8_INLINE void Separator(bool first);
 
   Handle<JSReceiver> CurrentHolder(DirectHandle<Object> value,
-                                   Handle<Object> inital_holder);
+                                   DirectHandle<Object> inital_holder);
 
   Result StackPush(Handle<Object> object, Handle<Object> key);
   void StackPop();
@@ -612,7 +649,8 @@ MaybeHandle<Object> JsonStringifier::ApplyToJsonFunction(Handle<Object> object,
 }
 
 MaybeHandle<Object> JsonStringifier::ApplyReplacerFunction(
-    Handle<Object> value, Handle<Object> key, Handle<Object> initial_holder) {
+    Handle<Object> value, Handle<Object> key,
+    DirectHandle<Object> initial_holder) {
   HandleScope scope(isolate_);
   if (IsSmi(*key)) key = factory()->NumberToString(key);
   Handle<Object> argv[] = {key, value};
@@ -624,7 +662,7 @@ MaybeHandle<Object> JsonStringifier::ApplyReplacerFunction(
 }
 
 Handle<JSReceiver> JsonStringifier::CurrentHolder(
-    DirectHandle<Object> value, Handle<Object> initial_holder) {
+    DirectHandle<Object> value, DirectHandle<Object> initial_holder) {
   if (stack_.empty()) {
     Handle<JSObject> holder =
         factory()->NewJSObject(isolate_->object_function());
@@ -813,7 +851,7 @@ JsonStringifier::Result JsonStringifier::Serialize_(Handle<Object> object,
     return EXCEPTION;
   }
 
-  Handle<Object> initial_value = object;
+  DirectHandle<Object> initial_value = object;
   PtrComprCageBase cage_base(isolate_);
   if (!IsSmi(*object)) {
     InstanceType instance_type =
@@ -1064,7 +1102,7 @@ JsonStringifier::Result JsonStringifier::SerializeJSArray(
 
 template <ElementsKind kind>
 JsonStringifier::Result JsonStringifier::SerializeFixedArrayWithInterruptCheck(
-    Handle<JSArray> array, uint32_t length, uint32_t* slow_path_index) {
+    DirectHandle<JSArray> array, uint32_t length, uint32_t* slow_path_index) {
   static_assert(IsSmiElementsKind(kind) || IsDoubleElementsKind(kind));
   using ArrayT = typename std::conditional<IsDoubleElementsKind(kind),
                                            FixedDoubleArray, FixedArray>::type;
@@ -1380,15 +1418,17 @@ bool JsonStringifier::SerializeStringUnchecked_(
   // The <base::uc16, char> version of this method must not be called.
   DCHECK(sizeof(DestChar) >= sizeof(SrcChar));
   bool required_escaping = false;
+  int prev_escaped_offset = -1;
   for (int i = 0; i < src.length(); i++) {
     SrcChar c = src[i];
     if (raw_json || DoNotEscape(c)) {
-      dest->Append(c);
+      continue;
     } else if (sizeof(SrcChar) != 1 &&
                base::IsInRange(c, static_cast<SrcChar>(0xD800),
                                static_cast<SrcChar>(0xDFFF))) {
       // The current character is a surrogate.
       required_escaping = true;
+      dest->AppendSubstring(src.data(), prev_escaped_offset + 1, i);
       if (c <= 0xDBFF) {
         // The current character is a leading surrogate.
         if (i + 1 < src.length()) {
@@ -1427,12 +1467,16 @@ bool JsonStringifier::SerializeStringUnchecked_(
         dest->AppendCString(hex);
         DeleteArray(hex);
       }
+      prev_escaped_offset = i;
     } else {
-      DCHECK_LT(c, 0x60);
       required_escaping = true;
+      dest->AppendSubstring(src.data(), prev_escaped_offset + 1, i);
+      DCHECK_LT(c, 0x60);
       dest->AppendCString(&JsonEscapeTable[c * kJsonEscapeTableEntrySize]);
+      prev_escaped_offset = i;
     }
   }
+  dest->AppendSubstring(src.data(), prev_escaped_offset + 1, src.length());
   return required_escaping;
 }
 
@@ -1452,15 +1496,20 @@ bool JsonStringifier::SerializeString_(Tagged<String> string,
     required_escaping = SerializeStringUnchecked_<SrcChar, DestChar, raw_json>(
         vector, &no_extend);
   } else {
+    DCHECK(encoding_ == String::TWO_BYTE_ENCODING ||
+           (string->IsFlat() &&
+            String::IsOneByteRepresentationUnderneath(string)));
+    int prev_escaped_offset = -1;
     for (int i = 0; i < vector.length(); i++) {
       SrcChar c = vector.at(i);
       if (raw_json || DoNotEscape(c)) {
-        Append<SrcChar, DestChar>(c);
+        continue;
       } else if (sizeof(SrcChar) != 1 &&
                  base::IsInRange(c, static_cast<SrcChar>(0xD800),
                                  static_cast<SrcChar>(0xDFFF))) {
         // The current character is a surrogate.
         required_escaping = true;
+        AppendSubstring(vector.data(), prev_escaped_offset + 1, i);
         if (c <= 0xDBFF) {
           // The current character is a leading surrogate.
           if (i + 1 < vector.length()) {
@@ -1499,12 +1548,16 @@ bool JsonStringifier::SerializeString_(Tagged<String> string,
           AppendCString(hex);
           DeleteArray(hex);
         }
+        prev_escaped_offset = i;
       } else {
-        DCHECK_LT(c, 0x60);
         required_escaping = true;
+        AppendSubstring(vector.data(), prev_escaped_offset + 1, i);
+        DCHECK_LT(c, 0x60);
         AppendCString(&JsonEscapeTable[c * kJsonEscapeTableEntrySize]);
+        prev_escaped_offset = i;
       }
     }
+    AppendSubstring(vector.data(), prev_escaped_offset + 1, vector.length());
   }
   if (!raw_json) Append<uint8_t, DestChar>('"');
   return required_escaping;

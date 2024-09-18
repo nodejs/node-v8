@@ -193,6 +193,18 @@ DISALLOWED_FLAGS = [
 
   # TODO(https://crbug.com/1393020): Changes the global object.
   '--harmony-struct',
+
+  # Logs non-deterministic internal state.
+  '--log',
+
+  # Writes to stdout and is not comparable.
+  '--dump-counters',
+
+  # Statistics about allocations aren't comparable.
+  '--expose-statistics',
+
+  # TODO(https://crbug.com/366323510): Experimental feature.
+  '--turboshaft-frontend',
 ]
 
 # List pairs of flags that lead to contradictory cycles, i.e.:
