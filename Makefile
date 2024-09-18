@@ -911,9 +911,6 @@ else
 ifeq ($(findstring s390x,$(UNAME_M)),s390x)
 DESTCPU ?= s390x
 else
-ifeq ($(findstring s390,$(UNAME_M)),s390)
-DESTCPU ?= s390
-else
 ifeq ($(findstring OS/390,$(shell uname -s)),OS/390)
 DESTCPU ?= s390x
 else
@@ -943,7 +940,6 @@ endif
 endif
 endif
 endif
-endif
 ifeq ($(DESTCPU),x64)
 ARCH=x64
 else
@@ -956,9 +952,6 @@ else
 ifeq ($(DESTCPU),ppc64)
 ARCH=ppc64
 else
-ifeq ($(DESTCPU),s390)
-ARCH=s390
-else
 ifeq ($(DESTCPU),s390x)
 ARCH=s390x
 else
@@ -966,7 +959,6 @@ ifeq ($(DESTCPU),riscv64)
 ARCH=riscv64
 else
 ARCH=x86
-endif
 endif
 endif
 endif
