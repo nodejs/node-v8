@@ -5,11 +5,15 @@ on:
     - cron: '0 6 * * *'
   workflow_dispatch:
 
+env:
+  CC: clang
+  CXX: clang++
+
 jobs:
   updateCanary:
     name: Update the canary branch
     if: github.repository == 'nodejs/node-v8' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Clone node-v8
         uses: actions/checkout@v4
