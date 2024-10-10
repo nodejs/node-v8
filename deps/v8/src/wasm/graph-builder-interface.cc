@@ -279,7 +279,7 @@ class WasmGraphBuildingInterface {
   void StartFunctionBody(FullDecoder* decoder, Control* block) {}
 
   void FinishFunction(FullDecoder* decoder) {
-    if (inlining_enabled(decoder)) {
+    if (v8_flags.wasm_inlining) {
       DCHECK_EQ(feedback_instruction_index_, type_feedback_.size());
     }
     if (inlined_status_ == kRegularFunction) {
@@ -1001,7 +1001,7 @@ class WasmGraphBuildingInterface {
   void CallDirect(FullDecoder* decoder, const CallFunctionImmediate& imm,
                   const Value args[], Value returns[]) {
     int maybe_call_count = -1;
-    if (inlining_enabled(decoder) && !type_feedback_.empty()) {
+    if (v8_flags.wasm_inlining && !type_feedback_.empty()) {
       const CallSiteFeedback& feedback = next_call_feedback();
       DCHECK_EQ(feedback.num_cases(), 1);
       maybe_call_count = feedback.call_count(0);
@@ -1016,7 +1016,7 @@ class WasmGraphBuildingInterface {
   void ReturnCall(FullDecoder* decoder, const CallFunctionImmediate& imm,
                   const Value args[]) {
     int maybe_call_count = -1;
-    if (inlining_enabled(decoder) && !type_feedback_.empty()) {
+    if (v8_flags.wasm_inlining && !type_feedback_.empty()) {
       const CallSiteFeedback& feedback = next_call_feedback();
       DCHECK_EQ(feedback.num_cases(), 1);
       maybe_call_count = feedback.call_count(0);
@@ -1046,7 +1046,7 @@ class WasmGraphBuildingInterface {
   void CallRef(FullDecoder* decoder, const Value& func_ref,
                const FunctionSig* sig, const Value args[], Value returns[]) {
     const CallSiteFeedback* feedback = nullptr;
-    if (inlining_enabled(decoder) && !type_feedback_.empty()) {
+    if (v8_flags.wasm_inlining && !type_feedback_.empty()) {
       feedback = &next_call_feedback();
     }
     if (feedback == nullptr || feedback->num_cases() == 0) {
@@ -1140,7 +1140,7 @@ class WasmGraphBuildingInterface {
   void ReturnCallRef(FullDecoder* decoder, const Value& func_ref,
                      const FunctionSig* sig, const Value args[]) {
     const CallSiteFeedback* feedback = nullptr;
-    if (inlining_enabled(decoder) && !type_feedback_.empty()) {
+    if (v8_flags.wasm_inlining && !type_feedback_.empty()) {
       feedback = &next_call_feedback();
     }
     if (feedback == nullptr || feedback->num_cases() == 0) {
@@ -1853,20 +1853,22 @@ class WasmGraphBuildingInterface {
       case HeapType::kNone:
       case HeapType::kNoExtern:
       case HeapType::kNoFunc:
-      case HeapType::kNoExn:
+      case HeapType::kNoExn: {
         DCHECK(null_succeeds);
-        // This is needed for BrOnNull. {value_on_branch} is on the value stack
-        // and BrOnNull interacts with the values on the stack.
-        // TODO(14034): The compiler shouldn't have to access the stack used by
-        // the decoder ideally.
-        // Note: This TypeGuard doesn't add any new type information but we need
-        // a non-const Value that we can return to the decoder for
-        // value_on_branch. The clean solution would be to emit the TypeGuard
-        // with the branch-type in the effect edge of the branch and use
-        // value_on_branch->type as type there.
-        SetAndTypeNode(value_on_branch,
-                       builder_->TypeGuard(object.node, object.type));
-        return BrOnNull(decoder, object, br_depth, true, value_on_branch);
+        SsaEnv* false_env = ssa_env_;
+        SsaEnv* true_env = Split(decoder->zone(), false_env);
+        false_env->SetNotMerged();
+        std::tie(true_env->control, false_env->control) =
+            builder_->BrOnNull(object.node, object.type);
+        builder_->SetControl(false_env->control);
+        {
+          ScopedSsaEnv scoped_env(this, true_env);
+          // Narrow type for the successful cast target branch.
+          Forward(decoder, object, value_on_branch);
+          int drop_values = 0;
+          BrOrRet(decoder, br_depth, drop_values);
+        }
+      } break;
       case HeapType::kAny:
         // Any may never need a cast as it is either implicitly convertible or
         // never convertible for any given type.
@@ -2304,10 +2306,6 @@ class WasmGraphBuildingInterface {
   // - When exiting a loop through Delegate.
   bool emit_loop_exits() {
     return v8_flags.wasm_loop_unrolling || v8_flags.wasm_loop_peeling;
-  }
-
-  bool inlining_enabled(FullDecoder* decoder) {
-    return decoder->enabled_.has_inlining() || decoder->module_->is_wasm_gc;
   }
 
   void GetNodes(TFNode** nodes, const Value* values, size_t count) {

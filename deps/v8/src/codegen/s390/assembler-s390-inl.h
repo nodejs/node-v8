@@ -198,6 +198,18 @@ void WritableRelocInfo::set_target_external_reference(
                                    icache_flush_mode);
 }
 
+Address RelocInfo::wasm_indirect_call_target() const {
+  DCHECK(rmode_ == WASM_INDIRECT_CALL_TARGET);
+  return Assembler::target_address_at(pc_, constant_pool_);
+}
+
+void WritableRelocInfo::set_wasm_indirect_call_target(
+    Address target, ICacheFlushMode icache_flush_mode) {
+  DCHECK(rmode_ == RelocInfo::WASM_INDIRECT_CALL_TARGET);
+  Assembler::set_target_address_at(pc_, constant_pool_, target,
+                                   icache_flush_mode);
+}
+
 Builtin RelocInfo::target_builtin_at(Assembler* origin) { UNREACHABLE(); }
 
 Address RelocInfo::target_off_heap_target() {
@@ -222,7 +234,6 @@ Address Assembler::target_address_at(Address pc, Address constant_pool) {
     return pc + dis;
   }
 
-#if V8_TARGET_ARCH_S390X
   int instr1_length =
       Instruction::InstructionLength(reinterpret_cast<const uint8_t*>(pc));
   Opcode op2 = Instruction::S390OpcodeValue(
@@ -234,12 +245,6 @@ Address Assembler::target_address_at(Address pc, Address constant_pool) {
     return static_cast<Address>(((instr_1 & 0xFFFFFFFF) << 32) |
                                 ((instr_2 & 0xFFFFFFFF)));
   }
-#else
-  // IILF loads 32-bits
-  if (IILF == op1 || CFI == op1) {
-    return static_cast<Address>((instr_1 & 0xFFFFFFFF));
-  }
-#endif
 
   UNIMPLEMENTED();
   return 0;
@@ -293,7 +298,6 @@ void Assembler::set_target_address_at(Address pc, Address constant_pool,
     }
     patched = true;
   } else {
-#if V8_TARGET_ARCH_S390X
     int instr1_length =
         Instruction::InstructionLength(reinterpret_cast<const uint8_t*>(pc));
     Opcode op2 = Instruction::S390OpcodeValue(
@@ -322,21 +326,6 @@ void Assembler::set_target_address_at(Address pc, Address constant_pool,
       }
       patched = true;
     }
-#else
-    // IILF loads 32-bits
-    if (IILF == op1 || CFI == op1) {
-      instr_1 >>= 32;  // Zero out the lower 32-bits
-      instr_1 <<= 32;
-      instr_1 |= reinterpret_cast<uint32_t>(target);
-
-      Instruction::SetInstructionBits<SixByteInstr>(
-          reinterpret_cast<uint8_t*>(pc), instr_1);
-      if (icache_flush_mode != SKIP_ICACHE_FLUSH) {
-        FlushInstructionCache(pc, 6);
-      }
-      patched = true;
-    }
-#endif
   }
   if (!patched) UNREACHABLE();
 }

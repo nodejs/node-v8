@@ -250,8 +250,11 @@ Tagged<Object> AddToDisposableStack(Isolate* isolate,
                                     DisposeMethodHint hint) {
   // a. If V is either null or undefined and hint is sync-dispose, return
   // unused.
-  if (IsNullOrUndefined(*value)) {
+  if (IsNullOrUndefined(*value) && hint == DisposeMethodHint::kSyncDispose) {
     return *value;
+  } else if (IsNullOrUndefined(*value) &&
+             hint == DisposeMethodHint::kAsyncDispose) {
+    value = ReadOnlyRoots(isolate).undefined_value_handle();
   }
 
   Handle<Object> method;
@@ -317,6 +320,23 @@ RUNTIME_FUNCTION(Runtime_DisposeDisposableStack) {
           static_cast<DisposableStackResourcesType>(
               Smi::ToInt(*has_await_using))));
   return *result;
+}
+
+RUNTIME_FUNCTION(Runtime_HandleExceptionsInDisposeDisposableStack) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(2, args.length());
+
+  DirectHandle<JSDisposableStackBase> disposable_stack =
+      args.at<JSDisposableStackBase>(0);
+  Handle<Object> exception = args.at<Object>(1);
+
+  if (!isolate->is_catchable_by_javascript(*exception)) {
+    return isolate->Throw(*exception);
+  }
+
+  JSDisposableStackBase::HandleErrorInDisposal(isolate, disposable_stack,
+                                               exception);
+  return *disposable_stack;
 }
 
 namespace {
@@ -521,7 +541,8 @@ Handle<JSObject> NewSloppyArguments(Isolate* isolate, Handle<JSFunction> callee,
           isolate->factory()->NewSloppyArgumentsElements(
               mapped_count, context, arguments, AllocationType::kYoung);
 
-      result->set_map(isolate->native_context()->fast_aliased_arguments_map());
+      result->set_map(isolate,
+                      isolate->native_context()->fast_aliased_arguments_map());
       result->set_elements(*parameter_map);
 
       // Loop over the actual parameters backwards.
@@ -754,7 +775,7 @@ RUNTIME_FUNCTION(Runtime_DeleteLookupSlot) {
   // the global object, or the subject of a with.  Try to delete it
   // (respecting DONT_DELETE).
   Handle<JSReceiver> object = Cast<JSReceiver>(holder);
-  Maybe<bool> result = JSReceiver::DeleteProperty(object, name);
+  Maybe<bool> result = JSReceiver::DeleteProperty(isolate, object, name);
   MAYBE_RETURN(result, ReadOnlyRoots(isolate).exception());
   return isolate->heap()->ToBoolean(result.FromJust());
 }

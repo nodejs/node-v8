@@ -11,6 +11,7 @@
 #include "src/execution/thread-id.h"
 #include "src/handles/handles-inl.h"
 #include "src/heap/heap-inl.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/heap/local-factory-inl.h"
 #include "src/heap/local-heap-inl.h"
 #include "src/heap/mutable-page-metadata.h"
@@ -35,7 +36,7 @@ namespace internal {
 Handle<String> String::SlowFlatten(Isolate* isolate, Handle<ConsString> cons,
                                    AllocationType allocation) {
   DCHECK_NE(cons->second()->length(), 0);
-  DCHECK(!InAnySharedSpace(*cons));
+  DCHECK(!HeapLayout::InAnySharedSpace(*cons));
 
   // TurboFan can create cons strings with empty first parts.
   while (cons->first()->length() == 0) {
@@ -53,8 +54,8 @@ Handle<String> String::SlowFlatten(Isolate* isolate, Handle<ConsString> cons,
   DCHECK(AllowGarbageCollection::IsAllowed());
   int length = cons->length();
   if (allocation != AllocationType::kSharedOld) {
-    allocation =
-        ObjectInYoungGeneration(*cons) ? allocation : AllocationType::kOld;
+    allocation = HeapLayout::InYoungGeneration(*cons) ? allocation
+                                                      : AllocationType::kOld;
   }
   Handle<SeqString> result;
   if (cons->IsOneByteRepresentation()) {
@@ -114,8 +115,8 @@ Handle<String> String::SlowShare(Isolate* isolate, Handle<String> source) {
     case StringTransitionStrategy::kInPlace:
       // A relaxed write is sufficient here, because at this point the string
       // has not yet escaped the current thread.
-      DCHECK(InAnySharedSpace(*flat));
-      flat->set_map_no_write_barrier(*new_map.ToHandleChecked());
+      DCHECK(HeapLayout::InAnySharedSpace(*flat));
+      flat->set_map_no_write_barrier(isolate, *new_map.ToHandleChecked());
       return flat;
     case StringTransitionStrategy::kAlreadyTransitioned:
       return flat;
@@ -249,9 +250,9 @@ void String::MakeThin(IsolateT* isolate, Tagged<String> internalized) {
   }
 
   if (initial_shape.IsExternal()) {
-    set_map(target_map, kReleaseStore);
+    set_map(isolate, target_map, kReleaseStore);
   } else {
-    set_map_safe_transition(target_map, kReleaseStore);
+    set_map_safe_transition(isolate, target_map, kReleaseStore);
   }
 }
 
@@ -271,6 +272,7 @@ bool String::MarkForExternalizationDuringGC(Isolate* isolate, T* resource) {
       // The external resource was concurrently updated by another thread.
       return false;
     }
+    resource->Unaccount(reinterpret_cast<v8::Isolate*>(isolate));
     raw_hash = Name::IsExternalForwardingIndexBit::update(raw_hash, true);
     set_raw_hash_field(raw_hash, kReleaseStore);
     return true;
@@ -284,6 +286,7 @@ bool String::MarkForExternalizationDuringGC(Isolate* isolate, T* resource) {
     raw_hash = EnsureRawHash();
   }
   DCHECK(IsHashFieldComputed(raw_hash));
+  resource->Unaccount(reinterpret_cast<v8::Isolate*>(isolate));
   int forwarding_index =
       isolate->string_forwarding_table()->AddExternalResourceAndHash(
           this, resource, raw_hash);
@@ -379,7 +382,7 @@ void String::MakeExternalDuringGC(Isolate* isolate, T* resource) {
   // We are storing the new map using release store after creating a filler in
   // the NotifyObjectSizeChange call for the left-over space to avoid races with
   // the sweeper thread.
-  this->set_map(new_map, kReleaseStore);
+  this->set_map(isolate, new_map, kReleaseStore);
 
   if constexpr (is_one_byte) {
     Tagged<ExternalOneByteString> self = Cast<ExternalOneByteString>(this);
@@ -397,7 +400,8 @@ template EXPORT_TEMPLATE_DEFINE(V8_EXPORT_PRIVATE) void String::
 template EXPORT_TEMPLATE_DEFINE(V8_EXPORT_PRIVATE) void String::
     MakeExternalDuringGC(Isolate* isolate, v8::String::ExternalStringResource*);
 
-bool String::MakeExternal(v8::String::ExternalStringResource* resource) {
+bool String::MakeExternal(Isolate* isolate,
+                          v8::String::ExternalStringResource* resource) {
   // Disallow garbage collection to avoid possible GC vs string access deadlock.
   DisallowGarbageCollection no_gc;
 
@@ -421,14 +425,16 @@ bool String::MakeExternal(v8::String::ExternalStringResource* resource) {
   if (size < static_cast<int>(sizeof(UncachedExternalString))) return false;
   // Read-only strings cannot be made external, since that would mutate the
   // string.
-  if (IsReadOnlyHeapObject(this)) return false;
-  Isolate* isolate = GetIsolateFromWritableObject(this);
+  if (HeapLayout::InReadOnlySpace(this)) return false;
   if (IsShared()) {
-    DCHECK(isolate->is_shared_space_isolate());
     return MarkForExternalizationDuringGC(isolate, resource);
   }
-  DCHECK_IMPLIES(InWritableSharedSpace(this),
-                 isolate->is_shared_space_isolate());
+  // For strings in the shared space we need the shared space isolate instead of
+  // the current isolate.
+  if (HeapLayout::InWritableSharedSpace(this)) {
+    resource->Unaccount(reinterpret_cast<v8::Isolate*>(isolate));
+    isolate = isolate->shared_space_isolate();
+  }
   bool is_internalized = IsInternalizedString(this);
   bool has_pointers = StringShape(this).IsIndirect();
 
@@ -473,7 +479,7 @@ bool String::MakeExternal(v8::String::ExternalStringResource* resource) {
   // We are storing the new map using release store after creating a filler in
   // the NotifyObjectSizeChange call for the left-over space to avoid races with
   // the sweeper thread.
-  this->set_map(new_map, kReleaseStore);
+  this->set_map(isolate, new_map, kReleaseStore);
 
   Tagged<ExternalTwoByteString> self = Cast<ExternalTwoByteString>(this);
   self->SetResource(isolate, resource);
@@ -483,7 +489,8 @@ bool String::MakeExternal(v8::String::ExternalStringResource* resource) {
   return true;
 }
 
-bool String::MakeExternal(v8::String::ExternalOneByteStringResource* resource) {
+bool String::MakeExternal(Isolate* isolate,
+                          v8::String::ExternalOneByteStringResource* resource) {
   // Disallow garbage collection to avoid possible GC vs string access deadlock.
   DisallowGarbageCollection no_gc;
 
@@ -512,14 +519,16 @@ bool String::MakeExternal(v8::String::ExternalOneByteStringResource* resource) {
   if (size < static_cast<int>(sizeof(UncachedExternalString))) return false;
   // Read-only strings cannot be made external, since that would mutate the
   // string.
-  if (IsReadOnlyHeapObject(this)) return false;
-  Isolate* isolate = GetIsolateFromWritableObject(this);
+  if (HeapLayout::InReadOnlySpace(this)) return false;
   if (IsShared()) {
-    DCHECK(isolate->is_shared_space_isolate());
     return MarkForExternalizationDuringGC(isolate, resource);
   }
-  DCHECK_IMPLIES(InWritableSharedSpace(this),
-                 isolate->is_shared_space_isolate());
+  // For strings in the shared space we need the shared space isolate instead of
+  // the current isolate.
+  if (HeapLayout::InWritableSharedSpace(this)) {
+    resource->Unaccount(reinterpret_cast<v8::Isolate*>(isolate));
+    isolate = isolate->shared_space_isolate();
+  }
   bool is_internalized = IsInternalizedString(this);
   bool has_pointers = StringShape(this).IsIndirect();
 
@@ -540,7 +549,7 @@ bool String::MakeExternal(v8::String::ExternalOneByteStringResource* resource) {
     int new_size = this->SizeFromMap(new_map);
 
     if (has_pointers) {
-      DCHECK(!InWritableSharedSpace(this));
+      DCHECK(!HeapLayout::InWritableSharedSpace(this));
       isolate->heap()->NotifyObjectLayoutChange(
           this, no_gc, InvalidateRecordedSlots::kYes,
           InvalidateExternalPointerSlots::kNo, new_size);
@@ -564,7 +573,7 @@ bool String::MakeExternal(v8::String::ExternalOneByteStringResource* resource) {
   // We are storing the new map using release store after creating a filler in
   // the NotifyObjectSizeChange call for the left-over space to avoid races with
   // the sweeper thread.
-  this->set_map(new_map, kReleaseStore);
+  this->set_map(isolate, new_map, kReleaseStore);
 
   Tagged<ExternalOneByteString> self = Cast<ExternalOneByteString>(this);
   self->SetResource(isolate, resource);
@@ -581,7 +590,7 @@ bool String::SupportsExternalization(v8::String::Encoding encoding) {
   }
 
   // RO_SPACE strings cannot be externalized.
-  if (IsReadOnlyHeapObject(this)) {
+  if (HeapLayout::InReadOnlySpace(this)) {
     return false;
   }
 
@@ -602,7 +611,7 @@ bool String::SupportsExternalization(v8::String::Encoding encoding) {
   }
 
   // Only strings in old space can be externalized.
-  if (Heap::InYoungGeneration(Tagged(this))) {
+  if (HeapLayout::InYoungGeneration(Tagged(this))) {
     return false;
   }
 
@@ -712,7 +721,6 @@ bool String::LooksValid() {
   // TODO(leszeks): Maybe remove this check entirely, Heap::Contains uses
   // basically the same logic as the way we access the heap in the first place.
   // RO_SPACE objects should always be valid.
-  if (V8_ENABLE_THIRD_PARTY_HEAP_BOOL) return true;
   if (ReadOnlyHeap::Contains(this)) return true;
   MemoryChunkMetadata* chunk = MemoryChunkMetadata::FromHeapObject(this);
   if (chunk->heap() == nullptr) return false;

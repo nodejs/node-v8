@@ -548,6 +548,7 @@ class V8_EXPORT Isolate {
     kDocumentAllLegacyCall = 141,
     kDocumentAllLegacyConstruct = 142,
     kConsoleContext = 143,
+    kWasmImportedStringsUtf8 = 144,
 
     // If you add new values here, you'll also need to update Chromium's:
     // web_feature.mojom, use_counter_callback.cc, and enums.xml. V8 changes to
@@ -670,6 +671,18 @@ class V8_EXPORT Isolate {
    */
   void SetHostImportModuleDynamicallyCallback(
       HostImportModuleDynamicallyCallback callback);
+
+  /**
+   * This specifies the callback called by the upcoming dynamic
+   * import() and import.source() language feature to load modules.
+   *
+   * This API is experimental and is expected to be changed or removed in the
+   * future. The callback is currently only called when for source-phase
+   * imports. Evaluation-phase imports use the existing
+   * HostImportModuleDynamicallyCallback callback.
+   */
+  void SetHostImportModuleWithPhaseDynamicallyCallback(
+      HostImportModuleWithPhaseDynamicallyCallback callback);
 
   /**
    * This specifies the callback called by the upcoming import.meta
@@ -1746,7 +1759,7 @@ class V8_EXPORT Isolate {
   friend class PersistentValueMapBase;
 
   internal::Address* GetDataFromSnapshotOnce(size_t index);
-  void ReportExternalAllocationLimitReached();
+  void HandleExternalMemoryInterrupt();
 };
 
 void Isolate::SetData(uint32_t slot, void* data) {

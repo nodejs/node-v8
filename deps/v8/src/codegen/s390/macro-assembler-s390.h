@@ -128,6 +128,7 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   void JumpIfCodeIsTurbofanned(Register code, Register scratch,
                                Label* if_turbofanned);
   void LoadMap(Register destination, Register object);
+  void LoadCompressedMap(Register destination, Register object);
 
   void LoadFeedbackVector(Register dst, Register closure, Register scratch,
                           Label* fbv_undef);
@@ -625,18 +626,10 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   void Not64(Register dst, Register src = no_reg);
   void NotP(Register dst, Register src = no_reg);
 
-#ifdef V8_TARGET_ARCH_S390X
   void Popcnt64(Register dst, Register src);
-#endif
 
   void mov(Register dst, const Operand& src);
   void mov(Register dst, Register src);
-
-  void CleanUInt32(Register x) {
-#ifdef V8_TARGET_ARCH_S390X
-    llgfr(x, x);
-#endif
-  }
 
   void push(DoubleRegister src) {
     lay(sp, MemOperand(sp, -kSystemPointerSize));
@@ -917,14 +910,6 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
                    Simd128Register scratch);
   void SwapSimd128(MemOperand src, MemOperand dst, Simd128Register scratch);
 
-  // Cleanse pointer address on 31bit by zero out top  bit.
-  // This is a NOP on 64-bit.
-  void CleanseP(Register src) {
-#if (V8_HOST_ARCH_S390 && !(V8_TARGET_ARCH_S390X))
-    nilh(src, Operand(0x7FFF));
-#endif
-  }
-
   // ---------------------------------------------------------------------------
   // Runtime calls
 
@@ -1034,15 +1019,10 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
       else if (dst != src)  // If we didn't shift, we might need to copy
         mov(dst, src);
       int width = rangeStart - rangeEnd + 1;
-#if V8_TARGET_ARCH_S390X
       uint64_t mask = (static_cast<uint64_t>(1) << width) - 1;
       nihf(dst, Operand(mask >> 32));
       nilf(dst, Operand(mask & 0xFFFFFFFF));
       ltgr(dst, dst);
-#else
-      uint32_t mask = (1 << width) - 1;
-      AndP(dst, Operand(mask));
-#endif
     }
   }
 
@@ -1179,7 +1159,7 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   void BindExceptionHandler(Label* label) { bind(label); }
 
   // Convenience functions to call/jmp to the code of a JSFunction object.
-  void CallJSFunction(Register function_object);
+  void CallJSFunction(Register function_object, uint16_t argument_count);
   void JumpJSFunction(Register function_object,
                       JumpMode jump_mode = JumpMode::kJump);
 

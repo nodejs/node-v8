@@ -35,7 +35,8 @@ namespace internal {
 namespace {
 void CreateFixedArray(Heap* heap, Address start, int size) {
   Tagged<HeapObject> object = HeapObject::FromAddress(start);
-  object->set_map_after_allocation(ReadOnlyRoots(heap).fixed_array_map(),
+  object->set_map_after_allocation(heap->isolate(),
+                                   ReadOnlyRoots(heap).fixed_array_map(),
                                    SKIP_WRITE_BARRIER);
   Tagged<FixedArray> array = Cast<FixedArray>(object);
   int length = (size - FixedArray::kHeaderSize) / kTaggedSize;
@@ -407,11 +408,21 @@ UNINITIALIZED_TEST(ConcurrentBlackAllocation) {
     for (int i = 0; i < kNumIterations * kObjectsAllocatedPerIteration; i++) {
       Address address = objects[i];
       Tagged<HeapObject> object = HeapObject::FromAddress(address);
-
-      if (i < kWhiteIterations * kObjectsAllocatedPerIteration) {
+      if (v8_flags.black_allocated_pages) {
         CHECK(heap->marking_state()->IsUnmarked(object));
+        if (i < kWhiteIterations * kObjectsAllocatedPerIteration) {
+          CHECK(!PageMetadata::FromHeapObject(object)->Chunk()->IsFlagSet(
+              MemoryChunk::BLACK_ALLOCATED));
+        } else {
+          CHECK(PageMetadata::FromHeapObject(object)->Chunk()->IsFlagSet(
+              MemoryChunk::BLACK_ALLOCATED));
+        }
       } else {
-        CHECK(heap->marking_state()->IsMarked(object));
+        if (i < kWhiteIterations * kObjectsAllocatedPerIteration) {
+          CHECK(heap->marking_state()->IsUnmarked(object));
+        } else {
+          CHECK(heap->marking_state()->IsMarked(object));
+        }
       }
     }
   }
@@ -452,6 +463,7 @@ UNINITIALIZED_TEST(ConcurrentWriteBarrier) {
   Isolate* i_isolate = reinterpret_cast<Isolate*>(isolate);
   Heap* heap = i_isolate->heap();
   {
+    v8::Isolate::Scope isolate_scope(isolate);
     PtrComprCageAccessScope ptr_compr_cage_access_scope(i_isolate);
     Tagged<FixedArray> fixed_array;
     Tagged<HeapObject> value;
@@ -530,6 +542,7 @@ UNINITIALIZED_TEST(ConcurrentRecordRelocSlot) {
   Isolate* i_isolate = reinterpret_cast<Isolate*>(isolate);
   Heap* heap = i_isolate->heap();
   {
+    v8::Isolate::Scope isolate_scope(isolate);
     PtrComprCageAccessScope ptr_compr_cage_access_scope(i_isolate);
     Tagged<Code> code;
     Tagged<HeapObject> value;

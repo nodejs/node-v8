@@ -73,10 +73,14 @@ class V8_EXPORT_PRIVATE JSCallReducer final : public AdvancedReducer {
   Zone* ZoneForGraphAssembler() const { return temp_zone(); }
   JSGraph* JSGraphForGraphAssembler() const { return jsgraph(); }
 
-  bool has_wasm_calls() const { return has_wasm_calls_; }
+#if V8_ENABLE_WEBASSEMBLY
+  bool has_js_wasm_calls() const {
+    return wasm_module_for_inlining_ != nullptr;
+  }
   const wasm::WasmModule* wasm_module_for_inlining() const {
     return wasm_module_for_inlining_;
   }
+#endif  // V8_ENABLE_WEBASSEMBLY
 
   CompilationDependencies* dependencies() const;
   JSHeapBroker* broker() const { return broker_; }
@@ -163,6 +167,7 @@ class V8_EXPORT_PRIVATE JSCallReducer final : public AdvancedReducer {
   Reduction ReduceStringPrototypeEndsWith(Node* node);
 
 #ifdef V8_INTL_SUPPORT
+  Reduction ReduceStringPrototypeLocaleCompareIntl(Node* node);
   Reduction ReduceStringPrototypeToLowerCaseIntl(Node* node);
   Reduction ReduceStringPrototypeToUpperCaseIntl(Node* node);
 #endif  // V8_INTL_SUPPORT
@@ -170,7 +175,6 @@ class V8_EXPORT_PRIVATE JSCallReducer final : public AdvancedReducer {
   Reduction ReduceStringFromCharCode(Node* node);
   Reduction ReduceStringFromCodePoint(Node* node);
   Reduction ReduceStringPrototypeIterator(Node* node);
-  Reduction ReduceStringPrototypeLocaleCompare(Node* node);
   Reduction ReduceStringIteratorPrototypeNext(Node* node);
   Reduction ReduceStringPrototypeConcat(Node* node);
 
@@ -187,7 +191,11 @@ class V8_EXPORT_PRIVATE JSCallReducer final : public AdvancedReducer {
                                         SharedFunctionInfoRef shared);
   Reduction ReduceTypedArrayPrototypeToStringTag(Node* node);
   Reduction ReduceArrayBufferViewByteLengthAccessor(Node* node,
-                                                    InstanceType instance_type);
+                                                    InstanceType instance_type,
+                                                    Builtin builtin);
+  Reduction ReduceArrayBufferViewByteOffsetAccessor(Node* node,
+                                                    InstanceType instance_type,
+                                                    Builtin builtin);
   Reduction ReduceTypedArrayPrototypeLength(Node* node);
 
   Reduction ReduceForInsufficientFeedback(Node* node, DeoptimizeReason reason);
@@ -298,8 +306,9 @@ class V8_EXPORT_PRIVATE JSCallReducer final : public AdvancedReducer {
   // For preventing infinite recursion via ReduceJSCallWithArrayLikeOrSpread.
   std::unordered_set<Node*> generated_calls_with_array_like_or_spread_;
 
-  bool has_wasm_calls_ = false;
+#if V8_ENABLE_WEBASSEMBLY
   const wasm::WasmModule* wasm_module_for_inlining_ = nullptr;
+#endif  // V8_ENABLE_WEBASSEMBLY
 };
 
 }  // namespace compiler

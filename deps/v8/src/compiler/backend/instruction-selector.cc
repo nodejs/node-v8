@@ -17,11 +17,11 @@
 #include "src/compiler/common-operator.h"
 #include "src/compiler/compiler-source-position-table.h"
 #include "src/compiler/globals.h"
-#include "src/compiler/graph.h"
 #include "src/compiler/js-heap-broker.h"
 #include "src/compiler/node-properties.h"
 #include "src/compiler/schedule.h"
 #include "src/compiler/state-values-utils.h"
+#include "src/compiler/turbofan-graph.h"
 #include "src/compiler/turboshaft/operations.h"
 #include "src/compiler/turboshaft/opmasks.h"
 #include "src/compiler/turboshaft/representations.h"
@@ -359,21 +359,33 @@ bool InstructionSelectorT<Adapter>::CanCover(node_t user, node_t node) const {
   }
 
   // 3. Otherwise, the {node}'s effect level must match the {user}'s.
-  if constexpr (Adapter::IsTurboshaft) {
-    // A ProtectedLoad node itself increases effect_level by one.
-    int effect_level_after_node =
-        GetEffectLevel(node) + (this->IsProtectedLoad(node) ? 1 : 0);
-    if (current_effect_level_ != effect_level_after_node) {
-      return false;
-    }
-  } else {
-    if (GetEffectLevel(node) != current_effect_level_) {
-      return false;
-    }
+  if (GetEffectLevel(node) != current_effect_level_) {
+    return false;
   }
 
   // 4. Only {node} must have value edges pointing to {user}.
   return this->is_exclusive_user_of(user, node);
+}
+
+template <typename Adapter>
+bool InstructionSelectorT<Adapter>::CanCoverProtectedLoad(node_t user,
+                                                          node_t node) const {
+  if constexpr (Adapter::IsTurboshaft) {
+    DCHECK(CanCover(user, node));
+    const turboshaft::Graph* graph = this->turboshaft_graph();
+    for (turboshaft::OpIndex next = graph->NextIndex(node); next.valid();
+         next = graph->NextIndex(next)) {
+      if (next == user) break;
+      const turboshaft::Operation& op = graph->Get(next);
+      turboshaft::OpEffects effects = op.Effects();
+      if (effects.produces.control_flow || effects.required_when_unused) {
+        return false;
+      }
+    }
+    return true;
+  } else {
+    UNREACHABLE();
+  }
 }
 
 template <typename Adapter>
@@ -1610,7 +1622,7 @@ void InstructionSelectorT<Adapter>::InitializeCallBuffer(
     DCHECK_EQ(1 + frame_state_entries, buffer->instruction_args.size());
   }
 
-  size_t input_count = static_cast<size_t>(buffer->input_count());
+  size_t input_count = buffer->input_count();
 
   // Split the arguments into pushed_nodes and instruction_args. Pushed
   // arguments require an explicit push instruction before the call and do
@@ -1618,7 +1630,6 @@ void InstructionSelectorT<Adapter>::InitializeCallBuffer(
   // as an InstructionOperand argument to the call.
   auto arguments = call.arguments();
   auto iter(arguments.begin());
-  // call->inputs().begin());
   size_t pushed_count = 0;
   for (size_t index = 1; index < input_count; ++iter, ++index) {
     DCHECK_NE(iter, arguments.end());
@@ -1664,6 +1675,16 @@ void InstructionSelectorT<Adapter>::InitializeCallBuffer(
                                  saved_return_location, stack_param_delta),
                              saved_return_location);
     buffer->instruction_args.push_back(return_address);
+  }
+}
+
+template <typename Adapter>
+void InstructionSelectorT<Adapter>::UpdateSourcePosition(
+    Instruction* instruction, node_t node) {
+  if constexpr (Adapter::IsTurboshaft) {
+    sequence()->SetSourcePosition(instruction, (*source_positions_)[node]);
+  } else {
+    UNREACHABLE();
   }
 }
 
@@ -1782,9 +1803,7 @@ bool increment_effect_level_for_node(TurboshaftAdapter* adapter,
     return false;
   }
   return (op.Effects().consumes.bits() & kTurboshaftEffectLevelMask.bits()) !=
-             0 ||
-         op.Effects().required_when_unused ||
-         op.Effects().produces.control_flow;
+         0;
 }
 }  // namespace
 
@@ -2337,7 +2356,7 @@ void InstructionSelectorT<Adapter>::VisitWord32AtomicPairCompareExchange(
         // && !V8_TARGET_ARCH_RISCV32
 
 #if !V8_TARGET_ARCH_X64 && !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_MIPS64 && \
-    !V8_TARGET_ARCH_S390 && !V8_TARGET_ARCH_PPC64 &&                          \
+    !V8_TARGET_ARCH_S390X && !V8_TARGET_ARCH_PPC64 &&                         \
     !V8_TARGET_ARCH_RISCV64 && !V8_TARGET_ARCH_LOONG64
 
 VISIT_UNSUPPORTED_OP(Word64AtomicLoad)
@@ -2351,7 +2370,7 @@ VISIT_UNSUPPORTED_OP(Word64AtomicExchange)
 VISIT_UNSUPPORTED_OP(Word64AtomicCompareExchange)
 
 #endif  // !V8_TARGET_ARCH_X64 && !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_PPC64
-        // !V8_TARGET_ARCH_MIPS64 && !V8_TARGET_ARCH_S390 &&
+        // !V8_TARGET_ARCH_MIPS64 && !V8_TARGET_ARCH_S390X &&
         // !V8_TARGET_ARCH_RISCV64 && !V8_TARGET_ARCH_LOONG64
 
 #if !V8_TARGET_ARCH_IA32 && !V8_TARGET_ARCH_ARM && !V8_TARGET_ARCH_RISCV32
@@ -2586,8 +2605,15 @@ void InstructionSelectorT<Adapter>::VisitCall(node_t node, block_t handler) {
   UpdateMaxPushedArgumentCount(buffer.pushed_nodes.size());
 
   if (call_descriptor->RequiresEntrypointTagForCall()) {
+    DCHECK(!call_descriptor->IsJSFunctionCall());
     buffer.instruction_args.push_back(
         g.TempImmediate(call_descriptor->shifted_tag()));
+  } else if (call_descriptor->IsJSFunctionCall()) {
+    // For JSFunctions we need to know the number of pushed parameters during
+    // code generation.
+    uint32_t parameter_count =
+        static_cast<uint32_t>(buffer.pushed_nodes.size());
+    buffer.instruction_args.push_back(g.TempImmediate(parameter_count));
   }
 
   // Pass label of exception handler block.
@@ -4897,6 +4923,7 @@ void InstructionSelectorT<TurboshaftAdapter>::VisitNode(
         case ConstantOp::Kind::kRelocatableWasmCall:
         case ConstantOp::Kind::kRelocatableWasmStubCall:
         case ConstantOp::Kind::kRelocatableWasmCanonicalSignatureId:
+        case ConstantOp::Kind::kRelocatableWasmIndirectCallTarget:
           break;
       }
       VisitConstant(node);

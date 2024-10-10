@@ -31,6 +31,7 @@
 #include "src/handles/global-handles-inl.h"
 #include "src/heap/factory.h"
 #include "src/heap/heap-inl.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/objects/hash-table-inl.h"
 #include "src/objects/js-collection-inl.h"
 #include "src/objects/objects-inl.h"
@@ -188,7 +189,7 @@ TEST_F(WeakMapsTest, WeakMapPromotionMarkCompact) {
 
   InvokeMajorGC();
 
-  CHECK(!ObjectInYoungGeneration(weakmap->table()));
+  CHECK(!HeapLayout::InYoungGeneration(weakmap->table()));
 
   DirectHandle<Map> map = factory->NewContextfulMapForCurrentContext(
       JS_OBJECT_TYPE, JSObject::kHeaderSize);
@@ -201,14 +202,14 @@ TEST_F(WeakMapsTest, WeakMapPromotionMarkCompact) {
       Cast<EphemeronHashTable>(weakmap->table()), *object));
   InvokeMajorGC();
 
-  CHECK(!ObjectInYoungGeneration(*object));
-  CHECK(!ObjectInYoungGeneration(weakmap->table()));
+  CHECK(!HeapLayout::InYoungGeneration(*object));
+  CHECK(!HeapLayout::InYoungGeneration(weakmap->table()));
   CHECK(EphemeronHashTableContainsKey(
       Cast<EphemeronHashTable>(weakmap->table()), *object));
 
   InvokeMajorGC();
-  CHECK(!ObjectInYoungGeneration(*object));
-  CHECK(!ObjectInYoungGeneration(weakmap->table()));
+  CHECK(!HeapLayout::InYoungGeneration(*object));
+  CHECK(!HeapLayout::InYoungGeneration(weakmap->table()));
   CHECK(EphemeronHashTableContainsKey(
       Cast<EphemeronHashTable>(weakmap->table()), *object));
 }
@@ -223,7 +224,7 @@ TEST_F(WeakMapsTest, WeakMapScavenge) {
   DirectHandle<JSWeakMap> weakmap = isolate->factory()->NewJSWeakMap();
 
   InvokeAtomicMinorGC();
-  CHECK(ObjectInYoungGeneration(weakmap->table()));
+  CHECK(HeapLayout::InYoungGeneration(weakmap->table()));
 
   DirectHandle<Map> map = factory->NewContextfulMapForCurrentContext(
       JS_OBJECT_TYPE, JSObject::kHeaderSize);
@@ -237,15 +238,15 @@ TEST_F(WeakMapsTest, WeakMapScavenge) {
 
   if (!v8_flags.minor_ms) {
     InvokeAtomicMinorGC();
-    CHECK(ObjectInYoungGeneration(*object));
-    CHECK(!ObjectInYoungGeneration(weakmap->table()));
+    CHECK(HeapLayout::InYoungGeneration(*object));
+    CHECK(!HeapLayout::InYoungGeneration(weakmap->table()));
     CHECK(EphemeronHashTableContainsKey(
         Cast<EphemeronHashTable>(weakmap->table()), *object));
   }
 
   InvokeAtomicMajorGC();
-  CHECK(!ObjectInYoungGeneration(*object));
-  CHECK(!ObjectInYoungGeneration(weakmap->table()));
+  CHECK(!HeapLayout::InYoungGeneration(*object));
+  CHECK(!HeapLayout::InYoungGeneration(weakmap->table()));
   CHECK(EphemeronHashTableContainsKey(
       Cast<EphemeronHashTable>(weakmap->table()), *object));
 }
@@ -254,7 +255,6 @@ TEST_F(WeakMapsTest, WeakMapScavenge) {
 // by other paths are correctly recorded in the slots buffer.
 TEST_F(WeakMapsTest, Regress2060a) {
   if (!i::v8_flags.compact) return;
-  if (i::v8_flags.enable_third_party_heap) return;
   v8_flags.compact_on_every_full_gc = true;
   v8_flags.stress_concurrent_allocation = false;  // For SimulateFullSpace.
   Isolate* isolate = i_isolate();
@@ -277,9 +277,8 @@ TEST_F(WeakMapsTest, Regress2060a) {
     for (int i = 0; i < 32; i++) {
       DirectHandle<JSObject> object =
           factory->NewJSObject(function, AllocationType::kOld);
-      CHECK(!Heap::InYoungGeneration(*object));
-      CHECK_IMPLIES(!v8_flags.enable_third_party_heap,
-                    !first_page->Contains(object->address()));
+      CHECK(!HeapLayout::InYoungGeneration(*object));
+      CHECK(!first_page->Contains(object->address()));
       int32_t hash = Object::GetOrCreateHash(*key, isolate).value();
       JSWeakCollection::Set(weakmap, key, object, hash);
     }
@@ -316,9 +315,8 @@ TEST_F(WeakMapsTest, Regress2060b) {
   Handle<JSObject> keys[32];
   for (int i = 0; i < 32; i++) {
     keys[i] = factory->NewJSObject(function, AllocationType::kOld);
-    CHECK(!Heap::InYoungGeneration(*keys[i]));
-    CHECK_IMPLIES(!v8_flags.enable_third_party_heap,
-                  !first_page->Contains(keys[i]->address()));
+    CHECK(!HeapLayout::InYoungGeneration(*keys[i]));
+    CHECK(!first_page->Contains(keys[i]->address()));
   }
   DirectHandle<JSWeakMap> weakmap = isolate->factory()->NewJSWeakMap();
   for (int i = 0; i < 32; i++) {

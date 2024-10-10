@@ -32,6 +32,7 @@
 #include "src/flags/flags.h"
 #include "src/handles/handles.h"
 #include "src/heap/factory.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/heap/heap-write-barrier-inl.h"
 #include "src/objects/elements-kind.h"
 #include "src/objects/feedback-vector.h"
@@ -379,8 +380,8 @@ Handle<String> JSNativeContextSpecialization::Concatenate(
     // build a SeqString rather than a ConsString, regardless of {length}.
     // TODO(dmercadier, dinfuehr): always build a ConsString here once the
     // generational write-barrier supports background threads.
-    if (!LocalHeap::Current() ||
-        (!ObjectInYoungGeneration(*left) && !ObjectInYoungGeneration(*right))) {
+    if (!LocalHeap::Current() || (!HeapLayout::InYoungGeneration(*left) &&
+                                  !HeapLayout::InYoungGeneration(*right))) {
       return broker()
           ->local_isolate_or_isolate()
           ->factory()
@@ -484,8 +485,8 @@ Reduction JSNativeContextSpecialization::ReduceJSAdd(Node* node) {
       // One of {lhs} or {rhs} is not safe to be read in the background.
 
       if (left->length() + right->length() > ConsString::kMinLength &&
-          (!LocalHeap::Current() || (!ObjectInYoungGeneration(*left) &&
-                                     !ObjectInYoungGeneration(*right)))) {
+          (!LocalHeap::Current() || (!HeapLayout::InYoungGeneration(*left) &&
+                                     !HeapLayout::InYoungGeneration(*right)))) {
         // We can create a ConsString with {left} and {right}, without needing
         // to read their content (and this ConsString will not introduce
         // old-to-new pointers from the background).
@@ -881,7 +882,9 @@ JSNativeContextSpecialization::InferHasInPrototypeChain(
       // might be a different object each time, so it's much simpler to include
       // {prototype}. That does, however, mean that we must check {prototype}'s
       // map stability.
-      if (!prototype.map(broker()).is_stable()) return kMayBeInPrototypeChain;
+      if (!prototype.IsJSObject() || !prototype.map(broker()).is_stable()) {
+        return kMayBeInPrototypeChain;
+      }
       last_prototype = prototype.AsJSObject();
     }
     WhereToStart start = result == NodeProperties::kUnreliableMaps
@@ -1415,7 +1418,7 @@ Reduction JSNativeContextSpecialization::ReduceMegaDOMPropertyAccess(
       simplified()->LoadField(AccessBuilder::ForMapInstanceType()),
       receiver_map, effect, control);
 
-  if (v8_flags.embedder_instance_types && range_start != 0) {
+  if (v8_flags.experimental_embedder_instance_types && range_start != 0) {
     // Embedder instance ID is set, doing a simple range check.
     Node* diff_to_start =
         graph()->NewNode(simplified()->NumberSubtract(), receiver_instance_type,

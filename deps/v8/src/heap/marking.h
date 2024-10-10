@@ -11,8 +11,6 @@
 #include "src/common/globals.h"
 #include "src/heap/marking-worklist.h"
 #include "src/objects/heap-object.h"
-#include "src/objects/map.h"
-#include "src/utils/utils.h"
 
 namespace v8::internal {
 
@@ -230,53 +228,6 @@ class V8_EXPORT_PRIVATE MarkingBitmap final {
   CellType cells_[kCellsCount] = {0};
 };
 
-class LiveObjectRange final {
- public:
-  class iterator final {
-   public:
-    using value_type = std::pair<Tagged<HeapObject>, int /* size */>;
-    using pointer = const value_type*;
-    using reference = const value_type&;
-    using iterator_category = std::forward_iterator_tag;
-
-    inline iterator();
-    explicit inline iterator(const PageMetadata* page);
-
-    inline iterator& operator++();
-    inline iterator operator++(int);
-
-    bool operator==(iterator other) const {
-      return current_object_ == other.current_object_;
-    }
-    bool operator!=(iterator other) const { return !(*this == other); }
-
-    value_type operator*() {
-      return std::make_pair(current_object_, current_size_);
-    }
-
-   private:
-    inline bool AdvanceToNextMarkedObject();
-    inline void AdvanceToNextValidObject();
-
-    const PageMetadata* const page_ = nullptr;
-    const MarkBit::CellType* const cells_ = nullptr;
-    const PtrComprCageBase cage_base_;
-    MarkingBitmap::CellIndex current_cell_index_ = 0;
-    MarkingBitmap::CellType current_cell_ = 0;
-    Tagged<HeapObject> current_object_;
-    Tagged<Map> current_map_;
-    int current_size_ = 0;
-  };
-
-  explicit LiveObjectRange(const PageMetadata* page) : page_(page) {}
-
-  inline iterator begin();
-  inline iterator end();
-
- private:
-  const PageMetadata* const page_;
-};
-
 struct MarkingHelper final : public AllStatic {
   // TODO(340989496): Add on hold as target in ShouldMarkObject() and
   // TryMarkAndPush().
@@ -300,6 +251,19 @@ struct MarkingHelper final : public AllStatic {
   // the object is always considered as live.
   static V8_INLINE LivenessMode GetLivenessMode(Heap* heap,
                                                 Tagged<HeapObject> object);
+
+  // Returns true if the object is marked or resides on an always live page.
+  template <typename MarkingStateT>
+  static V8_INLINE bool IsMarkedOrAlwaysLive(Heap* heap,
+                                             MarkingStateT* marking_state,
+                                             Tagged<HeapObject> object);
+
+  // Returns true if the object is unmarked and doesn't reside on an always live
+  // page.
+  template <typename MarkingStateT>
+  static V8_INLINE bool IsUnmarkedAndNotAlwaysLive(Heap* heap,
+                                                   MarkingStateT* marking_state,
+                                                   Tagged<HeapObject> object);
 
   // Convenience helper around marking and pushing an object.
   //

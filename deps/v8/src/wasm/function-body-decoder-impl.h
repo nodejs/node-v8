@@ -184,9 +184,7 @@ V8_INLINE void DecodeError(Decoder* decoder, const uint8_t* pc, const char* str,
   // know this e.g. from the VALIDATE macro, but this assumption tells it again
   // that this path is impossible.
   V8_ASSUME(ValidationTag::validate);
-  if constexpr (!ValidationTag::full_validation) {
-    decoder->MarkError();
-  } else if constexpr (sizeof...(Args) == 0) {
+  if constexpr (sizeof...(Args) == 0) {
     decoder->error(pc, str);
   } else {
     decoder->errorf(pc, str, std::forward<Args>(args)...);
@@ -202,9 +200,7 @@ V8_INLINE void DecodeError(Decoder* decoder, const char* str, Args&&... args) {
   // know this e.g. from the VALIDATE macro, but this assumption tells it again
   // that this path is impossible.
   V8_ASSUME(ValidationTag::validate);
-  if constexpr (!ValidationTag::full_validation) {
-    decoder->MarkError();
-  } else if constexpr (sizeof...(Args) == 0) {
+  if constexpr (sizeof...(Args) == 0) {
     decoder->error(str);
   } else {
     decoder->errorf(str, std::forward<Args>(args)...);
@@ -497,11 +493,7 @@ struct BrOnCastImmediate {
   BrOnCastImmediate(Decoder* decoder, const uint8_t* pc, ValidationTag = {}) {
     raw_value = decoder->read_u8<ValidationTag>(pc, "br_on_cast flags");
     if (raw_value > (BrOnCastFlags::SRC_IS_NULL | BrOnCastFlags::RES_IS_NULL)) {
-      if constexpr (ValidationTag::full_validation) {
-        decoder->errorf(pc, "invalid br_on_cast flags %u", raw_value);
-      } else {
-        decoder->MarkError();
-      }
+      decoder->errorf(pc, "invalid br_on_cast flags %u", raw_value);
       return;
     }
     flags = BrOnCastFlags(raw_value);
@@ -989,9 +981,9 @@ struct StringConstImmediate {
   }
 };
 
-template <bool full_validation>
+template <bool validate>
 struct PcForErrors {
-  static_assert(full_validation == false);
+  static_assert(validate == false);
   explicit PcForErrors(const uint8_t* /* pc */) {}
 
   const uint8_t* pc() const { return nullptr; }
@@ -1008,11 +1000,11 @@ struct PcForErrors<true> {
 
 // An entry on the value stack.
 template <typename ValidationTag>
-struct ValueBase : public PcForErrors<ValidationTag::full_validation> {
+struct ValueBase : public PcForErrors<ValidationTag::validate> {
   ValueType type = kWasmVoid;
 
   ValueBase(const uint8_t* pc, ValueType type)
-      : PcForErrors<ValidationTag::full_validation>(pc), type(type) {}
+      : PcForErrors<ValidationTag::validate>(pc), type(type) {}
 };
 
 template <typename Value>
@@ -1057,7 +1049,7 @@ enum Reachability : uint8_t {
 
 // An entry on the control stack (i.e. if, block, loop, or try).
 template <typename Value, typename ValidationTag>
-struct ControlBase : public PcForErrors<ValidationTag::full_validation> {
+struct ControlBase : public PcForErrors<ValidationTag::validate> {
   ControlKind kind = kControlBlock;
   Reachability reachability = kReachable;
 
@@ -1081,7 +1073,7 @@ struct ControlBase : public PcForErrors<ValidationTag::full_validation> {
   ControlBase(Zone* zone, ControlKind kind, uint32_t stack_depth,
               uint32_t init_stack_depth, const uint8_t* pc,
               Reachability reachability)
-      : PcForErrors<ValidationTag::full_validation>(pc),
+      : PcForErrors<ValidationTag::validate>(pc),
         kind(kind),
         reachability(reachability),
         stack_depth(stack_depth),
@@ -1463,9 +1455,6 @@ class FastZoneVector {
 // lengths, etc.
 template <typename ValidationTag, DecodingMode decoding_mode = kFunctionBody>
 class WasmDecoder : public Decoder {
-  // {full_validation} implies {validate}.
-  static_assert(!ValidationTag::full_validation || ValidationTag::validate);
-
  public:
   WasmDecoder(Zone* zone, const WasmModule* module, WasmEnabledFeatures enabled,
               WasmDetectedFeatures* detected, const FunctionSig* sig,
@@ -1909,7 +1898,7 @@ class WasmDecoder : public Decoder {
                   imm.mem_index, num_memories);
       return false;
     }
-    if (!VALIDATE(this->module_->memories[imm.mem_index].is_memory64 ||
+    if (!VALIDATE(this->module_->memories[imm.mem_index].is_memory64() ||
                   imm.offset <= kMaxUInt32)) {
       this->DecodeError(pc, "memory offset outside 32-bit range: %" PRIu64,
                         imm.offset);
@@ -2052,6 +2041,8 @@ class WasmDecoder : public Decoder {
       DecodeError(pc, "invalid data segment index: %u", imm.index);
       return false;
     }
+    // TODO(14616): Data segments aren't available during eager validation.
+    // Discussion: github.com/WebAssembly/shared-everything-threads/issues/83
     if (!VALIDATE(!is_shared_ || module_->data_segments[imm.index].shared)) {
       DecodeError(
           pc, "cannot refer to non-shared segment %u from a shared function",
@@ -2483,7 +2474,13 @@ class WasmDecoder : public Decoder {
                                          pc + length + flags_imm.length +
                                              branch.length + source_imm.length,
                                          validate);
+            (ios.BrOnCastFlags(flags_imm), ...);
             (ios.BranchDepth(branch), ...);
+            // This code has grown historically (while the GC proposal's design
+            // evolved), but it's convenient: for the text format, we want to
+            // pretend that we have two ValueTypes; whereas the mjsunit
+            // module builder format cares only about the encapsulated
+            // HeapTypes (and the raw flags value, see callback above).
             (ios.ValueType(source_imm, flags_imm.flags.src_is_null), ...);
             (ios.ValueType(target_imm, flags_imm.flags.res_is_null), ...);
             return length + flags_imm.length + branch.length +
@@ -2905,11 +2902,14 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
       }
     }
 
-    // Even without validation, compilation could fail because of unsupported
-    // Liftoff operations. In that case, {pc_} did not necessarily advance until
-    // {end_}. Thus do not wrap the next check in {VALIDATE}.
+    // Even without validation, compilation could fail because of bailouts,
+    // e.g., unsupported operations in Liftoff or the decoder for Wasm-in-JS
+    // inlining. In those cases, {pc_} did not necessarily advance until {end_}.
     if (this->pc_ != this->end_) {
-      this->DecodeError("Beyond end of code");
+      // `DecodeError` is only available when validating, hence this guard.
+      if constexpr (ValidationTag::validate) {
+        this->DecodeError("Beyond end of code");
+      }
     }
   }
 
@@ -2974,11 +2974,11 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
   }
 
   V8_INLINE ValueType TableIndexType(const WasmTable* table) {
-    return table->is_table64 ? kWasmI64 : kWasmI32;
+    return table->is_table64() ? kWasmI64 : kWasmI32;
   }
 
   V8_INLINE ValueType MemoryIndexType(const WasmMemory* memory) {
-    return memory->is_memory64 ? kWasmI64 : kWasmI32;
+    return memory->is_memory64() ? kWasmI64 : kWasmI32;
   }
 
   V8_INLINE MemoryAccessImmediate
@@ -3333,15 +3333,8 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
   }
 
   DECODE(ThrowRef) {
-    this->detected_->add_exnref();
-    Value value = Pop();
-    if (!VALIDATE(
-            (value.type.kind() == kRef || value.type.kind() == kRefNull) &&
-            value.type.heap_type() == HeapType::kExn)) {
-      this->DecodeError("invalid type for throw_ref: expected exnref, found %s",
-                        value.type.name().c_str());
-      return 0;
-    }
+    CHECK_PROTOTYPE_OPCODE(exnref);
+    Value value = Pop(kWasmExnRef);
     CALL_INTERFACE_IF_OK_AND_REACHABLE(ThrowRef, &value);
     MarkMightThrow();
     EndControl();
@@ -3518,7 +3511,11 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
         if (!VALIDATE(TypeCheckOneArmedIf(c))) return 0;
       }
       if (c->is_try_table()) {
-        current_catch_ = c->previous_catch;
+        // "Pop" the {current_catch_} index. We did not push it if the block has
+        // no handler, so also skip it here in this case.
+        if (c->catch_cases.size() > 0) {
+          current_catch_ = c->previous_catch;
+        }
         FallThrough();
         // Temporarily set the reachability for the catch handlers, and restore
         // it before we actually exit the try block.
@@ -5965,7 +5962,7 @@ class WasmFullDecoder : public WasmDecoder<ValidationTag, decoding_mode> {
     }
 
     const FunctionSig* sig =
-        WasmOpcodes::SignatureForAtomicOp(opcode, imm.memory->is_memory64);
+        WasmOpcodes::SignatureForAtomicOp(opcode, imm.memory->is_memory64());
     V8_ASSUME(sig != nullptr);
     PoppedArgVector args = PopArgs(sig);
     Value* result = sig->return_count() ? Push(sig->GetReturn()) : nullptr;

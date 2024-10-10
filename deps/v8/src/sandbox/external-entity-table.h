@@ -111,6 +111,12 @@ class V8_EXPORT_PRIVATE ExternalEntityTable
     bool BelongsTo(const void* table) const { return owning_table_ == table; }
 #endif  // DEBUG
 
+    // Similar to `num_segments()` but also locks the mutex.
+    uint32_t NumSegmentsForTesting() {
+      base::MutexGuard guard(&mutex_);
+      return num_segments();
+    }
+
    protected:
     friend class ExternalEntityTable<Entry, size>;
 
@@ -199,6 +205,10 @@ class V8_EXPORT_PRIVATE ExternalEntityTable
   // Returns the number of live entries after sweeping.
   uint32_t GenericSweep(Space* space);
 
+  // Variant of the above that invokes a callback for every live entry.
+  template <typename Callback>
+  uint32_t GenericSweep(Space* space, Callback marked);
+
   // Iterate over all entries in the given space.
   //
   // The callback function will be invoked for every entry and be passed the
@@ -215,6 +225,12 @@ class V8_EXPORT_PRIVATE ExternalEntityTable
       FreelistHead(-1, -1);
 
  public:
+  // Generally, ExternalEntityTables are not compactible. The exception are
+  // CompactibleExternalEntityTables such as the ExternalPointerTable. This
+  // constant can be used to static_assert this property in locations that rely
+  // on a table (not) supporting compaction.
+  static constexpr bool kSupportsCompaction = false;
+
   // Initializes the table by reserving the backing memory, allocating an
   // initial segment, and populating the freelist.
   void Initialize();
@@ -248,12 +264,14 @@ class V8_EXPORT_PRIVATE ExternalEntityTable
     ExternalEntityTable<Entry, size>* const table_;
   };
 
+ protected:
+  static constexpr uint32_t kInternalReadOnlySegmentOffset = 0;
+  static constexpr uint32_t kInternalNullEntryIndex = 0;
+  static constexpr uint32_t kEndOfInternalReadOnlySegment = kEntriesPerSegment;
+
  private:
   // Required for Isolate::CheckIsolateLayout().
   friend class Isolate;
-
-  static constexpr uint32_t kInternalReadOnlySegmentOffset = 0;
-  static constexpr uint32_t kInternalNullEntryIndex = 0;
 
   // Helpers to toggle the first segment's permissions between kRead (sealed)
   // and kReadWrite (unsealed).

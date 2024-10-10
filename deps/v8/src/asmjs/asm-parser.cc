@@ -24,22 +24,22 @@ namespace internal {
 namespace wasm {
 
 #ifdef DEBUG
-#define FAIL_AND_RETURN(ret, msg)                                        \
-  failed_ = true;                                                        \
-  failure_message_ = msg;                                                \
-  failure_location_ = static_cast<int>(scanner_.Position());             \
-  if (v8_flags.trace_asm_parser) {                                       \
-    PrintF("[asm.js failure: %s, token: '%s', see: %s:%d]\n", msg,       \
-           scanner_.Name(scanner_.Token()).c_str(), __FILE__, __LINE__); \
-  }                                                                      \
-  return ret;
+#define TRACE_ASM_PARSER(...)      \
+  if (v8_flags.trace_asm_parser) { \
+    PrintF(__VA_ARGS__);           \
+  }
 #else
-#define FAIL_AND_RETURN(ret, msg)                            \
-  failed_ = true;                                            \
-  failure_message_ = msg;                                    \
-  failure_location_ = static_cast<int>(scanner_.Position()); \
-  return ret;
+#define TRACE_ASM_PARSER(...)
 #endif
+
+#define FAIL_AND_RETURN(ret, msg)                                          \
+  failed_ = true;                                                          \
+  failure_message_ = msg;                                                  \
+  failure_location_ = static_cast<int>(scanner_.Position());               \
+  TRACE_ASM_PARSER("[asm.js failure: %s, token: '%s', see: %s:%d]\n", msg, \
+                   scanner_.Name(scanner_.Token()).c_str(), __FILE__,      \
+                   __LINE__);                                              \
+  return ret;
 
 #define FAIL(msg) FAIL_AND_RETURN(, msg)
 #define FAILn(msg) FAIL_AND_RETURN(nullptr, msg)
@@ -171,7 +171,7 @@ FunctionSig* AsmJsParser::ConvertSignature(AsmType* return_type,
       UNREACHABLE();
     }
   }
-  return sig_builder.Build();
+  return sig_builder.Get();
 }
 
 bool AsmJsParser::Run() {
@@ -357,7 +357,7 @@ void AsmJsParser::ValidateModule() {
     if (info.kind == VarKind::kImportedFunction && !info.function_defined) {
       // For imported functions without a single call site, we insert a dummy
       // import here to preserve the fact that there actually was an import.
-      FunctionSig* void_void_sig = FunctionSig::Builder(zone(), 0, 0).Build();
+      FunctionSig* void_void_sig = FunctionSig::Builder(zone(), 0, 0).Get();
       module_builder_->AddImport(info.import->function_name, void_void_sig);
     }
   }
@@ -374,7 +374,7 @@ void AsmJsParser::ValidateModule() {
   }
   start->Emit(kExprEnd);
   FunctionSig::Builder b(zone(), 0, 0);
-  start->SetSignature(b.Build());
+  start->SetSignature(b.Get());
 }
 
 // 6.1 ValidateModule - parameters
@@ -2572,8 +2572,18 @@ void AsmJsParser::GatherCases(ZoneVector<int32_t>* cases) {
   scanner_.Seek(start);
 }
 
+#undef TOK
+#undef RECURSEn
+#undef RECURSE
+#undef RECURSE_OR_RETURN
+#undef EXPECT_TOKENn
+#undef EXPECT_TOKEN
+#undef EXPECT_TOKEN_OR_RETURN
+#undef FAILn
+#undef FAIL
+#undef FAIL_AND_RETURN
+#undef TRACE_ASM_PARSER
+
 }  // namespace wasm
 }  // namespace internal
 }  // namespace v8
-
-#undef RECURSE

@@ -119,7 +119,7 @@ class RegisteredExtension {
   V(SignatureToLocal, FunctionTemplateInfo, Signature)   \
   V(MessageToLocal, Object, Message)                     \
   V(PromiseToLocal, JSObject, Promise)                   \
-  V(StackTraceToLocal, FixedArray, StackTrace)           \
+  V(StackTraceToLocal, StackTraceInfo, StackTrace)       \
   V(StackFrameToLocal, StackFrameInfo, StackFrame)       \
   V(NumberToLocal, Object, Number)                       \
   V(IntegerToLocal, Object, Integer)                     \
@@ -190,7 +190,7 @@ class RegisteredExtension {
   V(Message, JSMessageObject)                   \
   V(Context, NativeContext)                     \
   V(External, Object)                           \
-  V(StackTrace, FixedArray)                     \
+  V(StackTrace, StackTraceInfo)                 \
   V(StackFrame, StackFrameInfo)                 \
   V(Proxy, JSProxy)                             \
   V(debug::GeneratorObject, JSGeneratorObject)  \
@@ -545,6 +545,31 @@ EXPORT_TEMPLATE_DECLARE(V8_EXPORT_PRIVATE)
 bool ValidateCallbackInfo(const PropertyCallbackInfo<T>& info);
 
 DECLARE_CONTEXTUAL_VARIABLE_WITH_DEFAULT(StackAllocatedCheck, const bool, true);
+
+// TODO(crbug.com/42203776): This should move to the API and be integrated into
+// `AdjustAmountOfExternalAllocatedMemory()` to make sure there are no
+// unbalanced bytes floating around.
+class V8_EXPORT_PRIVATE ExternalMemoryAccounterBase {
+ public:
+  ExternalMemoryAccounterBase() = default;
+  ~ExternalMemoryAccounterBase();
+  ExternalMemoryAccounterBase(ExternalMemoryAccounterBase&&) V8_NOEXCEPT;
+  ExternalMemoryAccounterBase& operator=(ExternalMemoryAccounterBase&&)
+      V8_NOEXCEPT;
+  ExternalMemoryAccounterBase(const ExternalMemoryAccounterBase&) = delete;
+  ExternalMemoryAccounterBase& operator=(const ExternalMemoryAccounterBase&) =
+      delete;
+
+  void Increase(Isolate* isolate, size_t size);
+  void Update(Isolate* isolate, int64_t delta);
+  void Decrease(Isolate* isolate, size_t size);
+
+ private:
+#ifdef DEBUG
+  size_t amount_of_external_memory_ = 0;
+  Isolate* isolate_ = nullptr;
+#endif
+};
 
 }  // namespace internal
 }  // namespace v8

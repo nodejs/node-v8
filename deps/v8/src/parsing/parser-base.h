@@ -4005,6 +4005,8 @@ ParserBase<Impl>::ParseMemberWithPresentNewPrefixesExpression() {
   CheckStackOverflow();
 
   if (peek() == Token::kImport && PeekAhead() == Token::kLeftParen) {
+    // TODO(42204365): Peek ahead to see if this is an import source call.
+    // It needs to peek ahead for tokens `import . source (`.
     impl()->ReportMessageAt(scanner()->peek_location(),
                             MessageTemplate::kImportCallNotNewExpression);
     return impl()->FailureExpression();
@@ -4486,6 +4488,12 @@ void ParserBase<Impl>::ParseVariableDeclarations(
       name = impl()->NullIdentifier();
       pattern = ParseBindingPattern();
       DCHECK(!impl()->IsIdentifier(pattern));
+    } else {
+      // `using` declarations should have an identifier.
+      impl()->ReportMessageAt(Scanner::Location(decl_pos, end_position()),
+                              MessageTemplate::kDeclarationMissingInitializer,
+                              "using");
+      return;
     }
 
     Scanner::Location variable_loc = scanner()->location();
@@ -4806,8 +4814,7 @@ void ParserBase<Impl>::ParseFunctionBody(
               : Token::kRightBrace;
 
       if (IsAsyncGeneratorFunction(kind)) {
-        impl()->ParseAndRewriteAsyncGeneratorFunctionBody(pos, kind,
-                                                          &inner_body);
+        impl()->ParseAsyncGeneratorFunctionBody(pos, kind, &inner_body);
       } else if (IsGeneratorFunction(kind)) {
         impl()->ParseGeneratorFunctionBody(pos, kind, &inner_body);
       } else {
@@ -5297,6 +5304,14 @@ void ParserBase<Impl>::ParseClassLiteralBody(ClassInfo& class_info,
                                       prop_info.is_computed_name, &class_info);
       impl()->InferFunctionName();
       continue;
+    }
+
+    if (property_kind == ClassLiteralProperty::Kind::AUTO_ACCESSOR) {
+      // Private auto-accessors are handled above with the other private
+      // properties.
+      DCHECK(!prop_info.is_private);
+      impl()->AddInstanceFieldOrStaticElement(property, &class_info,
+                                              prop_info.is_static);
     }
 
     impl()->DeclarePublicClassMethod(name, property, is_constructor,

@@ -18,6 +18,7 @@ namespace {
 
 #define CHECK_SELF_OR_THROW_FAST_OPTIONS(return_value)                      \
   if (!self) {                                                              \
+    HandleScope handle_scope(options.isolate);                              \
     options.isolate->ThrowError(                                            \
         "This method is not defined on objects inheriting from FastCAPI."); \
     return return_value;                                                    \
@@ -52,6 +53,9 @@ class FastCApiObject {
 
   static int ThrowNoFallbackFastCallback(Local<Object> receiver) {
     FastCApiObject* self = UnwrapObject(receiver);
+    if (!self) {
+      self = &FastCApiObject::instance();
+    }
     self->fast_call_count_++;
     v8::Isolate* isolate = receiver->GetIsolate();
     v8::HandleScope scope(isolate);
@@ -90,6 +94,17 @@ class FastCApiObject {
     self->fast_call_count_++;
 
     HandleScope handle_scope(options.isolate);
+    if (!out->IsUint8Array()) {
+      options.isolate->ThrowError(
+          "Invalid parameter, the second parameter has to be a a Uint8Array.");
+      return;
+    }
+    Local<Uint8Array> array = out.As<Uint8Array>();
+    if (array->Length() < source.length) {
+      options.isolate->ThrowError(
+          "Invalid parameter, destination array is too small.");
+      return;
+    }
     uint8_t* memory =
         reinterpret_cast<uint8_t*>(out.As<Uint8Array>()->Buffer()->Data());
     memcpy(memory, source.data, source.length);
@@ -145,21 +160,9 @@ class FastCApiObject {
                                             int32_t arg_i32, uint32_t arg_u32,
                                             int64_t arg_i64, uint64_t arg_u64,
                                             float arg_f32, double arg_f64) {
-    FastCApiObject* self;
-
-    // For Wasm call, we don't pass FastCApiObject as the receiver, so we need
-    // to retrieve the FastCApiObject instance from a static variable.
-    if (IsJSGlobalProxy(*Utils::OpenDirectHandle(*receiver)) ||
-        IsUndefined(*Utils::OpenDirectHandle(*receiver))) {
-      // Note: FastCApiObject::instance() returns the reference of an object
-      // allocated in thread-local storage, its value cannot be stored in a
-      // static variable here.
+    FastCApiObject* self = UnwrapObject(receiver);
+    if (!self) {
       self = &FastCApiObject::instance();
-    } else {
-      // Fuzzing code can call this function from JS; in this case the receiver
-      // should be a FastCApiObject.
-      self = UnwrapObject(receiver);
-      CHECK_NOT_NULL(self);
     }
     self->fast_call_count_++;
 
@@ -372,9 +375,9 @@ class FastCApiObject {
     T* memory = reinterpret_cast<T*>(
         typed_array_arg.As<TypedArray>()->Buffer()->Data());
     size_t length = typed_array_arg.As<TypedArray>()->ByteLength() / sizeof(T);
-    T sum = 0;
+    double sum = 0;
     for (size_t i = 0; i < length; ++i) {
-      sum += memory[i];
+      sum += static_cast<double>(memory[i]);
     }
     return static_cast<Type>(sum);
   }
@@ -1370,6 +1373,7 @@ class FastCApiObject {
 
  private:
   static bool IsValidApiObject(Local<Object> object) {
+    if (object->IsInt32()) return false;
     auto instance_type = i::Internals::GetInstanceType(
         internal::ValueHelper::ValueAsAddress(*object));
     return (base::IsInRange(instance_type, i::Internals::kFirstJSApiObjectType,
@@ -1378,6 +1382,9 @@ class FastCApiObject {
   }
   static FastCApiObject* UnwrapObject(Local<Object> object) {
     if (!IsValidApiObject(object)) {
+      return nullptr;
+    }
+    if (object->InternalFieldCount() <= kV8WrapperObjectIndex) {
       return nullptr;
     }
     FastCApiObject* wrapped = reinterpret_cast<FastCApiObject*>(
@@ -1420,7 +1427,8 @@ void CreateFastCAPIObject(const FunctionCallbackInfo<Value>& info) {
   api_object->SetAccessorProperty(
       String::NewFromUtf8Literal(info.GetIsolate(), "supports_fp_params"),
       FunctionTemplate::New(info.GetIsolate(), FastCApiObject::SupportsFPParams)
-          ->GetFunction(api_object->GetCreationContext().ToLocalChecked())
+          ->GetFunction(api_object->GetCreationContext(info.GetIsolate())
+                            .ToLocalChecked())
           .ToLocalChecked());
 }
 

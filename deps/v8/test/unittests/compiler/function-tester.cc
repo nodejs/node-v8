@@ -8,10 +8,10 @@
 #include "src/codegen/assembler.h"
 #include "src/codegen/compiler.h"
 #include "src/codegen/optimized-compilation-info.h"
-#include "src/compiler/graph.h"
 #include "src/compiler/js-heap-broker.h"
 #include "src/compiler/linkage.h"
 #include "src/compiler/pipeline.h"
+#include "src/compiler/turbofan-graph.h"
 #include "src/execution/execution.h"
 #include "src/handles/handles.h"
 #include "src/objects/objects-inl.h"
@@ -58,7 +58,7 @@ FunctionTester::FunctionTester(Isolate* isolate, Handle<Code> code,
       flags_(0) {
   CHECK(!code.is_null());
   Compile(function);
-  function->set_code(*code, kReleaseStore);
+  function->UpdateCode(*code);
 }
 
 void FunctionTester::CheckThrows(Handle<Object> a) {
@@ -157,7 +157,7 @@ Handle<JSFunction> FunctionTester::CompileGraph(Graph* graph) {
       Pipeline::GenerateCodeForTesting(&info, isolate, call_descriptor, graph,
                                        AssemblerOptions::Default(isolate))
           .ToHandleChecked();
-  function->set_code(*code, kReleaseStore);
+  function->UpdateCode(*code);
   return function;
 }
 
@@ -185,7 +185,7 @@ Handle<JSFunction> FunctionTester::Optimize(Handle<JSFunction> function,
   DirectHandle<Code> code =
       compiler::Pipeline::GenerateCodeForTesting(&info, isolate)
           .ToHandleChecked();
-  function->set_code(*code, v8::kReleaseStore);
+  function->UpdateCode(*code);
   return function;
 }
 }  // namespace compiler

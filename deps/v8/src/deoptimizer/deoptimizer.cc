@@ -341,22 +341,8 @@ class ActivationsFinder : public ThreadVisitor {
   // for the trampoline to the deoptimizer call respective to each code, and use
   // it to replace the current pc on the stack.
   void VisitThread(Isolate* isolate, ThreadLocalTop* top) override {
-#if V8_ENABLE_WEBASSEMBLY
-    // Also visit the ancestors of the active stack for wasm stack switching.
-    // We don't need to visit suspended stacks at the moment, because 1) they
-    // only contain wasm frames and 2) wasm does not do lazy deopt. Revisit this
-    // if one of these assumptions changes.
-    Tagged<WasmContinuationObject> continuation;
-    if (top == isolate->thread_local_top()) {
-      Tagged<Object> maybe_continuation =
-          isolate->root(RootIndex::kActiveContinuation);
-      if (!IsUndefined(maybe_continuation)) {
-        continuation = Cast<WasmContinuationObject>(maybe_continuation);
-      }
-    }
-#endif
-
-    for (StackFrameIterator it(isolate, top); !it.done(); it.Advance()) {
+    for (StackFrameIterator it(isolate, top, StackFrameIterator::NoHandles{});
+         !it.done(); it.Advance()) {
       if (it.frame()->is_optimized()) {
         Tagged<GcSafeCode> code = it.frame()->GcSafeLookupCode();
         if (CodeKindCanDeoptimize(code->kind()) &&
@@ -379,29 +365,21 @@ class ActivationsFinder : public ThreadVisitor {
           DCHECK_IMPLIES(code.SafeEquals(topmost_), safe_to_deopt_);
           static_assert(SafepointEntry::kNoTrampolinePC == -1);
           CHECK_GE(trampoline_pc, 0);
-          // Replace the current pc on the stack with the trampoline.
-          // TODO(v8:10026): avoid replacing a signed pointer.
           if (!it.frame()->InFastCCall()) {
-            Address* pc_addr = it.frame()->pc_address();
             Address new_pc = code->instruction_start() + trampoline_pc;
-            PointerAuthentication::ReplacePC(pc_addr, new_pc,
-                                             kSystemPointerSize);
+            if (v8_flags.cet_compatible) {
+              Address pc = *it.frame()->pc_address();
+              Deoptimizer::PatchJumpToTrampoline(pc, new_pc);
+            } else {
+              // Replace the current pc on the stack with the trampoline.
+              // TODO(v8:10026): avoid replacing a signed pointer.
+              Address* pc_addr = it.frame()->pc_address();
+              PointerAuthentication::ReplacePC(pc_addr, new_pc,
+                                               kSystemPointerSize);
+            }
           }
         }
       }
-
-#if V8_ENABLE_WEBASSEMBLY
-      // We reached the base of the wasm stack. Follow the chain of
-      // continuations to find the parent stack and reset the iterator.
-      if (it.frame()->type() == StackFrame::STACK_SWITCH) {
-        CHECK_EQ(top, isolate->thread_local_top());
-        DCHECK(!continuation.is_null());
-        continuation = Cast<WasmContinuationObject>(continuation->parent());
-        wasm::StackMemory* parent =
-            reinterpret_cast<wasm::StackMemory*>(continuation->stack());
-        it.Reset(top, parent);
-      }
-#endif
     }
   }
 
@@ -424,8 +402,9 @@ void Deoptimizer::DeoptimizeMarkedCode(Isolate* isolate) {
   // Make sure all activations of optimized code can deopt at their current PC.
   // The topmost optimized code has special handling because it cannot be
   // deoptimized due to weak object dependency.
-  for (StackFrameIterator it(isolate, isolate->thread_local_top()); !it.done();
-       it.Advance()) {
+  for (StackFrameIterator it(isolate, isolate->thread_local_top(),
+                             StackFrameIterator::NoHandles{});
+       !it.done(); it.Advance()) {
     if (it.frame()->is_optimized()) {
       Tagged<GcSafeCode> code = it.frame()->GcSafeLookupCode();
       Tagged<JSFunction> function =
@@ -489,10 +468,6 @@ void Deoptimizer::DeoptimizeFunction(Tagged<JSFunction> function,
   RCS_SCOPE(isolate, RuntimeCallCounterId::kDeoptimizeCode);
   TimerEventScope<TimerEventDeoptimizeCode> timer(isolate);
   TRACE_EVENT0("v8", "V8.DeoptimizeCode");
-  if (v8_flags.profile_guided_optimization) {
-    function->shared()->set_cached_tiering_decision(
-        CachedTieringDecision::kNormal);
-  }
   function->ResetIfCodeFlushed(isolate);
   if (code.is_null()) code = function->code(isolate);
 
@@ -501,10 +476,12 @@ void Deoptimizer::DeoptimizeFunction(Tagged<JSFunction> function,
     // refer to that code. The code cannot be shared across native contexts,
     // so we only need to search one.
     code->set_marked_for_deoptimization(true);
+#ifndef V8_ENABLE_LEAPTIERING_BOOL
     // The code in the function's optimized code feedback vector slot might
     // be different from the code on the function - evict it if necessary.
     function->feedback_vector()->EvictOptimizedCodeMarkedForDeoptimization(
         isolate, function->shared(), "unlinking code marked for deopt");
+#endif  // !V8_ENABLE_LEAPTIERING_BOOL
 
     DeoptimizeMarkedCode(isolate);
   }
@@ -603,11 +580,11 @@ Deoptimizer::Deoptimizer(Isolate* isolate, Tagged<JSFunction> function,
         wasm::GetWasmCodeManager()->LookupCode(isolate, from);
     compiled_optimized_wasm_code_ = code;
     DCHECK_NOT_NULL(code);
-    DCHECK_EQ(code->kind(), wasm::WasmCode::kWasmFunction);
+    CHECK_EQ(code->kind(), wasm::WasmCode::kWasmFunction);
     wasm::WasmDeoptView deopt_view(code->deopt_data());
     const wasm::WasmDeoptData& deopt_data = deopt_view.GetDeoptData();
     DCHECK_NE(deopt_data.translation_array_size, 0);
-    DCHECK_GE(from, deopt_data.deopt_exit_start_offset);
+    CHECK_GE(from, deopt_data.deopt_exit_start_offset);
     Address deopt_exit_offset = from - code->instruction_start();
     // All eager deopt exits are calls "at the end" of the code to the builtin
     // generated by Generate_DeoptimizationEntry_Eager. These calls have a fixed
@@ -1009,7 +986,7 @@ FrameDescription* Deoptimizer::DoComputeWasmLiftoffFrame(
       output_offset,
       is_bottommost ? caller_fp_ : output_[frame_index - 1]->GetFp());
 
-  DCHECK_EQ(output_frame_size, output_offset);
+  CHECK_EQ(output_frame_size, output_offset);
   int base_offset = output_frame_size;
 
   // Set trusted instance data on output frame.
@@ -1026,7 +1003,7 @@ FrameDescription* Deoptimizer::DoComputeWasmLiftoffFrame(
   if constexpr (Is64()) {
     // On 32 bit platforms int64s are represented as 2 values on Turbofan.
     // Liftoff on the other hand treats them as 1 value (a register pair).
-    DCHECK_EQ(liftoff_description->var_state.size(), frame.GetValueCount());
+    CHECK_EQ(liftoff_description->var_state.size(), frame.GetValueCount());
   }
 
   bool int64_lowering_is_low = true;
@@ -1118,26 +1095,26 @@ FrameDescription* Deoptimizer::DoComputeWasmLiftoffFrame(
       case wasm::LiftoffVarState::kStack:
         switch (liftoff_iter->kind()) {
           case wasm::ValueKind::kI32:
-            DCHECK(value.kind() == TranslatedValue::Kind::kInt32 ||
-                   value.kind() == TranslatedValue::Kind::kUint32);
+            CHECK(value.kind() == TranslatedValue::Kind::kInt32 ||
+                  value.kind() == TranslatedValue::Kind::kUint32);
             output_frame->SetLiftoffFrameSlot32(
                 base_offset - liftoff_iter->offset(), value.int32_value_);
             break;
           case wasm::ValueKind::kF32:
-            DCHECK_EQ(value.kind(), TranslatedValue::Kind::kFloat);
+            CHECK_EQ(value.kind(), TranslatedValue::Kind::kFloat);
             output_frame->SetLiftoffFrameSlot32(
                 base_offset - liftoff_iter->offset(),
                 value.float_value().get_bits());
             break;
           case wasm::ValueKind::kI64:
             if constexpr (Is64()) {
-              DCHECK(value.kind() == TranslatedValue::Kind::kInt64 ||
-                     value.kind() == TranslatedValue::Kind::kUint64);
+              CHECK(value.kind() == TranslatedValue::Kind::kInt64 ||
+                    value.kind() == TranslatedValue::Kind::kUint64);
               output_frame->SetLiftoffFrameSlot64(
                   base_offset - liftoff_iter->offset(), value.int64_value_);
             } else {
-              DCHECK(value.kind() == TranslatedValue::Kind::kInt32 ||
-                     value.kind() == TranslatedValue::Kind::kUint32);
+              CHECK(value.kind() == TranslatedValue::Kind::kInt32 ||
+                    value.kind() == TranslatedValue::Kind::kUint32);
               // TODO(bigendian): Either the offsets or the default for
               // int64_lowering_is_low might have to be swapped.
               if (int64_lowering_is_low) {
@@ -1153,7 +1130,7 @@ FrameDescription* Deoptimizer::DoComputeWasmLiftoffFrame(
             }
             break;
           case wasm::ValueKind::kS128: {
-            int64x2 values = value.simd128_value_.to_i64x2();
+            int64x2 values = value.simd_value().to_i64x2();
             const int offset = base_offset - liftoff_iter->offset();
             output_frame->SetLiftoffFrameSlot64(offset, values.val[0]);
             output_frame->SetLiftoffFrameSlot64(offset + sizeof(int64_t),
@@ -1161,14 +1138,14 @@ FrameDescription* Deoptimizer::DoComputeWasmLiftoffFrame(
             break;
           }
           case wasm::ValueKind::kF64:
-            DCHECK_EQ(value.kind(), TranslatedValue::Kind::kDouble);
+            CHECK_EQ(value.kind(), TranslatedValue::Kind::kDouble);
             output_frame->SetLiftoffFrameSlot64(
                 base_offset - liftoff_iter->offset(),
                 value.double_value().get_bits());
             break;
           case wasm::ValueKind::kRef:
           case wasm::ValueKind::kRefNull:
-            DCHECK_EQ(value.kind(), TranslatedValue::Kind::kTagged);
+            CHECK_EQ(value.kind(), TranslatedValue::Kind::kTagged);
             output_frame->SetLiftoffFrameSlotPointer(
                 base_offset - liftoff_iter->offset(), value.raw_literal_.ptr());
             break;
@@ -1380,6 +1357,28 @@ void Deoptimizer::GetWasmStackSlotsCounts(const wasm::FunctionSig* sig,
 }
 #endif  // V8_ENABLE_WEBASSEMBLY
 
+namespace {
+
+bool DeoptimizedMaglevvedCodeEarly(Isolate* isolate,
+                                   Tagged<JSFunction> function,
+                                   Tagged<Code> code) {
+  if (!code->is_maglevved()) return false;
+  if (IsRequestTurbofan(function->feedback_vector()->tiering_state())) {
+    // We request turbofan after consuming the invocation_count_for_turbofan
+    // budget which is greater than
+    // invocation_count_for_maglev_with_delay.
+    return false;
+  }
+  int current_invocation_budget =
+      function->raw_feedback_cell()->interrupt_budget() /
+      function->shared()->GetBytecodeArray(isolate)->length();
+  return current_invocation_budget >=
+         v8_flags.invocation_count_for_turbofan -
+             v8_flags.invocation_count_for_maglev_with_delay;
+}
+
+}  // namespace
+
 // We rely on this function not causing a GC.  It is called from generated code
 // without having a real stack frame in place.
 void Deoptimizer::DoComputeOutputFrames() {
@@ -1555,6 +1554,17 @@ void Deoptimizer::DoComputeOutputFrames() {
               DeoptExitIsInsideOsrLoop(isolate(), function_,
                                        bytecode_offset_in_outermost_frame_,
                                        compiled_code_->osr_offset())))) {
+    if (v8_flags.profile_guided_optimization &&
+        function_->shared()->cached_tiering_decision() !=
+            CachedTieringDecision::kDelayMaglev) {
+      if (DeoptimizedMaglevvedCodeEarly(isolate(), function_, compiled_code_)) {
+        function_->shared()->set_cached_tiering_decision(
+            CachedTieringDecision::kDelayMaglev);
+      } else {
+        function_->shared()->set_cached_tiering_decision(
+            CachedTieringDecision::kNormal);
+      }
+    }
     function_->reset_tiering_state();
     function_->SetInterruptBudget(isolate_, CodeKind::INTERPRETED_FUNCTION);
     function_->feedback_vector()->set_was_once_deoptimized();

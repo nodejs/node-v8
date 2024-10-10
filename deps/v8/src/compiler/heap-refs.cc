@@ -17,6 +17,7 @@
 #include "src/compiler/compilation-dependencies.h"
 #include "src/compiler/js-heap-broker-inl.h"
 #include "src/execution/protectors-inl.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/objects/allocation-site-inl.h"
 #include "src/objects/descriptor-array.h"
 #include "src/objects/heap-number-inl.h"
@@ -1320,7 +1321,7 @@ OptionalObjectRef JSObjectRef::RawInobjectPropertyAt(JSHeapBroker* broker,
 }
 
 bool JSObjectRef::IsElementsTenured(FixedArrayBaseRef elements) {
-  return !ObjectInYoungGeneration(*elements.object());
+  return !HeapLayout::InYoungGeneration(*elements.object());
 }
 
 FieldIndex MapRef::GetFieldIndexFor(InternalIndex descriptor_index) const {
@@ -1689,6 +1690,7 @@ HolderLookupResult FunctionTemplateInfoRef::LookupHolderOfExpectedType(
   if (!expected_receiver_type->IsTemplateFor(prototype.object()->map())) {
     return not_found;
   }
+  CHECK(prototype.IsJSObject());
   return HolderLookupResult(CallOptimization::kHolderFound,
                             prototype.AsJSObject());
 }
@@ -1950,7 +1952,7 @@ HoleType ObjectRef::HoleType() const {
   // Trusted objects cannot be TheHole and comparing them to TheHole is not
   // allowed, as they live in different cage bases.
   if (i::IsHeapObject(*object()) &&
-      IsTrustedSpaceObject(Cast<HeapObject>(*object())))
+      i::HeapLayout::InTrustedSpace(Cast<HeapObject>(*object())))
     return HoleType::kNone;
 #define IF_HOLE_THEN_RETURN(Name, name, Root) \
   if (i::Is##Name(*object())) {               \

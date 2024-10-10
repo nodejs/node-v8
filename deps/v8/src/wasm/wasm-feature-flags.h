@@ -63,7 +63,10 @@
   /* FP16 proposal. */                                                         \
   /* https://github.com/WebAssembly/half-precision */                          \
   /* V8 side owner: irezvov */                                                 \
-  V(fp16, "fp16", false)
+  V(fp16, "fp16", false)                                                       \
+                                                                               \
+  /* V8 side owner: irezvov */                                                 \
+  V(growable_stacks, "growable stacks for jspi", false)
 
 // #############################################################################
 // Staged features (disabled by default, but enabled via --wasm-staging (also
@@ -92,10 +95,10 @@
   /* V8 side owner: jkummerow */                                               \
   V(stringref, "reference-typed strings", false)                               \
                                                                                \
-  /* Imported Strings Proposal. */                                             \
-  /* https://github.com/WebAssembly/js-string-builtins */                      \
+  /* Imported Strings TextEncoder/TextDecoder post-MVP extension. */           \
+  /* No upstream repo yet. */                                                  \
   /* V8 side owner: jkummerow */                                               \
-  V(imported_strings, "imported strings", false)                               \
+  V(imported_strings_utf8, "imported strings (utf8 features)", false)          \
                                                                                \
   /* Exnref */                                                                 \
   /* This flag enables the new exception handling proposal */                  \
@@ -118,13 +121,11 @@
   /* Shipped in v9.5 */                                                        \
   V(legacy_eh, "legacy exception handling opcodes", true)                      \
                                                                                \
-  /* Not user-visible, defined here so an Origin Trial can control it. */      \
-  /* V8 side owner: manoskouk, clemensb */                                     \
-  /* Staged in v11.3 */                                                        \
-  /* Shipped in V12.7 */                                                       \
-  /* Shipped for wasm-gc modules as part of wasm-gc in v11.9 */                \
-  /* Launch bug: https://crbug.com/40898108 */                                 \
-  V(inlining, "wasm-into-wasm inlining", true)
+  /* Imported Strings Proposal. */                                             \
+  /* https://github.com/WebAssembly/js-string-builtins */                      \
+  /* V8 side owner: jkummerow */                                               \
+  /* Shipped in v13.0 */                                                       \
+  V(imported_strings, "imported strings", true)
 
 // Combination of all available wasm feature flags.
 #define FOREACH_WASM_FEATURE_FLAG(V)        \

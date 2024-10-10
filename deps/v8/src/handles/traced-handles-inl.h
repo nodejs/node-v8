@@ -6,6 +6,7 @@
 #define V8_HANDLES_TRACED_HANDLES_INL_H_
 
 #include "src/handles/traced-handles.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/heap/heap-write-barrier-inl.h"
 #include "src/objects/slots-inl.h"
 
@@ -38,7 +39,7 @@ std::pair<TracedNodeBlock*, TracedNode*> TracedHandles::AllocateNode() {
 bool TracedHandles::NeedsTrackingInYoungNodes(Tagged<Object> object,
                                               TracedNode* node) const {
   DCHECK(!node->is_in_young_list());
-  return ObjectInYoungGeneration(object);
+  return HeapLayout::InYoungGeneration(object);
 }
 
 CppHeap* TracedHandles::GetCppHeapIfUnifiedYoungGC(Isolate* isolate) const {
@@ -78,7 +79,7 @@ bool TracedHandles::NeedsToBeRemembered(
     // If marking is in progress, the marking barrier will be issued later.
     return false;
   }
-  if (!ObjectInYoungGeneration(object)) {
+  if (!HeapLayout::InYoungGeneration(object)) {
     return false;
   }
   return IsCppGCHostOld(*cpp_heap, reinterpret_cast<Address>(slot));
@@ -123,7 +124,7 @@ FullObjectSlot TracedHandles::Create(
     DCHECK(block->InYoungList());
   }
   if (needs_black_allocation) {
-    WriteBarrier::MarkingFromGlobalHandle(object);
+    WriteBarrier::MarkingFromTracedHandle(object);
   }
 #ifdef VERIFY_HEAP
   if (i::v8_flags.verify_heap) {

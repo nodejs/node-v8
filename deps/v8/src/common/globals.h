@@ -46,16 +46,13 @@ namespace internal {
 #if (V8_TARGET_ARCH_ARM && !V8_HOST_ARCH_ARM)
 #define USE_SIMULATOR 1
 #endif
-#if (V8_TARGET_ARCH_PPC && !V8_HOST_ARCH_PPC)
-#define USE_SIMULATOR 1
-#endif
 #if (V8_TARGET_ARCH_PPC64 && !V8_HOST_ARCH_PPC64)
 #define USE_SIMULATOR 1
 #endif
 #if (V8_TARGET_ARCH_MIPS64 && !V8_HOST_ARCH_MIPS64)
 #define USE_SIMULATOR 1
 #endif
-#if (V8_TARGET_ARCH_S390 && !V8_HOST_ARCH_S390)
+#if (V8_TARGET_ARCH_S390X && !V8_HOST_ARCH_S390X)
 #define USE_SIMULATOR 1
 #endif
 #if (V8_TARGET_ARCH_RISCV64 && !V8_HOST_ARCH_RISCV64)
@@ -77,7 +74,7 @@ namespace internal {
 
 // Determine whether the architecture uses an embedded constant pool
 // (contiguous constant pool embedded in code object).
-#if V8_TARGET_ARCH_PPC || V8_TARGET_ARCH_PPC64
+#if V8_TARGET_ARCH_PPC64
 #define V8_EMBEDDED_CONSTANT_POOL_BOOL true
 #else
 #define V8_EMBEDDED_CONSTANT_POOL_BOOL false
@@ -119,10 +116,7 @@ namespace internal {
 #define COMPRESS_POINTERS_IN_MULTIPLE_CAGES_BOOL false
 #endif
 
-#if defined(V8_SHARED_RO_HEAP) &&                     \
-    (!defined(V8_COMPRESS_POINTERS) ||                \
-     defined(V8_COMPRESS_POINTERS_IN_SHARED_CAGE)) && \
-    !defined(V8_DISABLE_WRITE_BARRIERS)
+#if defined(V8_SHARED_RO_HEAP) && !defined(V8_DISABLE_WRITE_BARRIERS)
 #define V8_CAN_CREATE_SHARED_HEAP_BOOL true
 #else
 #define V8_CAN_CREATE_SHARED_HEAP_BOOL false
@@ -156,6 +150,12 @@ namespace internal {
 #define ENABLE_CONTROL_FLOW_INTEGRITY_BOOL true
 #else
 #define ENABLE_CONTROL_FLOW_INTEGRITY_BOOL false
+#endif
+
+#ifdef V8_ENABLE_WASM_CODE_POINTER_TABLE
+#define V8_ENABLE_WASM_CODE_POINTER_TABLE_BOOL true
+#else
+#define V8_ENABLE_WASM_CODE_POINTER_TABLE_BOOL false
 #endif
 
 #if V8_TARGET_ARCH_ARM || V8_TARGET_ARCH_ARM64
@@ -248,6 +248,13 @@ const size_t kShortBuiltinCallsOldSpaceSizeThreshold = size_t{2} * GB;
 #define V8_EXTERNAL_CODE_SPACE_BOOL true
 #else
 #define V8_EXTERNAL_CODE_SPACE_BOOL false
+#endif
+
+// Support for builtin jump table disassembly.
+#if defined(V8_ENABLE_BUILTIN_JUMP_TABLE_SWITCH) && defined(ENABLE_DISASSEMBLER)
+#define V8_BUILTIN_JUMP_TABLE_INFO_BOOL true
+#else
+#define V8_BUILTIN_JUMP_TABLE_INFO_BOOL false
 #endif
 
 // V8_HEAP_USE_PTHREAD_JIT_WRITE_PROTECT controls how V8 sets permissions for
@@ -439,8 +446,7 @@ constexpr int kSystemPointerSizeLog2 = 3;
 constexpr intptr_t kIntptrSignBit =
     static_cast<intptr_t>(uintptr_t{0x8000000000000000});
 constexpr bool kPlatformRequiresCodeRange = true;
-#if (V8_HOST_ARCH_PPC || V8_HOST_ARCH_PPC64) && \
-    (V8_TARGET_ARCH_PPC || V8_TARGET_ARCH_PPC64) && V8_OS_LINUX
+#if V8_HOST_ARCH_PPC64 && V8_TARGET_ARCH_PPC64 && V8_OS_LINUX
 constexpr size_t kMaximalCodeRangeSize = 512 * MB;
 constexpr size_t kMinExpectedOSPageSize = 64 * KB;  // OS page on PPC Linux
 #elif V8_TARGET_ARCH_ARM64 || V8_TARGET_ARCH_LOONG64 || V8_TARGET_ARCH_RISCV64
@@ -473,8 +479,7 @@ constexpr size_t kMinimumTrustedRangeSize = 32 * MB;
 
 constexpr int kSystemPointerSizeLog2 = 2;
 constexpr intptr_t kIntptrSignBit = 0x80000000;
-#if (V8_HOST_ARCH_PPC || V8_HOST_ARCH_PPC64) && \
-    (V8_TARGET_ARCH_PPC || V8_TARGET_ARCH_PPC64) && V8_OS_LINUX
+#if V8_HOST_ARCH_PPC64 && V8_TARGET_ARCH_PPC64 && V8_OS_LINUX
 constexpr bool kPlatformRequiresCodeRange = false;
 constexpr size_t kMaximalCodeRangeSize = 0 * MB;
 constexpr size_t kMinimumCodeRangeSize = 0 * MB;
@@ -599,7 +604,7 @@ constexpr int kEmbedderDataSlotSizeInTaggedSlots =
     kEmbedderDataSlotSize / kTaggedSize;
 static_assert(kEmbedderDataSlotSize >= kSystemPointerSize);
 
-constexpr int kExternalAllocationSoftLimit =
+constexpr size_t kExternalAllocationSoftLimit =
     internal::Internals::kExternalAllocationSoftLimit;
 
 // Maximum object size that gets allocated into regular pages. Objects larger
@@ -658,7 +663,7 @@ F FUNCTION_CAST(Address addr) {
 // Determine whether the architecture uses function descriptors
 // which provide a level of indirection between the function pointer
 // and the function entrypoint.
-#if (V8_HOST_ARCH_PPC || V8_HOST_ARCH_PPC64) &&                    \
+#if V8_HOST_ARCH_PPC64 &&                                          \
     (V8_OS_AIX || (V8_TARGET_ARCH_PPC64 && V8_TARGET_BIG_ENDIAN && \
                    (!defined(_CALL_ELF) || _CALL_ELF == 1)))
 #define USES_FUNCTION_DESCRIPTORS 1
@@ -1186,7 +1191,7 @@ using HeapObjectSlot = SlotTraits::THeapObjectSlot;
 using OffHeapObjectSlot = SlotTraits::TOffHeapObjectSlot;
 
 // A InstructionStreamSlot instance describes a kTaggedSize-sized field
-// ("slot") holding a strong pointer to a InstructionStream object. The
+// ("slot") holding a strong pointer to an InstructionStream object. The
 // InstructionStream object slots might be compressed and since code space might
 // be allocated off the main heap the load operations require explicit cage base
 // value for code space.
@@ -2379,24 +2384,30 @@ inline std::ostream& operator<<(std::ostream& os, TieringState marker) {
 
 // State machine:
 // S(tate)0: kPending
-// S1: kEarlyMaglev
-// S2: kEarlyTurbofan
-// S3: kNormal
+// S1: kEarlySparkplug
+// S2: kDelayMaglev
+// S3: kEarlyMaglev
+// S4: kEarlyTurbofan
+// S5: kNormal
 //
-// C(ondition)0: maglev compile
-// C1: ic was stable early
-// C2: turbofan compile
-// C3: ic change or deopt
+// C(ondition)0: sparkplug compile
+// C1: maglev compile
+// C2: deopt early
+// C3: ic was stable early
+// C4: turbofan compile
+// C5: ic change or deopt
 //
-// S0 -- C0 -- C1 --> S1 -- C2 -- C3 --> S2 --|
-//             |      |                       |
-//             |      |-----------------------|
-//             |                 |
-//             |                 C3
-//             |                 |
-//             |-----------------------> S3
+// S0 - C0 -> S1 - C1 - C3 -> S3 - C4 -> S4 -|
+//                 |    |                    |
+//                 |    |--------------------|
+//                 |             |
+//                 C2            C5
+//                 |             |
+//                 --> S2        --> S5
 enum class CachedTieringDecision : int32_t {
   kPending,
+  kEarlySparkplug,
+  kDelayMaglev,
   kEarlyMaglev,
   kEarlyTurbofan,
   kNormal,
@@ -2597,6 +2608,10 @@ constexpr int kSwissNameDictionaryInitialCapacity = 4;
 constexpr int kSmallOrderedHashSetMinCapacity = 4;
 constexpr int kSmallOrderedHashMapMinCapacity = 4;
 
+enum class AdaptArguments { kYes, kNo };
+constexpr AdaptArguments kAdapt = AdaptArguments::kYes;
+constexpr AdaptArguments kDontAdapt = AdaptArguments::kNo;
+
 constexpr int kJSArgcReceiverSlots = 1;
 constexpr uint16_t kDontAdaptArgumentsSentinel = 0;
 
@@ -2691,6 +2706,12 @@ enum class StringTransitionStrategy {
   // The string is already transitioned to the desired representation.
   kAlreadyTransitioned
 };
+
+#ifdef V8_ENABLE_WASM_CODE_POINTER_TABLE
+using WasmCodePointer = uint32_t;
+#else
+using WasmCodePointer = Address;
+#endif
 
 }  // namespace internal
 

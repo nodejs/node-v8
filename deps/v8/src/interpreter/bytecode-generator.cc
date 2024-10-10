@@ -190,7 +190,8 @@ class V8_NODISCARD BytecodeGenerator::ControlScope::DeferredCommands final {
         result_register_(result_register),
         message_register_(message_register),
         return_token_(-1),
-        async_return_token_(-1) {
+        async_return_token_(-1),
+        fallthrough_from_try_block_needed_(false) {
     // There's always a rethrow path.
     // TODO(leszeks): We could decouple deferred_ index and token to allow us
     // to still push this lazily.
@@ -250,6 +251,7 @@ class V8_NODISCARD BytecodeGenerator::ControlScope::DeferredCommands final {
   // Records the dispatch token to be used to identify the implicit fall-through
   // path at the end of a try-block into the corresponding finally-block.
   void RecordFallThroughPath() {
+    fallthrough_from_try_block_needed_ = true;
     builder()->LoadLiteral(Smi::FromInt(
         static_cast<int>(TryFinallyContinuationToken::kFallthroughToken)));
     builder()->StoreAccumulatorInRegister(token_register_);
@@ -260,64 +262,91 @@ class V8_NODISCARD BytecodeGenerator::ControlScope::DeferredCommands final {
     builder()->StoreAccumulatorInRegister(result_register_);
   }
 
+  void ApplyDeferredCommand(const Entry& entry) {
+    if (entry.command == CMD_RETHROW) {
+      // Pending message object is restored on exit.
+      builder()
+          ->LoadAccumulatorWithRegister(message_register_)
+          .SetPendingMessage();
+    }
+
+    if (CommandUsesAccumulator(entry.command)) {
+      builder()->LoadAccumulatorWithRegister(result_register_);
+    }
+    execution_control()->PerformCommand(entry.command, entry.statement,
+                                        kNoSourcePosition);
+  }
+
   // Applies all recorded control-flow commands after the finally-block again.
   // This generates a dynamic dispatch on the token from the entry point.
   void ApplyDeferredCommands() {
     if (deferred_.empty()) return;
 
-    BytecodeLabel fall_through;
+    BytecodeLabel fall_through_from_try_block;
 
     if (deferred_.size() == 1) {
       // For a single entry, just jump to the fallthrough if we don't match the
       // entry token.
       const Entry& entry = deferred_[0];
 
-      builder()
-          ->LoadLiteral(Smi::FromInt(entry.token))
-          .CompareReference(token_register_)
-          .JumpIfFalse(ToBooleanMode::kAlreadyBoolean, &fall_through);
-
-      if (entry.command == CMD_RETHROW) {
-        // Pending message object is restored on exit.
+      if (fallthrough_from_try_block_needed_) {
         builder()
-            ->LoadAccumulatorWithRegister(message_register_)
-            .SetPendingMessage();
+            ->LoadLiteral(Smi::FromInt(entry.token))
+            .CompareReference(token_register_)
+            .JumpIfFalse(ToBooleanMode::kAlreadyBoolean,
+                         &fall_through_from_try_block);
       }
 
-      if (CommandUsesAccumulator(entry.command)) {
-        builder()->LoadAccumulatorWithRegister(result_register_);
-      }
-      execution_control()->PerformCommand(entry.command, entry.statement,
-                                          kNoSourcePosition);
+      ApplyDeferredCommand(entry);
     } else {
       // For multiple entries, build a jump table and switch on the token,
       // jumping to the fallthrough if none of them match.
+      //
+      // If fallthrough from the try block is not needed, generate a jump table
+      // with one (1) fewer entries and reuse the fallthrough path for the final
+      // entry.
+      const int jump_table_base_value =
+          fallthrough_from_try_block_needed_ ? 0 : 1;
+      const int jump_table_size =
+          static_cast<int>(deferred_.size() - jump_table_base_value);
 
-      BytecodeJumpTable* jump_table =
-          builder()->AllocateJumpTable(static_cast<int>(deferred_.size()), 0);
-      builder()
-          ->LoadAccumulatorWithRegister(token_register_)
-          .SwitchOnSmiNoFeedback(jump_table)
-          .Jump(&fall_through);
-      for (const Entry& entry : deferred_) {
-        builder()->Bind(jump_table, entry.token);
+      if (jump_table_size == 1) {
+        DCHECK_EQ(2, deferred_.size());
+        BytecodeLabel fall_through_to_final_entry;
+        const Entry& first_entry = deferred_[0];
+        const Entry& final_entry = deferred_[1];
+        builder()
+            ->LoadLiteral(Smi::FromInt(first_entry.token))
+            .CompareReference(token_register_)
+            .JumpIfFalse(ToBooleanMode::kAlreadyBoolean,
+                         &fall_through_to_final_entry);
+        ApplyDeferredCommand(first_entry);
+        builder()->Bind(&fall_through_to_final_entry);
+        ApplyDeferredCommand(final_entry);
+      } else {
+        BytecodeJumpTable* jump_table = builder()->AllocateJumpTable(
+            jump_table_size, jump_table_base_value);
+        builder()
+            ->LoadAccumulatorWithRegister(token_register_)
+            .SwitchOnSmiNoFeedback(jump_table);
 
-        if (entry.command == CMD_RETHROW) {
-          // Pending message object is restored on exit.
-          builder()
-              ->LoadAccumulatorWithRegister(message_register_)
-              .SetPendingMessage();
+        const Entry& first_entry = deferred_.front();
+        if (fallthrough_from_try_block_needed_) {
+          builder()->Jump(&fall_through_from_try_block);
+          builder()->Bind(jump_table, first_entry.token);
         }
+        ApplyDeferredCommand(first_entry);
 
-        if (CommandUsesAccumulator(entry.command)) {
-          builder()->LoadAccumulatorWithRegister(result_register_);
+        for (const Entry& entry : base::IterateWithoutFirst(deferred_)) {
+          builder()->Bind(jump_table, entry.token);
+          ApplyDeferredCommand(entry);
         }
-        execution_control()->PerformCommand(entry.command, entry.statement,
-                                            kNoSourcePosition);
       }
     }
 
-    builder()->Bind(&fall_through);
+    if (fallthrough_from_try_block_needed_) {
+      builder()->Bind(&fall_through_from_try_block);
+    }
   }
 
   BytecodeArrayBuilder* builder() { return generator_->builder(); }
@@ -368,6 +397,9 @@ class V8_NODISCARD BytecodeGenerator::ControlScope::DeferredCommands final {
   // Tokens for commands that don't need a statement.
   int return_token_;
   int async_return_token_;
+
+  // Whether a fallthrough is possible.
+  bool fallthrough_from_try_block_needed_;
 };
 
 // Scoped class for dealing with control flow reaching the function level.
@@ -1595,7 +1627,8 @@ bool NeedsContextInitialization(DeclarationScope* scope) {
 
 void BytecodeGenerator::GenerateBytecode(uintptr_t stack_limit) {
   InitializeAstVisitor(stack_limit);
-  if (v8_flags.stress_lazy_compilation && local_isolate_->is_main_thread()) {
+  if (v8_flags.stress_lazy_compilation && local_isolate_->is_main_thread() &&
+      !local_isolate_->AsIsolate()->bootstrapper()->IsActive()) {
     // Trigger stack overflow with 1/stress_lazy_compilation probability.
     // Do this only for the main thread compilations because querying random
     // numbers from background threads will make the random values dependent
@@ -1648,10 +1681,13 @@ void BytecodeGenerator::GenerateBytecodeBody() {
     GenerateBaseConstructorBody();
   } else if (function_kind() == FunctionKind::kDerivedConstructor) {
     GenerateDerivedConstructorBody();
-  } else if ((IsAsyncFunction(function_kind()) &&
-              !IsAsyncGeneratorFunction(function_kind())) ||
+  } else if (IsAsyncFunction(function_kind()) ||
              IsModuleWithTopLevelAwait(function_kind())) {
-    GenerateAsyncFunctionBody();
+    if (IsAsyncGeneratorFunction(function_kind())) {
+      GenerateAsyncGeneratorFunctionBody();
+    } else {
+      GenerateAsyncFunctionBody();
+    }
   } else {
     GenerateBodyStatements();
   }
@@ -1825,36 +1861,101 @@ void BytecodeGenerator::GenerateAsyncFunctionBody() {
       catch_prediction());
 }
 
-void BytecodeGenerator::GenerateBodyStatements() {
-  GenerateBodyStatementsWithoutImplicitFinalReturn();
+void BytecodeGenerator::GenerateAsyncGeneratorFunctionBody() {
+  DCHECK(IsAsyncGeneratorFunction(function_kind()));
+  set_catch_prediction(HandlerTable::ASYNC_AWAIT);
+
+  // For ES2017 Async Generators, we produce:
+  //
+  // try {
+  //   InitialYield;
+  //   ...body...;
+  // } catch (.catch) {
+  //   %AsyncGeneratorReject(generator, .catch);
+  // } finally {
+  //   %_GeneratorClose(generator);
+  // }
+  //
+  // - InitialYield yields the actual generator object.
+  // - Any return statement inside the body will have its argument wrapped
+  //   in an iterator result object with a "done" property set to `true`.
+  // - If the generator terminates for whatever reason, we must close it.
+  //   Hence the finally clause.
+  // - BytecodeGenerator performs special handling for ReturnStatements in
+  //   async generator functions, resolving the appropriate Promise with an
+  //   "done" iterator result object containing a Promise-unwrapped value.
+
+  // In async generator functions, when parameters are not simple,
+  // a parameter initialization block will be added as the first block to the
+  // AST. Since this block can throw synchronously, it should not be wrapped
+  // in the following try-finally. We visit this block outside the try-finally
+  // and remove it from the AST.
+  int start = 0;
+  ZonePtrList<Statement>* statements = info()->literal()->body();
+  Statement* stmt = statements->at(0);
+  if (stmt->IsBlock()) {
+    Block* block = static_cast<Block*>(statements->at(0));
+    if (block->is_initialization_block_for_parameters()) {
+      VisitBlockDeclarationsAndStatements(block);
+      start = 1;
+    }
+  }
+
+  BuildTryFinally(
+      [&]() {
+        BuildTryCatch(
+            [&]() { GenerateBodyStatements(start); },
+            [&](Register context) {
+              RegisterAllocationScope register_scope(this);
+              RegisterList args = register_allocator()->NewRegisterList(2);
+              builder()
+                  ->MoveRegister(generator_object(), args[0])
+                  .StoreAccumulatorInRegister(args[1])  // exception
+                  .CallRuntime(Runtime::kInlineAsyncGeneratorReject, args);
+              execution_control()->ReturnAccumulator(kNoSourcePosition);
+            },
+            catch_prediction());
+      },
+      [&](Register body_continuation_token, Register body_continuation_result) {
+        RegisterAllocationScope register_scope(this);
+        Register arg = register_allocator()->NewRegister();
+        builder()
+            ->MoveRegister(generator_object(), arg)
+            .CallRuntime(Runtime::kInlineGeneratorClose, arg);
+      },
+      catch_prediction());
+}
+
+void BytecodeGenerator::GenerateBodyStatements(int start) {
+  GenerateBodyStatementsWithoutImplicitFinalReturn(start);
 
   // Emit an implicit return instruction in case control flow can fall off the
-  // end of the function without an explicit return being present on all
-  // paths.
+  // end of the function without an explicit return being present on all paths.
+  //
+  // ControlScope is used instead of building the Return bytecode directly, as
+  // the entire body is wrapped in a try-finally block for async generators.
   if (!builder()->RemainderOfBlockIsDead()) {
     builder()->LoadUndefined();
     const int pos = info()->literal()->return_position();
-    // TODO(358404372): Handle AsyncGeneratorFunction as well once its AST
-    // rewrite is removed from the parser.
-    if ((IsAsyncFunction(function_kind()) &&
-         !IsAsyncGeneratorFunction(function_kind())) ||
+    if (IsAsyncFunction(function_kind()) ||
         IsModuleWithTopLevelAwait(function_kind())) {
-      BuildAsyncReturn(pos);
+      execution_control()->AsyncReturnAccumulator(pos);
     } else {
-      BuildReturn(pos);
+      execution_control()->ReturnAccumulator(pos);
     }
   }
 }
 
-void BytecodeGenerator::GenerateBodyStatementsWithoutImplicitFinalReturn() {
+void BytecodeGenerator::GenerateBodyStatementsWithoutImplicitFinalReturn(
+    int start) {
   ZonePtrList<Statement>* body = info()->literal()->body();
   if (v8_flags.js_explicit_resource_management && closure_scope() != nullptr &&
       (closure_scope()->has_using_declaration() ||
        closure_scope()->has_await_using_declaration())) {
-    BuildDisposeScope([&]() { VisitStatements(body); },
+    BuildDisposeScope([&]() { VisitStatements(body, start); },
                       closure_scope()->has_await_using_declaration());
   } else {
-    VisitStatements(body);
+    VisitStatements(body, start);
   }
 }
 
@@ -2121,8 +2222,8 @@ void BytecodeGenerator::VisitDeclarations(Declaration::List* declarations) {
 }
 
 void BytecodeGenerator::VisitStatements(
-    const ZonePtrList<Statement>* statements) {
-  for (int i = 0; i < statements->length(); i++) {
+    const ZonePtrList<Statement>* statements, int start) {
+  for (int i = start; i < statements->length(); i++) {
     // Allocate an outer register allocations scope for the statement.
     RegisterAllocationScope allocation_scope(this);
     Statement* stmt = statements->at(i);
@@ -2404,7 +2505,7 @@ bool IsSwitchOptimizable(SwitchStatement* stmt, SwitchInfo* info) {
 
 void BytecodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
   // We need this scope because we visit for register values. We have to
-  // maintain a execution result scope where registers can be allocated.
+  // maintain an execution result scope where registers can be allocated.
   ZonePtrList<CaseClause>* clauses = stmt->cases();
 
   SwitchInfo info;
@@ -2678,7 +2779,9 @@ void BytecodeGenerator::BuildTryFinally(
   try_control_builder.EndTry();
 
   // Record fall-through and exception cases.
-  commands.RecordFallThroughPath();
+  if (!builder()->RemainderOfBlockIsDead()) {
+    commands.RecordFallThroughPath();
+  }
   try_control_builder.LeaveTry();
   try_control_builder.BeginHandler();
   commands.RecordHandlerReThrowPath();
@@ -2707,33 +2810,56 @@ void BytecodeGenerator::BuildDisposeScope(WrappedFunc wrapped_func,
       [&]() { wrapped_func(); },
       // Finally block
       [&](Register body_continuation_token, Register body_continuation_result) {
-        RegisterList args = register_allocator()->NewRegisterList(4);
-        Register result_register = register_allocator()->NewRegister();
-
         if (has_await_using) {
+          Register result_register = register_allocator()->NewRegister();
+          Register disposable_stack_register =
+              register_allocator()->NewRegister();
+          builder()->MoveRegister(current_disposables_stack_,
+                                  disposable_stack_register);
           LoopBuilder loop_builder(builder(), nullptr, nullptr,
                                    feedback_spec());
           LoopScope loop_scope(this, &loop_builder);
 
-          builder()
-              ->MoveRegister(current_disposables_stack_, args[0])
-              .MoveRegister(body_continuation_token, args[1])
-              .MoveRegister(body_continuation_result, args[2])
-              .LoadLiteral(
-                  Smi::FromEnum(DisposableStackResourcesType::kAtLeastOneAsync))
-              .StoreAccumulatorInRegister(args[3]);
-          builder()->CallRuntime(Runtime::kDisposeDisposableStack, args);
+          {
+            RegisterAllocationScope allocation_scope(this);
+            RegisterList args = register_allocator()->NewRegisterList(4);
+            builder()
+                ->MoveRegister(disposable_stack_register, args[0])
+                .MoveRegister(body_continuation_token, args[1])
+                .MoveRegister(body_continuation_result, args[2])
+                .LoadLiteral(Smi::FromEnum(
+                    DisposableStackResourcesType::kAtLeastOneAsync))
+                .StoreAccumulatorInRegister(args[3]);
+            builder()->CallRuntime(Runtime::kDisposeDisposableStack, args);
+          }
 
           builder()
               ->StoreAccumulatorInRegister(result_register)
-              .LoadUndefined()
+              .LoadTrue()
               .CompareReference(result_register);
 
           loop_builder.BreakIfTrue(ToBooleanMode::kConvertToBoolean);
 
-          BuildAwait();
+          builder()->LoadAccumulatorWithRegister(result_register);
+          BuildTryCatch(
+              [&]() { BuildAwait(); },
+              [&](Register context) {
+                RegisterList args = register_allocator()->NewRegisterList(2);
+                builder()
+                    ->MoveRegister(current_disposables_stack_, args[0])
+                    .StoreAccumulatorInRegister(args[1])  // exception
+                    .CallRuntime(
+                        Runtime::kHandleExceptionsInDisposeDisposableStack,
+                        args);
+
+                builder()->StoreAccumulatorInRegister(
+                    disposable_stack_register);
+              },
+              catch_prediction());
+
           loop_builder.BindContinueTarget();
         } else {
+          RegisterList args = register_allocator()->NewRegisterList(4);
           builder()
               ->MoveRegister(current_disposables_stack_, args[0])
               .MoveRegister(body_continuation_token, args[1])
@@ -3290,6 +3416,30 @@ void BytecodeGenerator::BuildClassLiteral(ClassLiteral* expr, Register name) {
         continue;
       }
 
+      if (property->kind() == ClassLiteral::Property::AUTO_ACCESSOR) {
+        {
+          RegisterAllocationScope private_name_register_scope(this);
+          Register name_register = register_allocator()->NewRegister();
+          Variable* accessor_storage_private_name_var =
+              property->auto_accessor_info()
+                  ->accessor_storage_name_proxy()
+                  ->var();
+          builder()
+              ->LoadLiteral(accessor_storage_private_name_var->raw_name())
+              .StoreAccumulatorInRegister(name_register)
+              .CallRuntime(Runtime::kCreatePrivateNameSymbol, name_register);
+          BuildVariableAssignment(accessor_storage_private_name_var,
+                                  Token::kInit, HoleCheckMode::kElided);
+        }
+
+        Register getter = register_allocator()->GrowRegisterList(&args);
+        Register setter = register_allocator()->GrowRegisterList(&args);
+        AutoAccessorInfo* auto_accessor_info = property->auto_accessor_info();
+        VisitForRegisterValue(auto_accessor_info->generated_getter(), getter);
+        VisitForRegisterValue(auto_accessor_info->generated_setter(), setter);
+        continue;
+      }
+
       Register value = register_allocator()->GrowRegisterList(&args);
       VisitForRegisterValue(property->value(), value);
     }
@@ -3428,7 +3578,7 @@ void BytecodeGenerator::BuildClassProperty(ClassLiteral::Property* property) {
   // Private methods are not initialized in BuildClassProperty.
   DCHECK_IMPLIES(property->is_private(),
                  property->kind() == ClassLiteral::Property::FIELD ||
-                     property->kind() == ClassLiteral::Property::AUTO_ACCESSOR);
+                     property->is_auto_accessor());
   builder()->SetExpressionPosition(property->key());
 
   bool is_literal_store =
@@ -3437,7 +3587,7 @@ void BytecodeGenerator::BuildClassProperty(ClassLiteral::Property* property) {
 
   if (!is_literal_store) {
     key = register_allocator()->NewRegister();
-    if (property->kind() == ClassLiteral::Property::AUTO_ACCESSOR) {
+    if (property->is_auto_accessor()) {
       Variable* var =
           property->auto_accessor_info()->accessor_storage_name_proxy()->var();
       DCHECK_NOT_NULL(var);
@@ -3569,7 +3719,7 @@ void BytecodeGenerator::BuildPrivateBrandInitialization(Register receiver,
                                 feedback_index(slot));
   } else {
     // We are in the slow case where super() is called from a nested
-    // arrow function or a eval(), so the class scope context isn't
+    // arrow function or an eval(), so the class scope context isn't
     // tracked in a context register in the stack, and we have to
     // walk the context chain from the runtime to find it.
     DCHECK_NE(info()->literal()->scope()->outer_scope(), brand->scope());
@@ -3721,6 +3871,9 @@ void BytecodeGenerator::VisitLiteral(Literal* expr) {
     case Literal::kString:
       builder()->LoadLiteral(expr->AsRawString());
       execution_result()->SetResultIsInternalizedString();
+      break;
+    case Literal::kConsString:
+      builder()->LoadLiteral(expr->AsConsString());
       break;
     case Literal::kBigInt:
       builder()->LoadLiteral(expr->AsBigInt());
@@ -7378,15 +7531,21 @@ void BytecodeGenerator::VisitEmptyParentheses(EmptyParentheses* expr) {
 }
 
 void BytecodeGenerator::VisitImportCallExpression(ImportCallExpression* expr) {
-  const int register_count = expr->import_options() ? 3 : 2;
+  const int register_count = expr->import_options() ? 4 : 3;
+  // args is a list of [ function_closure, specifier, phase, import_options ].
   RegisterList args = register_allocator()->NewRegisterList(register_count);
+
+  builder()->MoveRegister(Register::function_closure(), args[0]);
   VisitForRegisterValue(expr->specifier(), args[1]);
-  if (expr->import_options()) {
-    VisitForRegisterValue(expr->import_options(), args[2]);
-  }
   builder()
-      ->MoveRegister(Register::function_closure(), args[0])
-      .CallRuntime(Runtime::kDynamicImportCall, args);
+      ->LoadLiteral(Smi::FromInt(static_cast<int>(expr->phase())))
+      .StoreAccumulatorInRegister(args[2]);
+
+  if (expr->import_options()) {
+    VisitForRegisterValue(expr->import_options(), args[3]);
+  }
+
+  builder()->CallRuntime(Runtime::kDynamicImportCall, args);
 }
 
 void BytecodeGenerator::BuildGetIterator(IteratorType hint) {

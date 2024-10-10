@@ -235,7 +235,7 @@ class DebugInfoImpl {
     CompilationEnv env = CompilationEnv::ForModule(native_module_);
     const WasmFunction* function = &env.module->functions[func_index];
     base::Vector<const uint8_t> wire_bytes = native_module_->wire_bytes();
-    bool is_shared = env.module->types[function->sig_index].is_shared;
+    bool is_shared = env.module->type(function->sig_index).is_shared;
     FunctionBody body{function->sig, function->code.offset(),
                       wire_bytes.begin() + function->code.offset(),
                       wire_bytes.begin() + function->code.end_offset(),
@@ -381,6 +381,17 @@ class DebugInfoImpl {
     UpdateReturnAddress(frame, new_code, return_location);
 
     per_isolate_data_[frame->isolate()].stepping_frame = frame->id();
+  }
+
+  bool IsFrameBlackboxed(WasmFrame* frame) {
+    NativeModule* native_module = frame->native_module();
+    int func_index = frame->function_index();
+    WireBytesRef func_code =
+        native_module->module()->functions[func_index].code;
+    Isolate* isolate = frame->isolate();
+    DirectHandle<Script> script(Cast<Script>(frame->script()), isolate);
+    return isolate->debug()->IsFunctionBlackboxed(script, func_code.offset(),
+                                                  func_code.end_offset());
   }
 
   bool PrepareStep(WasmFrame* frame) {
@@ -681,6 +692,7 @@ class DebugInfoImpl {
       case kI16:
       case kF16:
       case kVoid:
+      case kTop:
       case kBottom:
         UNREACHABLE();
     }
@@ -818,6 +830,10 @@ const wasm::WasmFunction& DebugInfo::GetFunctionAtAddress(Address pc,
 void DebugInfo::SetBreakpoint(int func_index, int offset,
                               Isolate* current_isolate) {
   impl_->SetBreakpoint(func_index, offset, current_isolate);
+}
+
+bool DebugInfo::IsFrameBlackboxed(WasmFrame* frame) {
+  return impl_->IsFrameBlackboxed(frame);
 }
 
 bool DebugInfo::PrepareStep(WasmFrame* frame) {

@@ -7,7 +7,7 @@
 // regular desktop machines.
 // V8 calls into generated code by using the GeneratedCode class,
 // which will start execution in the Simulator or forwards to the real entry
-// on a ARM HW platform.
+// on an ARM HW platform.
 
 #ifndef V8_EXECUTION_ARM_SIMULATOR_ARM_H_
 #define V8_EXECUTION_ARM_SIMULATOR_ARM_H_
@@ -237,9 +237,9 @@ class Simulator : public SimulatorBase {
   // margin to prevent overflows (kAdditionalStackMargin).
   uintptr_t StackLimit(uintptr_t c_limit) const;
 
-  // Return current stack view, without additional safety margins.
+  // Return central stack view, without additional safety margins.
   // Users, for example wasm::StackMemory, can add their own.
-  base::Vector<uint8_t> GetCurrentStackView() const;
+  base::Vector<uint8_t> GetCentralStackView() const;
 
   // Executes ARM instructions until the PC reaches end_sim_pc.
   void Execute();

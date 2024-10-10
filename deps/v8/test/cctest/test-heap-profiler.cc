@@ -1864,7 +1864,6 @@ TEST(NativeSnapshotObjectId) {
 }
 
 TEST(NativeSnapshotObjectIdMoving) {
-  if (i::v8_flags.enable_third_party_heap) return;
   // Required to allow moving specific objects.
   i::ManualGCScope manual_gc_scope;
   i::heap::ManualEvacuationCandidatesSelectionScope
@@ -4231,12 +4230,16 @@ TEST(WeakReference) {
           .Build();
   CHECK(IsCode(*code));
 
+#ifdef V8_ENABLE_LEAPTIERING
+  USE(fv);
+#else
   // Manually inlined version of FeedbackVector::SetOptimizedCode (needed due
   // to the FOR_TESTING code kind).
   fv->set_maybe_optimized_code(i::MakeWeak(code->wrapper()));
   fv->set_flags(
       i::FeedbackVector::MaybeHasTurbofanCodeBit::encode(true) |
       i::FeedbackVector::TieringStateBits::encode(i::TieringState::kNone));
+#endif  // V8_ENABLE_LEAPTIERING
 
   v8::HeapProfiler* heap_profiler = isolate->GetHeapProfiler();
   const v8::HeapSnapshot* snapshot = heap_profiler->TakeHeapSnapshot();

@@ -8,6 +8,7 @@
 #include <optional>
 
 #include "src/common/ptr-compr-inl.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/heap/heap-write-barrier-inl.h"
 #include "src/objects/code.h"
 #include "src/objects/instruction-stream.h"
@@ -61,7 +62,7 @@ Tagged<InstructionStream> InstructionStream::Initialize(
     writable_allocation.WriteHeaderSlot<Smi, kCodeOffset>(Smi::zero(),
                                                           kReleaseStore);
 
-    DCHECK(!ObjectInYoungGeneration(reloc_info));
+    DCHECK(!HeapLayout::InYoungGeneration(reloc_info));
     writable_allocation.WriteProtectedPointerHeaderSlot<TrustedByteArray,
                                                         kRelocationInfoOffset>(
         reloc_info, kRelaxedStore);
@@ -174,8 +175,8 @@ Address InstructionStream::body_end() const {
 
 Tagged<Object> InstructionStream::raw_code(AcquireLoadTag tag) const {
   Tagged<Object> value = RawProtectedPointerField(kCodeOffset).Acquire_Load();
-  DCHECK(!ObjectInYoungGeneration(value));
-  DCHECK(IsSmi(value) || IsTrustedSpaceObject(Cast<HeapObject>(value)));
+  DCHECK(!HeapLayout::InYoungGeneration(value));
+  DCHECK(IsSmi(value) || HeapLayout::InTrustedSpace(Cast<HeapObject>(value)));
   return value;
 }
 
@@ -184,8 +185,8 @@ Tagged<Code> InstructionStream::code(AcquireLoadTag tag) const {
 }
 
 void InstructionStream::set_code(Tagged<Code> value, ReleaseStoreTag tag) {
-  DCHECK(!ObjectInYoungGeneration(value));
-  DCHECK(IsTrustedSpaceObject(value));
+  DCHECK(!HeapLayout::InYoungGeneration(value));
+  DCHECK(HeapLayout::InTrustedSpace(value));
   WriteProtectedPointerField(kCodeOffset, value, tag);
   CONDITIONAL_PROTECTED_POINTER_WRITE_BARRIER(*this, kCodeOffset, value,
                                               UPDATE_WRITE_BARRIER);

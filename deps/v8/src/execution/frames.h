@@ -9,8 +9,8 @@
 #include "src/base/bounds.h"
 #include "src/codegen/handler-table.h"
 #include "src/codegen/safepoint-table.h"
+#include "src/common/assert-scope.h"
 #include "src/common/globals.h"
-#include "src/handles/handles.h"
 #include "src/objects/code.h"
 #include "src/objects/deoptimization-data.h"
 #include "src/objects/objects.h"
@@ -126,6 +126,7 @@ class StackHandler {
   IF_WASM(V, C_WASM_ENTRY, CWasmEntryFrame)                               \
   IF_WASM(V, WASM_EXIT, WasmExitFrame)                                    \
   IF_WASM(V, WASM_LIFTOFF_SETUP, WasmLiftoffSetupFrame)                   \
+  IF_WASM(V, WASM_SEGMENT_START, WasmSegmentStartFrame)                   \
   V(INTERPRETED, InterpretedFrame)                                        \
   V(BASELINE, BaselineFrame)                                              \
   V(MAGLEV, MaglevFrame)                                                  \
@@ -191,7 +192,7 @@ class StackFrame {
   // Note that the marker is not a Smi: Smis on 64-bit architectures are stored
   // in the top 32 bits of a 64-bit value, which in turn makes them expensive
   // (in terms of code/instruction size) to push as immediates onto the stack.
-  static int32_t TypeToMarker(Type type) {
+  static constexpr int32_t TypeToMarker(Type type) {
     DCHECK_GE(type, 0);
     return (type << kSmiTagSize) | kSmiTag;
   }
@@ -200,31 +201,21 @@ class StackFrame {
   //
   // Unlike the return value of TypeToMarker, this takes an intptr_t, as that is
   // the type of the value on the stack.
-  static Type MarkerToType(intptr_t marker) {
+  static constexpr Type MarkerToType(intptr_t marker) {
     DCHECK(IsTypeMarker(marker));
-    intptr_t type = marker >> kSmiTagSize;
-    // TODO(petermarshall): There is a bug in the arm simulators that causes
-    // invalid frame markers.
-#if (defined(USE_SIMULATOR) &&                        \
-     (V8_TARGET_ARCH_ARM64 || V8_TARGET_ARCH_ARM)) || \
-    (V8_TARGET_ARCH_RISCV32 || V8_TARGET_ARCH_RISCV64)
-    if (static_cast<uintptr_t>(type) >= Type::NUMBER_OF_TYPES) {
-      // Appease UBSan.
-      return Type::NUMBER_OF_TYPES;
-    }
-#else
-    DCHECK_LT(static_cast<uintptr_t>(type), Type::NUMBER_OF_TYPES);
-#endif
-    return static_cast<Type>(type);
+    return static_cast<Type>(marker >> kSmiTagSize);
   }
 
-  // Check if a marker is a stack frame type marker or a tagged pointer.
+  // Check if a marker is a stack frame type marker.
   //
   // Returns true if the given marker is tagged as a stack frame type marker,
   // and should be converted back to a stack frame type using MarkerToType.
-  // Otherwise, the value is a tagged function pointer.
-  static bool IsTypeMarker(intptr_t function_or_marker) {
-    return (function_or_marker & kSmiTagMask) == kSmiTag;
+  static constexpr bool IsTypeMarker(uintptr_t function_or_marker) {
+    static_assert(kSmiTag == 0);
+    static_assert((std::numeric_limits<uintptr_t>::max() >> kSmiTagSize) >
+                  Type::NUMBER_OF_TYPES);
+    return (function_or_marker & kSmiTagMask) == kSmiTag &&
+           function_or_marker < (Type::NUMBER_OF_TYPES << kSmiTagSize);
   }
 
   // Copy constructor; it breaks the connection to host iterator
@@ -252,7 +243,7 @@ class StackFrame {
   bool is_turbofan() const { return type() == TURBOFAN; }
 #if V8_ENABLE_WEBASSEMBLY
   bool is_wasm() const {
-    return this->type() == WASM
+    return this->type() == WASM || this->type() == WASM_SEGMENT_START
 #ifdef V8_ENABLE_DRUMBRAKE
            || this->type() == WASM_INTERPRETER_ENTRY
 #endif  // V8_ENABLE_DRUMBRAKE
@@ -776,6 +767,9 @@ class JavaScriptFrame : public CommonFrameWithJSLinkage {
 
   void GetFunctions(std::vector<Handle<SharedFunctionInfo>>* functions) const;
 
+  // Returns {AbstractCode, code offset} pair for this frame's PC value.
+  std::tuple<Tagged<AbstractCode>, int> GetActiveCodeAndOffset() const;
+
   // Architecture-specific register description.
   static Register fp_register();
   static Register context_register();
@@ -1137,8 +1131,6 @@ class InterpretedFrame : public UnoptimizedFrame {
     return static_cast<const InterpretedFrame*>(frame);
   }
 
-  static int GetBytecodeOffset(Address fp);
-
  protected:
   inline explicit InterpretedFrame(StackFrameIteratorBase* iterator);
 
@@ -1160,6 +1152,10 @@ class BaselineFrame : public UnoptimizedFrame {
   static BaselineFrame* cast(StackFrame* frame) {
     DCHECK(frame->is_baseline());
     return static_cast<BaselineFrame*>(frame);
+  }
+  static const BaselineFrame* cast(const StackFrame* frame) {
+    DCHECK(frame->is_baseline());
+    return static_cast<const BaselineFrame*>(frame);
   }
 
  protected:
@@ -1269,11 +1265,11 @@ class WasmFrame : public TypedFrame {
   void Summarize(std::vector<FrameSummary>* frames) const override;
 
   static WasmFrame* cast(StackFrame* frame) {
+    DCHECK(frame->is_wasm()
 #ifdef V8_ENABLE_DRUMBRAKE
-    DCHECK(frame->is_wasm() && !frame->is_wasm_interpreter_entry());
-#else
-    DCHECK(frame->is_wasm());
+           && !frame->is_wasm_interpreter_entry()
 #endif  // V8_ENABLE_DRUMBRAKE
+    );
     return static_cast<WasmFrame*>(frame);
   }
 
@@ -1285,6 +1281,24 @@ class WasmFrame : public TypedFrame {
   Tagged<WasmModuleObject> module_object() const;
 };
 
+// WasmSegmentStartFrame is a regular Wasm frame moved to the
+// beginning of a new stack segment allocated for growable stack.
+// It requires special handling on return. To indicate that, the WASM frame type
+// is replaced by WASM_SEGMENT_START.
+class WasmSegmentStartFrame : public WasmFrame {
+ public:
+  // type() intentionally returns WASM frame type because WasmSegmentStartFrame
+  // behaves exactly like regular WasmFrame in all scenarios.
+  Type type() const override { return WASM; }
+
+ protected:
+  inline explicit WasmSegmentStartFrame(StackFrameIteratorBase* iterator);
+
+ private:
+  friend class StackFrameIteratorBase;
+};
+
+// Wasm to C-API exit frame.
 class WasmExitFrame : public WasmFrame {
  public:
   Type type() const override { return WASM_EXIT; }
@@ -1438,7 +1452,7 @@ class WasmLiftoffSetupFrame : public TypedFrame {
  public:
   Type type() const override { return WASM_LIFTOFF_SETUP; }
 
-  FullObjectSlot wasm_instance_slot() const;
+  FullObjectSlot wasm_instance_data_slot() const;
 
   int GetDeclaredFunctionIndex() const;
 
@@ -1609,6 +1623,9 @@ class StackFrameIteratorBase {
   StackFrameIteratorBase& operator=(const StackFrameIteratorBase&) = delete;
 
   Isolate* isolate() const { return isolate_; }
+#if V8_ENABLE_WEBASSEMBLY
+  wasm::StackMemory* wasm_stack() const { return wasm_stack_; }
+#endif
 
   bool done() const { return frame_ == nullptr; }
 
@@ -1634,6 +1651,18 @@ class StackFrameIteratorBase {
   };
   StackFrame* frame_;
   StackHandler* handler_;
+#if V8_ENABLE_WEBASSEMBLY
+  // Stop at the end of the topmost (wasm) stack.
+  bool first_stack_only_ = false;
+  // // Current wasm stack being iterated.
+  wasm::StackMemory* wasm_stack_ = nullptr;
+  // See {StackFrameIterator::NoHandles}.
+  std::optional<DisallowGarbageCollection> no_gc_;
+  union {
+    Handle<WasmContinuationObject> handle_;
+    Tagged<WasmContinuationObject> obj_;
+  } continuation_{Handle<WasmContinuationObject>::null()};
+#endif
 
   StackHandler* handler() const {
     DCHECK(!done());
@@ -1655,7 +1684,22 @@ class StackFrameIterator : public StackFrameIteratorBase {
   V8_EXPORT_PRIVATE explicit StackFrameIterator(Isolate* isolate);
   // An iterator that iterates over a given thread's stack.
   V8_EXPORT_PRIVATE StackFrameIterator(Isolate* isolate, ThreadLocalTop* t);
+  // Use this constructor to use the stack frame iterator without a handle
+  // scope. This sets the {no_gc_} scope, and if the {continuation_} object is
+  // used, it is unhandlified.
+  struct NoHandles {};
+  V8_EXPORT_PRIVATE StackFrameIterator(Isolate* isolate, ThreadLocalTop* top,
+                                       NoHandles);
 #if V8_ENABLE_WEBASSEMBLY
+  // Depending on the use case, users of the StackFrameIterator should either:
+  // - Use the default constructor, which iterates the active stack and its
+  // ancestors, but not the suspended stacks.
+  // - Or use the constructor below to iterate the topmost stack only, and
+  // iterate the {Isolate::wasm_stacks()} list on the side to visit all
+  // inactive stacks.
+  struct FirstStackOnly {};
+  V8_EXPORT_PRIVATE StackFrameIterator(Isolate* isolate, ThreadLocalTop* t,
+                                       FirstStackOnly);
   // An iterator that iterates over a given wasm stack segment.
   V8_EXPORT_PRIVATE StackFrameIterator(Isolate* isolate,
                                        wasm::StackMemory* stack);
@@ -1674,6 +1718,8 @@ class StackFrameIterator : public StackFrameIteratorBase {
 #if V8_ENABLE_WEBASSEMBLY
   // Go to the first frame of this stack.
   void Reset(ThreadLocalTop* top, wasm::StackMemory* stack);
+  Tagged<WasmContinuationObject> continuation();
+  void set_continuation(Tagged<WasmContinuationObject> continuation);
 #endif
 
 #ifdef DEBUG

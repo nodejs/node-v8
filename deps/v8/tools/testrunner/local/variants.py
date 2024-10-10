@@ -41,7 +41,6 @@ ALL_VARIANT_FLAGS = {
         "--turboshaft-future",
         "--turboshaft-wasm",
         "--no-wasm-generic-wrapper",
-        "--no-wasm-to-js-generic-wrapper",
         "--no-liftoff",
     ]],
     "concurrent_sparkplug": [["--concurrent-sparkplug", "--sparkplug"]],
@@ -55,6 +54,7 @@ ALL_VARIANT_FLAGS = {
     ]],
     "minor_ms": [["--minor-ms"]],
     "no_lfa": [["--no-lazy-feedback-allocation"]],
+    "no_memory_protection_keys": [["--no-memory-protection-keys"]],
     # No optimization means disable all optimizations. OptimizeFunctionOnNextCall
     # would not force optimization too. It turns into a Nop. Please see
     # https://chromium-review.googlesource.com/c/452620/ for more discussion.
@@ -70,9 +70,10 @@ ALL_VARIANT_FLAGS = {
     "rehash_snapshot": [["--rehash-snapshot"]],
     "slow_path": [["--force-slow-path"]],
     "stress": [[
-        "--no-liftoff", "--stress-lazy-source-positions",
-        "--no-wasm-generic-wrapper", "--no-wasm-lazy-compilation",
-        "--no-wasm-to-js-generic-wrapper"
+        "--no-liftoff",
+        "--stress-lazy-source-positions",
+        "--no-wasm-generic-wrapper",
+        "--no-wasm-lazy-compilation",
     ]],
     "stress_concurrent_allocation": [["--stress-concurrent-allocation"]],
     "stress_concurrent_inlining": [["--stress-concurrent-inlining"]],

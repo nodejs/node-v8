@@ -20,6 +20,7 @@
 #include "src/heap/gc-tracer-inl.h"
 #include "src/heap/gc-tracer.h"
 #include "src/heap/heap-inl.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/heap/heap.h"
 #include "src/heap/incremental-marking-job.h"
 #include "src/heap/mark-compact.h"
@@ -357,15 +358,31 @@ void IncrementalMarking::StartBlackAllocation() {
   DCHECK(!black_allocation_);
   DCHECK(IsMajorMarking());
   black_allocation_ = true;
-  heap()->allocator()->MarkLinearAllocationAreasBlack();
+  if (v8_flags.black_allocated_pages) {
+    heap()->allocator()->FreeLinearAllocationAreasAndResetFreeLists();
+  } else {
+    heap()->allocator()->MarkLinearAllocationAreasBlack();
+  }
   if (isolate()->is_shared_space_isolate()) {
     isolate()->global_safepoint()->IterateSharedSpaceAndClientIsolates(
         [](Isolate* client) {
-          client->heap()->MarkSharedLinearAllocationAreasBlack();
+          if (v8_flags.black_allocated_pages) {
+            client->heap()->FreeSharedLinearAllocationAreasAndResetFreeLists();
+          } else {
+            client->heap()->MarkSharedLinearAllocationAreasBlack();
+          }
         });
   }
   heap()->safepoint()->IterateLocalHeaps([](LocalHeap* local_heap) {
-    local_heap->MarkLinearAllocationAreasBlack();
+    if (v8_flags.black_allocated_pages) {
+      // The freelists of the underlying spaces must anyway be empty after the
+      // first call to FreeLinearAllocationAreasAndResetFreeLists(). However,
+      // don't call FreeLinearAllocationAreas(), since it also frees the
+      // shared-space areas.
+      local_heap->FreeLinearAllocationAreasAndResetFreeLists();
+    } else {
+      local_heap->MarkLinearAllocationAreasBlack();
+    }
   });
   StartPointerTableBlackAllocation();
   if (v8_flags.trace_incremental_marking) {
@@ -376,15 +393,20 @@ void IncrementalMarking::StartBlackAllocation() {
 
 void IncrementalMarking::PauseBlackAllocation() {
   DCHECK(IsMajorMarking());
-  heap()->allocator()->UnmarkLinearAllocationsArea();
-  if (isolate()->is_shared_space_isolate()) {
-    isolate()->global_safepoint()->IterateSharedSpaceAndClientIsolates(
-        [](Isolate* client) {
-          client->heap()->UnmarkSharedLinearAllocationAreas();
-        });
+  if (!v8_flags.black_allocated_pages) {
+    heap()->allocator()->UnmarkLinearAllocationsArea();
+
+    if (isolate()->is_shared_space_isolate()) {
+      isolate()->global_safepoint()->IterateSharedSpaceAndClientIsolates(
+          [](Isolate* client) {
+            client->heap()->UnmarkSharedLinearAllocationAreas();
+          });
+    }
+
+    heap()->safepoint()->IterateLocalHeaps([](LocalHeap* local_heap) {
+      local_heap->UnmarkLinearAllocationsArea();
+    });
   }
-  heap()->safepoint()->IterateLocalHeaps(
-      [](LocalHeap* local_heap) { local_heap->UnmarkLinearAllocationsArea(); });
   StopPointerTableBlackAllocation();
   if (v8_flags.trace_incremental_marking) {
     isolate()->PrintWithTimestamp(
@@ -394,13 +416,16 @@ void IncrementalMarking::PauseBlackAllocation() {
 }
 
 void IncrementalMarking::FinishBlackAllocation() {
-  if (black_allocation_) {
-    black_allocation_ = false;
-    StopPointerTableBlackAllocation();
-    if (v8_flags.trace_incremental_marking) {
-      isolate()->PrintWithTimestamp(
-          "[IncrementalMarking] Black allocation finished\n");
-    }
+  if (!black_allocation_) {
+    return;
+  }
+  // Don't fixup the marking bitmaps of the black allocated pages, since the
+  // concurrent marker may still be running and will access the page flags.
+  black_allocation_ = false;
+  StopPointerTableBlackAllocation();
+  if (v8_flags.trace_incremental_marking) {
+    isolate()->PrintWithTimestamp(
+        "[IncrementalMarking] Black allocation finished\n");
   }
 }
 
@@ -408,6 +433,9 @@ void IncrementalMarking::StartPointerTableBlackAllocation() {
 #ifdef V8_ENABLE_SANDBOX
   heap()->code_pointer_space()->set_allocate_black(true);
   heap()->trusted_pointer_space()->set_allocate_black(true);
+  if (isolate()->is_shared_space_isolate()) {
+    isolate()->shared_trusted_pointer_space()->set_allocate_black(true);
+  }
 #endif  // V8_ENABLE_SANDBOX
 #ifdef V8_ENABLE_LEAPTIERING
   heap()->js_dispatch_table_space()->set_allocate_black(true);
@@ -418,6 +446,10 @@ void IncrementalMarking::StopPointerTableBlackAllocation() {
 #ifdef V8_ENABLE_SANDBOX
   heap()->code_pointer_space()->set_allocate_black(false);
   heap()->trusted_pointer_space()->set_allocate_black(false);
+  if (isolate()->is_shared_space_isolate()) {
+    heap()->isolate()->shared_trusted_pointer_space()->set_allocate_black(
+        false);
+  }
 #endif  // V8_ENABLE_SANDBOX
 #ifdef V8_ENABLE_LEAPTIERING
   heap()->js_dispatch_table_space()->set_allocate_black(false);
@@ -464,7 +496,7 @@ void IncrementalMarking::UpdateMarkingWorklistAfterScavenge() {
       DCHECK(!Heap::IsLargeObject(obj));
       Tagged<HeapObject> dest = map_word.ToForwardingAddress(obj);
       DCHECK_IMPLIES(marking_state->IsUnmarked(obj), IsFreeSpaceOrFiller(obj));
-      if (InWritableSharedSpace(dest) &&
+      if (HeapLayout::InWritableSharedSpace(dest) &&
           !isolate()->is_shared_space_isolate()) {
         // Object got promoted into the shared heap. Drop it from the client
         // heap marking worklist.
@@ -502,9 +534,12 @@ void IncrementalMarking::UpdateExternalPointerTableAfterScavenge() {
 #ifdef V8_COMPRESS_POINTERS
   if (!IsMajorMarking()) return;
   DCHECK(!v8_flags.separate_gc_phases);
-
   heap_->isolate()->external_pointer_table().UpdateAllEvacuationEntries(
       heap_->young_external_pointer_space(), [](Address old_handle_location) {
+        if (old_handle_location == kNullAddress) {
+          // Handle was clobbered by a previous Scavenger cycle.
+          return kNullAddress;
+        }
         // 1) Resolve object start from the marking bitmap. Note that it's safe
         //    since there is no black allocation for the young space (and hence
         //    no range or page marking).
@@ -521,6 +556,7 @@ void IncrementalMarking::UpdateExternalPointerTableAfterScavenge() {
         // mark-bits).
         const MemoryChunk* chunk =
             MemoryChunk::FromAddress(old_handle_location);
+        DCHECK_NOT_NULL(chunk);
         if (!chunk->InYoungGeneration()) {
           return old_handle_location;
         }
@@ -878,8 +914,14 @@ void IncrementalMarking::Step(v8::base::TimeDelta max_duration,
   // marker doesn't rely on correct synchronization but e.g. on black allocation
   // and the on_hold worklist.
 #ifndef V8_ATOMIC_OBJECT_FIELD_WRITES
-  DCHECK(!v8_flags.concurrent_marking);
-  safepoint_scope.emplace(isolate(), SafepointKind::kIsolate);
+  {
+    DCHECK(!v8_flags.concurrent_marking);
+    // Ensure that the isolate has no shared heap. Otherwise a shared GC might
+    // happen when trying to enter the safepoint.
+    DCHECK(!isolate()->has_shared_space());
+    AllowGarbageCollection allow_gc;
+    safepoint_scope.emplace(isolate(), SafepointKind::kIsolate);
+  }
 #endif
 
   size_t v8_bytes_processed = 0;

@@ -38,6 +38,8 @@
 #include "src/codegen/assembler-arch.h"
 #include "src/codegen/assembler.h"
 #include "src/debug/debug.h"
+#include "src/heap/heap-layout-inl.h"
+#include "src/heap/heap-layout.h"
 #include "src/objects/objects-inl.h"
 
 namespace v8 {
@@ -66,7 +68,8 @@ void WritableRelocInfo::apply(intptr_t delta) {
 
 Address RelocInfo::target_address() {
   DCHECK(IsCodeTargetMode(rmode_) || IsWasmCall(rmode_) ||
-         IsNearBuiltinEntry(rmode_) || IsWasmStubCall(rmode_));
+         IsNearBuiltinEntry(rmode_) || IsWasmStubCall(rmode_) ||
+         IsExternalReference(rmode_));
   return Assembler::target_address_at(pc_, constant_pool_);
 }
 
@@ -113,6 +116,17 @@ void Assembler::set_target_compressed_address_at(
 Tagged_t Assembler::target_compressed_address_at(Address pc,
                                                  Address constant_pool) {
   return static_cast<Tagged_t>(target_address_at(pc, constant_pool));
+}
+
+Address RelocInfo::wasm_indirect_call_target() const {
+  DCHECK(rmode_ == WASM_INDIRECT_CALL_TARGET);
+  return Assembler::target_address_at(pc_, constant_pool_);
+}
+void WritableRelocInfo::set_wasm_indirect_call_target(
+    Address target, ICacheFlushMode icache_flush_mode) {
+  DCHECK(rmode_ == RelocInfo::WASM_INDIRECT_CALL_TARGET);
+  Assembler::set_target_address_at(pc_, constant_pool_, target,
+                                   icache_flush_mode);
 }
 
 Handle<Object> Assembler::code_target_object_handle_at(Address pc,
@@ -195,8 +209,9 @@ void WritableRelocInfo::set_target_object(Tagged<HeapObject> target,
     // We must not compress pointers to objects outside of the main pointer
     // compression cage as we wouldn't be able to decompress them with the
     // correct cage base.
-    DCHECK_IMPLIES(V8_ENABLE_SANDBOX_BOOL, !IsTrustedSpaceObject(target));
-    DCHECK_IMPLIES(V8_EXTERNAL_CODE_SPACE_BOOL, !IsCodeSpaceObject(target));
+    DCHECK_IMPLIES(V8_ENABLE_SANDBOX_BOOL, !HeapLayout::InTrustedSpace(target));
+    DCHECK_IMPLIES(V8_EXTERNAL_CODE_SPACE_BOOL,
+                   !HeapLayout::InCodeSpace(target));
     Assembler::set_target_compressed_address_at(
         pc_, constant_pool_,
         V8HeapCompressionScheme::CompressObject(target.ptr()),
@@ -305,7 +320,7 @@ void Assembler::set_target_constant32_at(Address pc, uint32_t target,
   if (icache_flush_mode != SKIP_ICACHE_FLUSH) {
     FlushInstructionCache(pc, 2 * kInstrSize);
   }
-  DCHECK_EQ(target_constant32_at(pc), target);
+  DCHECK_EQ(static_cast<uint32_t>(target_constant32_at(pc)), target);
 }
 
 uint32_t Assembler::uint32_constant_at(Address pc, Address constant_pool) {

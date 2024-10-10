@@ -707,7 +707,7 @@ TEST_F(ModuleTest, ModuleNamespace) {
   Local<Value> ns = module->GetModuleNamespace();
   CHECK_EQ(Module::kInstantiated, module->GetStatus());
   Local<v8::Object> nsobj = ns->ToObject(context()).ToLocalChecked();
-  CHECK_EQ(nsobj->GetCreationContext().ToLocalChecked(), context());
+  CHECK_EQ(nsobj->GetCreationContext(isolate()).ToLocalChecked(), context());
 
   // a, b
   CHECK(nsobj->Get(context(), NewString("a")).ToLocalChecked()->IsUndefined());
@@ -1206,6 +1206,27 @@ TEST_F(ModuleTest, IsGraphAsyncTopLevelAwait) {
   cycle_self_module_global.Reset();
   cycle_one_module_global.Reset();
   cycle_two_module_global.Reset();
+}
+
+TEST_F(ModuleTest, HasTopLevelAwait) {
+  HandleScope scope(isolate());
+  {
+    Local<String> source_text = NewString("await notExecuted();");
+    ScriptOrigin origin = ModuleOrigin(NewString("async_leaf.js"), isolate());
+    ScriptCompiler::Source source(source_text, origin);
+    Local<Module> async_leaf_module =
+        ScriptCompiler::CompileModule(isolate(), &source).ToLocalChecked();
+    CHECK(async_leaf_module->HasTopLevelAwait());
+  }
+
+  {
+    Local<String> source_text = NewString("notExecuted();");
+    ScriptOrigin origin = ModuleOrigin(NewString("sync_leaf.js"), isolate());
+    ScriptCompiler::Source source(source_text, origin);
+    Local<Module> sync_leaf_module =
+        ScriptCompiler::CompileModule(isolate(), &source).ToLocalChecked();
+    CHECK(!sync_leaf_module->HasTopLevelAwait());
+  }
 }
 
 TEST_F(ModuleTest, AsyncEvaluatingInEvaluateEntryPoint) {

@@ -281,7 +281,9 @@ class TrustedFixedArray
 
  public:
   template <class IsolateT>
-  static inline Handle<TrustedFixedArray> New(IsolateT* isolate, int capacity);
+  static inline Handle<TrustedFixedArray> New(
+      IsolateT* isolate, int capacity,
+      AllocationType allocation = AllocationType::kTrusted);
 
   DECL_PRINTER(TrustedFixedArray)
   DECL_VERIFIER(TrustedFixedArray)
@@ -758,13 +760,6 @@ class ArrayList : public TaggedArrayBase<ArrayList, ArrayListShape> {
       AllocationType allocation = AllocationType::kYoung);
 };
 
-enum SearchMode { ALL_ENTRIES, VALID_ENTRIES };
-
-template <SearchMode search_mode, typename T>
-inline int Search(T* array, Tagged<Name> name, int valid_entries = 0,
-                  int* out_insertion_index = nullptr,
-                  bool concurrent_search = false);
-
 class ByteArrayShape final : public AllStatic {
  public:
   static constexpr int kElementSize = kUInt8Size;
@@ -899,8 +894,8 @@ using FixedInt64Array = FixedIntegerArrayBase<int64_t, ByteArray>;
 using FixedUInt64Array = FixedIntegerArrayBase<uint64_t, ByteArray>;
 
 // Use with care! Raw addresses on the heap are not safe in combination with
-// the sandbox. Use an ExternalPointerArray instead. However, this can for
-// example be used to store sandboxed pointers, which is safe.
+// the sandbox. However, this can for example be used to store sandboxed
+// pointers, which is safe.
 template <typename Base>
 class FixedAddressArrayBase : public FixedIntegerArrayBase<Address, Base> {
   using Underlying = FixedIntegerArrayBase<Address, Base>;
@@ -920,47 +915,6 @@ class FixedAddressArrayBase : public FixedIntegerArrayBase<Address, Base> {
 
 using FixedAddressArray = FixedAddressArrayBase<ByteArray>;
 using TrustedFixedAddressArray = FixedAddressArrayBase<TrustedByteArray>;
-
-// An array containing external pointers.
-// When the sandbox is off, this will simply contain system-pointer sized words.
-// Otherwise, it contains external pointer handles, i.e. indices into the
-// external pointer table.
-// This class uses lazily-initialized external pointer slots. As such, its
-// content can simply be zero-initialized, and the external pointer table
-// entries are only allocated when an element is written to for the first time.
-class ExternalPointerArray : public FixedArrayBase {
- public:
-  template <ExternalPointerTag tag>
-  inline Address get(int index, Isolate* isolate);
-  template <ExternalPointerTag tag>
-  inline void set(int index, Isolate* isolate, Address value);
-
-  static inline Handle<ExternalPointerArray> New(
-      Isolate* isolate, int length,
-      AllocationType allocation = AllocationType::kYoung);
-
-  static constexpr int SizeFor(int length) {
-    return kHeaderSize + length * kExternalPointerSlotSize;
-  }
-
-  static constexpr int OffsetOfElementAt(int index) {
-    return kHeaderSize + index * kExternalPointerSlotSize;
-  }
-
-  // Maximal length of a single ExternalPointerArray.
-  static const int kMaxLength = FixedArrayBase::kMaxSize - kHeaderSize;
-  static_assert(Internals::IsValidSmi(kMaxLength),
-                "ExternalPointerArray maxLength not a Smi");
-
-  class BodyDescriptor;
-
-  static constexpr int kPointersOffset = kHeaderSize;
-
-  DECL_PRINTER(ExternalPointerArray)
-  DECL_VERIFIER(ExternalPointerArray)
-
-  OBJECT_CONSTRUCTORS(ExternalPointerArray, FixedArrayBase);
-};
 
 template <class T, class Super>
 class PodArrayBase : public Super {

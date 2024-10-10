@@ -5,6 +5,7 @@
 #include "src/codegen/arm64/assembler-arm64-inl.h"
 #include "src/codegen/arm64/constants-arm64.h"
 #include "src/codegen/arm64/macro-assembler-arm64-inl.h"
+#include "src/codegen/interface-descriptors-inl.h"
 #include "src/codegen/machine-type.h"
 #include "src/codegen/optimized-compilation-info.h"
 #include "src/compiler/backend/code-generator-impl.h"
@@ -17,6 +18,7 @@
 #include "src/heap/mutable-page-metadata.h"
 
 #if V8_ENABLE_WEBASSEMBLY
+#include "src/wasm/wasm-linkage.h"
 #include "src/wasm/wasm-objects.h"
 #endif  // V8_ENABLE_WEBASSEMBLY
 
@@ -858,7 +860,9 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         __ cmp(cp, temp);
         __ Assert(eq, AbortReason::kWrongFunctionContext);
       }
-      __ CallJSFunction(func);
+      uint32_t num_arguments =
+          i.InputUint32(instr->JSCallArgumentCountInputIndex());
+      __ CallJSFunction(func, num_arguments);
       RecordCallPosition(instr);
       frame_access_state()->ClearSPDelta();
       break;
@@ -1880,6 +1884,9 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     case kArm64Float64ToFloat32:
       __ Fcvt(i.OutputDoubleRegister().S(), i.InputDoubleRegister(0));
+      break;
+    case kArm64Float64ToFloat16:
+      __ Fcvt(i.OutputDoubleRegister().H(), i.InputDoubleRegister(0));
       break;
     case kArm64Float32ToInt32: {
       __ Fcvtzs(i.OutputRegister32(), i.InputFloat32Register(0));
@@ -3532,34 +3539,29 @@ void CodeGenerator::AssembleArchBinarySearchSwitch(Instruction* instr) {
 void CodeGenerator::AssembleArchTableSwitch(Instruction* instr) {
   Arm64OperandConverter i(this, instr);
   UseScratchRegisterScope scope(masm());
-  Register input = i.InputRegister32(0);
-  Register temp = scope.AcquireX();
+  Register input = i.InputRegister64(0);
   size_t const case_count = instr->InputCount() - 2;
-  Label table;
-  __ Cmp(input, case_count);
-  __ B(hs, GetLabel(i.InputRpo(1)));
-  __ Adr(temp, &table);
-  int entry_size_log2 = 2;
-#ifdef V8_ENABLE_CONTROL_FLOW_INTEGRITY
-  ++entry_size_log2;  // Account for BTI.
-  constexpr int instructions_per_jump_target = 1;
-#else
-  constexpr int instructions_per_jump_target = 0;
-#endif
-  constexpr int instructions_per_case = 1 + instructions_per_jump_target;
-  __ Add(temp, temp, Operand(input, UXTW, entry_size_log2));
-  __ Br(temp);
-  {
-    const size_t instruction_count =
-        case_count * instructions_per_case + instructions_per_jump_target;
-    MacroAssembler::BlockPoolsScope block_pools(masm(),
-                                                instruction_count * kInstrSize);
-    __ Bind(&table);
-    for (size_t index = 0; index < case_count; ++index) {
-      __ JumpTarget();
-      __ B(GetLabel(i.InputRpo(index + 2)));
-    }
-    __ JumpTarget();
+
+  base::Vector<Label*> cases = zone()->AllocateVector<Label*>(case_count);
+  for (size_t index = 0; index < case_count; ++index) {
+    cases[index] = GetLabel(i.InputRpo(index + 2));
+  }
+  Label* fallthrough = GetLabel(i.InputRpo(1));
+  __ Cmp(input, Immediate(case_count));
+  __ B(fallthrough, hs);
+
+  Label* const jump_table = AddJumpTable(cases);
+  Register table = scope.AcquireX();
+  __ Adr(table, jump_table, MacroAssembler::kAdrFar);
+  __ Ldr(table, MemOperand(table, input, LSL, kSystemPointerSizeLog2));
+  __ Br(table);
+}
+
+void CodeGenerator::AssembleJumpTable(base::Vector<Label*> targets) {
+  const size_t jump_table_size = targets.size() * kSystemPointerSize;
+  MacroAssembler::BlockPoolsScope no_pool_inbetween(masm(), jump_table_size);
+  for (auto target : targets) {
+    __ dcptr(target);
   }
 }
 
@@ -3624,21 +3626,13 @@ void CodeGenerator::AssembleConstructFrame() {
       Register scratch = temps.AcquireX();
       __ Mov(scratch,
              StackFrame::TypeToMarker(info()->GetOutputStackFrameType()));
-      __ Push<MacroAssembler::kSignLR>(lr, fp, scratch, kWasmInstanceRegister);
+      __ Push<MacroAssembler::kSignLR>(lr, fp, scratch,
+                                       kWasmImplicitArgRegister);
       static constexpr int kSPToFPDelta = 2 * kSystemPointerSize;
       __ Add(fp, sp, kSPToFPDelta);
       if (call_descriptor->IsWasmCapiFunction()) {
         // The C-API function has one extra slot for the PC.
         required_slots++;
-      } else if (call_descriptor->IsWasmImportWrapper()) {
-        // If the wrapper is running on a secondary stack, it will switch to the
-        // central stack and fill these slots with the central stack pointer and
-        // secondary stack limit. Otherwise the slots remain empty.
-        static_assert(WasmImportWrapperFrameConstants::kCentralStackSPOffset ==
-                      -24);
-        static_assert(
-            WasmImportWrapperFrameConstants::kSecondaryStackLimitOffset == -32);
-        __ Push(xzr, xzr);
       }
 #endif  // V8_ENABLE_WEBASSEMBLY
     } else if (call_descriptor->kind() == CallDescriptor::kCallCodeObject) {
@@ -3701,13 +3695,30 @@ void CodeGenerator::AssembleConstructFrame() {
         __ B(hs, &done);
       }
 
-      __ Call(static_cast<intptr_t>(Builtin::kWasmStackOverflow),
-              RelocInfo::WASM_STUB_CALL);
-      // The call does not return, hence we can ignore any references and just
-      // define an empty safepoint.
-      ReferenceMap* reference_map = zone()->New<ReferenceMap>(zone());
-      RecordSafepoint(reference_map);
-      if (v8_flags.debug_code) __ Brk(0);
+      if (v8_flags.experimental_wasm_growable_stacks) {
+        CPURegList regs_to_save(kXRegSizeInBits, RegList{});
+        regs_to_save.Combine(WasmHandleStackOverflowDescriptor::GapRegister());
+        regs_to_save.Combine(
+            WasmHandleStackOverflowDescriptor::FrameBaseRegister());
+        for (auto reg : wasm::kGpParamRegisters) regs_to_save.Combine(reg);
+        __ PushCPURegList(regs_to_save);
+        __ Mov(WasmHandleStackOverflowDescriptor::GapRegister(),
+               required_slots * kSystemPointerSize);
+        __ Add(
+            WasmHandleStackOverflowDescriptor::FrameBaseRegister(), fp,
+            Operand(call_descriptor->ParameterSlotCount() * kSystemPointerSize +
+                    CommonFrameConstants::kFixedFrameSizeAboveFp));
+        __ CallBuiltin(Builtin::kWasmHandleStackOverflow);
+        __ PopCPURegList(regs_to_save);
+      } else {
+        __ Call(static_cast<intptr_t>(Builtin::kWasmStackOverflow),
+                RelocInfo::WASM_STUB_CALL);
+        // The call does not return, hence we can ignore any references and just
+        // define an empty safepoint.
+        ReferenceMap* reference_map = zone()->New<ReferenceMap>(zone());
+        RecordSafepoint(reference_map);
+        if (v8_flags.debug_code) __ Brk(0);
+      }
       __ Bind(&done);
     }
 #endif  // V8_ENABLE_WEBASSEMBLY
@@ -3773,6 +3784,37 @@ void CodeGenerator::AssembleReturn(InstructionOperand* additional_pop_count) {
       __ Assert(eq, AbortReason::kUnexpectedAdditionalPopValue);
     }
   }
+
+#if V8_ENABLE_WEBASSEMBLY
+  if (call_descriptor->IsWasmFunctionCall() &&
+      v8_flags.experimental_wasm_growable_stacks) {
+    {
+      UseScratchRegisterScope temps{masm()};
+      Register scratch = temps.AcquireX();
+      __ Ldr(scratch, MemOperand(fp, TypedFrameConstants::kFrameTypeOffset));
+      __ Cmp(scratch,
+             Operand(StackFrame::TypeToMarker(StackFrame::WASM_SEGMENT_START)));
+    }
+    Label done;
+    __ B(ne, &done);
+    CPURegList regs_to_save(kXRegSizeInBits, RegList{});
+    for (auto reg : wasm::kGpReturnRegisters) regs_to_save.Combine(reg);
+    __ PushCPURegList(regs_to_save);
+    __ Mov(kCArgRegs[0], ExternalReference::isolate_address());
+    __ CallCFunction(ExternalReference::wasm_shrink_stack(), 1);
+    __ Mov(fp, kReturnRegister0);
+    __ PopCPURegList(regs_to_save);
+    if (masm()->options().enable_simulator_code) {
+      // The next instruction after shrinking stack is leaving the frame.
+      // So SP will be set to old FP there. Switch simulator stack limit here.
+      UseScratchRegisterScope temps{masm()};
+      temps.Exclude(x16);
+      __ LoadStackLimit(x16, StackLimitKind::kRealStackLimit);
+      __ hlt(kImmExceptionIsSwitchStackLimit);
+    }
+    __ bind(&done);
+  }
+#endif  // V8_ENABLE_WEBASSEMBLY
 
   Register argc_reg = x3;
   // Functions with JS linkage have at least one parameter (the receiver).
@@ -4254,11 +4296,6 @@ void CodeGenerator::AssembleSwap(InstructionOperand* source,
     default:
       UNREACHABLE();
   }
-}
-
-void CodeGenerator::AssembleJumpTable(Label** targets, size_t target_count) {
-  // On 64-bit ARM we emit the jump tables inline.
-  UNREACHABLE();
 }
 
 #undef __

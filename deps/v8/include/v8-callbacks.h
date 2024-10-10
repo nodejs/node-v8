@@ -254,15 +254,7 @@ using AddCrashKeyCallback = void (*)(CrashKeyId id, const std::string& value);
 using BeforeCallEnteredCallback = void (*)(Isolate*);
 using CallCompletedCallback = void (*)(Isolate*);
 
-// --- AllowCodeGenerationFromStrings callbacks ---
-
-/**
- * Callback to check if code generation from strings is allowed. See
- * Context::AllowCodeGenerationFromStrings.
- */
-using AllowCodeGenerationFromStringsCallback = bool (*)(Local<Context> context,
-                                                        Local<String> source);
-
+// --- Modify Code Generation From Strings Callback ---
 struct ModifyCodeGenerationFromStringsResult {
   // If true, proceed with the codegen algorithm. Otherwise, block it.
   bool codegen_allowed = false;
@@ -271,22 +263,6 @@ struct ModifyCodeGenerationFromStringsResult {
   // This field is considered only if codegen_allowed is true.
   MaybeLocal<String> modified_source;
 };
-
-/**
- * Access type specification.
- */
-enum AccessType {
-  ACCESS_GET,
-  ACCESS_SET,
-  ACCESS_HAS,
-  ACCESS_DELETE,
-  ACCESS_KEYS
-};
-
-// --- Failed Access Check Callback ---
-
-using FailedAccessCheckCallback = void (*)(Local<Object> target,
-                                           AccessType type, Local<Value> data);
 
 /**
  * Callback to check if codegen is allowed from a source object, and convert
@@ -299,6 +275,22 @@ using ModifyCodeGenerationFromStringsCallback2 =
     ModifyCodeGenerationFromStringsResult (*)(Local<Context> context,
                                               Local<Value> source,
                                               bool is_code_like);
+
+// --- Failed Access Check Callback ---
+
+/**
+ * Access type specification.
+ */
+enum AccessType {
+  ACCESS_GET,
+  ACCESS_SET,
+  ACCESS_HAS,
+  ACCESS_DELETE,
+  ACCESS_KEYS
+};
+
+using FailedAccessCheckCallback = void (*)(Local<Object> target,
+                                           AccessType type, Local<Value> data);
 
 // --- WebAssembly compilation callbacks ---
 using ExtensionCallback = bool (*)(const FunctionCallbackInfo<Value>&);
@@ -376,6 +368,47 @@ using HostImportModuleDynamicallyCallback = MaybeLocal<Promise> (*)(
     Local<Context> context, Local<Data> host_defined_options,
     Local<Value> resource_name, Local<String> specifier,
     Local<FixedArray> import_attributes);
+
+/**
+ * HostImportModuleWithPhaseDynamicallyCallback is called when we
+ * require the embedder to load a module with a specific phase. This is used
+ * as part of the dynamic import syntax.
+ *
+ * The referrer contains metadata about the script/module that calls
+ * import.
+ *
+ * The specifier is the name of the module that should be imported.
+ *
+ * The phase is the phase of the import requested.
+ *
+ * The import_attributes are import attributes for this request in the form:
+ * [key1, value1, key2, value2, ...] where the keys and values are of type
+ * v8::String. Note, unlike the FixedArray passed to ResolveModuleCallback and
+ * returned from ModuleRequest::GetImportAttributes(), this array does not
+ * contain the source Locations of the attributes.
+ *
+ * The Promise returned from this function is forwarded to userland
+ * JavaScript. The embedder must resolve this promise according to the phase
+ * requested:
+ * - For ModuleImportPhase::kSource, the promise must be resolved with a
+ *   compiled ModuleSource object, or rejected with a ReferenceError if the
+ *   module does not support source representation.
+ * - For ModuleImportPhase::kEvaluation, the promise must be resolved with a
+ *   ModuleNamespace object of a module that has been compiled, instantiated,
+ *   and evaluated.
+ *
+ * In case of an exception, the embedder must reject this promise with the
+ * exception. If the promise creation itself fails (e.g. due to stack
+ * overflow), the embedder must propagate that exception by returning an empty
+ * MaybeLocal.
+ *
+ * This callback is still experimental and is only invoked for source phase
+ * imports.
+ */
+using HostImportModuleWithPhaseDynamicallyCallback = MaybeLocal<Promise> (*)(
+    Local<Context> context, Local<Data> host_defined_options,
+    Local<Value> resource_name, Local<String> specifier,
+    ModuleImportPhase phase, Local<FixedArray> import_attributes);
 
 /**
  * Callback for requesting a compile hint for a function from the embedder. The

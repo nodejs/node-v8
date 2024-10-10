@@ -45,13 +45,12 @@ bitfield struct SharedFunctionInfoFlags2 extends uint8 {
   class_scope_has_private_brand: bool: 1 bit;
   has_static_private_methods_or_accessors: bool: 1 bit;
   // In case another bit is needed here it should be possible to combine
-  // is_sparkplug_compiling, sparkplug_compiled, cached_tiering_decision, and
-  // function_context_independent_compiled into a SharedTieringState enum
-  // using only 4 bits.
+  // is_sparkplug_compiling, cached_tiering_decision, and
+  // function_context_independent_compiled into a SharedTieringState enum using
+  // only 4 bits.
   is_sparkplug_compiling: bool: 1 bit;
   maglev_compilation_failed: bool: 1 bit;
-  sparkplug_compiled: bool: 1 bit;
-  cached_tiering_decision: CachedTieringDecision: 2 bit;
+  cached_tiering_decision: CachedTieringDecision: 3 bit;
   function_context_independent_compiled: bool: 1 bit;
 }
 
@@ -76,11 +75,9 @@ extern class SharedFunctionInfo extends HeapObject {
   outer_scope_info_or_feedback_metadata: HeapObject;
   script: Script|Undefined;
   // [length]: The function length - usually the number of declared parameters
-  // (always without the receiver).
-  // Use up to 2^16-2 parameters (16 bits of values, where one is reserved for
-  // kDontAdaptArgumentsSentinel). The value is only reliable when the function
+  // (always without the receiver). The value is only reliable when the function
   // has been compiled.
-  length: int16;
+  length: uint16;
   // [formal_parameter_count]: The number of declared parameters (or the special
   // value kDontAdaptArgumentsSentinel to indicate that arguments are passed
   // unaltered).

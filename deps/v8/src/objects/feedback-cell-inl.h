@@ -55,9 +55,13 @@ void FeedbackCell::clear_interrupt_budget() {
 }
 
 #ifdef V8_ENABLE_LEAPTIERING
-void FeedbackCell::initialize_dispatch_handle(IsolateForSandbox isolate,
-                                              uint16_t parameter_count) {
-  InitJSDispatchHandleField(kDispatchHandleOffset, isolate, parameter_count);
+void FeedbackCell::allocate_dispatch_handle(IsolateForSandbox isolate,
+                                            uint16_t parameter_count,
+                                            Tagged<Code> code,
+                                            WriteBarrierMode mode) {
+  DCHECK_EQ(dispatch_handle(), kNullJSDispatchHandle);
+  AllocateAndInstallJSDispatchHandle(kDispatchHandleOffset, isolate,
+                                     parameter_count, code, mode);
 }
 
 void FeedbackCell::clear_dispatch_handle() {
@@ -78,9 +82,9 @@ void FeedbackCell::set_dispatch_handle(JSDispatchHandle new_handle) {
 void FeedbackCell::IncrementClosureCount(Isolate* isolate) {
   ReadOnlyRoots r(isolate);
   if (map() == r.no_closures_cell_map()) {
-    set_map(r.one_closure_cell_map());
+    set_map(isolate, r.one_closure_cell_map());
   } else if (map() == r.one_closure_cell_map()) {
-    set_map(r.many_closures_cell_map());
+    set_map(isolate, r.many_closures_cell_map());
   } else {
     DCHECK(map() == r.many_closures_cell_map());
   }

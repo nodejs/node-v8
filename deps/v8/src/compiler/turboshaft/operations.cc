@@ -16,9 +16,9 @@
 #include "src/common/globals.h"
 #include "src/compiler/backend/instruction-selector.h"
 #include "src/compiler/frame-states.h"
-#include "src/compiler/graph-visualizer.h"
 #include "src/compiler/js-heap-broker.h"
 #include "src/compiler/machine-operator.h"
+#include "src/compiler/turbofan-graph-visualizer.h"
 #include "src/compiler/turboshaft/deopt-data.h"
 #include "src/compiler/turboshaft/graph.h"
 #include "src/handles/handles-inl.h"
@@ -572,6 +572,10 @@ void ConstantOp::PrintOptions(std::ostream& os) const {
     case Kind::kRelocatableWasmCanonicalSignatureId:
       os << "relocatable wasm canonical signature ID: "
          << static_cast<int32_t>(storage.integral);
+      break;
+    case Kind::kRelocatableWasmIndirectCallTarget:
+      os << "relocatable wasm indirect call target: "
+         << static_cast<uint32_t>(storage.integral);
       break;
   }
   os << ']';
@@ -1505,6 +1509,7 @@ const RegisterRepresentation& RepresentationFor(wasm::ValueType type) {
       return kSimd128;
     case wasm::kVoid:
     case wasm::kRtt:
+    case wasm::kTop:
     case wasm::kBottom:
       UNREACHABLE();
   }

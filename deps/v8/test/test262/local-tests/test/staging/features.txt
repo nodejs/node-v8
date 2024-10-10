@@ -15,10 +15,6 @@
 # https://github.com/tc39/proposal-intl-locale-info
 Intl.Locale-info
 
-# FinalizationRegistry#cleanupSome
-# https://github.com/tc39/proposal-cleanup-some
-FinalizationRegistry.prototype.cleanupSome
-
 # Intl.NumberFormat V3
 # https://github.com/tc39/proposal-intl-numberformat-v3
 Intl.NumberFormat-v3
@@ -30,12 +26,6 @@ legacy-regexp
 # Import Attributes
 # https://github.com/tc39/proposal-import-attributes/
 import-attributes
-
-# Import Assertions (Normative Optional, Deprecated)
-# This feature should not be implemented, but if it is it must
-# respect the specified behavior
-# https://github.com/tc39/proposal-import-attributes/
-import-assertions
 
 # JSON modules
 # https://github.com/tc39/proposal-json-modules

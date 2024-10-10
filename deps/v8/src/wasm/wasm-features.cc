@@ -46,15 +46,11 @@ WasmEnabledFeatures WasmEnabledFeatures::FromContext(
     if (isolate->IsWasmStringRefEnabled(context)) {
       features.Add(WasmEnabledFeature::stringref);
     }
-    if (isolate->IsWasmInliningEnabled(context)) {
-      features.Add(WasmEnabledFeature::inlining);
-    }
     if (isolate->IsWasmImportedStringsEnabled(context)) {
       features.Add(WasmEnabledFeature::imported_strings);
     }
     if (isolate->IsWasmJSPIEnabled(context)) {
       features.Add(WasmEnabledFeature::jspi);
-      features.Add(WasmEnabledFeature::type_reflection);
     }
   }
   // This space intentionally left blank for future Wasm origin trials.

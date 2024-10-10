@@ -70,11 +70,13 @@ double BoundedAverageSpeed(const base::RingBuffer<BytesAndDuration>& buffer) {
 
 GCTracer::Event::Event(Type type, State state,
                        GarbageCollectionReason gc_reason,
-                       const char* collector_reason)
+                       const char* collector_reason,
+                       GCTracer::Priority priority)
     : type(type),
       state(state),
       gc_reason(gc_reason),
-      collector_reason(collector_reason) {}
+      collector_reason(collector_reason),
+      priority(priority) {}
 
 const char* ToString(GCTracer::Event::Type type, bool short_name) {
   switch (type) {
@@ -173,7 +175,7 @@ GCTracer::GCTracer(Heap* heap, base::TimeTicks startup_time,
                    GarbageCollectionReason initial_gc_reason)
     : heap_(heap),
       current_(Event::Type::START, Event::State::NOT_RUNNING, initial_gc_reason,
-               nullptr),
+               nullptr, heap_->isolate()->priority()),
       previous_(current_),
       allocation_time_(startup_time),
       previous_mark_compact_end_time_(startup_time) {
@@ -228,6 +230,8 @@ void GCTracer::StartCycle(GarbageCollector collector,
   DCHECK(!young_gc_while_full_gc_);
 
   young_gc_while_full_gc_ = current_.state != Event::State::NOT_RUNNING;
+  CHECK_IMPLIES(v8_flags.separate_gc_phases && young_gc_while_full_gc_,
+                current_.state == Event::State::SWEEPING);
   if (young_gc_while_full_gc_) {
     // The cases for interruption are: Scavenger, MinorMS interrupting sweeping.
     // In both cases we are fine with fetching background counters now and
@@ -262,7 +266,8 @@ void GCTracer::StartCycle(GarbageCollector collector,
   DCHECK_EQ(Event::State::NOT_RUNNING, previous_.state);
 
   previous_ = current_;
-  current_ = Event(type, Event::State::MARKING, gc_reason, collector_reason);
+  current_ = Event(type, Event::State::MARKING, gc_reason, collector_reason,
+                   heap_->isolate()->priority());
 
   switch (marking) {
     case MarkingType::kAtomic:
@@ -812,7 +817,6 @@ void GCTracer::PrintNVP() const {
           "time_to_safepoint=%.2f "
           "heap.prologue=%.2f "
           "heap.epilogue=%.2f "
-          "heap.epilogue.reduce_new_space=%.2f "
           "heap.external.prologue=%.2f "
           "heap.external.epilogue=%.2f "
           "heap.external_weak_global_handles=%.2f "
@@ -852,7 +856,6 @@ void GCTracer::PrintNVP() const {
           current_.scopes[Scope::TIME_TO_SAFEPOINT].InMillisecondsF(),
           current_scope(Scope::HEAP_PROLOGUE),
           current_scope(Scope::HEAP_EPILOGUE),
-          current_scope(Scope::HEAP_EPILOGUE_REDUCE_NEW_SPACE),
           current_scope(Scope::HEAP_EXTERNAL_PROLOGUE),
           current_scope(Scope::HEAP_EXTERNAL_EPILOGUE),
           current_scope(Scope::HEAP_EXTERNAL_WEAK_GLOBAL_HANDLES),
@@ -984,7 +987,6 @@ void GCTracer::PrintNVP() const {
           "heap.prologue=%.2f "
           "heap.embedder_tracing_epilogue=%.2f "
           "heap.epilogue=%.2f "
-          "heap.epilogue.reduce_new_space=%.2f "
           "heap.external.prologue=%.1f "
           "heap.external.epilogue=%.1f "
           "heap.external.weak_global_handles=%.1f "
@@ -1078,7 +1080,6 @@ void GCTracer::PrintNVP() const {
           current_scope(Scope::HEAP_PROLOGUE),
           current_scope(Scope::HEAP_EMBEDDER_TRACING_EPILOGUE),
           current_scope(Scope::HEAP_EPILOGUE),
-          current_scope(Scope::HEAP_EPILOGUE_REDUCE_NEW_SPACE),
           current_scope(Scope::HEAP_EXTERNAL_PROLOGUE),
           current_scope(Scope::HEAP_EXTERNAL_EPILOGUE),
           current_scope(Scope::HEAP_EXTERNAL_WEAK_GLOBAL_HANDLES),
@@ -1559,6 +1560,7 @@ void GCTracer::ReportFullCycleToRecorder() {
 
   v8::metrics::GarbageCollectionFullCycle event;
   event.reason = static_cast<int>(current_.gc_reason);
+  event.priority = current_.priority;
 
   // Managed C++ heap statistics:
   if (cpp_heap) {
@@ -1791,6 +1793,7 @@ void GCTracer::ReportYoungCycleToRecorder() {
   v8::metrics::GarbageCollectionYoungCycle event;
   // Reason:
   event.reason = static_cast<int>(current_.gc_reason);
+  event.priority = current_.priority;
 #if defined(CPPGC_YOUNG_GENERATION)
   // Managed C++ heap statistics:
   auto* cpp_heap = v8::internal::CppHeap::From(heap_->cpp_heap());
@@ -1874,6 +1877,15 @@ GarbageCollector GCTracer::GetCurrentCollector() const {
     case Event::Type::START:
       UNREACHABLE();
   }
+}
+
+void GCTracer::UpdateCurrentEventPriority(GCTracer::Priority priority) {
+  // If the priority is changed, reset the priority field to denote a mixed
+  // priority cycle.
+  if (!current_.priority.has_value() || (current_.priority == priority)) {
+    return;
+  }
+  current_.priority = std::nullopt;
 }
 
 #ifdef DEBUG

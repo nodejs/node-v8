@@ -35,19 +35,17 @@ namespace compiler {
 
 class CodeGenerator::JumpTable final : public ZoneObject {
  public:
-  JumpTable(JumpTable* next, Label** targets, size_t target_count)
-      : next_(next), targets_(targets), target_count_(target_count) {}
+  JumpTable(JumpTable* next, const base::Vector<Label*>& targets)
+      : next_(next), targets_(targets) {}
 
   Label* label() { return &label_; }
   JumpTable* next() const { return next_; }
-  Label** targets() const { return targets_; }
-  size_t target_count() const { return target_count_; }
+  const base::Vector<Label*>& targets() const { return targets_; }
 
  private:
   Label label_;
   JumpTable* const next_;
-  Label** const targets_;
-  size_t const target_count_;
+  base::Vector<Label*> const targets_;
 };
 
 CodeGenerator::CodeGenerator(Zone* codegen_zone, Frame* frame, Linkage* linkage,
@@ -237,12 +235,14 @@ void CodeGenerator::AssembleCode() {
 
 #if V8_ENABLE_WEBASSEMBLY
   if (info->code_kind() == CodeKind::WASM_TO_JS_FUNCTION ||
-      info->builtin() == Builtin::kWasmToJsWrapperCSA) {
+      info->builtin() == Builtin::kWasmToJsWrapperCSA ||
+      wasm::BuiltinLookup::IsWasmBuiltinId(info->builtin())) {
     // By default the code generator can convert slot IDs to SP-relative memory
-    // operands depending on the offset. However, the SP may switch to the
-    // central stack at the beginning of the wrapper if the caller is on a
-    // secondary stack, and switch back at the end. So for the whole duration
-    // of the wrapper, only FP-relative addressing is valid.
+    // operands depending on the offset if the encoding is more efficient.
+    // However the SP may switch to the central stack for wasm-to-js wrappers
+    // and wasm builtins, so disable this optimization there.
+    // TODO(thibaudm): Disable this more selectively, only wasm builtins that
+    // call JS builtins can switch, and only around the call site.
     frame_access_state()->SetFPRelativeOnly(true);
   }
 #endif
@@ -328,6 +328,12 @@ void CodeGenerator::AssembleCode() {
     frame_access_state()->MarkHasFrame(block->needs_frame());
 
     masm()->bind(GetLabel(current_block_));
+
+#ifdef V8_ENABLE_CONTROL_FLOW_INTEGRITY
+    if (block->IsSwitchTarget()) {
+      masm()->JumpTarget();
+    }
+#endif
 
     if (block->must_construct_frame()) {
       AssembleConstructFrame();
@@ -434,7 +440,7 @@ void CodeGenerator::AssembleCode() {
     masm()->Align(kSystemPointerSize);
     for (JumpTable* table = jump_tables_; table; table = table->next()) {
       masm()->bind(table->label());
-      AssembleJumpTable(table->targets(), table->target_count());
+      AssembleJumpTable(table->targets());
     }
   }
 
@@ -537,6 +543,10 @@ MaybeHandle<Code> CodeGenerator::FinalizeCode() {
       .set_stack_slots(frame()->GetTotalFrameSlotCount())
       .set_profiler_data(info()->profiler_data())
       .set_osr_offset(info()->osr_offset());
+
+  if (info()->function_context_specializing()) {
+    builder.set_is_context_specialized();
+  }
 
   if (CodeKindUsesDeoptimizationData(info()->code_kind())) {
     builder.set_deoptimization_data(GenerateDeoptimizationData());
@@ -936,10 +946,12 @@ bool CodeGenerator::GetSlotAboveSPBeforeTailCall(Instruction* instr,
 StubCallMode CodeGenerator::DetermineStubCallMode() const {
 #if V8_ENABLE_WEBASSEMBLY
   CodeKind code_kind = info()->code_kind();
-  if (code_kind == CodeKind::WASM_FUNCTION ||
-      code_kind == CodeKind::WASM_TO_CAPI_FUNCTION ||
-      code_kind == CodeKind::WASM_TO_JS_FUNCTION) {
+  if (code_kind == CodeKind::WASM_FUNCTION) {
     return StubCallMode::kCallWasmRuntimeStub;
+  }
+  if (code_kind == CodeKind::WASM_TO_CAPI_FUNCTION ||
+      code_kind == CodeKind::WASM_TO_JS_FUNCTION) {
+    return StubCallMode::kCallBuiltinPointer;
   }
 #endif  // V8_ENABLE_WEBASSEMBLY
   return StubCallMode::kCallCodeObject;
@@ -1100,10 +1112,16 @@ base::OwnedVector<uint8_t> CodeGenerator::GenerateWasmDeoptimizationData() {
 }
 #endif  // V8_ENABLE_WEBASSEMBLY
 
-Label* CodeGenerator::AddJumpTable(Label** targets, size_t target_count) {
-  jump_tables_ = zone()->New<JumpTable>(jump_tables_, targets, target_count);
+Label* CodeGenerator::AddJumpTable(base::Vector<Label*> targets) {
+  jump_tables_ = zone()->New<JumpTable>(jump_tables_, targets);
   return jump_tables_->label();
 }
+
+#ifndef V8_TARGET_ARCH_X64
+void CodeGenerator::AssemblePlaceHolderForLazyDeopt(Instruction* instr) {
+  UNREACHABLE();
+}
+#endif
 
 void CodeGenerator::RecordCallPosition(Instruction* instr) {
   const bool needs_frame_state =

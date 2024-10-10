@@ -6,6 +6,7 @@
 #define V8_HEAP_PRETENURING_HANDLER_INL_H_
 
 #include "src/base/sanitizer/msan.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/heap/mutable-page-metadata.h"
 #include "src/heap/new-spaces.h"
 #include "src/heap/pretenuring-handler.h"
@@ -16,25 +17,29 @@
 namespace v8 {
 namespace internal {
 
+// static
 void PretenuringHandler::UpdateAllocationSite(
-    Tagged<Map> map, Tagged<HeapObject> object,
+    Heap* heap, Tagged<Map> map, Tagged<HeapObject> object,
     PretenuringFeedbackMap* pretenuring_feedback) {
-  DCHECK_NE(pretenuring_feedback, &global_pretenuring_feedback_);
+  DCHECK_NE(pretenuring_feedback,
+            &heap->pretenuring_handler()->global_pretenuring_feedback_);
 #ifdef DEBUG
   MemoryChunk* chunk = MemoryChunk::FromHeapObject(object);
   // MemoryChunk::IsToPage() is not available with sticky mark-bits.
   DCHECK_IMPLIES(v8_flags.sticky_mark_bits || chunk->IsToPage(),
                  v8_flags.minor_ms);
-  DCHECK_IMPLIES(!v8_flags.minor_ms && !Heap::InYoungGeneration(object),
+  DCHECK_IMPLIES(!v8_flags.minor_ms && !HeapLayout::InYoungGeneration(object),
                  chunk->IsFlagSet(MemoryChunk::PAGE_NEW_OLD_PROMOTION));
 #endif
-  if (!v8_flags.allocation_site_pretenuring ||
+  if (V8_UNLIKELY(!v8_flags.allocation_site_pretenuring) ||
       !AllocationSite::CanTrack(map->instance_type())) {
     return;
   }
   Tagged<AllocationMemento> memento_candidate =
-      FindAllocationMemento<kForGC>(map, object);
-  if (memento_candidate.is_null()) return;
+      FindAllocationMemento<kForGC>(heap, map, object);
+  if (memento_candidate.is_null()) {
+    return;
+  }
   DCHECK(IsJSObjectMap(map));
 
   // Entering cached feedback is used in the parallel case. We are not allowed
@@ -44,9 +49,10 @@ void PretenuringHandler::UpdateAllocationSite(
   (*pretenuring_feedback)[UncheckedCast<AllocationSite>(Tagged<Object>(key))]++;
 }
 
+// static
 template <PretenuringHandler::FindMementoMode mode>
 Tagged<AllocationMemento> PretenuringHandler::FindAllocationMemento(
-    Tagged<Map> map, Tagged<HeapObject> object) {
+    Heap* heap, Tagged<Map> map, Tagged<HeapObject> object) {
   Address object_address = object.address();
   Address memento_address =
       object_address + ALIGN_TO_ALLOCATION_ALIGNMENT(object->SizeFromMap(map));
@@ -70,7 +76,7 @@ Tagged<AllocationMemento> PretenuringHandler::FindAllocationMemento(
   // initialized to silence MemorySanitizer warnings.
   MSAN_MEMORY_IS_INITIALIZED(candidate_map_slot.address(), kTaggedSize);
   if (!candidate_map_slot.Relaxed_ContainsMapValue(
-          ReadOnlyRoots(heap_).allocation_memento_map().ptr())) {
+          ReadOnlyRoots(heap).allocation_memento_map().ptr())) {
     return AllocationMemento();
   }
 
@@ -102,8 +108,8 @@ Tagged<AllocationMemento> PretenuringHandler::FindAllocationMemento(
       // Either the object is the last object in the new space, or there is
       // another object of at least word size (the header map word) following
       // it, so suffices to compare ptr and top here.
-      top = heap_->NewSpaceTop();
-      DCHECK(memento_address >= heap_->NewSpaceLimit() ||
+      top = heap->NewSpaceTop();
+      DCHECK(memento_address >= heap->NewSpaceLimit() ||
              memento_address +
                      ALIGN_TO_ALLOCATION_ALIGNMENT(AllocationMemento::kSize) <=
                  top);

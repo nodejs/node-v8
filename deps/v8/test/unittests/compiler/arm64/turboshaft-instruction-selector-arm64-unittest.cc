@@ -2622,7 +2622,7 @@ TEST_F(TurboshaftInstructionSelectorTest, SimdF32x4MulWithDupNegativeTest) {
     m.Return(m.F32x4Mul(m.Parameter(2), shuffle));
     Stream s = m.Build();
     ASSERT_EQ(2U, s.size());
-    // The shuffle is a i8x16.dup of lane 0.
+    // The shuffle is an i8x16.dup of lane 0.
     EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
     EXPECT_EQ(3U, s[0]->InputCount());
     EXPECT_EQ(kArm64FMul, s[1]->arch_opcode());
@@ -2744,7 +2744,7 @@ TEST_F(TurboshaftInstructionSelectorTest, SimdF64x2MulWithDupNegativeTest) {
     m.Return(m.F64x2Mul(m.Parameter(2), shuffle));
     Stream s = m.Build();
     ASSERT_EQ(2U, s.size());
-    // The shuffle is a i8x16.dup of lane 0.
+    // The shuffle is an i8x16.dup of lane 0.
     EXPECT_EQ(kArm64S128Dup, s[0]->arch_opcode());
     EXPECT_EQ(3U, s[0]->InputCount());
     EXPECT_EQ(kArm64FMul, s[1]->arch_opcode());
@@ -5631,7 +5631,7 @@ void TestPokePair(TurboshaftInstructionSelectorTest::StreamBuilder* m,
                   base::Vector<const OpIndex> args, int expected_poke_pair,
                   int expected_poke) {
   auto call_descriptor = TurboshaftInstructionSelectorTest::StreamBuilder::
-      MakeSimpleTSCallDescriptor(zone, builder->Build());
+      MakeSimpleTSCallDescriptor(zone, builder->Get());
 
   OpIndex callee = m->Int64Constant(0);
   m->Call(callee, OpIndex::Invalid(), args, call_descriptor);

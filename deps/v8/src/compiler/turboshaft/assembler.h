@@ -5,7 +5,6 @@
 #ifndef V8_COMPILER_TURBOSHAFT_ASSEMBLER_H_
 #define V8_COMPILER_TURBOSHAFT_ASSEMBLER_H_
 
-#include <concepts>
 #include <cstring>
 #include <iomanip>
 #include <iterator>
@@ -198,8 +197,8 @@ template <typename T>
 class IndexRange : public Range<T> {
  public:
   using base = Range<T>;
-  using value_type = typename base::value_type;
-  using iterator_type = typename base::iterator_type;
+  using value_type = base::value_type;
+  using iterator_type = base::iterator_type;
 
   explicit IndexRange(ConstOrV<T> count) : Range<T>(0, count, 1) {}
 };
@@ -227,8 +226,8 @@ class Sequence : private Range<T> {
   using base = Range<T>;
 
  public:
-  using value_type = typename base::value_type;
-  using iterator_type = typename base::iterator_type;
+  using value_type = base::value_type;
+  using iterator_type = base::iterator_type;
 
   explicit Sequence(ConstOrV<T> begin, ConstOrV<T> stride = 1)
       : base(begin, 0, stride) {}
@@ -732,7 +731,7 @@ struct LoopLabelForHelper<std::tuple<V<Ts>...>> {
 }  // namespace detail
 
 template <typename T>
-using LoopLabelFor = typename detail::LoopLabelForHelper<T>::type;
+using LoopLabelFor = detail::LoopLabelForHelper<T>::type;
 
 Handle<Code> BuiltinCodeHandle(Builtin builtin, Isolate* isolate);
 
@@ -773,65 +772,8 @@ class ValueNumberingReducer;
 template <class Next>
 class EmitProjectionReducer;
 
-template <class Assembler, bool has_gvn, template <class> class... Reducers>
-class ReducerStack {};
-
-// The following overloads of ReducerStack build the reducer stack, with 2
-// subtleties:
-//  - Inserting an EmitProjectionReducer in the right place: right before the
-//    ValueNumberingReducer if the stack has a ValueNumberingReducer, and right
-//    before the last reducer of the stack otherwise.
-//  - Inserting a GenericReducerBase right before the last reducer of the stack.
-//    This last reducer should have a kIsBottomOfStack member defined, and
-//    should be an IR-specific reducer (like TSReducerBase).
-
-// Insert the GenericReducerBase before the bottom-most reducer of the stack.
-template <class Assembler, template <class> class LastReducer>
-class ReducerStack<Assembler, true, LastReducer>
-    : public GenericReducerBase<LastReducer<ReducerStack<Assembler, true>>> {
-  static_assert(LastReducer<ReducerStack<Assembler, false>>::kIsBottomOfStack);
-
- public:
-  using GenericReducerBase<
-      LastReducer<ReducerStack<Assembler, true>>>::GenericReducerBase;
-};
-
-// The stack has no ValueNumberingReducer, so we insert the
-// EmitProjectionReducer right before the GenericReducerBase (which we insert
-// before the bottom-most reducer).
-template <class Assembler, template <class> class LastReducer>
-class ReducerStack<Assembler, false, LastReducer>
-    : public EmitProjectionReducer<
-          GenericReducerBase<LastReducer<ReducerStack<Assembler, false>>>> {
-  static_assert(LastReducer<ReducerStack<Assembler, false>>::kIsBottomOfStack);
-
- public:
-  using EmitProjectionReducer<GenericReducerBase<
-      LastReducer<ReducerStack<Assembler, false>>>>::EmitProjectionReducer;
-};
-
-// We insert an EmitProjectionReducer right before the ValueNumberingReducer
-template <class Assembler, template <class> class... Reducers>
-class ReducerStack<Assembler, true, ValueNumberingReducer, Reducers...>
-    : public EmitProjectionReducer<
-          ValueNumberingReducer<ReducerStack<Assembler, true, Reducers...>>> {
- public:
-  using EmitProjectionReducer<ValueNumberingReducer<
-      ReducerStack<Assembler, true, Reducers...>>>::EmitProjectionReducer;
-};
-
-template <class Assembler, bool has_gvn, template <class> class FirstReducer,
-          template <class> class... Reducers>
-class ReducerStack<Assembler, has_gvn, FirstReducer, Reducers...>
-    : public FirstReducer<ReducerStack<Assembler, has_gvn, Reducers...>> {
- public:
-  using FirstReducer<
-      ReducerStack<Assembler, has_gvn, Reducers...>>::FirstReducer;
-};
-
-template <class Reducers, bool has_gvn>
-class ReducerStack<Assembler<Reducers>, has_gvn> {
- public:
+template <typename Reducers>
+struct StackBottom {
   using AssemblerType = Assembler<Reducers>;
   using ReducerList = Reducers;
   Assembler<ReducerList>& Asm() {
@@ -839,16 +781,29 @@ class ReducerStack<Assembler<Reducers>, has_gvn> {
   }
 };
 
-template <class Reducers>
-struct reducer_stack_type {};
+template <typename ReducerList>
+struct ReducerStack {
+  static constexpr size_t length = reducer_list_length<ReducerList>::value;
+  // We assume a TSReducerBase is at the end of the list.
+  static constexpr size_t base_index =
+      reducer_list_index_of<ReducerList, TSReducerBase>::value;
+  static_assert(base_index == length - 1);
+  // Insert a GenericReducerBase before that.
+  using WithGeneric =
+      reducer_list_insert_at<ReducerList, base_index, GenericReducerBase>::type;
+  // If we have a ValueNumberingReducer in the list, we insert at that index,
+  // otherwise before the reducer_base.
+  static constexpr size_t ep_index =
+      reducer_list_index_of<WithGeneric, ValueNumberingReducer,
+                            base_index>::value;
+  using WithGenericAndEmitProjection =
+      reducer_list_insert_at<WithGeneric, ep_index,
+                             EmitProjectionReducer>::type;
+  static_assert(reducer_list_length<WithGenericAndEmitProjection>::value ==
+                length + 2);
 
-template <template <class> class... Reducers>
-struct reducer_stack_type<reducer_list<Reducers...>> {
-  using type =
-      ReducerStack<Assembler<reducer_list<Reducers...>>,
-                   (is_same_reducer<ValueNumberingReducer, Reducers>::value ||
-                    ...),
-                   Reducers...>;
+  using type = reducer_list_to_stack<WithGenericAndEmitProjection,
+                                     StackBottom<ReducerList>>::type;
 };
 
 template <typename Next>
@@ -857,13 +812,13 @@ class GenericReducerBase;
 // TURBOSHAFT_REDUCER_GENERIC_BOILERPLATE should almost never be needed: it
 // should only be used by the IR-specific base class, while other reducers
 // should simply use `TURBOSHAFT_REDUCER_BOILERPLATE`.
-#define TURBOSHAFT_REDUCER_GENERIC_BOILERPLATE(Name)                      \
-  using ReducerList = typename Next::ReducerList;                         \
-  using assembler_t = compiler::turboshaft::Assembler<ReducerList>;       \
-  assembler_t& Asm() { return *static_cast<assembler_t*>(this); }         \
-  template <class T>                                                      \
-  using ScopedVar = compiler::turboshaft::ScopedVariable<T, assembler_t>; \
-  using CatchScope = compiler::turboshaft::CatchScopeImpl<assembler_t>;   \
+#define TURBOSHAFT_REDUCER_GENERIC_BOILERPLATE(Name)                    \
+  using ReducerList = typename Next::ReducerList;                       \
+  using assembler_t = compiler::turboshaft::Assembler<ReducerList>;     \
+  assembler_t& Asm() { return *static_cast<assembler_t*>(this); }       \
+  template <class T>                                                    \
+  using ScopedVar = compiler::turboshaft::ScopedVar<T, assembler_t>;    \
+  using CatchScope = compiler::turboshaft::CatchScopeImpl<assembler_t>; \
   static constexpr auto& ReducerName() { return #Name; }
 
 // Defines a few helpers to use the Assembler and its stack in Reducers.
@@ -873,30 +828,28 @@ class GenericReducerBase;
   using block_t = typename Next::block_t;
 
 template <class T, class Assembler>
-class ScopedVariable : Variable {
+class Var : protected Variable {
   using value_type = maybe_const_or_v_t<T>;
 
  public:
   template <typename Reducer>
-  explicit ScopedVariable(Reducer* reducer)
-      : Variable(reducer->Asm().NewVariable(
-            static_cast<const RegisterRepresentation&>(V<T>::rep))),
-        assembler_(reducer->Asm()) {}
+  explicit Var(Reducer* reducer) : Var(reducer->Asm()) {}
+
   template <typename Reducer>
-  ScopedVariable(Reducer* reducer, value_type initial_value)
-      : ScopedVariable(reducer) {
+  Var(Reducer* reducer, value_type initial_value) : Var(reducer) {
     assembler_.SetVariable(*this, assembler_.resolve(initial_value));
   }
 
-  ScopedVariable(const ScopedVariable&) = delete;
-  ScopedVariable(ScopedVariable&&) = delete;
-  ScopedVariable& operator=(const ScopedVariable) = delete;
-  ScopedVariable& operator=(ScopedVariable&&) = delete;
-  ~ScopedVariable() {
-    // Explicitly mark the variable as invalid to avoid the creation of
-    // unnecessary loop phis.
-    assembler_.SetVariable(*this, OpIndex::Invalid());
-  }
+  explicit Var(Assembler& assembler)
+      : Variable(assembler.NewVariable(
+            static_cast<const RegisterRepresentation&>(V<T>::rep))),
+        assembler_(assembler) {}
+
+  Var(const Var&) = delete;
+  Var(Var&&) = delete;
+  Var& operator=(const Var) = delete;
+  Var& operator=(Var&&) = delete;
+  ~Var() = default;
 
   void Set(value_type new_value) {
     assembler_.SetVariable(*this, assembler_.resolve(new_value));
@@ -926,8 +879,23 @@ class ScopedVariable : Variable {
   operator OpIndex() const { return Get(); }
   operator OptionalOpIndex() const { return Get(); }
 
- private:
+ protected:
   Assembler& assembler_;
+};
+
+template <typename T, typename Assembler>
+class ScopedVar : public Var<T, Assembler> {
+  using Base = Var<T, Assembler>;
+
+ public:
+  using Base::Base;
+  ~ScopedVar() {
+    // Explicitly mark the variable as invalid to avoid the creation of
+    // unnecessary loop phis.
+    this->assembler_.SetVariable(*this, OpIndex::Invalid());
+  }
+
+  using Base::operator=;
 };
 
 // LABEL_BLOCK is used in Reducers to have a single call forwarding to the next
@@ -974,7 +942,7 @@ class EmitProjectionReducer
     OpIndex new_idx = Continuation{this}.Reduce(args...);
     const Operation& op = Asm().output_graph().Get(new_idx);
     if constexpr (MayThrow(opcode)) {
-      // Operations that can throw are lowered to a Op+DidntThrow, and what we
+      // Operations that can throw are lowered to an Op+DidntThrow, and what we
       // get from Next::Reduce is the DidntThrow.
       return WrapInTupleIfNeeded(op.Cast<DidntThrowOp>(), new_idx);
     }
@@ -1359,10 +1327,12 @@ auto BuildResultTuple(bool bound, Iterable&& iterable, LoopLabel&& loop_header,
 
 }  // namespace detail
 
-template <class Next>
-class GenericAssemblerOpInterface : public Next {
+template <typename Assembler>
+class GenericAssemblerOpInterface {
  public:
-  TURBOSHAFT_REDUCER_BOILERPLATE(GenericAssemblerOpInterface)
+  using assembler_t = Assembler;
+  using block_t = Block;
+  assembler_t& Asm() { return *static_cast<assembler_t*>(this); }
 
   // These methods are used by the assembler macros (BIND, BIND_LOOP, GOTO,
   // GOTO_IF).
@@ -1532,33 +1502,18 @@ class GenericAssemblerOpInterface : public Next {
   }
 };
 
-template <class Next>
+template <typename Assembler>
 class TurboshaftAssemblerOpInterface
-    : public GenericAssemblerOpInterface<Next> {
+    : public GenericAssemblerOpInterface<Assembler> {
  public:
-  TURBOSHAFT_REDUCER_BOILERPLATE(TurboshaftAssemblerOpInterface)
+  using GenericAssemblerOpInterface<Assembler>::Asm;
 
   template <typename... Args>
   explicit TurboshaftAssemblerOpInterface(Args... args)
-      : GenericAssemblerOpInterface<Next>(args...),
+      : GenericAssemblerOpInterface<Assembler>(args...),
         matcher_(Asm().output_graph()) {}
 
   const OperationMatcher& matcher() const { return matcher_; }
-
-  // ReduceProjection eliminates projections to tuples and returns instead the
-  // corresponding tuple input. We do this at the top of the stack to avoid
-  // passing this Projection around needlessly. This is in particular important
-  // to ValueNumberingReducer, which assumes that it's at the bottom of the
-  // stack, and that the BaseReducer will actually emit an Operation. If we put
-  // this projection-to-tuple-simplification in the BaseReducer, then this
-  // assumption of the ValueNumberingReducer will break.
-  V<Any> REDUCE(Projection)(V<Any> tuple, uint16_t index,
-                            RegisterRepresentation rep) {
-    if (auto* tuple_op = Asm().matcher().template TryCast<TupleOp>(tuple)) {
-      return tuple_op->input(index);
-    }
-    return Next::ReduceProjection(tuple, index, rep);
-  }
 
   // Methods to be used by the reducers to reducer operations with the whole
   // reducer stack.
@@ -1688,6 +1643,10 @@ class TurboshaftAssemblerOpInterface
                           UnsignedMulOverflownBits, Word32)
   DECL_SINGLE_REP_BINOP_V(Uint64MulOverflownBits, WordBinop,
                           UnsignedMulOverflownBits, Word64)
+
+  V<Word32> Word32BitwiseNot(ConstOrV<Word32> input) {
+    return Word32BitwiseXor(input, static_cast<uint32_t>(-1));
+  }
 
   V<Word> WordBinop(V<Word> left, V<Word> right, WordBinopOp::Kind kind,
                     WordRepresentation rep) {
@@ -1870,6 +1829,8 @@ class TurboshaftAssemblerOpInterface
                                Word32)
   DECL_SINGLE_REP_COMPARISON_V(Int64LessThanOrEqual, SignedLessThanOrEqual,
                                Word64)
+  DECL_SINGLE_REP_COMPARISON_V(IntPtrLessThanOrEqual, SignedLessThanOrEqual,
+                               WordPtr)
   DECL_MULTI_REP_BINOP(UintLessThanOrEqual, Comparison, RegisterRepresentation,
                        UnsignedLessThanOrEqual)
   DECL_SINGLE_REP_COMPARISON_V(Uint32LessThanOrEqual, UnsignedLessThanOrEqual,
@@ -2290,6 +2251,8 @@ class TurboshaftAssemblerOpInterface
     return UintPtrConstant(static_cast<uintptr_t>(value));
   }
   V<WordPtr> UintPtrConstant(uintptr_t value) { return WordPtrConstant(value); }
+  // TODO(nicohartmann): I would like to get rid of this overload as it is
+  // non-obvious that this doesnt perform Smi-tagging.
   V<Smi> SmiConstant(intptr_t value) {
     return SmiConstant(i::Tagged<Smi>(value));
   }
@@ -2409,6 +2372,11 @@ class TurboshaftAssemblerOpInterface
     return ReduceIfReachableConstant(
         ConstantOp::Kind::kRelocatableWasmCanonicalSignatureId,
         static_cast<uint64_t>(canonical_id));
+  }
+
+  V<WordPtr> RelocatableWasmIndirectCallTarget(uint32_t function_index) {
+    return ReduceIfReachableConstant(
+        ConstantOp::Kind::kRelocatableWasmIndirectCallTarget, function_index);
   }
 
   V<Context> NoContextConstant() {
@@ -3163,8 +3131,8 @@ class TurboshaftAssemblerOpInterface
   }
 
 #if V8_ENABLE_WEBASSEMBLY
-  void WasmStackCheck(WasmStackCheckOp::Kind kind) {
-    ReduceIfReachableWasmStackCheck(kind);
+  void WasmStackCheck(WasmStackCheckOp::Kind kind, int parameter_slots) {
+    ReduceIfReachableWasmStackCheck(kind, parameter_slots);
   }
 #endif
 
@@ -3839,6 +3807,14 @@ class TurboshaftAssemblerOpInterface
     CallRuntime<typename RuntimeCallDescriptor::Abort>(isolate, context,
                                                        {reason});
   }
+  V<BigInt> CallRuntime_BigIntUnaryOp(Isolate* isolate, V<Context> context,
+                                      V<BigInt> input, ::Operation operation) {
+    DCHECK_EQ(operation,
+              any_of(::Operation::kBitwiseNot, ::Operation::kNegate,
+                     ::Operation::kIncrement, ::Operation::kDecrement));
+    return CallRuntime<typename RuntimeCallDescriptor::BigIntUnaryOp>(
+        isolate, context, {input, __ SmiConstant(Smi::FromEnum(operation))});
+  }
   V<Number> CallRuntime_DateCurrentTime(Isolate* isolate, V<Context> context) {
     return CallRuntime<typename RuntimeCallDescriptor::DateCurrentTime>(
         isolate, context, {});
@@ -3975,7 +3951,7 @@ class TurboshaftAssemblerOpInterface
         {object, prototype});
   }
 
-  void TailCall(OpIndex callee, base::Vector<const OpIndex> arguments,
+  void TailCall(V<CallTarget> callee, base::Vector<const OpIndex> arguments,
                 const TSCallDescriptor* descriptor) {
     ReduceIfReachableTailCall(callee, arguments, descriptor);
   }
@@ -5029,8 +5005,8 @@ class TurboshaftAssemblerOpInterface
 #endif  // V8_TARGET_ARCH_X64
 #endif  // V8_ENABLE_WASM_SIMD256_REVEC
 
-  V<WasmTrustedInstanceData> WasmInstanceParameter() {
-    return Parameter(wasm::kWasmInstanceParameterIndex,
+  V<WasmTrustedInstanceData> WasmInstanceDataParameter() {
+    return Parameter(wasm::kWasmInstanceDataParameterIndex,
                      RegisterRepresentation::Tagged());
   }
 
@@ -5190,8 +5166,9 @@ struct AssemblerData {
 
 template <class Reducers>
 class Assembler : public AssemblerData,
-                  public reducer_stack_type<Reducers>::type {
-  using Stack = typename reducer_stack_type<Reducers>::type;
+                  public ReducerStack<Reducers>::type,
+                  public TurboshaftAssemblerOpInterface<Assembler<Reducers>> {
+  using Stack = typename ReducerStack<Reducers>::type;
   using node_t = typename Stack::node_t;
 
  public:
@@ -5275,6 +5252,21 @@ class Assembler : public AssemblerData,
 #ifdef DEBUG
   int& intermediate_tracing_depth() { return intermediate_tracing_depth_; }
 #endif
+
+  // ReduceProjection eliminates projections to tuples and returns the
+  // corresponding tuple input instead. We do this at the top of the stack to
+  // avoid passing this Projection around needlessly. This is in particular
+  // important to ValueNumberingReducer, which assumes that it's at the bottom
+  // of the stack, and that the BaseReducer will actually emit an Operation. If
+  // we put this projection-to-tuple-simplification in the BaseReducer, then
+  // this assumption of the ValueNumberingReducer will break.
+  V<Any> ReduceProjection(V<Any> tuple, uint16_t index,
+                          RegisterRepresentation rep) {
+    if (auto* tuple_op = Asm().matcher().template TryCast<TupleOp>(tuple)) {
+      return tuple_op->input(index);
+    }
+    return Stack::ReduceProjection(tuple, index, rep);
+  }
 
   // Adds {source} to the predecessors of {destination}.
   void AddPredecessor(Block* source, Block* destination, bool branch) {
@@ -5421,7 +5413,7 @@ class Assembler : public AssemblerData,
     intermediate_block->SetOrigin(source->OriginForBlockEnd());
     // Inserting a Goto in {intermediate_block} to {destination}. This will
     // create the edge from {intermediate_block} to {destination}. Note that
-    // this will call AddPredecessor, but we've already removed the eventual
+    // this will call AddPredecessor, but we've already removed the possible
     // edge of {destination} that need splitting, so no risks of infinite
     // recursion here.
     this->Goto(destination);
@@ -5531,12 +5523,9 @@ class CatchScopeImpl {
 };
 
 template <template <class> class... Reducers>
-class TSAssembler
-    : public Assembler<reducer_list<TurboshaftAssemblerOpInterface, Reducers...,
-                                    TSReducerBase>> {
+class TSAssembler : public Assembler<reducer_list<Reducers..., TSReducerBase>> {
  public:
-  using Assembler<reducer_list<TurboshaftAssemblerOpInterface, Reducers...,
-                               TSReducerBase>>::Assembler;
+  using Assembler<reducer_list<Reducers..., TSReducerBase>>::Assembler;
 };
 
 #include "src/compiler/turboshaft/undef-assembler-macros.inc"

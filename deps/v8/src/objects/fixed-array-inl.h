@@ -318,7 +318,11 @@ Handle<FixedArray> FixedArray::New(IsolateT* isolate, int capacity,
 // static
 template <class IsolateT>
 Handle<TrustedFixedArray> TrustedFixedArray::New(IsolateT* isolate,
-                                                 int capacity) {
+                                                 int capacity,
+                                                 AllocationType allocation) {
+  DCHECK(allocation == AllocationType::kTrusted ||
+         allocation == AllocationType::kSharedTrusted);
+
   if (V8_UNLIKELY(static_cast<unsigned>(capacity) >
                   TrustedFixedArray::kMaxLength)) {
     FATAL("Fatal JavaScript invalid size error %d (see crbug.com/1201626)",
@@ -330,8 +334,8 @@ Handle<TrustedFixedArray> TrustedFixedArray::New(IsolateT* isolate,
   // The same is true for the other trusted-space arrays below.
 
   std::optional<DisallowGarbageCollection> no_gc;
-  Handle<TrustedFixedArray> result = Cast<TrustedFixedArray>(
-      Allocate(isolate, capacity, &no_gc, AllocationType::kTrusted));
+  Handle<TrustedFixedArray> result =
+      Cast<TrustedFixedArray>(Allocate(isolate, capacity, &no_gc, allocation));
   MemsetTagged((*result)->RawFieldOfFirstElement(), Smi::zero(), capacity);
   return result;
 }
@@ -374,7 +378,7 @@ Handle<D> TaggedArrayBase<D, S, P>::Allocate(
   Tagged<Map> map = Cast<Map>(roots.object_at(S::kMapRootIndex));
   DCHECK(ReadOnlyHeap::Contains(map));
 
-  xs->set_map_after_allocation(map, SKIP_WRITE_BARRIER);
+  xs->set_map_after_allocation(isolate, map, SKIP_WRITE_BARRIER);
   xs->set_capacity(capacity);
 
   return handle(xs, isolate);
@@ -438,8 +442,6 @@ OBJECT_CONSTRUCTORS_IMPL(ByteArray, ByteArray::Super)
 
 OBJECT_CONSTRUCTORS_IMPL(TrustedByteArray, TrustedByteArray::Super)
 
-OBJECT_CONSTRUCTORS_IMPL(ExternalPointerArray, FixedArrayBase)
-
 OBJECT_CONSTRUCTORS_IMPL(ArrayList, ArrayList::Super)
 
 NEVER_READ_ONLY_SPACE_IMPL(WeakArrayList)
@@ -487,118 +489,6 @@ Handle<FixedArray> FixedArray::Resize(Isolate* isolate,
 }
 
 inline int WeakArrayList::AllocatedSize() const { return SizeFor(capacity()); }
-
-// Perform a binary search in a fixed array.
-template <SearchMode search_mode, typename T>
-int BinarySearch(T* array, Tagged<Name> name, int valid_entries,
-                 int* out_insertion_index) {
-  DCHECK_IMPLIES(search_mode == VALID_ENTRIES, out_insertion_index == nullptr);
-  int low = 0;
-  // We have to search on all entries, even when search_mode == VALID_ENTRIES.
-  // This is because the InternalIndex might be different from the SortedIndex
-  // (i.e the first added item in {array} could be the last in the sorted
-  // index). After doing the binary search and getting the correct internal
-  // index we check to have the index lower than valid_entries, if needed.
-  int high = array->number_of_entries() - 1;
-  uint32_t hash = name->hash();
-  int limit = high;
-
-  DCHECK(low <= high);
-
-  while (low != high) {
-    int mid = low + (high - low) / 2;
-    Tagged<Name> mid_name = array->GetSortedKey(mid);
-    uint32_t mid_hash = mid_name->hash();
-
-    if (mid_hash >= hash) {
-      high = mid;
-    } else {
-      low = mid + 1;
-    }
-  }
-
-  for (; low <= limit; ++low) {
-    int sort_index = array->GetSortedKeyIndex(low);
-    Tagged<Name> entry = array->GetKey(InternalIndex(sort_index));
-    uint32_t current_hash = entry->hash();
-    if (current_hash != hash) {
-      // 'search_mode == ALL_ENTRIES' here and below is not needed since
-      // 'out_insertion_index != nullptr' implies 'search_mode == ALL_ENTRIES'.
-      // Having said that, when creating the template for <VALID_ENTRIES> these
-      // ifs can be elided by the C++ compiler if we add 'search_mode ==
-      // ALL_ENTRIES'.
-      if (search_mode == ALL_ENTRIES && out_insertion_index != nullptr) {
-        *out_insertion_index = sort_index + (current_hash > hash ? 0 : 1);
-      }
-      return T::kNotFound;
-    }
-    if (entry == name) {
-      if (search_mode == ALL_ENTRIES || sort_index < valid_entries) {
-        return sort_index;
-      }
-      return T::kNotFound;
-    }
-  }
-
-  if (search_mode == ALL_ENTRIES && out_insertion_index != nullptr) {
-    *out_insertion_index = limit + 1;
-  }
-  return T::kNotFound;
-}
-
-// Perform a linear search in this fixed array. len is the number of entry
-// indices that are valid.
-template <SearchMode search_mode, typename T>
-int LinearSearch(T* array, Tagged<Name> name, int valid_entries,
-                 int* out_insertion_index) {
-  if (search_mode == ALL_ENTRIES && out_insertion_index != nullptr) {
-    uint32_t hash = name->hash();
-    int len = array->number_of_entries();
-    for (int number = 0; number < len; number++) {
-      int sorted_index = array->GetSortedKeyIndex(number);
-      Tagged<Name> entry = array->GetKey(InternalIndex(sorted_index));
-      uint32_t current_hash = entry->hash();
-      if (current_hash > hash) {
-        *out_insertion_index = sorted_index;
-        return T::kNotFound;
-      }
-      if (entry == name) return sorted_index;
-    }
-    *out_insertion_index = len;
-    return T::kNotFound;
-  } else {
-    DCHECK_LE(valid_entries, array->number_of_entries());
-    DCHECK_NULL(out_insertion_index);  // Not supported here.
-    for (int number = 0; number < valid_entries; number++) {
-      if (array->GetKey(InternalIndex(number)) == name) return number;
-    }
-    return T::kNotFound;
-  }
-}
-
-template <SearchMode search_mode, typename T>
-int Search(T* array, Tagged<Name> name, int valid_entries,
-           int* out_insertion_index, bool concurrent_search) {
-  SLOW_DCHECK_IMPLIES(!concurrent_search, array->IsSortedNoDuplicates());
-
-  if (valid_entries == 0) {
-    if (search_mode == ALL_ENTRIES && out_insertion_index != nullptr) {
-      *out_insertion_index = 0;
-    }
-    return T::kNotFound;
-  }
-
-  // Do linear search for small arrays, and for searches in the background
-  // thread.
-  const int kMaxElementsForLinearSearch = 8;
-  if (valid_entries <= kMaxElementsForLinearSearch || concurrent_search) {
-    return LinearSearch<search_mode>(array, name, valid_entries,
-                                     out_insertion_index);
-  }
-
-  return BinarySearch<search_mode>(array, name, valid_entries,
-                                   out_insertion_index);
-}
 
 template <class D, class S, class P>
 int PrimitiveArrayBase<D, S, P>::length() const {
@@ -732,7 +622,7 @@ Handle<D> PrimitiveArrayBase<D, S, P>::Allocate(
   Tagged<Map> map = Cast<Map>(roots.object_at(S::kMapRootIndex));
   DCHECK(ReadOnlyHeap::Contains(map));
 
-  xs->set_map_after_allocation(map, SKIP_WRITE_BARRIER);
+  xs->set_map_after_allocation(isolate, map, SKIP_WRITE_BARRIER);
   xs->set_length(length);
 
   return handle(xs, isolate);
@@ -1028,24 +918,6 @@ template <typename T, typename Base>
 int FixedIntegerArrayBase<T, Base>::length() const {
   DCHECK_EQ(Base::length() % sizeof(T), 0);
   return Base::length() / sizeof(T);
-}
-
-template <ExternalPointerTag tag>
-inline Address ExternalPointerArray::get(int index, Isolate* isolate) {
-  return ReadExternalPointerField<tag>(OffsetOfElementAt(index), isolate);
-}
-
-template <ExternalPointerTag tag>
-inline void ExternalPointerArray::set(int index, Isolate* isolate,
-                                      Address value) {
-  WriteLazilyInitializedExternalPointerField<tag>(OffsetOfElementAt(index),
-                                                  isolate, value);
-}
-
-// static
-Handle<ExternalPointerArray> ExternalPointerArray::New(
-    Isolate* isolate, int length, AllocationType allocation) {
-  return isolate->factory()->NewExternalPointerArray(length, allocation);
 }
 
 template <class T, class Super>

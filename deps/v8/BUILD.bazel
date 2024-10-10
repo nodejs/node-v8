@@ -59,8 +59,6 @@ load(":bazel/v8-non-pointer-compression.bzl", "v8_binary_non_pointer_compression
 # v8_enable_gdbjit
 # v8_check_header_includes
 # v8_enable_lazy_source_positions
-# v8_enable_third_party_heap
-# v8_third_party_heap_files
 # v8_disable_write_barriers
 # v8_enable_unconditional_write_barriers
 # v8_enable_single_generation
@@ -150,6 +148,8 @@ v8_flag(name = "v8_enable_verify_predictable")
 
 v8_flag(name = "v8_enable_test_features")
 
+v8_flag(name = "v8_wasm_random_fuzzers")
+
 v8_flag(
     name = "v8_enable_maglev",
     default = True,
@@ -186,6 +186,14 @@ selects.config_setting_group(
     match_all = [
         ":enable_maglev",
         "@v8//bazel/config:v8_target_arm64",
+    ],
+)
+
+selects.config_setting_group(
+    name = "enable_maglev_riscv",
+    match_all = [
+        ":enable_maglev",
+        "@v8//bazel/config:v8_target_riscv64",
     ],
 )
 
@@ -328,10 +336,10 @@ selects.config_setting_group(
     ],
 )
 
-# Enable isolated cage if v8_enable_pointer_compression and
+# Enable multiple cages if v8_enable_pointer_compression and
 # NOT v8_enable_pointer_compression_shared_cage.
 selects.config_setting_group(
-    name = "enable_pointer_compression_isolated_cage",
+    name = "enable_pointer_compression_multiple_cages",
     match_all = [
         ":is_v8_enable_pointer_compression",
         ":is_not_v8_enable_pointer_compression_shared_cage",
@@ -482,8 +490,7 @@ v8_config(
             ],
             "@v8//bazel/config:v8_target_arm64": ["V8_TARGET_ARCH_ARM64"],
             "@v8//bazel/config:v8_target_s390x": [
-                "V8_TARGET_ARCH_S390",
-                "V8_TARGET_ARCH_S390X",
+                "V8_TARGET_ARCH_S390X"
             ],
             "@v8//bazel/config:v8_target_riscv64": [
                 # NOTE: Bazel rules for riscv64 weren't tested on a real system.
@@ -492,8 +499,7 @@ v8_config(
             ],
             "@v8//bazel/config:v8_target_ppc64le": [
                 # NOTE: Bazel rules for ppc64le weren't tested on a real system.
-                "V8_TARGET_ARCH_PPC64",
-                "V8_TARGET_ARCH_PPC_LE",
+                "V8_TARGET_ARCH_PPC64"
             ],
         },
         no_match_error = "Please specify a target cpu supported by v8",
@@ -528,8 +534,8 @@ v8_config(
         ":enable_pointer_compression_shared_cage": [
             "V8_COMPRESS_POINTERS_IN_SHARED_CAGE",
         ],
-        ":enable_pointer_compression_isolated_cage": [
-            "V8_COMPRESS_POINTERS_IN_ISOLATE_CAGE",
+        ":enable_pointer_compression_multiple_cages": [
+            "V8_COMPRESS_POINTERS_IN_MULTIPLE_CAGES",
         ],
         "//conditions:default": [],
     }) + select({
@@ -840,7 +846,7 @@ filegroup(
         "src/base/strings.h",
         "src/base/sys-info.cc",
         "src/base/sys-info.h",
-        "src/base/template-meta-programming/algorithm.h",
+        "src/base/template-meta-programming/common.h",
         "src/base/template-meta-programming/functional.h",
         "src/base/template-meta-programming/list.h",
         "src/base/template-meta-programming/string-literal.h",
@@ -1359,6 +1365,7 @@ filegroup(
         "src/builtins/constants-table-builder.cc",
         "src/builtins/constants-table-builder.h",
         "src/builtins/data-view-ops.h",
+        "src/builtins/profile-data-reader.cc",
         "src/builtins/profile-data-reader.h",
         "src/codegen/aligned-slot-allocator.cc",
         "src/codegen/aligned-slot-allocator.h",
@@ -1539,7 +1546,6 @@ filegroup(
         "src/execution/futex-emulation.h",
         "src/execution/interrupts-scope.cc",
         "src/execution/interrupts-scope.h",
-        "src/execution/isolate.cc",
         "src/execution/isolate.h",
         "src/execution/isolate-data.h",
         "src/execution/isolate-inl.h",
@@ -1677,8 +1683,13 @@ filegroup(
         "src/heap/heap-controller.cc",
         "src/heap/heap-controller.h",
         "src/heap/heap-inl.h",
+        "src/heap/heap-layout.cc",
+        "src/heap/heap-layout.h",
+        "src/heap/heap-layout-inl.h",
         "src/heap/heap-layout-tracer.cc",
         "src/heap/heap-layout-tracer.h",
+        "src/heap/heap-utils.h",
+        "src/heap/heap-utils-inl.h",
         "src/heap/heap-verifier.cc",
         "src/heap/heap-verifier.h",
         "src/heap/heap-write-barrier.cc",
@@ -1698,6 +1709,8 @@ filegroup(
         "src/heap/large-spaces.h",
         "src/heap/linear-allocation-area.h",
         "src/heap/list.h",
+        "src/heap/live-object-range.h",
+        "src/heap/live-object-range-inl.h",
         "src/heap/local-factory.cc",
         "src/heap/local-factory.h",
         "src/heap/local-factory-inl.h",
@@ -1793,8 +1806,6 @@ filegroup(
         "src/heap/stress-scavenge-observer.h",
         "src/heap/sweeper.cc",
         "src/heap/sweeper.h",
-        "src/heap/third-party/heap-api.h",
-        "src/heap/third-party/heap-api-stub.cc",
         "src/heap/traced-handles-marking-visitor.cc",
         "src/heap/traced-handles-marking-visitor.h",
         "src/heap/weak-object-worklists.cc",
@@ -2336,6 +2347,7 @@ filegroup(
         "src/runtime/runtime-test.cc",
         "src/runtime/runtime-trace.cc",
         "src/runtime/runtime-typedarray.cc",
+        "src/runtime/runtime-utils.cc",
         "src/runtime/runtime-utils.h",
         "src/runtime/runtime-weak-refs.cc",
         "src/sandbox/bounded-size.h",
@@ -2557,6 +2569,8 @@ filegroup(
             "src/codegen/x64/assembler-x64.cc",
             "src/codegen/x64/assembler-x64.h",
             "src/codegen/x64/assembler-x64-inl.h",
+            "src/codegen/x64/builtin-jump-table-info-x64.cc",
+            "src/codegen/x64/builtin-jump-table-info-x64.h",
             "src/codegen/x64/constants-x64.h",
             "src/codegen/x64/cpu-x64.cc",
             "src/codegen/x64/fma-instr.h",
@@ -2820,6 +2834,13 @@ filegroup(
         ],
         "//conditions:default": [],
     }) + select({
+        ":enable_maglev_riscv": [
+            "src/maglev/riscv/maglev-assembler-riscv-inl.h",
+            "src/maglev/riscv/maglev-assembler-riscv.cc",
+            "src/maglev/riscv/maglev-ir-riscv.cc",
+        ],
+        "//conditions:default": [],
+    }) + select({
         ":enable_maglev_arm": [
             "src/maglev/arm/maglev-assembler-arm-inl.h",
             "src/maglev/arm/maglev-assembler-arm.cc",
@@ -2879,7 +2900,6 @@ filegroup(
             "src/wasm/function-body-decoder-impl.h",
             "src/wasm/function-compiler.cc",
             "src/wasm/function-compiler.h",
-            "src/wasm/fuzzing/random-module-generation.cc",
             "src/wasm/fuzzing/random-module-generation.h",
             "src/wasm/graph-builder-interface.cc",
             "src/wasm/graph-builder-interface.h",
@@ -2889,7 +2909,6 @@ filegroup(
             "src/wasm/leb-helper.h",
             "src/wasm/local-decl-encoder.cc",
             "src/wasm/local-decl-encoder.h",
-            "src/wasm/memory-tracing.cc",
             "src/wasm/memory-tracing.h",
             "src/wasm/module-compiler.cc",
             "src/wasm/module-compiler.h",
@@ -2903,7 +2922,6 @@ filegroup(
             "src/wasm/object-access.h",
             "src/wasm/pgo.cc",
             "src/wasm/pgo.h",
-            "src/wasm/serialized-signature-inl.h",
             "src/wasm/signature-hashing.h",
             "src/wasm/simd-shuffle.cc",
             "src/wasm/simd-shuffle.h",
@@ -2924,6 +2942,9 @@ filegroup(
             "src/wasm/wasm-builtin-list.h",
             "src/wasm/wasm-code-manager.cc",
             "src/wasm/wasm-code-manager.h",
+            "src/wasm/wasm-code-pointer-table.cc",
+            "src/wasm/wasm-code-pointer-table.h",
+            "src/wasm/wasm-code-pointer-table-inl.h",
             "src/wasm/wasm-debug.cc",
             "src/wasm/wasm-debug.h",
             "src/wasm/wasm-deopt-data.cc",
@@ -2983,6 +3004,11 @@ filegroup(
             "src/wasm/interpreter/wasm-interpreter-simd.cc",
         ],
         "//conditions:default": [],
+    }) + select({
+        ":is_v8_wasm_random_fuzzers": [
+            "src/wasm/fuzzing/random-module-generation.cc",
+        ],
+        "//conditions:default": [],
     }),
 )
 
@@ -3039,7 +3065,6 @@ filegroup(
 filegroup(
     name = "v8_compiler_files",
     srcs = [
-        "src/builtins/profile-data-reader.h",
         "src/compiler/access-builder.cc",
         "src/compiler/access-builder.h",
         "src/compiler/access-info.cc",
@@ -3135,16 +3160,12 @@ filegroup(
         "src/compiler/frame-states.h",
         "src/compiler/functional-list.h",
         "src/compiler/globals.h",
-        "src/compiler/graph.cc",
-        "src/compiler/graph.h",
         "src/compiler/graph-assembler.cc",
         "src/compiler/graph-assembler.h",
         "src/compiler/graph-reducer.cc",
         "src/compiler/graph-reducer.h",
         "src/compiler/graph-trimmer.cc",
         "src/compiler/graph-trimmer.h",
-        "src/compiler/graph-visualizer.cc",
-        "src/compiler/graph-visualizer.h",
         "src/compiler/graph-zone-traits.h",
         "src/compiler/heap-refs.cc",
         "src/compiler/heap-refs.h",
@@ -3268,6 +3289,14 @@ filegroup(
         "src/compiler/string-builder-optimizer.h",
         "src/compiler/turbofan.h",
         "src/compiler/turbofan-enabled.cc",
+        "src/compiler/turbofan-graph.cc",
+        "src/compiler/turbofan-graph.h",
+        "src/compiler/turbofan-graph-visualizer.cc",
+        "src/compiler/turbofan-graph-visualizer.h",
+        "src/compiler/turbofan-typer.cc",
+        "src/compiler/turbofan-typer.h",
+        "src/compiler/turbofan-types.cc",
+        "src/compiler/turbofan-types.h",
         "src/compiler/turboshaft/access-builder.h",
         "src/compiler/turboshaft/analyzer-iterator.cc",
         "src/compiler/turboshaft/analyzer-iterator.h",
@@ -3282,6 +3311,8 @@ filegroup(
         "src/compiler/turboshaft/build-graph-phase.cc",
         "src/compiler/turboshaft/build-graph-phase.h",
         "src/compiler/turboshaft/builtin-call-descriptors.h",
+        "src/compiler/turboshaft/builtin-compiler.cc",
+        "src/compiler/turboshaft/builtin-compiler.h",
         "src/compiler/turboshaft/csa-optimize-phase.cc",
         "src/compiler/turboshaft/csa-optimize-phase.h",
         "src/compiler/turboshaft/dataview-lowering-reducer.h",
@@ -3303,6 +3334,7 @@ filegroup(
         "src/compiler/turboshaft/explicit-truncation-reducer.h",
         "src/compiler/turboshaft/fast-api-call-lowering-reducer.h",
         "src/compiler/turboshaft/fast-hash.h",
+        "src/compiler/turboshaft/field-macro.inc",
         "src/compiler/turboshaft/graph.cc",
         "src/compiler/turboshaft/graph.h",
         "src/compiler/turboshaft/graph-builder.cc",
@@ -3363,9 +3395,6 @@ filegroup(
         "src/compiler/turboshaft/select-lowering-reducer.h",
         "src/compiler/turboshaft/sidetable.cc",
         "src/compiler/turboshaft/sidetable.h",
-        "src/compiler/turboshaft/simplified-lowering-phase.cc",
-        "src/compiler/turboshaft/simplified-lowering-phase.h",
-        "src/compiler/turboshaft/simplified-lowering-reducer.h",
         "src/compiler/turboshaft/simplify-tf-loops.cc",
         "src/compiler/turboshaft/simplify-tf-loops.h",
         "src/compiler/turboshaft/snapshot-table.h",
@@ -3406,10 +3435,6 @@ filegroup(
         "src/compiler/type-narrowing-reducer.h",
         "src/compiler/typed-optimization.cc",
         "src/compiler/typed-optimization.h",
-        "src/compiler/typer.cc",
-        "src/compiler/typer.h",
-        "src/compiler/types.cc",
-        "src/compiler/types.h",
         "src/compiler/use-info.h",
         "src/compiler/value-numbering-reducer.cc",
         "src/compiler/value-numbering-reducer.h",
@@ -3484,6 +3509,9 @@ filegroup(
             "src/compiler/turboshaft/wasm-gc-typed-optimization-reducer.cc",
             "src/compiler/turboshaft/wasm-gc-typed-optimization-reducer.h",
             "src/compiler/turboshaft/wasm-load-elimination-reducer.h",
+            "src/compiler/turboshaft/wasm-in-js-inlining-phase.cc",
+            "src/compiler/turboshaft/wasm-in-js-inlining-phase.h",
+            "src/compiler/turboshaft/wasm-in-js-inlining-reducer-inl.h",
             "src/compiler/turboshaft/wasm-lowering-phase.cc",
             "src/compiler/turboshaft/wasm-lowering-phase.h",
             "src/compiler/turboshaft/wasm-lowering-reducer.h",
@@ -3588,6 +3616,7 @@ filegroup(
         "src/builtins/builtins-lazy-gen.h",
         "src/builtins/builtins-microtask-queue-gen.cc",
         "src/builtins/builtins-number-gen.cc",
+        "src/builtins/builtins-number-tsa.cc",
         "src/builtins/builtins-object-gen.cc",
         "src/builtins/builtins-object-gen.h",
         "src/builtins/builtins-promise-gen.cc",
@@ -3607,8 +3636,7 @@ filegroup(
         "src/builtins/builtins-utils-gen.h",
         "src/builtins/growable-fixed-array-gen.cc",
         "src/builtins/growable-fixed-array-gen.h",
-        "src/builtins/profile-data-reader.cc",
-        "src/builtins/profile-data-reader.h",
+        "src/builtins/number-builtins-reducer-inl.h",
         "src/builtins/setup-builtins-internal.cc",
         "src/builtins/torque-csa-header-includes.h",
         "src/codegen/turboshaft-builtins-assembler-inl.h",
@@ -3616,6 +3644,8 @@ filegroup(
         "third_party/v8/codegen/fp16-inl.h",
         "src/codegen/code-stub-assembler-inl.h",
         "src/codegen/code-stub-assembler.h",
+        "src/codegen/define-code-stub-assembler-macros.inc",
+        "src/codegen/undef-code-stub-assembler-macros.inc",
         "src/heap/setup-heap-internal.cc",
         "src/ic/accessor-assembler.cc",
         "src/ic/accessor-assembler.h",
@@ -3629,6 +3659,8 @@ filegroup(
         "src/interpreter/interpreter-assembler.h",
         "src/interpreter/interpreter-generator.cc",
         "src/interpreter/interpreter-generator.h",
+        "src/interpreter/interpreter-generator-tsa.cc",
+        "src/interpreter/interpreter-generator-tsa.h",
         "src/interpreter/interpreter-intrinsics-generator.cc",
         "src/interpreter/interpreter-intrinsics-generator.h",
         "src/numbers/integer-literal.h",
@@ -3797,6 +3829,25 @@ filegroup(
 )
 
 v8_library(
+  name = "lib_fast_float",
+  srcs = [
+    "third_party/fast_float/src/include/fast_float/ascii_number.h",
+    "third_party/fast_float/src/include/fast_float/bigint.h",
+    "third_party/fast_float/src/include/fast_float/constexpr_feature_detect.h",
+    "third_party/fast_float/src/include/fast_float/decimal_to_binary.h",
+    "third_party/fast_float/src/include/fast_float/digit_comparison.h",
+    "third_party/fast_float/src/include/fast_float/fast_float.h",
+    "third_party/fast_float/src/include/fast_float/fast_table.h",
+    "third_party/fast_float/src/include/fast_float/float_common.h",
+    "third_party/fast_float/src/include/fast_float/parse_number.h",
+    ],
+  hdrs = [ "third_party/fast_float/src/include/fast_float/fast_float.h" ],
+  includes = [
+    "third_party/fast_float/src/include",
+  ],
+)
+
+v8_library(
   name = "lib_fp16",
   srcs = ["third_party/fp16/src/include/fp16.h"],
   hdrs = [
@@ -3836,6 +3887,7 @@ filegroup(
 filegroup(
     name = "mksnapshot_files",
     srcs = [
+        "src/execution/isolate.cc",
         "src/init/setup-isolate-full.cc",
         "src/snapshot/embedded/embedded-empty.cc",
         "src/snapshot/embedded/embedded-file-writer.cc",
@@ -3967,6 +4019,10 @@ filegroup(
 filegroup(
     name = "noicu/snapshot_files",
     srcs = [
+        # Not a snapshot file per se, but depends on symbols only present in the snapshot (or
+        # through a placeholder when building the snapshot itself); having it here makes using
+        # shared linkage for the main v8 target possible.
+        "src/execution/isolate.cc",
         "src/init/setup-isolate-deserialize.cc",
     ] + select({
         "@v8//bazel/config:v8_target_arm": [
@@ -3984,6 +4040,7 @@ filegroup(
 filegroup(
     name = "icu/snapshot_files",
     srcs = [
+        "src/execution/isolate.cc",
         "src/init/setup-isolate-deserialize.cc",
     ] + select({
         "@v8//bazel/config:v8_target_arm": [
@@ -4299,6 +4356,7 @@ v8_library(
         ":noicu/generated_torque_definitions",
     ],
     deps = [
+        ":lib_fast_float",
         ":lib_fp16",
         ":v8_libbase",
         "//external:absl_btree",

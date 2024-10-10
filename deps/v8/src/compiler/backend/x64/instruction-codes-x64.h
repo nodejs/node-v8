@@ -159,6 +159,7 @@ namespace compiler {
   V(SSEFloat32Min)                                   \
   V(SSEFloat64Min)                                   \
   V(SSEFloat64ToFloat32)                             \
+  V(SSEFloat64ToFloat16)                             \
   V(SSEFloat64ToInt32)                               \
   V(SSEFloat64ToUint32)                              \
   V(SSEFloat32ToInt64)                               \
@@ -244,6 +245,7 @@ namespace compiler {
   V(X64F16x8SConvertI16x8)                           \
   V(X64F16x8UConvertI16x8)                           \
   V(X64F16x8DemoteF32x4Zero)                         \
+  V(X64F16x8DemoteF64x2Zero)                         \
   V(X64F32x4PromoteLowF16x8)                         \
   V(X64F16x8Qfma)                                    \
   V(X64F16x8Qfms)                                    \

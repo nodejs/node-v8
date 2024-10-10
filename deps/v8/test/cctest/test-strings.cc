@@ -1354,14 +1354,14 @@ TEST(InternalizeExternal) {
     Handle<String> string = v8::Utils::OpenHandle(*ext_string);
     CHECK(IsExternalString(*string));
     CHECK(!IsInternalizedString(*string));
-    CHECK(!i::Heap::InYoungGeneration(*string));
+    CHECK(!i::HeapLayout::InYoungGeneration(*string));
     CHECK_EQ(isolate->string_table()->TryStringToIndexOrLookupExisting(
                  isolate, string->ptr()),
              Smi::FromInt(ResultSentinel::kNotFound).ptr());
     factory->InternalizeName(string);
     CHECK(IsExternalString(*string));
     CHECK(IsInternalizedString(*string));
-    CHECK(!i::Heap::InYoungGeneration(*string));
+    CHECK(!i::HeapLayout::InYoungGeneration(*string));
   }
   i::heap::InvokeMajorGC(CcTest::heap());
   i::heap::InvokeMajorGC(CcTest::heap());
@@ -1390,7 +1390,7 @@ TEST(Regress1402187) {
     v8::Local<v8::String> ext_string =
         Utils::ToLocal(factory->NewStringFromAsciiChecked(
             ext_string_content, AllocationType::kOld));
-    CHECK(ext_string->MakeExternal(resource));
+    CHECK(ext_string->MakeExternal(CcTest::isolate(), resource));
     Handle<String> string = v8::Utils::OpenHandle(*ext_string);
     string->set_raw_hash_field(fake_hash);
     CHECK(IsExternalString(*string));
@@ -1441,7 +1441,7 @@ static void ExternalizeDuringJsonStringifyCallback(
   OneByteVectorResource* resource =
       new OneByteVectorResource(v8::base::Vector<const char>(
           ext_string_content, strlen(ext_string_content)));
-  CHECK(v8::String::Cast(*key)->MakeExternal(resource));
+  CHECK(v8::String::Cast(*key)->MakeExternal(CcTest::isolate(), resource));
 }
 
 TEST(ExternalizeDuringJsonStringify) {
@@ -1638,11 +1638,25 @@ static void CheckCanonicalEquivalence(uint16_t c, uint16_t test) {
   CHECK_EQ(expect, test);
 }
 
+static inline uint16_t TryConvertToLatin1(uint16_t c) {
+  switch (c) {
+    // This are equivalent characters in unicode.
+    case 0x39c:
+    case 0x3bc:
+      return 0xb5;
+    // This is an uppercase of a Latin-1 character
+    // outside of Latin-1.
+    case 0x178:
+      return 0xff;
+  }
+  return c;
+}
+
 TEST(Latin1IgnoreCase) {
   for (uint16_t c = unibrow::Latin1::kMaxChar + 1; c != 0; c++) {
     uint16_t lower = ConvertLatin1<unibrow::ToLowercase, false>(c);
     uint16_t upper = ConvertLatin1<unibrow::ToUppercase, false>(c);
-    uint16_t test = unibrow::Latin1::TryConvertToLatin1(c);
+    uint16_t test = TryConvertToLatin1(c);
     // Filter out all character whose upper is not their lower or vice versa.
     if (lower == 0 && upper == 0) {
       CheckCanonicalEquivalence(c, test);
@@ -2071,7 +2085,7 @@ TEST(CheckCachedDataInternalExternalUncachedString) {
       new OneByteResource(i::StrDup(raw_small), strlen(raw_small));
 
   // Check it is external, internalized, and uncached with a cacheable resource.
-  string->MakeExternal(resource);
+  string->MakeExternal(CcTest::i_isolate(), resource);
   CHECK(string->IsOneByteRepresentation());
   CHECK(IsExternalString(*string));
   CHECK(IsInternalizedString(*string));
@@ -2116,7 +2130,7 @@ TEST(CheckCachedDataInternalExternalUncachedStringTwoByte) {
   Resource* resource = new Resource(two_byte, len);
 
   // Check it is external, internalized, and uncached with a cacheable resource.
-  string->MakeExternal(resource);
+  string->MakeExternal(CcTest::i_isolate(), resource);
   CHECK(string->IsTwoByteRepresentation());
   CHECK(IsExternalString(*string));
   CHECK(IsInternalizedString(*string));

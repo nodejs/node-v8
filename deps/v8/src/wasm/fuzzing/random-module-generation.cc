@@ -17,8 +17,9 @@
 
 // This whole compilation unit should only be included in non-official builds to
 // reduce binary size (it's a testing-only implementation which lives in src/ so
-// that the GenerateRandomWasmModule runtime function can use it).
-#ifdef OFFICIAL_BUILD
+// that the GenerateRandomWasmModule runtime function can use it).  We normally
+// disable V8_WASM_RANDOM_FUZZERS in official builds.
+#ifndef V8_WASM_RANDOM_FUZZERS
 #error Exclude this compilation unit in official builds.
 #endif
 
@@ -354,7 +355,7 @@ FunctionSig* CreateSignature(Zone* zone,
   for (auto& type : return_types) {
     builder.AddReturn(type);
   }
-  return builder.Build();
+  return builder.Get();
 }
 
 template <WasmModuleGenerationOptions options>
@@ -395,7 +396,7 @@ class BodyGen {
         DCHECK_NE(type, kWasmVoid);
         builder.AddReturn(type);
       }
-      FunctionSig* sig = builder.Build();
+      FunctionSig* sig = builder.Get();
       const bool is_final = true;
       int sig_id = gen->builder_->builder()->AddSignature(sig, is_final);
       gen->builder_->EmitI32V(sig_id);
@@ -2177,8 +2178,7 @@ class BodyGen {
         mutable_globals_(mutable_globals),
         structs_(structs),
         arrays_(arrays),
-        string_imports_(strings),
-        locals_initialized_(false) {
+        string_imports_(strings) {
     const FunctionSig* sig = fn->signature();
     blocks_.emplace_back();
     for (size_t i = 0; i < sig->return_count(); ++i) {
@@ -3435,11 +3435,11 @@ class BodyGen {
   std::vector<uint8_t> mutable_globals_;  // indexes into {globals_}.
   uint32_t recursion_depth = 0;
   std::vector<int> catch_blocks_;
-  bool has_simd_;
+  bool has_simd_ = false;
   const std::vector<uint32_t>& structs_;
   const std::vector<uint32_t>& arrays_;
   const StringImports& string_imports_;
-  bool locals_initialized_;
+  bool locals_initialized_ = false;
 
   bool recursion_limit_reached() {
     return recursion_depth >= kMaxRecursionDepth;
@@ -3632,7 +3632,7 @@ class ModuleGen {
     for (int i = 0; i < num_params; ++i) {
       builder.AddParam(GetValueType<options>(module_range_, num_types));
     }
-    return builder.Build();
+    return builder.Get();
   }
 
   // Creates and adds random function signatures.
@@ -4068,6 +4068,7 @@ WasmInitExpr GenerateInitExpr(Zone* zone, DataRange& range,
     }
     case kVoid:
     case kRtt:
+    case kTop:
     case kBottom:
       UNREACHABLE();
   }
@@ -4334,7 +4335,7 @@ base::Vector<uint8_t> GenerateWasmModuleForInitExpressions(
     FunctionSig::Builder sig_builder(zone, 1, 0);
     sig_builder.AddReturn(return_type);
     uint32_t signature_index =
-        builder.ForceAddSignature(sig_builder.Build(), kIsFinal);
+        builder.ForceAddSignature(sig_builder.Get(), kIsFinal);
     function_signatures.push_back(signature_index);
   }
 

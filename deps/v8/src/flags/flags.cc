@@ -35,7 +35,7 @@
 namespace v8::internal {
 
 // Define {v8_flags}, declared in flags.h.
-FlagValues v8_flags;
+FlagValues v8_flags PERMISSION_MUTABLE_SECTION;
 
 // {v8_flags} needs to be aligned to a memory page, and the size needs to be a
 // multiple of a page size. This is required for memory-protection of the memory
@@ -62,7 +62,7 @@ int FlagHelpers::FlagNamesCmp(const char* a, const char* b) {
     if (ac > bc) return 1;
     i++;
   } while (ac != '\0');
-  DCHECK(bc == '\0');
+  DCHECK_EQ(bc, '\0');
   return 0;
 }
 
@@ -958,6 +958,8 @@ class ImplicationProcessor {
                         FindFlagByPointer(&v8_flags.flag2)) \
       : std::make_tuple(nullptr, nullptr)
 
+#define RESET_WHEN_FUZZING(flag) CONTRADICTION(flag, fuzzing)
+
 // static
 void FlagList::ResolveContradictionsWhenFuzzing() {
   if (!i::v8_flags.fuzzing) return;
@@ -966,13 +968,43 @@ void FlagList::ResolveContradictionsWhenFuzzing() {
   // on the command line. One of them will be reset with precedence left to
   // right.
   std::tuple<Flag*, Flag*> contradictions[] = {
+      CONTRADICTION(always_osr_from_maglev, disable_optimizing_compilers),
+      CONTRADICTION(always_osr_from_maglev, jitless),
+      CONTRADICTION(always_osr_from_maglev, lite_mode),
+      CONTRADICTION(always_turbofan, disable_optimizing_compilers),
+      CONTRADICTION(always_turbofan, jitless),
+      CONTRADICTION(always_turbofan, lite_mode),
+      CONTRADICTION(assert_types, stress_concurrent_inlining),
+      CONTRADICTION(assert_types, stress_concurrent_inlining_attach_code),
+      CONTRADICTION(disable_optimizing_compilers, maglev_future),
+      CONTRADICTION(disable_optimizing_compilers, stress_concurrent_inlining),
+      CONTRADICTION(disable_optimizing_compilers,
+                    stress_concurrent_inlining_attach_code),
+      CONTRADICTION(disable_optimizing_compilers, stress_maglev),
+      CONTRADICTION(disable_optimizing_compilers, turboshaft_future),
+      CONTRADICTION(disable_optimizing_compilers,
+                    turboshaft_wasm_in_js_inlining),
       CONTRADICTION(jitless, maglev_future),
-      CONTRADICTION(jitless, stress_maglev),
       CONTRADICTION(jitless, stress_concurrent_inlining),
       CONTRADICTION(jitless, stress_concurrent_inlining_attach_code),
+      CONTRADICTION(jitless, stress_maglev),
+      CONTRADICTION(lite_mode, maglev_future),
+      CONTRADICTION(lite_mode, predictable_gc_schedule),
+      CONTRADICTION(lite_mode, stress_concurrent_inlining),
+      CONTRADICTION(lite_mode, stress_concurrent_inlining_attach_code),
+      CONTRADICTION(lite_mode, stress_maglev),
+      CONTRADICTION(optimize_for_size, predictable_gc_schedule),
       CONTRADICTION(predictable, stress_concurrent_inlining_attach_code),
-      CONTRADICTION(stress_concurrent_inlining, assert_types),
-      CONTRADICTION(stress_concurrent_inlining_attach_code, assert_types),
+      CONTRADICTION(predictable_gc_schedule, stress_compaction),
+      CONTRADICTION(single_threaded, stress_concurrent_inlining_attach_code),
+      CONTRADICTION(stress_concurrent_inlining, turboshaft_assert_types),
+      CONTRADICTION(stress_concurrent_inlining_attach_code,
+                    turboshaft_assert_types),
+      CONTRADICTION(stress_lazy_compilation, correctness_fuzzer_suppressions),
+
+      // Separate list of flags that shouldn't be used when --fuzzing is
+      // passed. These flags will be reset to their defaults.
+      RESET_WHEN_FUZZING(parallel_compile_tasks_for_lazy),
   };
   for (auto [flag1, flag2] : contradictions) {
     if (!flag1 || !flag2) continue;
@@ -987,6 +1019,9 @@ void FlagList::ResolveContradictionsWhenFuzzing() {
     if (flag->IsDefault()) {
       FATAL("Multiple flags with contradictory default values");
     }
+
+    // Ensure we never reset the fuzzing flag.
+    CHECK(!flag->PointsTo(&v8_flags.fuzzing));
 
     std::cerr << "Warning: resetting flag --" << flag->name()
               << " due to conflicting flags" << std::endl;

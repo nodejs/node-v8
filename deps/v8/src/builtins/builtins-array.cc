@@ -450,7 +450,7 @@ V8_WARN_UNUSED_RESULT Tagged<Object> GenericArrayPop(Isolate* isolate,
       isolate, element, Object::GetPropertyOrElement(isolate, receiver, index));
 
   // d. Perform ? DeletePropertyOrThrow(O, index).
-  MAYBE_RETURN(JSReceiver::DeletePropertyOrElement(receiver, index,
+  MAYBE_RETURN(JSReceiver::DeletePropertyOrElement(isolate, receiver, index,
                                                    LanguageMode::kStrict),
                ReadOnlyRoots(isolate).exception());
 
@@ -568,7 +568,7 @@ V8_WARN_UNUSED_RESULT Tagged<Object> GenericArrayShift(
                                        Just(ShouldThrow::kThrowOnError)));
     } else {  // e. Else fromPresent is false,
       // i. Perform ? DeletePropertyOrThrow(O, to).
-      MAYBE_RETURN(JSReceiver::DeletePropertyOrElement(receiver, to,
+      MAYBE_RETURN(JSReceiver::DeletePropertyOrElement(isolate, receiver, to,
                                                        LanguageMode::kStrict),
                    ReadOnlyRoots(isolate).exception());
     }
@@ -580,8 +580,8 @@ V8_WARN_UNUSED_RESULT Tagged<Object> GenericArrayShift(
   // 7. Perform ? DeletePropertyOrThrow(O, ! ToString(len-1)).
   Handle<String> new_length = isolate->factory()->NumberToString(
       isolate->factory()->NewNumber(length - 1));
-  MAYBE_RETURN(JSReceiver::DeletePropertyOrElement(receiver, new_length,
-                                                   LanguageMode::kStrict),
+  MAYBE_RETURN(JSReceiver::DeletePropertyOrElement(
+                   isolate, receiver, new_length, LanguageMode::kStrict),
                ReadOnlyRoots(isolate).exception());
 
   // 8. Perform ? Set(O, "length", len-1, true).
@@ -699,7 +699,7 @@ class ArrayConcatVisitor {
       set_exceeds_array_limit(true);
       // Exception hasn't been thrown at this point. Return true to
       // break out, and caller will throw. !visit would imply that
-      // there is already a exception.
+      // there is already an exception.
       return true;
     }
 
@@ -772,7 +772,7 @@ class ArrayConcatVisitor {
       Tagged<JSArray> raw = *array;
       raw->set_length(*length);
       raw->set_elements(*storage_fixed_array());
-      raw->set_map(*map, kReleaseStore);
+      raw->set_map(isolate_, *map, kReleaseStore);
     }
     return array;
   }
@@ -1562,7 +1562,7 @@ BUILTIN(ArrayConcat) {
       isolate, receiver,
       Object::ToObject(isolate, args.receiver(), "Array.prototype.concat"));
   BuiltinArguments::ChangeValueScope set_receiver_value_scope(
-      isolate, &args, BuiltinArguments::kReceiverOffset, *receiver);
+      isolate, &args, BuiltinArguments::kReceiverIndex, *receiver);
 
   Handle<JSArray> result_array;
 

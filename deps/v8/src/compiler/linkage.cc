@@ -214,9 +214,8 @@ int CallDescriptor::CalculateFixedFrameSize(CodeKind code_kind) const {
       return TypedFrameConstants::kFixedSlotCount;
 #if V8_ENABLE_WEBASSEMBLY
     case kCallWasmFunction:
-      return WasmFrameConstants::kFixedSlotCount;
     case kCallWasmImportWrapper:
-      return WasmImportWrapperFrameConstants::kFixedSlotCount;
+      return WasmFrameConstants::kFixedSlotCount;
     case kCallWasmCapiFunction:
       return WasmExitFrameConstants::kFixedSlotCount;
 #endif  // V8_ENABLE_WEBASSEMBLY
@@ -482,7 +481,7 @@ CallDescriptor* Linkage::GetCEntryStubCallDescriptor(
       kDefaultCodeEntrypointTag,        // tag
       target_type,                      // target MachineType
       target_loc,                       // target location
-      locations.Build(),                // location_sig
+      locations.Get(),                  // location_sig
       js_parameter_count,               // stack_parameter_count
       properties,                       // properties
       kNoCalleeSaved,                   // callee-saved
@@ -541,7 +540,7 @@ CallDescriptor* Linkage::GetJSCallDescriptor(Zone* zone, bool is_osr,
       kJSEntrypointTag,              // tag
       target_type,                   // target MachineType
       target_loc,                    // target location
-      locations.Build(),             // location_sig
+      locations.Get(),               // location_sig
       js_parameter_count,            // stack_parameter_count
       properties,                    // properties
       kNoCalleeSaved,                // callee-saved
@@ -621,7 +620,7 @@ CallDescriptor* Linkage::GetStubCallDescriptor(
 #if V8_ENABLE_WEBASSEMBLY
     case StubCallMode::kCallWasmRuntimeStub:
       kind = CallDescriptor::kCallWasmFunction;
-      target_type = MachineType::Pointer();
+      target_type = MachineType::WasmCodePointer();
       break;
 #endif  // V8_ENABLE_WEBASSEMBLY
     case StubCallMode::kCallBuiltinPointer:
@@ -642,7 +641,7 @@ CallDescriptor* Linkage::GetStubCallDescriptor(
       descriptor.tag(),                      // tag
       target_type,                           // target MachineType
       target_loc,                            // target location
-      locations.Build(),                     // location_sig
+      locations.Get(),                       // location_sig
       stack_parameter_count,                 // stack_parameter_count
       properties,                            // properties
       callee_saved_registers,                // callee-saved registers
@@ -690,7 +689,7 @@ CallDescriptor* Linkage::GetBytecodeDispatchCallDescriptor(
       kBytecodeHandlerEntrypointTag,  // tag
       target_type,                    // target MachineType
       target_loc,                     // target location
-      locations.Build(),              // location_sig
+      locations.Get(),                // location_sig
       stack_parameter_count,          // stack_parameter_count
       Operator::kNoProperties,        // properties
       kNoCalleeSaved,                 // callee-saved registers
@@ -741,7 +740,7 @@ bool Linkage::ParameterHasSecondaryLocation(int index) const {
 #if V8_ENABLE_WEBASSEMBLY
   if (incoming_->IsWasmFunctionCall()) {
     LinkageLocation loc = GetParameterLocation(index);
-    return IsTaggedReg(loc, kWasmInstanceRegister);
+    return IsTaggedReg(loc, kWasmImplicitArgRegister);
   }
 #endif  // V8_ENABLE_WEBASSEMBLY
   return false;
@@ -767,10 +766,11 @@ LinkageLocation Linkage::GetParameterSecondaryLocation(int index) const {
     }
   }
 #if V8_ENABLE_WEBASSEMBLY
-  static const int kWasmInstanceSlot = 3 + StandardFrameConstants::kCPSlotCount;
+  static const int kWasmInstanceDataSlot =
+      3 + StandardFrameConstants::kCPSlotCount;
   if (incoming_->IsWasmFunctionCall()) {
-    DCHECK(IsTaggedReg(loc, kWasmInstanceRegister));
-    return LinkageLocation::ForCalleeFrameSlot(kWasmInstanceSlot,
+    DCHECK(IsTaggedReg(loc, kWasmImplicitArgRegister));
+    return LinkageLocation::ForCalleeFrameSlot(kWasmInstanceDataSlot,
                                                MachineType::AnyTagged());
   }
 #endif  // V8_ENABLE_WEBASSEMBLY

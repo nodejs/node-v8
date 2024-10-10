@@ -37,26 +37,30 @@ V8_OBJECT class HeapObjectLayout {
   inline Tagged<Map> map() const;
   inline Tagged<Map> map(AcquireLoadTag) const;
 
-  inline void set_map(Tagged<Map> value);
-  inline void set_map(Tagged<Map> value, ReleaseStoreTag);
+  inline void set_map(Isolate* isolate, Tagged<Map> value);
+  template <typename IsolateT>
+  inline void set_map(IsolateT* isolate, Tagged<Map> value, ReleaseStoreTag);
 
   // This method behaves the same as `set_map` but marks the map transition as
   // safe for the concurrent marker (object layout doesn't change) during
   // verification.
-  inline void set_map_safe_transition(Tagged<Map> value, ReleaseStoreTag);
+  template <typename IsolateT>
+  inline void set_map_safe_transition(IsolateT* isolate, Tagged<Map> value,
+                                      ReleaseStoreTag);
 
   inline void set_map_safe_transition_no_write_barrier(
-      Tagged<Map> value, RelaxedStoreTag = kRelaxedStore);
+      Isolate* isolate, Tagged<Map> value, RelaxedStoreTag = kRelaxedStore);
 
   // Initialize the map immediately after the object is allocated.
   // Do not use this outside Heap.
   inline void set_map_after_allocation(
-      Tagged<Map> value, WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
+      Isolate* isolate, Tagged<Map> value,
+      WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
 
   // The no-write-barrier version.  This is OK if the object is white and in
   // new space, or if the value is an immortal immutable object, like the maps
   // of primitive (non-JS) objects like strings, heap numbers etc.
-  inline void set_map_no_write_barrier(Tagged<Map> value,
+  inline void set_map_no_write_barrier(Isolate* isolate, Tagged<Map> value,
                                        RelaxedStoreTag = kRelaxedStore);
 
   // Access the map word using acquire load and release store.
@@ -132,30 +136,36 @@ class HeapObject : public TaggedImpl<HeapObjectReferenceType::STRONG, Address> {
   // [map]: Contains a map which contains the object's reflective
   // information.
   DECL_GETTER(map, Tagged<Map>)
-  inline void set_map(Tagged<Map> value);
+  inline void set_map(Isolate* isolate, Tagged<Map> value);
 
   // This method behaves the same as `set_map` but marks the map transition as
   // safe for the concurrent marker (object layout doesn't change) during
   // verification.
-  inline void set_map_safe_transition(Tagged<Map> value);
+  template <typename IsolateT>
+  inline void set_map_safe_transition(IsolateT* isolate, Tagged<Map> value);
 
   inline ObjectSlot map_slot() const;
 
   // The no-write-barrier version.  This is OK if the object is white and in
   // new space, or if the value is an immortal immutable object, like the maps
   // of primitive (non-JS) objects like strings, heap numbers etc.
-  inline void set_map_no_write_barrier(Tagged<Map> value,
+  inline void set_map_no_write_barrier(Isolate* isolate, Tagged<Map> value,
                                        RelaxedStoreTag = kRelaxedStore);
-  inline void set_map_no_write_barrier(Tagged<Map> value, ReleaseStoreTag);
+  inline void set_map_no_write_barrier(Isolate* isolate, Tagged<Map> value,
+                                       ReleaseStoreTag);
   inline void set_map_safe_transition_no_write_barrier(
-      Tagged<Map> value, RelaxedStoreTag = kRelaxedStore);
-  inline void set_map_safe_transition_no_write_barrier(Tagged<Map> value,
+      Isolate* isolate, Tagged<Map> value, RelaxedStoreTag = kRelaxedStore);
+  inline void set_map_safe_transition_no_write_barrier(Isolate* isolate,
+                                                       Tagged<Map> value,
                                                        ReleaseStoreTag);
 
   // Access the map using acquire load and release store.
   DECL_ACQUIRE_GETTER(map, Tagged<Map>)
-  inline void set_map(Tagged<Map> value, ReleaseStoreTag);
-  inline void set_map_safe_transition(Tagged<Map> value, ReleaseStoreTag);
+  template <typename IsolateT>
+  inline void set_map(IsolateT* isolate, Tagged<Map> value, ReleaseStoreTag);
+  template <typename IsolateT>
+  inline void set_map_safe_transition(IsolateT* isolate, Tagged<Map> value,
+                                      ReleaseStoreTag);
 
   // Compare-and-swaps map word using release store, returns true if the map
   // word was actually swapped.
@@ -164,8 +174,10 @@ class HeapObject : public TaggedImpl<HeapObjectReferenceType::STRONG, Address> {
 
   // Initialize the map immediately after the object is allocated.
   // Do not use this outside Heap.
+  template <typename IsolateT>
   inline void set_map_after_allocation(
-      Tagged<Map> value, WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
+      IsolateT* isolate, Tagged<Map> value,
+      WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
 
   static inline void SetFillerMap(const WritableFreeSpace& writable_page,
                                   Tagged<Map> value);
@@ -240,39 +252,45 @@ class HeapObject : public TaggedImpl<HeapObjectReferenceType::STRONG, Address> {
   // GC internal.
   V8_EXPORT_PRIVATE int SizeFromMap(Tagged<Map> map) const;
 
-  template <class T, typename std::enable_if<std::is_arithmetic<T>::value ||
-                                                 std::is_enum<T>::value ||
-                                                 std::is_pointer<T>::value,
-                                             int>::type = 0>
+  template <class T, typename std::enable_if_t<std::is_arithmetic_v<T> ||
+                                                   std::is_enum_v<T> ||
+                                                   std::is_pointer_v<T>,
+                                               int> = 0>
   inline T ReadField(size_t offset) const {
     return ReadMaybeUnalignedValue<T>(field_address(offset));
   }
 
-  template <class T, typename std::enable_if<std::is_arithmetic<T>::value ||
-                                                 std::is_enum<T>::value ||
-                                                 std::is_pointer<T>::value,
-                                             int>::type = 0>
+  template <class T, typename std::enable_if_t<std::is_arithmetic_v<T> ||
+                                                   std::is_enum_v<T> ||
+                                                   std::is_pointer_v<T>,
+                                               int> = 0>
   inline void WriteField(size_t offset, T value) const {
     return WriteMaybeUnalignedValue<T>(field_address(offset), value);
   }
 
   // Atomically reads a field using relaxed memory ordering. Can only be used
   // with integral types whose size is <= kTaggedSize (to guarantee alignment).
-  template <class T,
-            typename std::enable_if<(std::is_arithmetic<T>::value ||
-                                     std::is_enum<T>::value) &&
-                                        !std::is_floating_point<T>::value,
-                                    int>::type = 0>
+  template <class T, typename std::enable_if_t<
+                         (std::is_arithmetic_v<T> ||
+                          std::is_enum_v<T>)&&!std::is_floating_point_v<T>,
+                         int> = 0>
   inline T Relaxed_ReadField(size_t offset) const;
 
   // Atomically writes a field using relaxed memory ordering. Can only be used
   // with integral types whose size is <= kTaggedSize (to guarantee alignment).
-  template <class T,
-            typename std::enable_if<(std::is_arithmetic<T>::value ||
-                                     std::is_enum<T>::value) &&
-                                        !std::is_floating_point<T>::value,
-                                    int>::type = 0>
+  template <class T, typename std::enable_if_t<
+                         (std::is_arithmetic_v<T> ||
+                          std::is_enum_v<T>)&&!std::is_floating_point_v<T>,
+                         int> = 0>
   inline void Relaxed_WriteField(size_t offset, T value);
+
+  // Atomically reads a field using acquire memory ordering. Can only be used
+  // with integral types whose size is <= kTaggedSize (to guarantee alignment).
+  template <class T, typename std::enable_if_t<
+                         (std::is_arithmetic_v<T> ||
+                          std::is_enum_v<T>)&&!std::is_floating_point_v<T>,
+                         int> = 0>
+  inline T Acquire_ReadField(size_t offset) const;
 
   // Atomically compares and swaps a field using seq cst memory ordering.
   // Contains the required logic to properly handle number comparison.
@@ -395,10 +413,11 @@ class HeapObject : public TaggedImpl<HeapObjectReferenceType::STRONG, Address> {
   // JSDispatchHandles.
   //
   // These are references to entries in the JSDispatchTable, which contain the
-  // current code for a JSFunction.
-  inline void InitJSDispatchHandleField(size_t offset,
-                                        IsolateForSandbox isolate,
-                                        uint16_t parameter_count);
+  // current code for a function.
+  inline void AllocateAndInstallJSDispatchHandle(
+      size_t offset, IsolateForSandbox isolate, uint16_t parameter_count,
+      Tagged<Code> code,
+      WriteBarrierMode mode = WriteBarrierMode::UPDATE_WRITE_BARRIER);
 
   // Returns the field at offset in obj, as a read/write Object reference.
   // Does no checking, and is safe to use during GC, while maps are invalid.
@@ -503,9 +522,10 @@ class HeapObject : public TaggedImpl<HeapObjectReferenceType::STRONG, Address> {
     kNo,
   };
 
-  template <EmitWriteBarrier emit_write_barrier, typename MemoryOrder>
-  V8_INLINE void set_map(Tagged<Map> value, MemoryOrder order,
-                         VerificationMode mode);
+  template <EmitWriteBarrier emit_write_barrier, typename MemoryOrder,
+            typename IsolateT>
+  V8_INLINE void set_map(IsolateT* isolate, Tagged<Map> value,
+                         MemoryOrder order, VerificationMode mode);
 };
 
 inline HeapObject::HeapObject(Address ptr) : TaggedImpl(ptr) {
@@ -573,11 +593,6 @@ IS_TYPE_FUNCTION_DECL(NullOrUndefined, , /* unused */)
 STRUCT_LIST(DECL_STRUCT_PREDICATE)
 #undef DECL_STRUCT_PREDICATE
 
-// Whether the object is in the RO heap and the RO heap is shared, or in the
-// writable shared heap.
-V8_INLINE bool InAnySharedSpace(Tagged<HeapObject> obj);
-V8_INLINE bool InWritableSharedSpace(Tagged<HeapObject> obj);
-V8_INLINE bool InReadOnlySpace(Tagged<HeapObject> obj);
 // Whether the object is located outside of the sandbox or in read-only
 // space. Currently only needed due to Code objects. Once they are fully
 // migrated into trusted space, this can be replaced by !InsideSandbox().
@@ -589,6 +604,7 @@ V8_INLINE bool OutsideSandboxOrInReadonlySpace(Tagged<HeapObject> obj);
 // objects or Smis. This can be used for a fast RO space/Smi check which are
 // objects for e.g. GC than can be exlucded for processing.
 V8_INLINE constexpr bool FastInReadOnlySpaceOrSmallSmi(Tagged_t obj);
+V8_INLINE constexpr bool FastInReadOnlySpaceOrSmallSmi(Tagged<MaybeObject> obj);
 
 }  // namespace internal
 }  // namespace v8

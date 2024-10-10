@@ -8,6 +8,7 @@
 #include <optional>
 
 #include "src/common/globals.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/heap/heap-write-barrier.h"
 #include "src/objects/dictionary.h"
 #include "src/objects/elements.h"
@@ -645,7 +646,7 @@ void JSApiWrapper::SetCppHeapWrappable(IsolateForPointerCompression isolate,
       JSAPIObjectWithEmbedderSlots::kCppHeapWrappableOffset, isolate,
       reinterpret_cast<Address>(instance));
   if (instance) {
-    WriteBarrier::CombinedBarrierForCppHeapPointer(object_, instance);
+    WriteBarrier::ForCppHeapPointer(object_, instance);
   }
 }
 
@@ -655,7 +656,7 @@ void JSApiWrapper::SetCppHeapWrappable(IsolateForPointerCompression isolate,
       JSAPIObjectWithEmbedderSlots::kCppHeapWrappableOffset, isolate,
       reinterpret_cast<Address>(instance), tag);
   if (instance) {
-    WriteBarrier::CombinedBarrierForCppHeapPointer(object_, instance);
+    WriteBarrier::ForCppHeapPointer(object_, instance);
   }
 }
 
@@ -711,20 +712,19 @@ DEF_GETTER(JSObject, GetElementsKind, ElementsKind) {
   if (ElementsAreSafeToExamine(cage_base)) {
     Tagged<Map> map = fixed_array->map(cage_base);
     if (IsSmiOrObjectElementsKind(kind)) {
-      DCHECK(map == GetReadOnlyRoots(cage_base).fixed_array_map() ||
-             map == GetReadOnlyRoots(cage_base).fixed_cow_array_map());
+      CHECK(map == GetReadOnlyRoots(cage_base).fixed_array_map() ||
+            map == GetReadOnlyRoots(cage_base).fixed_cow_array_map());
     } else if (IsDoubleElementsKind(kind)) {
-      DCHECK(IsFixedDoubleArray(fixed_array, cage_base) ||
-             fixed_array == GetReadOnlyRoots(cage_base).empty_fixed_array());
+      CHECK(IsFixedDoubleArray(fixed_array, cage_base) ||
+            fixed_array == GetReadOnlyRoots(cage_base).empty_fixed_array());
     } else if (kind == DICTIONARY_ELEMENTS) {
-      DCHECK(IsFixedArray(fixed_array, cage_base));
-      DCHECK(IsNumberDictionary(fixed_array, cage_base));
+      CHECK(IsFixedArray(fixed_array, cage_base));
+      CHECK(IsNumberDictionary(fixed_array, cage_base));
     } else {
-      DCHECK(kind > DICTIONARY_ELEMENTS ||
-             IsAnyNonextensibleElementsKind(kind));
+      CHECK(kind > DICTIONARY_ELEMENTS || IsAnyNonextensibleElementsKind(kind));
     }
-    DCHECK(!IsSloppyArgumentsElementsKind(kind) ||
-           IsSloppyArgumentsElements(elements(cage_base)));
+    CHECK_IMPLIES(IsSloppyArgumentsElementsKind(kind),
+                  IsSloppyArgumentsElements(elements(cage_base)));
   }
 #endif
   return kind;
@@ -845,9 +845,10 @@ DEF_GETTER(JSObject, element_dictionary, Tagged<NumberDictionary>) {
 
 void JSReceiver::initialize_properties(Isolate* isolate) {
   ReadOnlyRoots roots(isolate);
-  DCHECK(!ObjectInYoungGeneration(roots.empty_fixed_array()));
-  DCHECK(!ObjectInYoungGeneration(roots.empty_property_dictionary()));
-  DCHECK(!ObjectInYoungGeneration(roots.empty_ordered_property_dictionary()));
+  DCHECK(!HeapLayout::InYoungGeneration(roots.empty_fixed_array()));
+  DCHECK(!HeapLayout::InYoungGeneration(roots.empty_property_dictionary()));
+  DCHECK(!HeapLayout::InYoungGeneration(
+      roots.empty_ordered_property_dictionary()));
   if (map(isolate)->is_dictionary_map()) {
     if (V8_ENABLE_SWISS_NAME_DICTIONARY_BOOL) {
       WRITE_FIELD(*this, kPropertiesOrHashOffset,
@@ -1035,7 +1036,7 @@ static inline bool ShouldConvertToSlowElements(Tagged<JSObject> object,
   DCHECK_LT(index, *new_capacity);
   if (*new_capacity <= JSObject::kMaxUncheckedOldFastElementsLength ||
       (*new_capacity <= JSObject::kMaxUncheckedFastElementsLength &&
-       ObjectInYoungGeneration(object))) {
+       HeapLayout::InYoungGeneration(object))) {
     return false;
   }
   return ShouldConvertToSlowElements(object->GetFastElementsUsage(),

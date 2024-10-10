@@ -44,9 +44,7 @@ class WasmSerializationTest {
     WasmFunctionBuilder* f;
     for (int i = 0; i < 3; ++i) {
       f = builder->AddFunction(sigs.i_i());
-      uint8_t code[] = {WASM_LOCAL_GET(0), kExprI32Const, 1, kExprI32Add,
-                        kExprEnd};
-      f->EmitCode(code, sizeof(code));
+      f->EmitCode({WASM_LOCAL_GET(0), kExprI32Const, 1, kExprI32Add, kExprEnd});
     }
     builder->AddExport(base::CStrVector(kFunctionName), f);
 
@@ -500,19 +498,17 @@ TEST(DeserializeIndirectCallWithDifferentCanonicalId) {
     // Add the "call_indirect" function which calls table0[0].
     uint32_t sig_id = builder.AddSignature(sigs.i_i(), true);
     WasmFunctionBuilder* f = builder.AddFunction(sig_id);
-    uint8_t code[] = {
-        // (i) => i != 0 ? f(i-1) : 42
-        WASM_IF_ELSE_I(
-            // cond:
-            WASM_LOCAL_GET(0),
-            // if_true:
-            WASM_CALL_INDIRECT(SIG_INDEX(sig_id),
-                               WASM_I32_SUB(WASM_LOCAL_GET(0), WASM_ONE),
-                               WASM_ZERO),
-            // if_false:
-            WASM_I32V_1(42)),
-        WASM_END};
-    f->EmitCode(code, sizeof(code));
+    f->EmitCode({// (i) => i != 0 ? f(i-1) : 42
+                 WASM_IF_ELSE_I(
+                     // cond:
+                     WASM_LOCAL_GET(0),
+                     // if_true:
+                     WASM_CALL_INDIRECT(
+                         SIG_INDEX(sig_id),
+                         WASM_I32_SUB(WASM_LOCAL_GET(0), WASM_ONE), WASM_ZERO),
+                     // if_false:
+                     WASM_I32V_1(42)),
+                 WASM_END});
     builder.AddExport(base::CStrVector("call_indirect"), f);
     // Add a function table.
     uint32_t table_id = builder.AddTable(kWasmFuncRef, 1);
@@ -528,7 +524,7 @@ TEST(DeserializeIndirectCallWithDifferentCanonicalId) {
   auto enabled_features = WasmEnabledFeatures::FromIsolate(i_isolate);
   std::weak_ptr<NativeModule> weak_native_module;
   v8::OwnedBuffer serialized_module;
-  uint32_t canonical_sig_id_before_serialization;
+  CanonicalTypeIndex canonical_sig_id_before_serialization;
   {
     ErrorThrower thrower(i_isolate, "");
 
@@ -548,7 +544,7 @@ TEST(DeserializeIndirectCallWithDifferentCanonicalId) {
       weak_native_module = module_object->shared_native_module();
 
       // Retrieve the canonicalized signature ID.
-      const std::vector<uint32_t>& canonical_type_ids =
+      const std::vector<CanonicalTypeIndex>& canonical_type_ids =
           module_object->native_module()
               ->module()
               ->isorecursive_canonical_type_ids;
@@ -608,8 +604,8 @@ TEST(DeserializeIndirectCallWithDifferentCanonicalId) {
   }
 
   // Now deserialize the previous module.
-  uint32_t canonical_sig_id_after_deserialization =
-      canonical_sig_id_before_serialization + 1;
+  CanonicalTypeIndex canonical_sig_id_after_deserialization{
+      canonical_sig_id_before_serialization.index + 1};
   {
     v8::Local<v8::Context> deserialization_context =
         v8::Context::New(CcTest::isolate());
@@ -625,7 +621,7 @@ TEST(DeserializeIndirectCallWithDifferentCanonicalId) {
             .ToHandleChecked();
 
     // Check that the signature ID got canonicalized to index 1.
-    const std::vector<uint32_t>& canonical_type_ids =
+    const std::vector<CanonicalTypeIndex>& canonical_type_ids =
         module_object->native_module()
             ->module()
             ->isorecursive_canonical_type_ids;

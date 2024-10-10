@@ -573,6 +573,7 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
   // Find the innermost outer scope that needs a context.
   Scope* GetOuterScopeWithContext();
 
+  bool HasReceiverToDeserialize() const;
   bool HasThisReference() const;
   // Analyze() must have been called once to create the ScopeInfo.
   Handle<ScopeInfo> scope_info() const {
@@ -915,7 +916,7 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
     // so we don't care that it calls sloppy eval.
     if (is_script_scope()) return;
 
-    // Sloppy eval in a eval scope can only introduce variables into the outer
+    // Sloppy eval in an eval scope can only introduce variables into the outer
     // (non-eval) declaration scope, not into this eval scope.
     if (is_eval_scope()) {
 #ifdef DEBUG

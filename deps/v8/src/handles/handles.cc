@@ -11,6 +11,7 @@
 #include "src/execution/thread-id.h"
 #include "src/handles/maybe-handles.h"
 #include "src/heap/base/stack.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/objects/objects-inl.h"
 #include "src/roots/roots-inl.h"
 #include "src/utils/address-map.h"
@@ -59,8 +60,8 @@ bool HandleBase::IsDereferenceAllowed() const {
   Tagged<Object> object(*location_);
   if (IsSmi(object)) return true;
   Tagged<HeapObject> heap_object = Cast<HeapObject>(object);
-  if (IsReadOnlyHeapObject(heap_object)) return true;
-  Isolate* isolate = GetIsolateFromWritableObject(heap_object);
+  if (HeapLayout::InReadOnlySpace(heap_object)) return true;
+  Isolate* isolate = Isolate::CurrentMaybeBackground();
   RootIndex root_index;
   if (isolate->roots_table().IsRootHandleLocation(location_, &root_index) &&
       RootsTable::IsImmortalImmovable(root_index)) {
@@ -70,7 +71,7 @@ bool HandleBase::IsDereferenceAllowed() const {
   if (!AllowHandleDereference::IsAllowed()) return false;
 
   // Allocations in the shared heap may be dereferenced by multiple threads.
-  if (InWritableSharedSpace(heap_object)) return true;
+  if (HeapLayout::InWritableSharedSpace(heap_object)) return true;
 
   // Deref is explicitly allowed from any thread. Used for running internal GC
   // epilogue callbacks in the safepoint after a GC.
@@ -108,12 +109,12 @@ bool DirectHandleBase::IsDereferenceAllowed() const {
   Tagged<Object> object(obj_);
   if (IsSmi(object)) return true;
   Tagged<HeapObject> heap_object = Cast<HeapObject>(object);
-  if (IsReadOnlyHeapObject(heap_object)) return true;
-  Isolate* isolate = GetIsolateFromWritableObject(heap_object);
+  if (HeapLayout::InReadOnlySpace(heap_object)) return true;
+  Isolate* isolate = Isolate::CurrentMaybeBackground();
   if (!AllowHandleDereference::IsAllowed()) return false;
 
   // Allocations in the shared heap may be dereferenced by multiple threads.
-  if (InWritableSharedSpace(heap_object)) return true;
+  if (HeapLayout::InWritableSharedSpace(heap_object)) return true;
 
   // Deref is explicitly allowed from any thread. Used for running internal GC
   // epilogue callbacks in the safepoint after a GC.

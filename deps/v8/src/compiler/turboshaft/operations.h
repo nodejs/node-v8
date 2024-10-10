@@ -49,6 +49,7 @@ V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream& os,
 }  // namespace v8::internal
 namespace v8::internal::compiler {
 class CallDescriptor;
+class JSWasmCallParameters;
 class DeoptimizeParameters;
 class FrameStateInfo;
 class Node;
@@ -1318,7 +1319,7 @@ struct FixedArityOperationT : OperationT<Derived> {
   V(sat_conversion_is_safe, SatConversionIsSafe)   \
   V(word32_select, Word32Select)                   \
   V(word64_select, Word64Select)                   \
-  V(float64_to_float16, Float64ToFloat16)          \
+  V(float64_to_float16, TruncateFloat64ToFloat16)  \
   V(float16, Float16)
 
 class V8_EXPORT_PRIVATE SupportedOperations {
@@ -1403,7 +1404,7 @@ struct AbortCSADcheckOp : FixedArityOperationT<1, AbortCSADcheckOp> {
     return MaybeRepVector<MaybeRegisterRepresentation::Tagged()>();
   }
 
-  V<String> message() { return Base::input<String>(0); }
+  V<String> message() const { return Base::input<String>(0); }
 
   explicit AbortCSADcheckOp(V<String> message) : Base(message) {}
 
@@ -2552,6 +2553,7 @@ struct ConstantOp : FixedArityOperationT<0, ConstantOp> {
     kTrustedHeapObject,
     kRelocatableWasmCall,
     kRelocatableWasmStubCall,
+    kRelocatableWasmIndirectCallTarget,
     kRelocatableWasmCanonicalSignatureId
   };
 
@@ -2604,6 +2606,7 @@ struct ConstantOp : FixedArityOperationT<0, ConstantOp> {
       case Kind::kTrustedHeapObject:
       case Kind::kRelocatableWasmCall:
       case Kind::kRelocatableWasmStubCall:
+      case Kind::kRelocatableWasmIndirectCallTarget:
         return RegisterRepresentation::WordPtr();
       case Kind::kSmi:
       case Kind::kHeapObject:
@@ -2705,7 +2708,8 @@ struct ConstantOp : FixedArityOperationT<0, ConstantOp> {
     return kind == Kind::kWord32 || kind == Kind::kWord64 ||
            kind == Kind::kRelocatableWasmCall ||
            kind == Kind::kRelocatableWasmStubCall ||
-           kind == Kind::kRelocatableWasmCanonicalSignatureId;
+           kind == Kind::kRelocatableWasmCanonicalSignatureId ||
+           kind == Kind::kRelocatableWasmIndirectCallTarget;
   }
 
   auto options() const { return std::tuple{kind, storage}; }
@@ -2720,6 +2724,7 @@ struct ConstantOp : FixedArityOperationT<0, ConstantOp> {
       case Kind::kTaggedIndex:
       case Kind::kRelocatableWasmCall:
       case Kind::kRelocatableWasmStubCall:
+      case Kind::kRelocatableWasmIndirectCallTarget:
       case Kind::kRelocatableWasmCanonicalSignatureId:
         return HashWithOptions(storage.integral);
       case Kind::kFloat32:
@@ -2750,6 +2755,7 @@ struct ConstantOp : FixedArityOperationT<0, ConstantOp> {
       case Kind::kRelocatableWasmCall:
       case Kind::kRelocatableWasmStubCall:
       case Kind::kRelocatableWasmCanonicalSignatureId:
+      case Kind::kRelocatableWasmIndirectCallTarget:
         return storage.integral == other.storage.integral;
       case Kind::kFloat32:
         // Using a bit_cast to uint32_t in order to return false when comparing
@@ -2841,22 +2847,50 @@ struct LoadOp : OperationT<LoadOp> {
           return RawAligned();
       }
     }
-
-    // TODO(dmercadier): use designed initializers once we move to C++20.
     static constexpr Kind TaggedBase() {
-      return {true, false, false, false, true, false, false};
+      return {.tagged_base = true,
+              .maybe_unaligned = false,
+              .with_trap_handler = false,
+              .trap_on_null = false,
+              .load_eliminable = true,
+              .is_immutable = false,
+              .is_atomic = false};
     }
     static constexpr Kind RawAligned() {
-      return {false, false, false, false, true, false, false};
+      return {.tagged_base = false,
+              .maybe_unaligned = false,
+              .with_trap_handler = false,
+              .trap_on_null = false,
+              .load_eliminable = true,
+              .is_immutable = false,
+              .is_atomic = false};
     }
     static constexpr Kind RawUnaligned() {
-      return {false, true, false, false, true, false, false};
+      return {.tagged_base = false,
+              .maybe_unaligned = true,
+              .with_trap_handler = false,
+              .trap_on_null = false,
+              .load_eliminable = true,
+              .is_immutable = false,
+              .is_atomic = false};
     }
     static constexpr Kind Protected() {
-      return {false, false, true, false, true, false, false};
+      return {.tagged_base = false,
+              .maybe_unaligned = false,
+              .with_trap_handler = true,
+              .trap_on_null = false,
+              .load_eliminable = true,
+              .is_immutable = false,
+              .is_atomic = false};
     }
     static constexpr Kind TrapOnNull() {
-      return {true, false, true, true, true, false, false};
+      return {.tagged_base = true,
+              .maybe_unaligned = false,
+              .with_trap_handler = true,
+              .trap_on_null = true,
+              .load_eliminable = true,
+              .is_immutable = false,
+              .is_atomic = false};
     }
     static constexpr Kind MaybeUnaligned(MemoryRepresentation rep) {
       return rep == MemoryRepresentation::Int8() ||
@@ -3755,10 +3789,12 @@ struct DeoptimizeIfOp : FixedArityOperationT<2, DeoptimizeIfOp> {
 struct WasmStackCheckOp : FixedArityOperationT<0, WasmStackCheckOp> {
   using Kind = JSStackCheckOp::Kind;
   Kind kind;
+  int parameter_slots;
 
   static constexpr OpEffects effects = OpEffects().CanCallAnything();
 
-  explicit WasmStackCheckOp(Kind kind) : Base(), kind(kind) {}
+  explicit WasmStackCheckOp(Kind kind, int parameter_slots)
+      : Base(), kind(kind), parameter_slots(parameter_slots) {}
 
   base::Vector<const RegisterRepresentation> outputs_rep() const { return {}; }
 
@@ -3769,7 +3805,7 @@ struct WasmStackCheckOp : FixedArityOperationT<0, WasmStackCheckOp> {
 
   void Validate(const Graph& graph) const {}
 
-  auto options() const { return std::tuple{kind}; }
+  auto options() const { return std::tuple{kind, parameter_slots}; }
 };
 
 V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream& os,
@@ -3899,21 +3935,31 @@ struct TSCallDescriptor : public NON_EXPORTED_BASE(ZoneObject) {
   base::Vector<const RegisterRepresentation> out_reps;
   CanThrow can_throw;
   LazyDeoptOnThrow lazy_deopt_on_throw;
+  // TODO(dlehmann,353475584): Since the `JSWasmCallParameters` are specific to
+  // one particular call site, this assumes that (only works correctly if)
+  // `TSCallDescriptor`s are not shared across different calls (which they are
+  // not at the moment).
+  // For sharing call descriptors, the `JSWasmCallParameters` need to be moved
+  // to the CallOp, which causes a lot of code churn (needs touching all
+  // `REDUCE(Call)`).
+  const JSWasmCallParameters* js_wasm_call_parameters;
 
   TSCallDescriptor(const CallDescriptor* descriptor,
                    base::Vector<const RegisterRepresentation> in_reps,
                    base::Vector<const RegisterRepresentation> out_reps,
-                   CanThrow can_throw, LazyDeoptOnThrow lazy_deopt_on_throw)
+                   CanThrow can_throw, LazyDeoptOnThrow lazy_deopt_on_throw,
+                   const JSWasmCallParameters* js_wasm_call_parameters)
       : descriptor(descriptor),
         in_reps(in_reps),
         out_reps(out_reps),
         can_throw(can_throw),
-        lazy_deopt_on_throw(lazy_deopt_on_throw) {}
+        lazy_deopt_on_throw(lazy_deopt_on_throw),
+        js_wasm_call_parameters(js_wasm_call_parameters) {}
 
-  static const TSCallDescriptor* Create(const CallDescriptor* descriptor,
-                                        CanThrow can_throw,
-                                        LazyDeoptOnThrow lazy_deopt_on_throw,
-                                        Zone* graph_zone) {
+  static const TSCallDescriptor* Create(
+      const CallDescriptor* descriptor, CanThrow can_throw,
+      LazyDeoptOnThrow lazy_deopt_on_throw, Zone* graph_zone,
+      const JSWasmCallParameters* js_wasm_call_parameters = nullptr) {
     DCHECK_IMPLIES(can_throw == CanThrow::kNo,
                    lazy_deopt_on_throw == LazyDeoptOnThrow::kNo);
     base::Vector<RegisterRepresentation> in_reps =
@@ -3931,7 +3977,8 @@ struct TSCallDescriptor : public NON_EXPORTED_BASE(ZoneObject) {
           descriptor->GetReturnType(i).representation());
     }
     return graph_zone->New<TSCallDescriptor>(descriptor, in_reps, out_reps,
-                                             can_throw, lazy_deopt_on_throw);
+                                             can_throw, lazy_deopt_on_throw,
+                                             js_wasm_call_parameters);
   }
 };
 

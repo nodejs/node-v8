@@ -345,6 +345,13 @@ ImportedFunctionEntry::ImportedFunctionEntry(
 // WasmDispatchTable
 OBJECT_CONSTRUCTORS_IMPL(WasmDispatchTable, TrustedObject)
 
+PROTECTED_POINTER_ACCESSORS(WasmDispatchTable, protected_offheap_data,
+                            TrustedManaged<WasmDispatchTableData>,
+                            kProtectedOffheapDataOffset)
+WasmDispatchTableData* WasmDispatchTable::offheap_data() const {
+  return protected_offheap_data()->get().get();
+}
+
 void WasmDispatchTable::clear_entry_padding(int index) {
   static_assert(kEntryPaddingBytes == 0 || kEntryPaddingBytes == kIntSize);
   if constexpr (kEntryPaddingBytes != 0) {
@@ -371,15 +378,16 @@ inline Tagged<Object> WasmDispatchTable::implicit_arg(int index) const {
   return implicit_arg;
 }
 
-inline Address WasmDispatchTable::target(int index) const {
+inline WasmCodePointer WasmDispatchTable::target(int index) const {
   DCHECK_LT(index, length());
-  if (v8_flags.wasm_jitless) return kNullAddress;
-  return ReadField<Address>(OffsetOf(index) + kTargetBias);
+  if (v8_flags.wasm_jitless) return wasm::kInvalidWasmCodePointer;
+  return ReadField<WasmCodePointer>(OffsetOf(index) + kTargetBias);
 }
 
-inline int WasmDispatchTable::sig(int index) const {
+inline wasm::CanonicalTypeIndex WasmDispatchTable::sig(int index) const {
   DCHECK_LT(index, length());
-  return ReadField<int>(OffsetOf(index) + kSigBias);
+  return wasm::CanonicalTypeIndex{
+      ReadField<uint32_t>(OffsetOf(index) + kSigBias)};
 }
 
 #if V8_ENABLE_DRUMBRAKE
@@ -521,23 +529,39 @@ wasm::ValueType WasmTableObject::type() {
   return type;
 }
 
+bool WasmTableObject::is_in_bounds(uint32_t entry_index) {
+  return entry_index < static_cast<uint32_t>(current_length());
+}
+
 bool WasmTableObject::is_table64() const {
-  int table64_smi_value =
-      TorqueGeneratedWasmTableObject<WasmTableObject, JSObject>::is_table64();
-  DCHECK_LE(0, table64_smi_value);
-  DCHECK_GE(1, table64_smi_value);
-  return table64_smi_value != 0;
+  return index_type() == wasm::IndexType::kI64;
+}
+
+std::optional<uint64_t> WasmTableObject::maximum_length_u64() const {
+  Tagged<Object> max = maximum_length();
+  if (IsUndefined(max)) return std::nullopt;
+  if (is_table64()) {
+    DCHECK(IsBigInt(max));
+#if DEBUG
+    bool lossless;
+    double value = Cast<BigInt>(maximum_length())->AsUint64(&lossless);
+    DCHECK(lossless);
+    return value;
+#else
+    return Cast<BigInt>(maximum_length())->AsUint64();
+#endif
+  }
+  DCHECK(IsNumber(max));
+  double value = Object::NumberValue(max);
+  DCHECK_LE(0, value);
+  DCHECK_GE(std::numeric_limits<uint64_t>::max(), value);
+  return value;
 }
 
 bool WasmMemoryObject::has_maximum_pages() { return maximum_pages() >= 0; }
 
 bool WasmMemoryObject::is_memory64() const {
-  int memory64_smi_value =
-      TorqueGeneratedWasmMemoryObject<WasmMemoryObject,
-                                      JSObject>::is_memory64();
-  DCHECK_LE(0, memory64_smi_value);
-  DCHECK_GE(1, memory64_smi_value);
-  return memory64_smi_value != 0;
+  return index_type() == wasm::IndexType::kI64;
 }
 
 // static
@@ -589,6 +613,7 @@ Handle<Object> WasmObject::ReadValueAt(Isolate* isolate,
       UNREACHABLE();
 
     case wasm::kVoid:
+    case wasm::kTop:
     case wasm::kBottom:
       UNREACHABLE();
   }

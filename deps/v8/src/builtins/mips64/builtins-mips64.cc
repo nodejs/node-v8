@@ -37,9 +37,11 @@ namespace internal {
 
 #define __ ACCESS_MASM(masm)
 
-void Builtins::Generate_Adaptor(MacroAssembler* masm, Address address) {
+void Builtins::Generate_Adaptor(MacroAssembler* masm,
+                                int formal_parameter_count, Address address) {
   __ li(kJavaScriptCallExtraArg1Register, ExternalReference::Create(address));
-  __ TailCallBuiltin(Builtin::kAdaptorWithBuiltinExitFrame);
+  __ TailCallBuiltin(
+      Builtins::AdaptorWithBuiltinExitFrame(formal_parameter_count));
 }
 
 namespace {
@@ -1290,11 +1292,18 @@ void Builtins::Generate_InterpreterEntryTrampoline(
     __ LoadFeedbackVectorFlagsAndJumpIfNeedsProcessing(
         flags, feedback_vector, CodeKind::BASELINE, &flags_need_processing);
 
+#ifndef V8_ENABLE_LEAPTIERING
+    // TODO(mips64, 42204201): This fastcase is difficult to support with the
+    // sandbox as it requires getting write access to the dispatch table. See
+    // `JSFunction::UpdateCode`. We might want to remove it for all
+    // configurations as it does not seem to be performance sensitive.
+
     // Load the baseline code into the closure.
     __ Move(a2, kInterpreterBytecodeArrayRegister);
     static_assert(kJavaScriptCallCodeStartRegister == a2, "ABI mismatch");
     __ ReplaceClosureCodeWithOptimizedCode(a2, closure, t0, t1);
     __ JumpCodeObject(a2, kJSEntrypointTag);
+#endif  // V8_ENABLE_LEAPTIERING
 
     __ bind(&install_baseline_code);
     __ GenerateTailCallToReturnedCode(Runtime::kInstallBaselineCode);
@@ -1882,8 +1891,9 @@ void OnStackReplacement(MacroAssembler* masm, OsrSourceTier source,
   Label jump_to_optimized_code;
   {
     // If maybe_target_code is not null, no need to call into runtime. A
-    // precondition here is: if maybe_target_code is a InstructionStream object,
-    // it must NOT be marked_for_deoptimization (callers must ensure this).
+    // precondition here is: if maybe_target_code is an InstructionStream
+    // object, it must NOT be marked_for_deoptimization (callers must ensure
+    // this).
     __ Branch(&jump_to_optimized_code, ne, maybe_target_code,
               Operand(Smi::zero()));
   }
@@ -2749,8 +2759,8 @@ constexpr RegList kSavedGpRegs = ([]() constexpr {
     saved_gp_regs.set(gp_param_reg);
   }
 
-  // The instance has already been stored in the fixed part of the frame.
-  saved_gp_regs.clear(kWasmInstanceRegister);
+  // The instance data has already been stored in the fixed part of the frame.
+  saved_gp_regs.clear(kWasmImplicitArgRegister);
   // All set registers were unique.
   CHECK_EQ(saved_gp_regs.Count(), arraysize(wasm::kGpParamRegisters) - 1);
   CHECK_EQ(WasmLiftoffSetupFrameConstants::kNumberOfSavedGpParamRegs,
@@ -2772,16 +2782,16 @@ constexpr DoubleRegList kSavedFpRegs = ([]() constexpr {
 
 // When entering this builtin, we have just created a Wasm stack frame:
 //
-// [   Wasm instance   ]  <-- sp
-// [ WASM frame marker ]
-// [     saved fp      ]  <-- fp
+// [ Wasm instance data ]  <-- sp
+// [ WASM frame marker  ]
+// [     saved fp       ]  <-- fp
 //
 // Add the feedback vector to the stack.
 //
-// [  feedback vector  ]  <-- sp
-// [   Wasm instance   ]
-// [ WASM frame marker ]
-// [     saved fp      ]  <-- fp
+// [  feedback vector   ]  <-- sp
+// [ Wasm instance data ]
+// [ WASM frame marker  ]
+// [     saved fp       ]  <-- fp
 void Builtins::Generate_WasmLiftoffFrameSetup(MacroAssembler* masm) {
   Register func_index = wasm::kLiftoffFrameSetupFunctionReg;
   Register vector = t1;
@@ -2789,7 +2799,7 @@ void Builtins::Generate_WasmLiftoffFrameSetup(MacroAssembler* masm) {
   Label allocate_vector, done;
 
   __ Ld(vector,
-        FieldMemOperand(kWasmInstanceRegister,
+        FieldMemOperand(kWasmImplicitArgRegister,
                         WasmTrustedInstanceData::kFeedbackVectorsOffset));
   __ Dlsa(vector, vector, func_index, kTaggedSizeLog2);
   __ Ld(vector, FieldMemOperand(vector, FixedArray::kHeaderSize));
@@ -2810,10 +2820,10 @@ void Builtins::Generate_WasmLiftoffFrameSetup(MacroAssembler* masm) {
   __ MultiPushFPU(kSavedFpRegs);
   __ Push(ra);
 
-  // Arguments to the runtime function: instance, func_index, and an
+  // Arguments to the runtime function: instance data, func_index, and an
   // additional stack slot for the NativeModule.
   __ SmiTag(func_index);
-  __ Push(kWasmInstanceRegister, func_index, zero_reg);
+  __ Push(kWasmImplicitArgRegister, func_index, zero_reg);
   __ Move(cp, Smi::zero());
   __ CallRuntime(Runtime::kWasmAllocateFeedbackVector, 3);
   __ mov(vector, kReturnRegister0);
@@ -2822,8 +2832,8 @@ void Builtins::Generate_WasmLiftoffFrameSetup(MacroAssembler* masm) {
   __ Pop(ra);
   __ MultiPopFPU(kSavedFpRegs);
   __ MultiPop(kSavedGpRegs);
-  __ Ld(kWasmInstanceRegister,
-        MemOperand(fp, WasmFrameConstants::kWasmInstanceOffset));
+  __ Ld(kWasmImplicitArgRegister,
+        MemOperand(fp, WasmFrameConstants::kWasmInstanceDataOffset));
   __ li(scratch, StackFrame::TypeToMarker(StackFrame::WASM));
   __ Sd(scratch, MemOperand(fp, TypedFrameConstants::kFrameTypeOffset));
   __ Branch(&done);
@@ -2839,7 +2849,7 @@ void Builtins::Generate_WasmCompileLazy(MacroAssembler* masm) {
     FrameScope scope(masm, StackFrame::INTERNAL);
 
     // Save registers that we need to keep alive across the runtime call.
-    __ Push(kWasmInstanceRegister);
+    __ Push(kWasmImplicitArgRegister);
     __ MultiPush(kSavedGpRegs);
     // Check if machine has simd enabled, if so push vector registers. If not
     // then only push double registers.
@@ -2863,7 +2873,7 @@ void Builtins::Generate_WasmCompileLazy(MacroAssembler* masm) {
     __ Dsubu(sp, sp, kSavedFpRegs.Count() * kDoubleSize);
     __ bind(&simd_pushed);
 
-    __ Push(kWasmInstanceRegister, kWasmCompileLazyFuncIndexRegister);
+    __ Push(kWasmImplicitArgRegister, kWasmCompileLazyFuncIndexRegister);
 
     // Initialize the JavaScript context with 0. CEntry will use it to
     // set the current context on the isolate.
@@ -2888,7 +2898,7 @@ void Builtins::Generate_WasmCompileLazy(MacroAssembler* masm) {
     __ MultiPopFPU(kSavedFpRegs);
     __ bind(&simd_popped);
     __ MultiPop(kSavedGpRegs);
-    __ Pop(kWasmInstanceRegister);
+    __ Pop(kWasmImplicitArgRegister);
   }
 
   // Untag the returned Smi, for later use.
@@ -2898,7 +2908,7 @@ void Builtins::Generate_WasmCompileLazy(MacroAssembler* masm) {
   // The runtime function returned the jump table slot offset as a Smi (now in
   // t8). Use that to compute the jump target.
   static_assert(!kSavedGpRegs.has(t8));
-  __ Ld(t8, FieldMemOperand(kWasmInstanceRegister,
+  __ Ld(t8, FieldMemOperand(kWasmImplicitArgRegister,
                             WasmTrustedInstanceData::kJumpTableStartOffset));
   __ Daddu(t8, v0, t8);
 
@@ -2949,10 +2959,8 @@ void Builtins::Generate_WasmToJsWrapperAsm(MacroAssembler* masm) {
     __ Sd(wasm::kGpParamRegisters[i],
           MemOperand(sp, (i - 1) * kSystemPointerSize));
   }
-  // Reserve fixed slots for the CSA wrapper.
-  // Two slots for stack-switching (central stack pointer and secondary stack
-  // limit), one for the signature.
-  __ Push(zero_reg, zero_reg, zero_reg);
+  // Reserve a slot for the signature.
+  __ Push(zero_reg);
   __ TailCallBuiltin(Builtin::kWasmToJsWrapperCSA);
 }
 
@@ -3146,6 +3154,12 @@ void Builtins::Generate_CEntry(MacroAssembler* masm, int result_size,
                                           no_reg));
   __ Jump(t9);
 }
+
+#if V8_ENABLE_WEBASSEMBLY
+void Builtins::Generate_WasmHandleStackOverflow(MacroAssembler* masm) {
+  __ Trap();
+}
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 void Builtins::Generate_DoubleToI(MacroAssembler* masm) {
   Label done;
@@ -3757,24 +3771,29 @@ void Generate_DeoptimizationEntry(MacroAssembler* masm,
   __ Ld(a4, MemOperand(a0, Deoptimizer::output_offset()));  // a4 is output_.
   __ Dlsa(a1, a4, a1, kSystemPointerSizeLog2);
   __ BranchShort(&outer_loop_header);
+
   __ bind(&outer_push_loop);
-  // Inner loop state: a2 = current FrameDescription*, a3 = loop index.
-  __ Ld(a2, MemOperand(a4, 0));  // output_[ix]
-  __ Ld(a3, MemOperand(a2, FrameDescription::frame_size_offset()));
+  Register current_frame = a2;
+  Register frame_size = a3;
+  __ Ld(current_frame, MemOperand(a4, 0));
+  __ Ld(frame_size,
+        MemOperand(current_frame, FrameDescription::frame_size_offset()));
   __ BranchShort(&inner_loop_header);
+
   __ bind(&inner_push_loop);
-  __ Dsubu(a3, a3, Operand(sizeof(uint64_t)));
-  __ Daddu(a6, a2, Operand(a3));
+  __ Dsubu(frame_size, frame_size, Operand(sizeof(uint64_t)));
+  __ Daddu(a6, current_frame, Operand(frame_size));
   __ Ld(a7, MemOperand(a6, FrameDescription::frame_content_offset()));
   __ push(a7);
+
   __ bind(&inner_loop_header);
-  __ BranchShort(&inner_push_loop, ne, a3, Operand(zero_reg));
+  __ BranchShort(&inner_push_loop, ne, frame_size, Operand(zero_reg));
 
   __ Daddu(a4, a4, Operand(kSystemPointerSize));
+
   __ bind(&outer_loop_header);
   __ BranchShort(&outer_push_loop, lt, a4, Operand(a1));
 
-  __ Ld(a1, MemOperand(a0, Deoptimizer::input_offset()));
   {
     // Check if machine has simd support, if so restore vector registers.
     // If not then restore double registers.
@@ -3793,7 +3812,7 @@ void Generate_DeoptimizationEntry(MacroAssembler* masm,
       int code = config->GetAllocatableSimd128Code(i);
       int src_offset = code * kSimd128Size + simd128_regs_offset;
       const MSARegister fpu_reg = MSARegister::from_code(code);
-      __ ld_d(fpu_reg, MemOperand(a1, src_offset));
+      __ ld_d(fpu_reg, MemOperand(current_frame, src_offset));
     }
     __ Branch(&done);
 
@@ -3802,23 +3821,23 @@ void Generate_DeoptimizationEntry(MacroAssembler* masm,
       int code = config->GetAllocatableSimd128Code(i);
       int src_offset = code * kSimd128Size + simd128_regs_offset;
       const DoubleRegister fpu_reg = DoubleRegister::from_code(code);
-      __ Ldc1(fpu_reg, MemOperand(a1, src_offset));
+      __ Ldc1(fpu_reg, MemOperand(current_frame, src_offset));
     }
 
     __ bind(&done);
   }
 
   // Push pc and continuation from the last output frame.
-  __ Ld(a6, MemOperand(a2, FrameDescription::pc_offset()));
+  __ Ld(a6, MemOperand(current_frame, FrameDescription::pc_offset()));
   __ push(a6);
-  __ Ld(a6, MemOperand(a2, FrameDescription::continuation_offset()));
+  __ Ld(a6, MemOperand(current_frame, FrameDescription::continuation_offset()));
   __ push(a6);
 
   // Technically restoring 'at' should work unless zero_reg is also restored
   // but it's safer to check for this.
   DCHECK(!(restored_regs.has(at)));
   // Restore the registers from the last output frame.
-  __ mov(at, a2);
+  __ mov(at, current_frame);
   for (int i = kNumberOfRegisters - 1; i >= 0; i--) {
     int offset =
         (i * kSystemPointerSize) + FrameDescription::registers_offset();
@@ -3827,10 +3846,17 @@ void Generate_DeoptimizationEntry(MacroAssembler* masm,
     }
   }
 
+  // If the continuation is non-zero (JavaScript), branch to the continuation.
+  // For Wasm just return to the pc from the last output frame in the lr
+  // register.
+  Label end;
   __ pop(at);  // Get continuation, leave pc on stack.
   __ pop(ra);
+  __ Branch(&end, eq, at, Operand(zero_reg));
   __ Jump(at);
-  __ stop();
+
+  __ bind(&end);
+  __ Jump(ra);
 }
 
 }  // namespace

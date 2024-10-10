@@ -1358,12 +1358,9 @@ void InstructionSelectorT<Adapter>::VisitStackSlot(node_t node) {
 
 template <typename Adapter>
 void InstructionSelectorT<Adapter>::VisitAbortCSADcheck(node_t node) {
-  if constexpr (Adapter::IsTurboshaft) {
-    UNIMPLEMENTED();
-  } else {
-    Arm64OperandGeneratorT<Adapter> g(this);
-    Emit(kArchAbortCSADcheck, g.NoOutput(), g.UseFixed(node->InputAt(0), x1));
-  }
+  Arm64OperandGeneratorT<Adapter> g(this);
+  Emit(kArchAbortCSADcheck, g.NoOutput(),
+       g.UseFixed(this->input_at(node, 0), x1));
 }
 
 template <typename Adapter>
@@ -3612,6 +3609,7 @@ void InstructionSelectorT<Adapter>::VisitWord64Ror(node_t node) {
   V(BitcastInt32ToFloat32, kArm64Float64MoveU64)              \
   V(BitcastInt64ToFloat64, kArm64Float64MoveU64)              \
   V(TruncateFloat64ToFloat32, kArm64Float64ToFloat32)         \
+  V(TruncateFloat64ToFloat16, kArm64Float64ToFloat16)         \
   V(TruncateFloat64ToWord32, kArchTruncateDoubleToI)          \
   V(TruncateFloat64ToUint32, kArm64Float64ToUint32)           \
   V(Float64ExtractLowWord32, kArm64Float64ExtractLowWord32)   \
@@ -6053,6 +6051,12 @@ void InstructionSelectorT<Adapter>::VisitSwitch(node_t node,
         index_operand = g.TempRegister();
         Emit(kArm64Sub32, index_operand, value_operand,
              g.TempImmediate(sw.min_value()));
+      } else {
+        // Smis top bits are undefined, so zero-extend if not already done so.
+        if (!ZeroExtendsWord32ToWord64(this->input_at(node, 0))) {
+          index_operand = g.TempRegister();
+          Emit(kArm64Mov32, index_operand, value_operand);
+        }
       }
       // Generate a table lookup.
       return EmitTableSwitch(sw, index_operand);
@@ -8514,7 +8518,7 @@ InstructionSelector::SupportedMachineOperatorFlags() {
                MachineOperatorBuilder::kLoadStorePairs;
   if (CpuFeatures::IsSupported(FP16)) {
     flags |= MachineOperatorBuilder::kFloat16 |
-             MachineOperatorBuilder::kFloat64ToFloat16;
+             MachineOperatorBuilder::kTruncateFloat64ToFloat16;
   }
   return flags;
 }

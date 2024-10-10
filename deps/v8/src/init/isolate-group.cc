@@ -9,6 +9,7 @@
 #include "src/common/ptr-compr-inl.h"
 #include "src/execution/isolate.h"
 #include "src/heap/code-range.h"
+#include "src/heap/read-only-spaces.h"
 #include "src/heap/trusted-range.h"
 #include "src/sandbox/sandbox.h"
 #include "src/utils/memcopy.h"
@@ -71,6 +72,7 @@ IsolateGroup* IsolateGroup::GetProcessWideIsolateGroup() {
 IsolateGroup::IsolateGroup() {}
 IsolateGroup::~IsolateGroup() {
   DCHECK_EQ(reference_count_.load(), 0);
+  DCHECK_EQ(isolate_count_.load(), 0);
   // If pointer compression is enabled but the external code space is disabled,
   // the pointer cage's page allocator is used for the CodeRange, whose
   // destructor calls it via VirtualMemory::Free.  Therefore we explicitly clear
@@ -80,9 +82,10 @@ IsolateGroup::~IsolateGroup() {
 }
 
 #ifdef V8_ENABLE_SANDBOX
-void IsolateGroup::Initialize(Sandbox* sandbox) {
+void IsolateGroup::Initialize(bool process_wide, Sandbox* sandbox) {
   DCHECK(!reservation_.IsReserved());
   CHECK(sandbox->is_initialized());
+  process_wide_ = process_wide;
   PtrComprCageReservationParams params;
   Address base = sandbox->address_space()->AllocatePages(
     sandbox->base(), params.reservation_size, params.base_alignment,
@@ -102,8 +105,9 @@ void IsolateGroup::Initialize(Sandbox* sandbox) {
       TrustedRange::EnsureProcessWideTrustedRange(kMaximalTrustedRangeSize);
 }
 #elif defined(V8_COMPRESS_POINTERS)
-void IsolateGroup::Initialize() {
+void IsolateGroup::Initialize(bool process_wide) {
   DCHECK(!reservation_.IsReserved());
+  process_wide_ = process_wide;
   PtrComprCageReservationParams params;
   if (!reservation_.InitReservation(params)) {
     V8::FatalProcessOutOfMemory(
@@ -116,7 +120,8 @@ void IsolateGroup::Initialize() {
   trusted_pointer_compression_cage_ = &reservation_;
 }
 #else   // !V8_COMPRESS_POINTERS
-void IsolateGroup::Initialize() {
+void IsolateGroup::Initialize(bool process_wide) {
+  process_wide_ = process_wide;
   page_allocator_ = GetPlatformPageAllocator();
 }
 #endif  // V8_ENABLE_SANDBOX
@@ -127,9 +132,9 @@ void IsolateGroup::InitializeOncePerProcess() {
   IsolateGroup* group = GetProcessWideIsolateGroup();
 
 #ifdef V8_ENABLE_SANDBOX
-  group->Initialize(GetProcessWideSandbox());
+  group->Initialize(true, GetProcessWideSandbox());
 #else
-  group->Initialize();
+  group->Initialize(true);
 #endif
   CHECK_NOT_NULL(group->page_allocator_);
 
@@ -147,10 +152,10 @@ void IsolateGroup::InitializeOncePerProcess() {
 
 namespace {
 void InitCodeRangeOnce(std::unique_ptr<CodeRange>* code_range_member,
-                       v8::PageAllocator* page_allocator,
-                       size_t requested_size) {
+                       v8::PageAllocator* page_allocator, size_t requested_size,
+                       bool immutable) {
   CodeRange* code_range = new CodeRange();
-  if (!code_range->InitReservation(page_allocator, requested_size)) {
+  if (!code_range->InitReservation(page_allocator, requested_size, immutable)) {
     V8::FatalProcessOutOfMemory(
         nullptr, "Failed to reserve virtual memory for CodeRange");
   }
@@ -167,8 +172,25 @@ void InitCodeRangeOnce(std::unique_ptr<CodeRange>* code_range_member,
 
 CodeRange* IsolateGroup::EnsureCodeRange(size_t requested_size) {
   base::CallOnce(&init_code_range_, InitCodeRangeOnce, &code_range_,
-                 page_allocator_, requested_size);
+                 page_allocator_, requested_size, process_wide_);
   return code_range_.get();
+}
+
+void IsolateGroup::ClearSharedSpaceIsolate() {
+  DCHECK_EQ(0, IsolateCount());
+  DCHECK(has_shared_space_isolate());
+  shared_space_isolate_ = nullptr;
+}
+
+void IsolateGroup::ClearReadOnlyArtifacts() {
+  DCHECK_EQ(0, IsolateCount());
+  read_only_artifacts_.reset();
+}
+
+ReadOnlyArtifacts* IsolateGroup::InitializeReadOnlyArtifacts() {
+  DCHECK(!read_only_artifacts_);
+  read_only_artifacts_ = std::make_unique<ReadOnlyArtifacts>();
+  return read_only_artifacts_.get();
 }
 
 // static
@@ -177,7 +199,7 @@ IsolateGroup* IsolateGroup::New() {
 
 #ifdef V8_COMPRESS_POINTERS_IN_MULTIPLE_CAGES
   static_assert(!V8_ENABLE_SANDBOX_BOOL);
-  group->Initialize();
+  group->Initialize(false);
 #else
   FATAL(
       "Creation of new isolate groups requires enabling "
@@ -204,6 +226,7 @@ void IsolateGroup::ReleaseGlobal() {
 #ifndef V8_COMPRESS_POINTERS_IN_MULTIPLE_CAGES
   IsolateGroup *group = GetProcessWideIsolateGroup();
   CHECK_EQ(group->reference_count_.load(), 1);
+  CHECK(!group->has_shared_space_isolate());
   group->page_allocator_ = nullptr;
   group->code_range_.reset();
   group->init_code_range_ = base::ONCE_STATE_UNINITIALIZED;

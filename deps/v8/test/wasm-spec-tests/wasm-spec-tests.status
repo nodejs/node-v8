@@ -4,34 +4,10 @@
 
 [
 [ALWAYS, {
-  'skip-stack-guard-page': [PASS, ['((arch == ppc or arch == ppc64 or arch == s390 or arch == s390x) and simulator_run)', SKIP]],
+  'skip-stack-guard-page': [PASS, ['((arch == ppc64 or arch == s390x) and simulator_run)', SKIP]],
+
   # Missing rebase in the proposal repository.
   'proposals/js-types/table': [FAIL],
-  # "data" is supposed to fail for "data segment does not fit"; missing rebase
-  # on https://github.com/WebAssembly/spec/commit/7fa2f20a.
-  'proposals/memory64/data': [FAIL],
-  # "elem" is supposed to fail for "elements segment does not fit"; missing
-  # rebase on https://github.com/WebAssembly/spec/commit/7fa2f20a.
-  'proposals/memory64/elem': [FAIL],
-  # "imports" is supposed to fail for "multiple tables"; missing rebase on
-  # https://github.com/WebAssembly/spec/commit/7fa2f20a.
-  'proposals/memory64/imports': [FAIL],
-  # "linking" is supposed to fail for "elements segment does not fit"; missing
-  # rebase on https://github.com/WebAssembly/spec/commit/7fa2f20a.
-  'proposals/memory64/linking': [FAIL],
-  # "table" is supposed to fail for "multiple tables"; missing rebase on
-  # https://github.com/WebAssembly/spec/commit/7fa2f20a.
-  'proposals/memory64/table': [FAIL],
-  # "unreached-invalid" is supposed to fail for "type mismatch"; missing rebase
-  # on https://github.com/WebAssembly/spec/commit/7fa2f20a.
-  'proposals/memory64/unreached-invalid': [FAIL],
-
-  'proposals/gc/imports': [FAIL],
-  'proposals/extended-const/imports': [FAIL],
-  'proposals/js-types/imports': [FAIL],
-  'proposals/tail-call/imports': [FAIL],
-
-  # TODO(wasm): Roll newest tests into "js-types" repository.
   'proposals/js-types/globals': [FAIL],
 
   # Tests that need to run sequentially (e.g. due to memory consumption).
@@ -40,12 +16,36 @@
   'f32*': [PASS, HEAVY],
   'f64*': [PASS, HEAVY],
 
-  # TODO(https://issues.chromium.org/342316792) Failing test after spec test update
-  'proposals/tail-call/memory': [FAIL],
-  'proposals/js-types/memory': [FAIL],
-  'proposals/exception-handling/memory': [FAIL],
-  'proposals/extended-const/memory': [FAIL],
-  'proposals/js-promise-integration/memory': [FAIL],
+  # TODO(https://crbug.com/364917766): Failing tests after spec test update,
+  # probably from rebasing on the wasm-3.0 branch.
+  'proposals/memory64/i16x8_relaxed_q15mulr_s': [FAIL],
+  'proposals/memory64/i32x4_relaxed_trunc': [FAIL],
+  'proposals/memory64/i8x16_relaxed_swizzle': [FAIL],
+  'proposals/memory64/instance': [FAIL],
+  'proposals/memory64/ref_null': [FAIL],
+  'proposals/memory64/relaxed_dot_product': [FAIL],
+  'proposals/memory64/relaxed_laneselect': [FAIL],
+  'proposals/memory64/relaxed_madd_nmadd': [FAIL],
+  'proposals/memory64/relaxed_min_max': [FAIL],
+  'proposals/memory64/table_fill': [FAIL],
+  'proposals/memory64/table_get': [FAIL],
+  'proposals/memory64/table_grow': [FAIL],
+  'proposals/memory64/table_set': [FAIL],
+  'proposals/memory64/throw': [FAIL],
+  'proposals/memory64/throw_ref': [FAIL],
+  'proposals/memory64/try_table': [FAIL],
+  'proposals/js-promise-integration/i16x8_relaxed_q15mulr_s': [FAIL],
+  'proposals/js-promise-integration/i8x16_relaxed_swizzle': [FAIL],
+  'proposals/js-promise-integration/i32x4_relaxed_trunc': [FAIL],
+  'proposals/js-promise-integration/instance': [FAIL],
+  'proposals/js-promise-integration/ref_null': [FAIL],
+  'proposals/js-promise-integration/relaxed_laneselect': [FAIL],
+  'proposals/js-promise-integration/relaxed_madd_nmadd': [FAIL],
+  'proposals/js-promise-integration/relaxed_dot_product': [FAIL],
+  'proposals/js-promise-integration/throw': [FAIL],
+  'proposals/js-promise-integration/relaxed_min_max': [FAIL],
+  'proposals/js-promise-integration/throw_ref': [FAIL],
+  'proposals/js-promise-integration/try_table': [FAIL],
 
   # The function-references spec tests haven't been updated to the final
   # binary encoding. We don't care, because the GC tests are up to date and
@@ -71,32 +71,38 @@
   'proposals/multi-memory/elem': [FAIL],
   'proposals/tail-call/elem': [FAIL],
   'proposals/exception-handling/elem': [FAIL],
-  'proposals/js-promise-integration/elem': [FAIL],
 
   'global': [FAIL],
   'proposals/extended-const/global': [FAIL],
 
   # These tests need to be rebased on the multi-memory proposal once it's
-  # merged into the main repository. They test that not more than one memory
-  # can be declared ("memory" / "memory64") or imported ("imports"), or that
-  # the byte for encoding the memory index is a single byte (and no LEB,
-  # "binary").
-  'binary': [FAIL],
-  'imports': [FAIL],
+  # merged into the main repository.
+  # "memory" tests that not more than one memory can be declared.
   'memory': [FAIL],
+  'proposals/exception-handling/memory': [FAIL],
+  'proposals/extended-const/memory': [FAIL],
+  'proposals/gc/memory': [FAIL],
+  'proposals/js-types/memory': [FAIL],
+  'proposals/tail-call/memory': [FAIL],
+  # "imports" tests that not more than one memory can be imported.
+  'imports': [FAIL],
+  'proposals/exception-handling/imports': [FAIL],
+  'proposals/extended-const/imports': [FAIL],
+  'proposals/gc/imports': [FAIL],
+  'proposals/js-types/imports': [FAIL],
+  'proposals/tail-call/imports': [FAIL],
+  # "binary" tests that the byte for encoding the memory index is a single
+  # byte (and no LEB).
+  'binary': [FAIL],
+  'proposals/exception-handling/binary': [FAIL],
   'proposals/extended-const/binary': [FAIL],
   'proposals/gc/binary': [FAIL],
   'proposals/js-types/binary': [FAIL],
-  'proposals/memory64/binary': [FAIL],
-  'proposals/memory64/memory64': [FAIL],
-  'proposals/memory64/memory': [FAIL],
   'proposals/tail-call/binary': [FAIL],
-  'proposals/exception-handling/binary': [FAIL],
-  'proposals/exception-handling/imports': [FAIL],
 
   # The test is incorrect as it exports a function with an exnref in the
   # signature, which is a runtime type error.
-  'proposals/exception-handling/ref_null': [FAIL]
+  'proposals/exception-handling/ref_null': [FAIL],
 }],  # ALWAYS
 
 ['arch == arm and not simulator_run', {
@@ -140,6 +146,12 @@
   'proposals/tail-call/float_exprs': [SKIP],
   'proposals/tail-call/float_misc': [SKIP],
   'proposals/tail-call/conversions': [SKIP],
+  'proposals/gc/float_misc': [SKIP],
+  'proposals/extended-const/float_misc': [SKIP],
+  'proposals/exception-handling/float_misc': [SKIP],
+
+  # MIPS64 doesn't support JSPI yet.
+  'proposals/js-promise-integration/*': [SKIP],
 }],  # 'arch == mips64el or arch == mips64'
 
 ['(arch == mips64el or arch == mips64) and not simulator_run', {
@@ -170,7 +182,7 @@
    'func': ['variant == stress', SKIP],
 }],  # 'arch == riscv32'
 
-['arch == ppc or arch == ppc64', {
+['arch == ppc64', {
   # These tests fail because ppc float min and max doesn't convert sNaN to qNaN.
   'f32': [SKIP],
   'f64': [SKIP],
@@ -188,10 +200,10 @@
   'proposals/bulk-memory-operations/conversions': [SKIP],
   'proposals/reference-types/conversions':  [SKIP],
   'proposals/tail-call/conversions':  [SKIP],
-}],  # 'arch == ppc or arch == ppc64'
+}],  # 'arch == ppc64'
 
-['arch == s390 or arch == s390x', {
-  # These tests fail because s390 float min and max doesn't convert sNaN to qNaN.
+['arch == s390x', {
+  # These tests fail because s390x float min and max doesn't convert sNaN to qNaN.
   'f32': [SKIP],
   'f64': [SKIP],
   'proposals/js-types/f32': [SKIP],
@@ -202,7 +214,7 @@
   'proposals/reference-types/f64': [SKIP],
   'proposals/tail-call/f32': [SKIP],
   'proposals/tail-call/f64': [SKIP],
-}],  # 'arch == s390 or arch == s390x'
+}],  # 'arch == s390x'
 
 ##############################################################################
 # TODO(v8:7777): Change this once wasm is supported in jitless mode.
@@ -218,11 +230,17 @@
 ##############################################################################
 ['no_simd_hardware == True', {
   'linking': [SKIP],
-  'simd*': [SKIP],
   'proposals/js-types/linking': [SKIP],
-  'proposals/multi-memory/simd_memory-multi': [SKIP],
-  'proposals/tail-call/simd_lane': [SKIP],
-  'proposals/memory64/simd_address': [SKIP],
+
+  'simd*': [SKIP],
+  'proposals/exception-handling/simd*': [SKIP],
+  'proposals/extended-const/simd*': [SKIP],
+  'proposals/gc/simd*': [SKIP],
+  'proposals/js-promise-integration/simd*': [SKIP],
+  'proposals/js-types/simd*': [SKIP],
+  'proposals/memory64/simd*': [SKIP],
+  'proposals/multi-memory/simd*': [SKIP],
+  'proposals/tail-call/simd*': [SKIP],
 }],  # no_simd_hardware == True
 
 ##############################################################################

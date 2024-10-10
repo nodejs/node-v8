@@ -10,6 +10,7 @@
 #include "src/codegen/flush-instruction-cache.h"
 #include "src/codegen/x64/assembler-x64.h"
 #include "src/debug/debug.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/objects/objects-inl.h"
 
 namespace v8 {
@@ -333,6 +334,20 @@ void WritableRelocInfo::set_target_external_reference(
   }
 }
 
+WasmCodePointer RelocInfo::wasm_indirect_call_target() const {
+  DCHECK(rmode_ == RelocInfo::WASM_INDIRECT_CALL_TARGET);
+  return ReadUnalignedValue<WasmCodePointer>(pc_);
+}
+
+void WritableRelocInfo::set_wasm_indirect_call_target(
+    WasmCodePointer target, ICacheFlushMode icache_flush_mode) {
+  DCHECK(rmode_ == RelocInfo::WASM_INDIRECT_CALL_TARGET);
+  WriteUnalignedValue(pc_, target);
+  if (icache_flush_mode != SKIP_ICACHE_FLUSH) {
+    FlushInstructionCache(pc_, sizeof(Address));
+  }
+}
+
 Address RelocInfo::target_internal_reference() {
   DCHECK(rmode_ == INTERNAL_REFERENCE);
   return ReadUnalignedValue<Address>(pc_);
@@ -351,8 +366,9 @@ void WritableRelocInfo::set_target_object(Tagged<HeapObject> target,
     // We must not compress pointers to objects outside of the main pointer
     // compression cage as we wouldn't be able to decompress them with the
     // correct cage base.
-    DCHECK_IMPLIES(V8_ENABLE_SANDBOX_BOOL, !IsTrustedSpaceObject(target));
-    DCHECK_IMPLIES(V8_EXTERNAL_CODE_SPACE_BOOL, !IsCodeSpaceObject(target));
+    DCHECK_IMPLIES(V8_ENABLE_SANDBOX_BOOL, !HeapLayout::InTrustedSpace(target));
+    DCHECK_IMPLIES(V8_EXTERNAL_CODE_SPACE_BOOL,
+                   !HeapLayout::InCodeSpace(target));
     Tagged_t tagged = V8HeapCompressionScheme::CompressObject(target.ptr());
     WriteUnalignedValue(pc_, tagged);
   } else {

@@ -3792,14 +3792,13 @@ bool CanInlineJSToWasmCall(const wasm::FunctionSig* wasm_signature) {
     return false;
   }
 
-  wasm::ValueType externRefNonNull = wasm::kWasmExternRef.AsNonNull();
   for (auto type : wasm_signature->all()) {
 #if defined(V8_TARGET_ARCH_32_BIT)
     if (type == wasm::kWasmI64) return false;
 #endif
     if (type != wasm::kWasmI32 && type != wasm::kWasmI64 &&
         type != wasm::kWasmF32 && type != wasm::kWasmF64 &&
-        type != wasm::kWasmExternRef && type != externRefNonNull) {
+        type != wasm::kWasmExternRef) {
       return false;
     }
   }
@@ -3825,9 +3824,6 @@ Reduction JSCallReducer::ReduceCallWasmFunction(Node* node,
   if (!CanInlineJSToWasmCall(wasm_signature)) {
     return NoChange();
   }
-
-  // Signal TurboFan that it should run the 'wasm-inlining' phase.
-  has_wasm_calls_ = true;
 
   const wasm::WasmModule* wasm_module = shared.wasm_module();
   if (wasm_module_for_inlining_ == nullptr) {
@@ -3885,19 +3881,15 @@ Reduction JSCallReducer::ReduceCallWasmFunction(Node* node,
 // Given a FunctionTemplateInfo, checks whether the fast API call can be
 // optimized, applying the initial step of the overload resolution algorithm:
 // Given an overload set function_template_info.c_signatures, and a list of
-// arguments of size argc:
-// 1. Let max_arg be the length of the longest type list of the entries in
-//    function_template_info.c_signatures.
-// 2. Let argc be the size of the arguments list.
-// 3. Initialize arg_count = min(max_arg, argc).
-// 4. Remove from the set all entries whose type list is not of length
+// arguments of size arg_count:
+// 1. Remove from the set all entries whose type list is not of length
 //    arg_count.
 // Returns an array with the indexes of the remaining entries in S, which
 // represents the set of "optimizable" function overloads.
 
 FastApiCallFunctionVector CanOptimizeFastCall(
     JSHeapBroker* broker, Zone* zone,
-    FunctionTemplateInfoRef function_template_info, size_t argc) {
+    FunctionTemplateInfoRef function_template_info, size_t arg_count) {
   FastApiCallFunctionVector result(zone);
   if (!v8_flags.turbo_fast_api_calls) return result;
 
@@ -3907,18 +3899,6 @@ FastApiCallFunctionVector CanOptimizeFastCall(
   ZoneVector<const CFunctionInfo*> signatures =
       function_template_info.c_signatures(broker);
   const size_t overloads_count = signatures.size();
-
-  // Calculates the length of the longest type list of the entries in
-  // function_template_info.
-  size_t max_arg = 0;
-  for (size_t i = 0; i < overloads_count; i++) {
-    const CFunctionInfo* c_signature = signatures[i];
-    // C arguments should include the receiver at index 0.
-    DCHECK_GE(c_signature->ArgumentCount(), kReceiver);
-    const size_t len = c_signature->ArgumentCount() - kReceiver;
-    if (len > max_arg) max_arg = len;
-  }
-  const size_t arg_count = std::min(max_arg, argc);
 
   // Only considers entries whose type list length matches arg_count.
   for (size_t i = 0; i < overloads_count; i++) {
@@ -4945,12 +4925,12 @@ Reduction JSCallReducer::ReduceJSCall(Node* node,
       return ReduceArrayBufferIsView(node);
     case Builtin::kDataViewPrototypeGetByteLength:
       // TODO(v8:11111): Optimize for JS_RAB_GSAB_DATA_VIEW_TYPE too.
-      return ReduceArrayBufferViewByteLengthAccessor(node, JS_DATA_VIEW_TYPE);
+      return ReduceArrayBufferViewByteLengthAccessor(node, JS_DATA_VIEW_TYPE,
+                                                     builtin);
     case Builtin::kDataViewPrototypeGetByteOffset:
       // TODO(v8:11111): Optimize for JS_RAB_GSAB_DATA_VIEW_TYPE too.
-      return ReduceArrayBufferViewAccessor(
-          node, JS_DATA_VIEW_TYPE,
-          AccessBuilder::ForJSArrayBufferViewByteOffset(), builtin);
+      return ReduceArrayBufferViewByteOffsetAccessor(node, JS_DATA_VIEW_TYPE,
+                                                     builtin);
     case Builtin::kDataViewPrototypeGetUint8:
       return ReduceDataViewAccess(node, DataViewAccess::kGet,
                                   ExternalArrayType::kExternalUint8Array);
@@ -5012,11 +4992,11 @@ Reduction JSCallReducer::ReduceJSCall(Node* node,
       return ReduceDataViewAccess(node, DataViewAccess::kSet,
                                   ExternalArrayType::kExternalBigUint64Array);
     case Builtin::kTypedArrayPrototypeByteLength:
-      return ReduceArrayBufferViewByteLengthAccessor(node, JS_TYPED_ARRAY_TYPE);
+      return ReduceArrayBufferViewByteLengthAccessor(node, JS_TYPED_ARRAY_TYPE,
+                                                     builtin);
     case Builtin::kTypedArrayPrototypeByteOffset:
-      return ReduceArrayBufferViewAccessor(
-          node, JS_TYPED_ARRAY_TYPE,
-          AccessBuilder::ForJSArrayBufferViewByteOffset(), builtin);
+      return ReduceArrayBufferViewByteOffsetAccessor(node, JS_TYPED_ARRAY_TYPE,
+                                                     builtin);
     case Builtin::kTypedArrayPrototypeLength:
       return ReduceTypedArrayPrototypeLength(node);
     case Builtin::kTypedArrayPrototypeToStringTag:
@@ -5138,6 +5118,8 @@ Reduction JSCallReducer::ReduceJSCall(Node* node,
     case Builtin::kStringPrototypeEndsWith:
       return ReduceStringPrototypeEndsWith(node);
 #ifdef V8_INTL_SUPPORT
+    case Builtin::kStringPrototypeLocaleCompareIntl:
+      return ReduceStringPrototypeLocaleCompareIntl(node);
     case Builtin::kStringPrototypeToLowerCaseIntl:
       return ReduceStringPrototypeToLowerCaseIntl(node);
     case Builtin::kStringPrototypeToUpperCaseIntl:
@@ -5149,8 +5131,6 @@ Reduction JSCallReducer::ReduceJSCall(Node* node,
       return ReduceStringFromCodePoint(node);
     case Builtin::kStringPrototypeIterator:
       return ReduceStringPrototypeIterator(node);
-    case Builtin::kStringPrototypeLocaleCompare:
-      return ReduceStringPrototypeLocaleCompare(node);
     case Builtin::kStringIteratorPrototypeNext:
       return ReduceStringIteratorPrototypeNext(node);
     case Builtin::kStringPrototypeConcat:
@@ -5225,7 +5205,8 @@ Reduction JSCallReducer::ReduceJSCall(Node* node,
   }
 
 #if V8_ENABLE_WEBASSEMBLY
-  if ((flags() & kInlineJSToWasmCalls) && shared.wasm_function_signature()) {
+  if ((flags() & kInlineJSToWasmCalls) && shared.wasm_function_signature() &&
+      !shared.is_promising_wasm_export()) {
     return ReduceCallWasmFunction(node, shared);
   }
 #endif  // V8_ENABLE_WEBASSEMBLY
@@ -6331,13 +6312,18 @@ Reduction JSCallReducer::ReduceArrayPrototypeShift(Node* node) {
             graph()->zone(), 1, BuiltinArguments::kNumExtraArgsWithReceiver,
             Builtins::name(builtin), node->op()->properties(),
             CallDescriptor::kNeedsFrameState);
-        Node* stub_code =
-            jsgraph()->CEntryStubConstant(1, ArgvMode::kStack, true);
+        const bool has_builtin_exit_frame = true;
+        Node* stub_code = jsgraph()->CEntryStubConstant(1, ArgvMode::kStack,
+                                                        has_builtin_exit_frame);
         Address builtin_entry = Builtins::CppEntryOf(builtin);
         Node* entry = jsgraph()->ExternalConstant(
             ExternalReference::Create(builtin_entry));
         Node* argc = jsgraph()->ConstantNoHole(
             BuiltinArguments::kNumExtraArgsWithReceiver);
+        static_assert(BuiltinArguments::kNewTargetIndex == 0);
+        static_assert(BuiltinArguments::kTargetIndex == 1);
+        static_assert(BuiltinArguments::kArgcIndex == 2);
+        static_assert(BuiltinArguments::kPaddingIndex == 3);
         if_false1 = efalse1 = vfalse1 =
             graph()->NewNode(common()->Call(call_descriptor), stub_code,
                              receiver, jsgraph()->PaddingConstant(), argc,
@@ -7067,8 +7053,9 @@ Reduction JSCallReducer::ReduceStringPrototypeIterator(Node* node) {
   return Replace(iterator);
 }
 
-Reduction JSCallReducer::ReduceStringPrototypeLocaleCompare(Node* node) {
 #ifdef V8_INTL_SUPPORT
+
+Reduction JSCallReducer::ReduceStringPrototypeLocaleCompareIntl(Node* node) {
   JSCallNode n(node);
   // Signature: receiver.localeCompare(compareString, locales, options)
   if (n.ArgumentCount() < 1 || n.ArgumentCount() > 3) {
@@ -7129,10 +7116,8 @@ Reduction JSCallReducer::ReduceStringPrototypeLocaleCompare(Node* node) {
                     jsgraph()->HeapConstantNoHole(callable.code()));
   NodeProperties::ChangeOp(node, common()->Call(call_descriptor));
   return Changed(node);
-#else
-  return NoChange();
-#endif
 }
+#endif  // V8_INTL_SUPPORT
 
 Reduction JSCallReducer::ReduceStringIteratorPrototypeNext(Node* node) {
   JSCallNode n(node);
@@ -7726,7 +7711,7 @@ Reduction JSCallReducer::ReduceTypedArrayPrototypeToStringTag(Node* node) {
 }
 
 Reduction JSCallReducer::ReduceArrayBufferViewByteLengthAccessor(
-    Node* node, InstanceType instance_type) {
+    Node* node, InstanceType instance_type, Builtin builtin) {
   // TODO(v8:11111): Optimize for JS_RAB_GSAB_DATA_VIEW_TYPE too.
   DCHECK(instance_type == JS_TYPED_ARRAY_TYPE ||
          instance_type == JS_DATA_VIEW_TYPE);
@@ -7756,9 +7741,8 @@ Reduction JSCallReducer::ReduceArrayBufferViewByteLengthAccessor(
     USE(unused_reduction);
     // Call default implementation for non-rab/gsab TAs.
     return ReduceArrayBufferViewAccessor(
-        node, JS_TYPED_ARRAY_TYPE,
-        AccessBuilder::ForJSArrayBufferViewByteLength(),
-        Builtin::kTypedArrayPrototypeByteLength);
+        node, instance_type, AccessBuilder::ForJSArrayBufferViewByteLength(),
+        builtin);
   }
 
   const CallParameters& p = CallParametersOf(node->op());
@@ -7788,6 +7772,45 @@ Reduction JSCallReducer::ReduceArrayBufferViewByteLengthAccessor(
       typed_array, instance_type, std::move(elements_kinds), a.ContextInput());
 
   return ReplaceWithSubgraph(&a, length);
+}
+
+Reduction JSCallReducer::ReduceArrayBufferViewByteOffsetAccessor(
+    Node* node, InstanceType instance_type, Builtin builtin) {
+  // TODO(v8:11111): Optimize for JS_RAB_GSAB_DATA_VIEW_TYPE too.
+  DCHECK(instance_type == JS_TYPED_ARRAY_TYPE ||
+         instance_type == JS_DATA_VIEW_TYPE);
+  Node* receiver = NodeProperties::GetValueInput(node, 1);
+  Effect effect{NodeProperties::GetEffectInput(node)};
+  Control control{NodeProperties::GetControlInput(node)};
+
+  MapInference inference(broker(), receiver, effect);
+  if (!inference.HaveMaps() ||
+      !inference.AllOfInstanceTypesAre(instance_type)) {
+    return inference.NoChange();
+  }
+
+  std::set<ElementsKind> elements_kinds;
+  bool maybe_rab_gsab = false;
+  if (instance_type == JS_TYPED_ARRAY_TYPE) {
+    for (MapRef map : inference.GetMaps()) {
+      ElementsKind kind = map.elements_kind();
+      elements_kinds.insert(kind);
+      if (IsRabGsabTypedArrayElementsKind(kind)) maybe_rab_gsab = true;
+    }
+  }
+
+  if (!maybe_rab_gsab) {
+    // We do not perform any change depending on this inference.
+    Reduction unused_reduction = inference.NoChange();
+    USE(unused_reduction);
+    // Call default implementation for non-rab/gsab TAs.
+    return ReduceArrayBufferViewAccessor(
+        node, instance_type, AccessBuilder::ForJSArrayBufferViewByteOffset(),
+        builtin);
+  }
+
+  // TODO(v8:11111): Optimize for RAG/GSAB TypedArray/DataView.
+  return inference.NoChange();
 }
 
 Reduction JSCallReducer::ReduceTypedArrayPrototypeLength(Node* node) {
@@ -8501,7 +8524,7 @@ Reduction JSCallReducer::ReduceDataViewAccess(Node* node, DataViewAccess access,
     }
   }
 
-  // We need to retain either the {receiver} itself or it's backing
+  // We need to retain either the {receiver} itself or its backing
   // JSArrayBuffer to make sure that the GC doesn't collect the raw
   // memory. We default to {receiver} here, and only use the buffer
   // if we anyways have to load it (to reduce register pressure).

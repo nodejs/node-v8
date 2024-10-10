@@ -269,7 +269,6 @@ def v8_library(
             copts = copts + default.copts,
             linkopts = linkopts + default.linkopts,
             alwayslink = 1,
-            linkstatic = 1,
             **kwargs
         )
 
@@ -288,7 +287,6 @@ def v8_library(
             copts = copts + default.copts + ENABLE_I18N_SUPPORT_DEFINES,
             linkopts = linkopts + default.linkopts,
             alwayslink = 1,
-            linkstatic = 1,
             **kwargs
         )
 
@@ -308,7 +306,6 @@ def v8_library(
             copts = copts + default.copts,
             linkopts = linkopts + default.linkopts,
             alwayslink = 1,
-            linkstatic = 1,
             **kwargs
         )
 
@@ -432,7 +429,7 @@ def _v8_target_cpu_transition_impl(settings,
         "armeabi-v7a": "arm32",
         "s390x": "s390x",
         "riscv64": "riscv64",
-        "ppc": "ppc64le",
+        "ppc64": "ppc64le",
     }
     v8_target_cpu = mapping[settings["//command_line_option:cpu"]]
     return {"@v8//bazel/config:v8_target_cpu": v8_target_cpu}
@@ -561,6 +558,7 @@ def build_config_content(cpu, icu):
         ("is_android", "false"),
         ("is_ios", "false"),
         ("js_shared_memory", "false"),
+        ("leaptiering", "true"),
         ("lite_mode", "false"),
         ("local_off_stack_check", "false"),
         ("memory_corruption_api", "false"),
@@ -578,7 +576,6 @@ def build_config_content(cpu, icu):
         ("single_generation", "false"),
         ("slow_dchecks", "false"),
         ("target_cpu", cpu),
-        ("third_party_heap", "false"),
         ("tsan", "false"),
         ("ubsan", "false"),
         ("use_sanitizer", "false"),
@@ -588,6 +585,7 @@ def build_config_content(cpu, icu):
         ("verify_csa", "false"),
         ("verify_heap", "false"),
         ("verify_predictable", "false"),
+        ("wasm_random_fuzzers", "false"),
         ("write_barriers", "false"),
     ])
 

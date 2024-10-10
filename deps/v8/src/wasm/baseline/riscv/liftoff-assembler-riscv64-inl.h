@@ -817,9 +817,10 @@ void LiftoffAssembler::LoadCallerFrameSlot(LiftoffRegister dst,
 
 void LiftoffAssembler::StoreCallerFrameSlot(LiftoffRegister src,
                                             uint32_t caller_slot_idx,
-                                            ValueKind kind) {
+                                            ValueKind kind,
+                                            Register frame_pointer) {
   int32_t offset = kSystemPointerSize * (caller_slot_idx + 1);
-  liftoff::Store(this, fp, offset, src, kind);
+  liftoff::Store(this, frame_pointer, offset, src, kind);
 }
 
 void LiftoffAssembler::LoadReturnStackSlot(LiftoffRegister dst, int offset,
@@ -870,6 +871,7 @@ void LiftoffAssembler::MoveStackValue(uint32_t dst_offset, uint32_t src_offset,
     case kVoid:
     case kI8:
     case kI16:
+    case kTop:
     case kBottom:
     case kF16:
       UNREACHABLE();

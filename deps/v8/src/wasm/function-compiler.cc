@@ -65,7 +65,7 @@ WasmCompilationResult WasmCompilationUnit::ExecuteFunctionCompilation(
     Counters* counters, WasmDetectedFeatures* detected) {
   const WasmFunction* func = &env->module->functions[func_index_];
   base::Vector<const uint8_t> code = wire_bytes_storage->GetCode(func->code);
-  bool is_shared = env->module->types[func->sig_index].is_shared;
+  bool is_shared = env->module->type(func->sig_index).is_shared;
   wasm::FunctionBody func_body{func->sig, func->code.offset(), code.begin(),
                                code.end(), is_shared};
 
@@ -140,7 +140,11 @@ WasmCompilationResult WasmCompilationUnit::ExecuteFunctionCompilation(
         std::unique_ptr<DebugSideTable> unused_debug_sidetable;
         if (V8_UNLIKELY(declared_index < 32 &&
                         (v8_flags.wasm_debug_mask_for_testing &
-                         (1 << declared_index)) != 0)) {
+                         (1 << declared_index)) != 0) &&
+            // Do not overwrite the debugging setting when performing a
+            // deoptimization.
+            (!v8_flags.wasm_deopt ||
+             env->deopt_location_kind == LocationKindForDeopt::kNone)) {
           options.set_debug_sidetable(&unused_debug_sidetable);
           if (!for_debugging_) options.set_for_debugging(kForDebugging);
         }
@@ -191,8 +195,7 @@ void WasmCompilationUnit::CompileWasmFunction(Counters* counters,
                                               const WasmFunction* function,
                                               ExecutionTier tier) {
   ModuleWireBytes wire_bytes(native_module->wire_bytes());
-  bool is_shared =
-      native_module->module()->types[function->sig_index].is_shared;
+  bool is_shared = native_module->module()->type(function->sig_index).is_shared;
   FunctionBody function_body{function->sig, function->code.offset(),
                              wire_bytes.start() + function->code.offset(),
                              wire_bytes.start() + function->code.end_offset(),
@@ -276,6 +279,12 @@ Handle<Code> JSToWasmWrapperCompilationUnit::Finalize() {
     PROFILE(isolate_, CodeCreateEvent(LogEventListener::CodeTag::kStub,
                                       Cast<AbstractCode>(code), name));
   }
+  isolate_->heap()->js_to_wasm_wrappers()->set(canonical_sig_index_,
+                                               MakeWeak(code->wrapper()));
+  Counters* counters = isolate_->counters();
+  counters->wasm_generated_code_size()->Increment(code->body_size());
+  counters->wasm_reloc_size()->Increment(code->relocation_size());
+  counters->wasm_compiled_export_wrapper()->Increment(1);
   return code;
 }
 

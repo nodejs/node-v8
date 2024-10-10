@@ -550,6 +550,16 @@ inline constexpr bool IsDoubleRepresentation(ValueRepresentation repr) {
          repr == ValueRepresentation::kHoleyFloat64;
 }
 
+inline constexpr bool IsZeroExtendedRepresentation(ValueRepresentation repr) {
+#if defined(V8_TARGET_ARCH_RISCV64)
+  // on RISC-V int32 are always sign-extended
+  return (repr == ValueRepresentation::kUint32);
+#else
+  return (repr == ValueRepresentation::kUint32 ||
+          repr == ValueRepresentation::kInt32);
+#endif
+}
+
 /*
  * The intersection (using `&`) of any two NodeTypes must be a valid NodeType
  * (possibly "kUnknown", modulo heap object bit).
@@ -1492,10 +1502,17 @@ class DeoptInfo {
   int translation_index() const { return translation_index_; }
   void set_translation_index(int index) { translation_index_ = index; }
 
+#ifdef DEBUG
+  size_t input_location_count() { return input_location_count_; }
+#endif  // DEBUG
+
  private:
   DeoptFrame top_frame_;
   const compiler::FeedbackSource feedback_to_update_;
   InputLocation* const input_locations_;
+#ifdef DEBUG
+  size_t input_location_count_;
+#endif  // DEBUG
   Label deopt_entry_label_;
   int translation_index_ = -1;
 };
@@ -3051,9 +3068,10 @@ DEF_FLOAT64_BINARY_NODE(Add)
 DEF_FLOAT64_BINARY_NODE(Subtract)
 DEF_FLOAT64_BINARY_NODE(Multiply)
 DEF_FLOAT64_BINARY_NODE(Divide)
-#if defined(V8_TARGET_ARCH_ARM64) || defined(V8_TARGET_ARCH_ARM)
-// On Arm/Arm64, floating point modulus is implemented with a call to a C++
-// function, while on x64, it's implemented natively without call.
+#if defined(V8_TARGET_ARCH_ARM64) || defined(V8_TARGET_ARCH_ARM) || \
+    defined(V8_TARGET_ARCH_RISCV64)
+// On Arm/Arm64/Riscv64, floating point modulus is implemented with a call to a
+// C++ function, while on x64, it's implemented natively without call.
 DEF_FLOAT64_BINARY_NODE_WITH_CALL(Modulus)
 #else
 DEF_FLOAT64_BINARY_NODE(Modulus)
@@ -8209,7 +8227,7 @@ class MergePointInterpreterFrameState;
 // ValueRepresentation doesn't distinguish between Int32 and TruncatedInt32:
 // both are Int32. For Phi untagging however, it's interesting to have a
 // difference between the 2, as a TruncatedInt32 would allow untagging to
-// Float64, whereas a Int32 use wouldn't (because it would require a deopting
+// Float64, whereas an Int32 use wouldn't (because it would require a deopting
 // Float64->Int32 conversion, whereas the truncating version of this conversion
 // cannot deopt). We thus use a UseRepresentation to record use hints for Phis.
 enum class UseRepresentation : uint8_t {

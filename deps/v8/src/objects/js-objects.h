@@ -32,6 +32,7 @@ class PropertyDescriptor;
 class PropertyKey;
 class NativeContext;
 class IsCompiledScope;
+class StackTraceInfo;
 class SwissNameDictionary;
 class ElementsAccessor;
 class Undefined;
@@ -151,15 +152,16 @@ class JSReceiver : public TorqueGeneratedJSReceiver<JSReceiver, HeapObject> {
 
   // Implementation of ES6 [[Delete]]
   V8_EXPORT_PRIVATE V8_WARN_UNUSED_RESULT static Maybe<bool>
-  DeletePropertyOrElement(Handle<JSReceiver> object, Handle<Name> name,
+  DeletePropertyOrElement(Isolate* isolate, Handle<JSReceiver> object,
+                          Handle<Name> name,
                           LanguageMode language_mode = LanguageMode::kSloppy);
   V8_EXPORT_PRIVATE V8_WARN_UNUSED_RESULT static Maybe<bool> DeleteProperty(
-      Handle<JSReceiver> object, Handle<Name> name,
+      Isolate* isolate, Handle<JSReceiver> object, Handle<Name> name,
       LanguageMode language_mode = LanguageMode::kSloppy);
   V8_WARN_UNUSED_RESULT static Maybe<bool> DeleteProperty(
       LookupIterator* it, LanguageMode language_mode);
   V8_WARN_UNUSED_RESULT static Maybe<bool> DeleteElement(
-      Handle<JSReceiver> object, uint32_t index,
+      Isolate* isolate, Handle<JSReceiver> object, uint32_t index,
       LanguageMode language_mode = LanguageMode::kSloppy);
 
   V8_WARN_UNUSED_RESULT static Tagged<Object> DefineProperty(
@@ -787,7 +789,8 @@ class JSObject : public TorqueGeneratedJSObject<JSObject, JSReceiver> {
 
   // Makes the object prototype immutable
   // Never called from JavaScript
-  static void SetImmutableProto(DirectHandle<JSObject> object);
+  static void SetImmutableProto(Isolate* isolate,
+                                DirectHandle<JSObject> object);
 
   // Initializes the body starting at |start_offset|. It is responsibility of
   // the caller to initialize object header. Fill the pre-allocated fields with

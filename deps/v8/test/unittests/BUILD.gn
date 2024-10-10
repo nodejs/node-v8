@@ -267,6 +267,7 @@ v8_source_set("v8_unittests_sources") {
     "api/isolate-unittest.cc",
     "api/remote-object-unittest.cc",
     "api/resource-constraints-unittest.cc",
+    "api/smi-tagging-unittest.cc",
     "api/v8-array-unittest.cc",
     "api/v8-maybe-unittest.cc",
     "api/v8-object-unittest.cc",
@@ -571,7 +572,6 @@ v8_source_set("v8_unittests_sources") {
       "compiler/turboshaft/loop-unrolling-analyzer-unittest.cc",
       "compiler/turboshaft/opmask-unittest.cc",
       "compiler/turboshaft/reducer-test.h",
-      "compiler/turboshaft/simplified-lowering-reducer-unittest.cc",
       "compiler/turboshaft/snapshot-table-unittest.cc",
       "compiler/turboshaft/store-store-elimination-reducer-unittest.cc",
       "compiler/turboshaft/turboshaft-typer-unittest.cc",
@@ -616,6 +616,8 @@ v8_source_set("v8_unittests_sources") {
       "wasm/struct-types-unittest.cc",
       "wasm/subtyping-unittest.cc",
       "wasm/wasm-code-manager-unittest.cc",
+      "wasm/wasm-code-pointer-table-unittest.cc",
+      "wasm/wasm-compile-module.h",
       "wasm/wasm-compiler-unittest.cc",
       "wasm/wasm-disassembler-unittest-bad-name-section.wasm.inc",
       "wasm/wasm-disassembler-unittest-gc.wasm.inc",
@@ -632,6 +634,7 @@ v8_source_set("v8_unittests_sources") {
       "wasm/wasm-macro-gen-unittest.cc",
       "wasm/wasm-module-builder-unittest.cc",
       "wasm/wasm-module-sourcemap-unittest.cc",
+      "wasm/wasm-usecounters.cc",
     ]
   }
 
@@ -737,7 +740,7 @@ v8_source_set("v8_unittests_sources") {
     if (v8_enable_webassembly) {
       sources += [ "wasm/trap-handler-native-unittest.cc" ]
     }
-  } else if (v8_current_cpu == "ppc" || v8_current_cpu == "ppc64") {
+  } else if (v8_current_cpu == "ppc64") {
     sources += [
       "assembler/disasm-ppc-unittest.cc",
       "assembler/macro-assembler-ppc-unittest.cc",
@@ -745,7 +748,7 @@ v8_source_set("v8_unittests_sources") {
     if (v8_enable_turbofan) {
       sources += [ "compiler/ppc/instruction-selector-ppc-unittest.cc" ]
     }
-  } else if (v8_current_cpu == "s390" || v8_current_cpu == "s390x") {
+  } else if (v8_current_cpu == "s390x") {
     sources += [
       "assembler/disasm-s390-unittest.cc",
       "assembler/macro-assembler-s390-unittest.cc",

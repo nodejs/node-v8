@@ -14,6 +14,7 @@
 #include "src/common/globals.h"
 #include "src/compiler/code-assembler.h"
 #include "src/compiler/pipeline.h"
+#include "src/compiler/turboshaft/builtin-compiler.h"
 #include "src/compiler/turboshaft/phase.h"
 #include "src/execution/isolate.h"
 #include "src/handles/handles-inl.h"
@@ -34,7 +35,7 @@ namespace v8 {
 namespace internal {
 
 // Forward declarations for C++ builtins.
-#define FORWARD_DECLARE(Name) \
+#define FORWARD_DECLARE(Name, Argc) \
   Address Builtin_##Name(int argc, Address* args, Isolate* isolate);
 BUILTIN_LIST_C(FORWARD_DECLARE)
 #undef FORWARD_DECLARE
@@ -93,9 +94,6 @@ AssemblerOptions BuiltinAssemblerOptions(Isolate* isolate, Builtin builtin) {
 
 using MacroAssemblerGenerator = void (*)(MacroAssembler*);
 using CodeAssemblerGenerator = void (*)(compiler::CodeAssemblerState*);
-using TurboshaftAssemblerGenerator =
-    void (*)(compiler::turboshaft::PipelineData*, Isolate*,
-             compiler::turboshaft::Graph&, Zone*);
 
 Handle<Code> BuildPlaceholder(Isolate* isolate, Builtin builtin) {
   HandleScope scope(isolate);
@@ -185,61 +183,33 @@ Tagged<Code> BuildAdaptor(Isolate* isolate, Builtin builtin,
                       ExternalAssemblerBuffer(buffer, kBufferSize));
   masm.set_builtin(builtin);
   DCHECK(!masm.has_frame());
-  Builtins::Generate_Adaptor(&masm, builtin_address);
+  int formal_parameter_count = Builtins::GetFormalParameterCount(builtin);
+  Builtins::Generate_Adaptor(&masm, formal_parameter_count, builtin_address);
   CodeDesc desc;
   masm.GetCode(isolate, &desc);
   DirectHandle<Code> code =
       Factory::CodeBuilder(isolate, desc, CodeKind::BUILTIN)
           .set_self_reference(masm.CodeObject())
           .set_builtin(builtin)
+          .set_parameter_count(formal_parameter_count)
           .Build();
-  return *code;
-}
-
-inline constexpr char kTempZoneName[] = "temp-zone";
-inline constexpr char kBuiltinCompilationZoneName[] =
-    "builtin-compilation-zone";
-
-Tagged<Code> BuildWithTurboshaftAssemblerImpl(
-    Isolate* isolate, Builtin builtin, TurboshaftAssemblerGenerator generator,
-    std::function<compiler::CallDescriptor*(Zone*)> call_descriptor_builder,
-    const char* name) {
-  HandleScope scope(isolate);
-  using namespace compiler::turboshaft;  // NOLINT(build/namespaces)
-
-  compiler::ZoneStats zone_stats(isolate->allocator());
-  ZoneWithName<kBuiltinCompilationZoneName> zone(&zone_stats,
-                                                 kBuiltinCompilationZoneName);
-  OptimizedCompilationInfo info(base::CStrVector(name), zone, CodeKind::BUILTIN,
-                                builtin);
-  compiler::CallDescriptor* call_descriptor = call_descriptor_builder(zone);
-
-  PipelineData data(&zone_stats, TurboshaftPipelineKind::kTSABuiltin, isolate,
-                    &info, BuiltinAssemblerOptions(isolate, builtin));
-  data.InitializeBuiltinComponent(call_descriptor);
-  data.InitializeGraphComponent(nullptr);
-  ZoneWithName<kTempZoneName> temp_zone(&zone_stats, kTempZoneName);
-  generator(&data, isolate, data.graph(), temp_zone);
-
-  DirectHandle<Code> code =
-      compiler::Pipeline::GenerateCodeForTurboshaftBuiltin(
-          &data, call_descriptor, builtin, name,
-          ProfileDataFromFile::TryRead(name))
-          .ToHandleChecked();
   return *code;
 }
 
 // Builder for builtins implemented in Turboshaft with JS linkage.
 V8_NOINLINE Tagged<Code> BuildWithTurboshaftAssemblerJS(
-    Isolate* isolate, Builtin builtin, TurboshaftAssemblerGenerator generator,
-    int argc, const char* name) {
-  return BuildWithTurboshaftAssemblerImpl(
+    Isolate* isolate, Builtin builtin,
+    compiler::turboshaft::TurboshaftAssemblerGenerator generator, int argc,
+    const char* name) {
+  HandleScope scope(isolate);
+  Handle<Code> code = compiler::turboshaft::BuildWithTurboshaftAssemblerImpl(
       isolate, builtin, generator,
       [argc](Zone* zone) {
         return compiler::Linkage::GetJSCallDescriptor(
             zone, false, argc, compiler::CallDescriptor::kCanUseRoots);
       },
-      name);
+      name, BuiltinAssemblerOptions(isolate, builtin));
+  return *code;
 }
 
 // Builder for builtins implemented in TurboFan with JS linkage.
@@ -263,9 +233,11 @@ V8_NOINLINE Tagged<Code> BuildWithCodeStubAssemblerJS(
 
 // Builder for builtins implemented in Turboshaft with CallStub linkage.
 V8_NOINLINE Tagged<Code> BuildWithTurboshaftAssemblerCS(
-    Isolate* isolate, Builtin builtin, TurboshaftAssemblerGenerator generator,
+    Isolate* isolate, Builtin builtin,
+    compiler::turboshaft::TurboshaftAssemblerGenerator generator,
     CallDescriptors::Key interface_descriptor, const char* name) {
-  return BuildWithTurboshaftAssemblerImpl(
+  HandleScope scope(isolate);
+  Handle<Code> code = compiler::turboshaft::BuildWithTurboshaftAssemblerImpl(
       isolate, builtin, generator,
       [interface_descriptor](Zone* zone) {
         CallInterfaceDescriptor descriptor(interface_descriptor);
@@ -275,7 +247,8 @@ V8_NOINLINE Tagged<Code> BuildWithTurboshaftAssemblerCS(
             compiler::CallDescriptor::kNoFlags,
             compiler::Operator::kNoProperties);
       },
-      name);
+      name, BuiltinAssemblerOptions(isolate, builtin));
+  return *code;
 }
 
 // Builder for builtins implemented in TurboFan with CallStub linkage.
@@ -407,7 +380,7 @@ void SetupIsolateDelegate::SetupBuiltinsInternal(Isolate* isolate) {
 
   int index = 0;
   Tagged<Code> code;
-#define BUILD_CPP(Name)                                      \
+#define BUILD_CPP(Name, Argc)                                \
   code = BuildAdaptor(isolate, Builtin::k##Name,             \
                       FUNCTION_ADDR(Builtin_##Name), #Name); \
   AddBuiltin(builtins, Builtin::k##Name, code);              \

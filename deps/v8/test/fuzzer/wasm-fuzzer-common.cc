@@ -85,18 +85,20 @@ Handle<WasmModuleObject> CompileReferenceModule(
   std::shared_ptr<NativeModule> native_module;
   constexpr bool kNoVerifyFunctions = false;
   auto enabled_features = WasmEnabledFeatures::FromIsolate(isolate);
+  WasmDetectedFeatures detected_features;
   ModuleResult module_res =
       DecodeWasmModule(enabled_features, wire_bytes, kNoVerifyFunctions,
-                       ModuleOrigin::kWasmOrigin);
+                       ModuleOrigin::kWasmOrigin, &detected_features);
   CHECK(module_res.ok());
-  std::shared_ptr<WasmModule> module = module_res.value();
+  std::shared_ptr<WasmModule> module = std::move(module_res).value();
   CHECK_NOT_NULL(module);
   CompileTimeImports compile_imports = CompileTimeImportsForFuzzing();
-  WasmError imports_error =
-      ValidateAndSetBuiltinImports(module.get(), wire_bytes, compile_imports);
+  WasmError imports_error = ValidateAndSetBuiltinImports(
+      module.get(), wire_bytes, compile_imports, &detected_features);
   CHECK(!imports_error.has_error());  // The module was compiled before.
   native_module = GetWasmEngine()->NewNativeModule(
-      isolate, enabled_features, CompileTimeImportsForFuzzing(), module, 0);
+      isolate, enabled_features, detected_features,
+      CompileTimeImportsForFuzzing(), module, 0);
   native_module->SetWireBytes(base::OwnedVector<uint8_t>::Of(wire_bytes));
   // The module is known to be valid as this point (it was compiled by the
   // caller before).
@@ -110,8 +112,8 @@ Handle<WasmModuleObject> CompileReferenceModule(
   constexpr base::Vector<const char> kNoSourceUrl;
   DirectHandle<Script> script =
       GetWasmEngine()->GetOrCreateScript(isolate, native_module, kNoSourceUrl);
-  isolate->heap()->EnsureWasmCanonicalRttsSize(module->MaxCanonicalTypeIndex() +
-                                               1);
+  TypeCanonicalizer::PrepareForCanonicalTypeId(isolate,
+                                               module->MaxCanonicalTypeIndex());
   return WasmModuleObject::New(isolate, std::move(native_module), script);
 }
 
@@ -261,9 +263,10 @@ void GenerateTestCase(Isolate* isolate, ModuleWireBytes wire_bytes,
 
   constexpr bool kVerifyFunctions = false;
   auto enabled_features = WasmEnabledFeatures::FromIsolate(isolate);
-  ModuleResult module_res =
-      DecodeWasmModule(enabled_features, wire_bytes.module_bytes(),
-                       kVerifyFunctions, ModuleOrigin::kWasmOrigin);
+  WasmDetectedFeatures unused_detected_features;
+  ModuleResult module_res = DecodeWasmModule(
+      enabled_features, wire_bytes.module_bytes(), kVerifyFunctions,
+      ModuleOrigin::kWasmOrigin, &unused_detected_features);
   CHECK_WITH_MSG(module_res.ok(), module_res.error().message().c_str());
   WasmModule* module = module_res.value().get();
   CHECK_NOT_NULL(module);
@@ -334,7 +337,7 @@ void WasmExecutionFuzzer::FuzzWasmModule(base::Vector<const uint8_t> data,
   // are saved as recursive groups as part of the type canonicalizer, but types
   // from previous runs just waste memory.
   GetTypeCanonicalizer()->EmptyStorageForTesting();
-  i_isolate->heap()->ClearWasmCanonicalRttsForTesting();
+  TypeCanonicalizer::ClearWasmCanonicalTypesForTesting(i_isolate);
 
   // Clear any exceptions from a prior run.
   if (i_isolate->has_exception()) {

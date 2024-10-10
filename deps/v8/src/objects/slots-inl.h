@@ -427,7 +427,7 @@ Tagged<Object> IndirectPointerSlot::ResolveHandle(
 Tagged<Object> IndirectPointerSlot::ResolveTrustedPointerHandle(
     IndirectPointerHandle handle, IsolateForSandbox isolate) const {
   DCHECK_NE(handle, kNullIndirectPointerHandle);
-  const TrustedPointerTable& table = isolate.GetTrustedPointerTable();
+  const TrustedPointerTable& table = isolate.GetTrustedPointerTableFor(tag_);
   return Tagged<Object>(table.Get(handle, tag_));
 }
 
@@ -457,7 +457,7 @@ inline void CopyTagged(Address dst, const Address src, size_t num_tagged) {
 }
 
 // Sets |counter| number of kTaggedSize-sized values starting at |start| slot.
-inline void MemsetTagged(Tagged_t* start, Tagged<Object> value,
+inline void MemsetTagged(Tagged_t* start, Tagged<MaybeObject> value,
                          size_t counter) {
 #ifdef V8_COMPRESS_POINTERS
   // CompressAny since many callers pass values which are not valid objects.
@@ -471,7 +471,7 @@ inline void MemsetTagged(Tagged_t* start, Tagged<Object> value,
 
 // Sets |counter| number of kTaggedSize-sized values starting at |start| slot.
 template <typename T>
-inline void MemsetTagged(SlotBase<T, Tagged_t> start, Tagged<Object> value,
+inline void MemsetTagged(SlotBase<T, Tagged_t> start, Tagged<MaybeObject> value,
                          size_t counter) {
   MemsetTagged(start.location(), value, counter);
 }

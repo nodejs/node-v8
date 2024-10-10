@@ -45,6 +45,7 @@
 #include "src/common/assert-scope.h"
 #include "src/debug/debug-coverage.h"
 #include "src/heap/heap-inl.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/heap/parked-scope-inl.h"
 #include "src/heap/read-only-heap.h"
 #include "src/heap/read-only-promotion.h"
@@ -2699,7 +2700,7 @@ TEST(CodeSerializerExternalString) {
   Handle<String> one_byte_string =
       isolate->factory()->NewStringFromAsciiChecked("one_byte");
   one_byte_string = isolate->factory()->InternalizeString(one_byte_string);
-  one_byte_string->MakeExternal(&one_byte_resource);
+  one_byte_string->MakeExternal(isolate, &one_byte_resource);
   CHECK(IsExternalOneByteString(*one_byte_string));
   CHECK(IsInternalizedString(*one_byte_string));
 
@@ -2712,7 +2713,7 @@ TEST(CodeSerializerExternalString) {
           ->NewStringFromTwoByte(base::VectorOf(two_byte, two_byte_length))
           .ToHandleChecked();
   two_byte_string = isolate->factory()->InternalizeString(two_byte_string);
-  two_byte_string->MakeExternal(&two_byte_resource);
+  two_byte_string->MakeExternal(isolate, &two_byte_resource);
   CHECK(IsExternalTwoByteString(*two_byte_string));
   CHECK(IsInternalizedString(*two_byte_string));
 
@@ -2778,7 +2779,7 @@ TEST(CodeSerializerLargeExternalString) {
   SerializerOneByteResource one_byte_resource(
       reinterpret_cast<const char*>(string.begin()), string.length());
   name = f->InternalizeString(name);
-  name->MakeExternal(&one_byte_resource);
+  name->MakeExternal(isolate, &one_byte_resource);
   CHECK(IsExternalOneByteString(*name));
   CHECK(IsInternalizedString(*name));
   CHECK(isolate->heap()->InSpace(*name, LO_SPACE));
@@ -4526,7 +4527,7 @@ UNINITIALIZED_TEST(SerializeApiWrapperData) {
           context->Global()->Get(context, v8_str("obj1")).ToLocalChecked();
       CHECK(obj1->IsObject());
       v8::Local<v8::Value> obj2 =
-          context->Global()->Get(context, v8_str("obj1")).ToLocalChecked();
+          context->Global()->Get(context, v8_str("obj2")).ToLocalChecked();
       CHECK(obj2->IsObject());
       CHECK_EQ(nullptr, v8::Object::Unwrap<CppHeapPointerTag::kDefaultTag>(
                             isolate, obj1.As<v8::Object>()));
@@ -6277,7 +6278,7 @@ void CheckObjectsAreInSharedHeap(Isolate* isolate) {
         heap->MustBeInSharedOldSpace(obj) ||
         (IsString(obj) && String::IsInPlaceInternalizable(Cast<String>(obj)));
     if (expected_in_shared_old) {
-      CHECK(InAnySharedSpace(obj));
+      CHECK(HeapLayout::InAnySharedSpace(obj));
     }
   }
 }
@@ -6288,6 +6289,9 @@ UNINITIALIZED_TEST(SharedStrings) {
   // shared Isolate.
 
   if (!V8_CAN_CREATE_SHARED_HEAP_BOOL) return;
+  // In multi-cage mode we create one cage per isolate
+  // and we don't share objects between cages.
+  if (COMPRESS_POINTERS_IN_MULTIPLE_CAGES_BOOL) return;
 
   // Make all the flags that require a shared heap false before creating the
   // isolate to serialize.

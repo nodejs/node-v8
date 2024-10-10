@@ -87,7 +87,7 @@ namespace {
 
 #elif V8_TARGET_ARCH_PPC64
 // ===========================================================================
-// == ppc & ppc64 ============================================================
+// == ppc64 ==================================================================
 // ===========================================================================
 #ifdef V8_TARGET_LITTLE_ENDIAN  // ppc64le linux
 #define STACK_SHADOW_WORDS 12
@@ -351,7 +351,7 @@ CallDescriptor* Linkage::GetSimplifiedCDescriptor(Zone* zone,
       kDefaultCodeEntrypointTag,     // tag
       target_type,                   // target MachineType
       target_loc,                    // target location
-      locations.Build(),             // location_sig
+      locations.Get(),               // location_sig
       0,                             // stack_parameter_count
       Operator::kNoThrow,            // properties
       kCalleeSaveRegisters,          // callee-saved registers

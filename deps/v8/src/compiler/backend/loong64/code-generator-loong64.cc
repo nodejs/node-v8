@@ -4,6 +4,7 @@
 
 #include "src/codegen/assembler-inl.h"
 #include "src/codegen/callable.h"
+#include "src/codegen/interface-descriptors-inl.h"
 #include "src/codegen/loong64/constants-loong64.h"
 #include "src/codegen/machine-type.h"
 #include "src/codegen/macro-assembler.h"
@@ -21,14 +22,7 @@ namespace compiler {
 
 #define __ masm()->
 
-// TODO(LOONG_dev): consider renaming these macros.
-#define TRACE_MSG(msg)                                                      \
-  PrintF("code_gen: \'%s\' in function %s at line %d\n", msg, __FUNCTION__, \
-         __LINE__)
-
-#define TRACE_UNIMPL()                                            \
-  PrintF("UNIMPLEMENTED code_generator_loong64: %s at line %d\n", \
-         __FUNCTION__, __LINE__)
+#define TRACE(...) PrintF(__VA_ARGS__)
 
 // Adds Loong64-specific methods to convert InstructionOperands.
 class Loong64OperandConverter final : public InstructionOperandConverter {
@@ -2358,7 +2352,8 @@ void CodeGenerator::AssembleArchBoolean(Instruction* instr,
   } else {
     PrintF("AssembleArchBranch Unimplemented arch_opcode is : %d\n",
            instr->arch_opcode());
-    TRACE_UNIMPL();
+    TRACE("UNIMPLEMENTED code_generator_loong64: %s at line %d\n", __FUNCTION__,
+          __LINE__);
     UNIMPLEMENTED();
   }
 }
@@ -2451,20 +2446,11 @@ void CodeGenerator::AssembleConstructFrame() {
           call_descriptor->IsWasmCapiFunction()) {
         // For import wrappers and C-API functions, this stack slot is only used
         // for printing stack traces in V8. Also, it holds a WasmImportData
-        // instead of the instance itself, which is taken care of in the frames
-        // accessors.
-        __ Push(kWasmInstanceRegister);
+        // instead of the trusted instance data, which is taken care of in the
+        // frames accessors.
+        __ Push(kWasmImplicitArgRegister);
       }
-      if (call_descriptor->IsWasmImportWrapper()) {
-        // If the wrapper is running on a secondary stack, it will switch to the
-        // central stack and fill these slots with the central stack pointer and
-        // secondary stack limit. Otherwise the slots remain empty.
-        static_assert(WasmImportWrapperFrameConstants::kCentralStackSPOffset ==
-                      -24);
-        static_assert(
-            WasmImportWrapperFrameConstants::kSecondaryStackLimitOffset == -32);
-        __ Push(zero_reg, zero_reg);
-      } else if (call_descriptor->IsWasmCapiFunction()) {
+      if (call_descriptor->IsWasmCapiFunction()) {
         // Reserve space for saving the PC later.
         __ Sub_d(sp, sp, Operand(kSystemPointerSize));
       }
@@ -2514,14 +2500,32 @@ void CodeGenerator::AssembleConstructFrame() {
         __ Branch(&done, uge, sp, Operand(stack_limit));
       }
 
-      __ Call(static_cast<intptr_t>(Builtin::kWasmStackOverflow),
-              RelocInfo::WASM_STUB_CALL);
-      // The call does not return, hence we can ignore any references and just
-      // define an empty safepoint.
-      ReferenceMap* reference_map = zone()->New<ReferenceMap>(zone());
-      RecordSafepoint(reference_map);
-      if (v8_flags.debug_code) {
-        __ stop();
+      if (v8_flags.experimental_wasm_growable_stacks) {
+        RegList regs_to_save;
+        regs_to_save.set(WasmHandleStackOverflowDescriptor::GapRegister());
+        regs_to_save.set(
+            WasmHandleStackOverflowDescriptor::FrameBaseRegister());
+
+        for (auto reg : wasm::kGpParamRegisters) regs_to_save.set(reg);
+        __ MultiPush(regs_to_save);
+        __ li(WasmHandleStackOverflowDescriptor::GapRegister(),
+              required_slots * kSystemPointerSize);
+        __ Add_d(
+            WasmHandleStackOverflowDescriptor::FrameBaseRegister(), fp,
+            Operand(call_descriptor->ParameterSlotCount() * kSystemPointerSize +
+                    CommonFrameConstants::kFixedFrameSizeAboveFp));
+        __ CallBuiltin(Builtin::kWasmHandleStackOverflow);
+        __ MultiPop(regs_to_save);
+      } else {
+        __ Call(static_cast<intptr_t>(Builtin::kWasmStackOverflow),
+                RelocInfo::WASM_STUB_CALL);
+        // The call does not return, hence we can ignore any references and just
+        // define an empty safepoint.
+        ReferenceMap* reference_map = zone()->New<ReferenceMap>(zone());
+        RecordSafepoint(reference_map);
+        if (v8_flags.debug_code) {
+          __ stop();
+        }
       }
 
       __ bind(&done);
@@ -2598,6 +2602,34 @@ void CodeGenerator::AssembleReturn(InstructionOperand* additional_pop_count) {
                 Operand(static_cast<int64_t>(0)));
     }
   }
+
+#if V8_ENABLE_WEBASSEMBLY
+  if (call_descriptor->IsWasmFunctionCall() &&
+      v8_flags.experimental_wasm_growable_stacks) {
+    Label done;
+    {
+      UseScratchRegisterScope temps{masm()};
+      Register scratch = temps.Acquire();
+      __ Ld_d(scratch, MemOperand(fp, TypedFrameConstants::kFrameTypeOffset));
+      __ BranchShort(
+          &done, ne, scratch,
+          Operand(StackFrame::TypeToMarker(StackFrame::WASM_SEGMENT_START)));
+    }
+    RegList regs_to_save;
+    for (auto reg : wasm::kGpReturnRegisters) regs_to_save.set(reg);
+    __ MultiPush(regs_to_save);
+    __ li(kCArgRegs[0], ExternalReference::isolate_address());
+    {
+      UseScratchRegisterScope temps{masm()};
+      Register scratch = temps.Acquire();
+      __ PrepareCallCFunction(1, scratch);
+    }
+    __ CallCFunction(ExternalReference::wasm_shrink_stack(), 1);
+    __ mov(fp, kReturnRegister0);
+    __ MultiPop(regs_to_save);
+    __ bind(&done);
+  }
+#endif  // V8_ENABLE_WEBASSEMBLY
 
   // Functions with JS linkage have at least one parameter (the receiver).
   // If {parameter_slots} == 0, it means it is a builtin with
@@ -3059,7 +3091,7 @@ void CodeGenerator::AssembleSwap(InstructionOperand* source,
   }
 }
 
-void CodeGenerator::AssembleJumpTable(Label** targets, size_t target_count) {
+void CodeGenerator::AssembleJumpTable(base::Vector<Label*> targets) {
   // On 64-bit LOONG64 we emit the jump tables inline.
   UNREACHABLE();
 }
@@ -3075,8 +3107,7 @@ void CodeGenerator::AssembleJumpTable(Label** targets, size_t target_count) {
 #undef ASSEMBLE_IEEE754_BINOP
 #undef ASSEMBLE_IEEE754_UNOP
 
-#undef TRACE_MSG
-#undef TRACE_UNIMPL
+#undef TRACE
 #undef __
 
 }  // namespace compiler

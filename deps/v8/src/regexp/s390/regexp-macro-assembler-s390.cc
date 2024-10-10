@@ -4,7 +4,7 @@
 
 #include "src/init/v8.h"
 
-#if V8_TARGET_ARCH_S390
+#if V8_TARGET_ARCH_S390X
 
 #include "src/codegen/macro-assembler.h"
 #include "src/codegen/s390/assembler-s390-inl.h"
@@ -539,6 +539,19 @@ void RegExpMacroAssemblerS390::CheckBitInTable(Handle<ByteArray> table,
             MemOperand(r2, index, (ByteArray::kHeaderSize - kHeapObjectTag)));
   __ CmpS64(r2, Operand::Zero());
   BranchOrBacktrack(ne, on_bit_set);
+}
+
+void RegExpMacroAssemblerS390::SkipUntilBitInTable(
+    int cp_offset, Handle<ByteArray> table, Handle<ByteArray> nibble_table,
+    int advance_by) {
+  // TODO(pthier): Optimize. Table can be loaded outside of the loop.
+  Label cont, again;
+  Bind(&again);
+  LoadCurrentCharacter(cp_offset, &cont, true);
+  CheckBitInTable(table, &cont);
+  AdvanceCurrentPosition(advance_by);
+  GoTo(&again);
+  Bind(&cont);
 }
 
 bool RegExpMacroAssemblerS390::CheckSpecialClassRanges(
@@ -1315,11 +1328,7 @@ void RegExpMacroAssemblerS390::CallCheckStackGuardState(Register scratch,
 template <typename T>
 static T& frame_entry(Address re_frame, int frame_offset) {
   DCHECK_EQ(kSystemPointerSize, sizeof(T));
-#ifdef V8_TARGET_ARCH_S390X
   return reinterpret_cast<T&>(Memory<uint64_t>(re_frame + frame_offset));
-#else
-  return reinterpret_cast<T&>(Memory<uint32_t>(re_frame + frame_offset));
-#endif
 }
 
 template <typename T>
@@ -1401,7 +1410,6 @@ void RegExpMacroAssemblerS390::SafeReturn() {
 
 void RegExpMacroAssemblerS390::SafeCallTarget(Label* name) {
   __ bind(name);
-  __ CleanseP(r14);
   __ mov(r0, r14);
   __ mov(ip, Operand(masm_->CodeObject()));
   __ SubS64(r0, r0, ip);
@@ -1519,4 +1527,4 @@ void RegExpMacroAssemblerS390::LoadCurrentCharacterUnchecked(int cp_offset,
 }  // namespace internal
 }  // namespace v8
 
-#endif  // V8_TARGET_ARCH_S390
+#endif  // V8_TARGET_ARCH_S390X

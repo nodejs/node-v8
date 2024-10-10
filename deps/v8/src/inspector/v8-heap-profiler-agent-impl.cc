@@ -8,7 +8,6 @@
 #include "include/v8-inspector.h"
 #include "include/v8-platform.h"
 #include "include/v8-profiler.h"
-#include "include/v8-version.h"
 #include "src/base/platform/mutex.h"
 #include "src/base/platform/time.h"
 #include "src/inspector/injected-script.h"
@@ -59,7 +58,8 @@ class GlobalObjectNameResolver final
 
   const char* GetName(v8::Local<v8::Object> object) override {
     v8::Local<v8::Context> creationContext;
-    if (!object->GetCreationContext().ToLocal(&creationContext)) {
+    if (!object->GetCreationContext(m_session->inspector()->isolate())
+             .ToLocal(&creationContext)) {
       return "";
     }
     InspectedContext* context = m_session->inspector()->getContext(
@@ -429,7 +429,7 @@ Response V8HeapProfilerAgentImpl::getObjectByHeapObjectId(
     return Response::ServerError("Object is not available");
 
   v8::Local<v8::Context> creationContext;
-  if (!heapObject->GetCreationContext().ToLocal(&creationContext)) {
+  if (!heapObject->GetCreationContext(m_isolate).ToLocal(&creationContext)) {
     return Response::ServerError("Object is not available");
   }
   *result = m_session->wrapObject(creationContext, heapObject,

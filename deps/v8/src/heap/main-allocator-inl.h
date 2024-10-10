@@ -5,10 +5,10 @@
 #ifndef V8_HEAP_MAIN_ALLOCATOR_INL_H_
 #define V8_HEAP_MAIN_ALLOCATOR_INL_H_
 
-#include "src/base/sanitizer/msan.h"
 #include "src/flags/flags.h"
 #include "src/heap/heap-inl.h"
 #include "src/heap/main-allocator.h"
+#include "src/heap/marking-state-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -16,7 +16,6 @@ namespace internal {
 AllocationResult MainAllocator::AllocateRaw(int size_in_bytes,
                                             AllocationAlignment alignment,
                                             AllocationOrigin origin) {
-  DCHECK(!v8_flags.enable_third_party_heap);
   size_in_bytes = ALIGN_TO_ALLOCATION_ALIGNMENT(size_in_bytes);
 
   DCHECK_EQ(in_gc(), origin == AllocationOrigin::kGC);

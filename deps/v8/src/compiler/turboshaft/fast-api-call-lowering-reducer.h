@@ -108,7 +108,7 @@ class FastApiCallLoweringReducer : public Next {
 
       // Build the actual call.
       const TSCallDescriptor* call_descriptor = TSCallDescriptor::Create(
-          Linkage::GetSimplifiedCDescriptor(__ graph_zone(), builder.Build(),
+          Linkage::GetSimplifiedCDescriptor(__ graph_zone(), builder.Get(),
                                             CallDescriptor::kNeedsFrameState),
           CanThrow::kNo, LazyDeoptOnThrow::kNo, __ graph_zone());
       OpIndex c_call_result = WrapFastCall(call_descriptor, callee, frame_state,
@@ -586,7 +586,7 @@ class FastApiCallLoweringReducer : public Next {
             ExternalReference::
                 allocate_and_initialize_young_external_pointer_table_entry());
     auto call_descriptor =
-        Linkage::GetSimplifiedCDescriptor(__ graph_zone(), builder.Build());
+        Linkage::GetSimplifiedCDescriptor(__ graph_zone(), builder.Get());
     OpIndex handle = __ Call(
         allocate_and_initialize_young_external_pointer_table_entry,
         {isolate_ptr, pointer},

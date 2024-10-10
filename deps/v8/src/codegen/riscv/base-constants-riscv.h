@@ -1005,8 +1005,14 @@ class InstructionGetters : public T {
 
   inline int Shamt32() const {
     // Valid only for shift instructions (SLLIW, SRLIW, SRAIW)
+#ifdef V8_TARGET_ARCH_RISCV32
+    DCHECK(((this->InstructionBits() & kBaseOpcodeMask) == OP_IMM_32 ||
+            (this->InstructionBits() & kBaseOpcodeMask) == OP_IMM) &&
+           (this->Funct3Value() == 0b001 || this->Funct3Value() == 0b101));
+#else
     DCHECK((this->InstructionBits() & kBaseOpcodeMask) == OP_IMM_32 &&
            (this->Funct3Value() == 0b001 || this->Funct3Value() == 0b101));
+#endif
     // | 0A00000 | shamt | rs1 | funct3 | rd | opcode |
     //  31        24   20
     return this->Bits(kImm12Shift + 4, kImm12Shift);
@@ -1240,6 +1246,10 @@ class InstructionGetters : public T {
 
   // Say if the instruction is a break or a trap.
   bool IsTrap() const;
+
+  bool IsAUIPC() const {
+    return (this->InstructionBits() & kBaseOpcodeMask) == AUIPC;
+  }
 };
 
 class Instruction : public InstructionGetters<InstructionBase> {

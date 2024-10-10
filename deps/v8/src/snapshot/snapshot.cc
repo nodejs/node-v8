@@ -255,11 +255,10 @@ void Snapshot::ClearReconstructableDataForSerialization(
 
 #if V8_ENABLE_WEBASSEMBLY
     // Clear the cached js-to-wasm wrappers.
-    DirectHandle<WeakArrayList> wrappers(isolate->heap()->js_to_wasm_wrappers(),
-                                         isolate);
-    for (int i = 0; i < wrappers->length(); ++i) {
-      wrappers->Set(i, Tagged<MaybeObject>{});
-    }
+    DirectHandle<WeakFixedArray> wrappers(
+        isolate->heap()->js_to_wasm_wrappers(), isolate);
+    MemsetTagged(wrappers->RawFieldOfFirstElement(), ClearedValue(isolate),
+                 wrappers->length());
 #endif  // V8_ENABLE_WEBASSEMBLY
 
     // Must happen after heap iteration since SFI::DiscardCompiled may allocate.
@@ -288,7 +287,7 @@ void Snapshot::ClearReconstructableDataForSerialization(
 
       // Also, clear out feedback vectors and recompilable code.
       if (fun->CanDiscardCompiled(isolate)) {
-        fun->set_code(*BUILTIN_CODE(isolate, CompileLazy));
+        fun->UpdateCode(*BUILTIN_CODE(isolate, CompileLazy));
       }
       if (!IsUndefined(fun->raw_feedback_cell(cage_base)->value(cage_base))) {
         fun->raw_feedback_cell(cage_base)->set_value(

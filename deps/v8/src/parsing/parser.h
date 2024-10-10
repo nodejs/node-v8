@@ -314,8 +314,8 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
                                  const CatchInfo& catch_info, int pos);
   void ParseGeneratorFunctionBody(int pos, FunctionKind kind,
                                   ScopedPtrList<Statement>* body);
-  void ParseAndRewriteAsyncGeneratorFunctionBody(
-      int pos, FunctionKind kind, ScopedPtrList<Statement>* body);
+  void ParseAsyncGeneratorFunctionBody(int pos, FunctionKind kind,
+                                       ScopedPtrList<Statement>* body);
   void DeclareFunctionNameVar(const AstRawString* function_name,
                               FunctionSyntaxKind function_syntax_kind,
                               DeclarationScope* function_scope);
@@ -348,6 +348,8 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
                             ClassInfo* class_info, int class_token_pos);
   void DeclareClassBrandVariable(ClassScope* scope, ClassInfo* class_info,
                                  int class_token_pos);
+  void AddInstanceFieldOrStaticElement(ClassLiteralProperty* property,
+                                       ClassInfo* class_info, bool is_static);
   void DeclarePrivateClassMember(ClassScope* scope,
                                  const AstRawString* property_name,
                                  ClassLiteralProperty* property,
@@ -634,7 +636,7 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
     ExpressionStatement* e_stat = statement->AsExpressionStatement();
     if (e_stat == nullptr) return false;
     Literal* literal = e_stat->expression()->AsLiteral();
-    if (literal == nullptr || !literal->IsString()) return false;
+    if (literal == nullptr || !literal->IsRawString()) return false;
     return arg == nullptr || literal->AsRawString() == arg;
   }
 

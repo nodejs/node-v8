@@ -59,6 +59,25 @@ void FeedbackMetadata::set(int index, int32_t value) {
   WriteField<int32_t>(offset, value);
 }
 
+// static
+constexpr uint32_t FeedbackVector::FlagMaskForNeedsProcessingCheckFrom(
+    CodeKind code_kind) {
+  DCHECK(CodeKindCanTierUp(code_kind));
+  // TODO(olivf): investigate whether we can drop
+  // kFlagsTieringStateIsAnyRequested here as well when leaptiering is enabled.
+  uint32_t flag_mask = FeedbackVector::kFlagsTieringStateIsAnyRequested |
+                       FeedbackVector::kFlagsLogNextExecution;
+  // When leaptiering is enabled, we don't load optimized code from the
+  // FeedbackVector, so we don't check for these flags.
+#ifndef V8_ENABLE_LEAPTIERING
+  flag_mask |= FeedbackVector::kFlagsMaybeHasTurbofanCode;
+  if (code_kind != CodeKind::MAGLEV) {
+    flag_mask |= FeedbackVector::kFlagsMaybeHasMaglevCode;
+  }
+#endif  // !V8_ENABLE_LEAPTIERING
+  return flag_mask;
+}
+
 bool FeedbackMetadata::is_empty() const {
   DCHECK_IMPLIES(slot_count() == 0, create_closure_slot_count() == 0);
   return slot_count() == 0;
@@ -171,51 +190,8 @@ void FeedbackVector::set_maybe_has_optimized_osr_code(bool value,
   }
 }
 
-Tagged<Code> FeedbackVector::optimized_code(IsolateForSandbox isolate) const {
-  Tagged<MaybeObject> slot = maybe_optimized_code();
-  DCHECK(slot.IsWeakOrCleared());
-  Tagged<HeapObject> heap_object;
-  Tagged<Code> code;
-  if (slot.GetHeapObject(&heap_object)) {
-    code = Cast<CodeWrapper>(heap_object)->code(isolate);
-  }
-  // It is possible that the maybe_optimized_code slot is cleared but the flags
-  // haven't been updated yet. We update them when we execute the function next
-  // time / when we create new closure.
-  DCHECK_IMPLIES(!code.is_null(),
-                 maybe_has_maglev_code() || maybe_has_turbofan_code());
-  DCHECK_IMPLIES(!code.is_null() && code->is_maglevved(),
-                 maybe_has_maglev_code());
-  DCHECK_IMPLIES(!code.is_null() && code->is_turbofanned(),
-                 maybe_has_turbofan_code());
-  return code;
-}
-
 TieringState FeedbackVector::tiering_state() const {
   return TieringStateBits::decode(flags());
-}
-
-bool FeedbackVector::has_optimized_code() const {
-  bool is_cleared = maybe_optimized_code().IsCleared();
-  DCHECK_IMPLIES(!is_cleared,
-                 maybe_has_maglev_code() || maybe_has_turbofan_code());
-  return !is_cleared;
-}
-
-bool FeedbackVector::maybe_has_maglev_code() const {
-  return MaybeHasMaglevCodeBit::decode(flags());
-}
-
-void FeedbackVector::set_maybe_has_maglev_code(bool value) {
-  set_flags(MaybeHasMaglevCodeBit::update(flags(), value));
-}
-
-bool FeedbackVector::maybe_has_turbofan_code() const {
-  return MaybeHasTurbofanCodeBit::decode(flags());
-}
-
-void FeedbackVector::set_maybe_has_turbofan_code(bool value) {
-  set_flags(MaybeHasTurbofanCodeBit::update(flags(), value));
 }
 
 bool FeedbackVector::log_next_execution() const {
@@ -243,6 +219,53 @@ void FeedbackVector::set_was_once_deoptimized() {
   set_invocation_count_before_stable(kInvocationCountBeforeStableDeoptSentinel,
                                      kRelaxedStore);
 }
+
+#ifndef V8_ENABLE_LEAPTIERING
+
+Tagged<Code> FeedbackVector::optimized_code(IsolateForSandbox isolate) const {
+  Tagged<MaybeObject> slot = maybe_optimized_code();
+  DCHECK(slot.IsWeakOrCleared());
+  Tagged<HeapObject> heap_object;
+  Tagged<Code> code;
+  if (slot.GetHeapObject(&heap_object)) {
+    code = Cast<CodeWrapper>(heap_object)->code(isolate);
+  }
+  // It is possible that the maybe_optimized_code slot is cleared but the flags
+  // haven't been updated yet. We update them when we execute the function next
+  // time / when we create new closure.
+  DCHECK_IMPLIES(!code.is_null(),
+                 maybe_has_maglev_code() || maybe_has_turbofan_code());
+  DCHECK_IMPLIES(!code.is_null() && code->is_maglevved(),
+                 maybe_has_maglev_code());
+  DCHECK_IMPLIES(!code.is_null() && code->is_turbofanned(),
+                 maybe_has_turbofan_code());
+  return code;
+}
+
+bool FeedbackVector::has_optimized_code() const {
+  bool is_cleared = maybe_optimized_code().IsCleared();
+  DCHECK_IMPLIES(!is_cleared,
+                 maybe_has_maglev_code() || maybe_has_turbofan_code());
+  return !is_cleared;
+}
+
+bool FeedbackVector::maybe_has_maglev_code() const {
+  return MaybeHasMaglevCodeBit::decode(flags());
+}
+
+void FeedbackVector::set_maybe_has_maglev_code(bool value) {
+  set_flags(MaybeHasMaglevCodeBit::update(flags(), value));
+}
+
+bool FeedbackVector::maybe_has_turbofan_code() const {
+  return MaybeHasTurbofanCodeBit::decode(flags());
+}
+
+void FeedbackVector::set_maybe_has_turbofan_code(bool value) {
+  set_flags(MaybeHasTurbofanCodeBit::update(flags(), value));
+}
+
+#endif  // !V8_ENABLE_LEAPTIERING
 
 std::optional<Tagged<Code>> FeedbackVector::GetOptimizedOsrCode(
     Isolate* isolate, FeedbackSlot slot) {
@@ -460,6 +483,15 @@ int FeedbackMetadataIterator::entry_size() const {
   return FeedbackMetadata::GetSlotSize(kind());
 }
 
+template <typename T>
+Handle<T> NexusConfig::NewHandle(Tagged<T> object) const {
+  if (mode() == Mode::MainThread) {
+    return handle(object, isolate_);
+  }
+  DCHECK_EQ(mode(), Mode::BackgroundThread);
+  return handle(object, local_heap_);
+}
+
 Tagged<MaybeObject> NexusConfig::GetFeedback(Tagged<FeedbackVector> vector,
                                              FeedbackSlot slot) const {
   return vector->SynchronizedGet(slot);
@@ -535,6 +567,22 @@ void FeedbackNexus::SetFeedback(Tagged<FeedbackType> feedback,
                                 WriteBarrierMode mode_extra) {
   config()->SetFeedbackPair(vector(), slot(), feedback, mode, feedback_extra,
                             mode_extra);
+}
+
+template <typename F>
+void FeedbackNexus::IterateMapsWithUnclearedHandler(F function) const {
+  // We don't need DisallowGarbageCollection here: accessing it.map() and
+  // it.handle() is safe between it.Advance() and a potential GC call in
+  // function(). The it itself is not invalidated, since it holds the
+  // polymorphic array by handle.
+  // TODO(370727490): Make the FeedbackIterator GC safe (e.g. look up
+  // map/handler in the feedback array on-demand).
+  for (FeedbackIterator it(this); !it.done(); it.Advance()) {
+    Handle<Map> map = config()->NewHandle(it.map());
+    if (!it.handler().IsCleared()) {
+      function(map);
+    }
+  }
 }
 
 }  // namespace v8::internal

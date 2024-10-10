@@ -10,6 +10,7 @@
 #include "src/api/api-natives.h"
 #include "src/base/strings.h"
 #include "src/common/globals.h"
+#include "src/debug/debug-interface.h"
 #include "src/debug/debug-wasm-objects-inl.h"
 #include "src/execution/frames-inl.h"
 #include "src/objects/allocation-site.h"
@@ -1127,6 +1128,7 @@ Handle<WasmValueObject> WasmValueObject::New(
     }
     case wasm::kRtt:
     case wasm::kVoid:
+    case wasm::kTop:
     case wasm::kBottom:
       UNREACHABLE();
   }

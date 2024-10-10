@@ -164,19 +164,21 @@ bool FirstTimeTierUpToSparkplug(Isolate* isolate, Tagged<JSFunction> function) {
          // events; see JSFunction::InitializeFeedbackCell()).
          (function->ActiveTierIsIgnition(isolate) &&
           CanCompileWithBaseline(isolate, function->shared()) &&
-          !function->shared()->sparkplug_compiled());
+          function->shared()->cached_tiering_decision() ==
+              CachedTieringDecision::kPending);
 }
 
 bool TieringOrTieredUpToOptimizedTier(Tagged<FeedbackVector> vector) {
-  return !IsNone(vector->tiering_state()) || vector->maybe_has_maglev_code() ||
+  return !IsNone(vector->tiering_state()) ||
+#ifndef V8_ENABLE_LEAPTIERING
+         vector->maybe_has_maglev_code() || vector->maybe_has_turbofan_code() ||
+#endif  // !V8_ENABLE_LEAPTIERING
          vector->maybe_has_maglev_osr_code() ||
-         vector->maybe_has_turbofan_code() ||
          vector->maybe_has_turbofan_osr_code();
 }
 
 bool TiersUpToMaglev(CodeKind code_kind) {
-  // TODO(v8:7700): Flip the UNLIKELY when appropriate.
-  return V8_UNLIKELY(maglev::IsMaglevEnabled()) &&
+  return V8_LIKELY(maglev::IsMaglevEnabled()) &&
          CodeKindIsUnoptimizedJSFunction(code_kind);
 }
 
@@ -199,10 +201,22 @@ int InterruptBudgetFor(std::optional<CodeKind> code_kind,
     return v8_flags.invocation_count_for_maglev_osr * bytecode_length;
   }
   if (TiersUpToMaglev(code_kind) && tiering_state == TieringState::kNone) {
-    if (v8_flags.profile_guided_optimization &&
-        (cached_tiering_decision == CachedTieringDecision::kEarlyMaglev ||
-         cached_tiering_decision == CachedTieringDecision::kEarlyTurbofan)) {
-      return v8_flags.invocation_count_for_early_optimization * bytecode_length;
+    if (v8_flags.profile_guided_optimization) {
+      switch (cached_tiering_decision) {
+        case CachedTieringDecision::kDelayMaglev:
+          return (std::max(v8_flags.invocation_count_for_maglev,
+                           v8_flags.minimum_invocations_after_ic_update) +
+                  v8_flags.invocation_count_for_maglev_with_delay) *
+                 bytecode_length;
+        case CachedTieringDecision::kEarlyMaglev:
+        case CachedTieringDecision::kEarlyTurbofan:
+          return v8_flags.invocation_count_for_early_optimization *
+                 bytecode_length;
+        case CachedTieringDecision::kPending:
+        case CachedTieringDecision::kEarlySparkplug:
+        case CachedTieringDecision::kNormal:
+          return v8_flags.invocation_count_for_maglev * bytecode_length;
+      }
     }
     return v8_flags.invocation_count_for_maglev * bytecode_length;
   }
@@ -408,15 +422,39 @@ OptimizationDecision TieringManager::ShouldOptimize(
   return OptimizationDecision::TurbofanHotAndStable();
 }
 
+namespace {
+
+bool ShouldResetInterruptBudgetByICChange(
+    CachedTieringDecision cached_tiering_decision) {
+  switch (cached_tiering_decision) {
+    case CachedTieringDecision::kEarlyMaglev:
+    case CachedTieringDecision::kEarlyTurbofan:
+      return false;
+    case CachedTieringDecision::kPending:
+    case CachedTieringDecision::kEarlySparkplug:
+    case CachedTieringDecision::kDelayMaglev:
+    case CachedTieringDecision::kNormal:
+      return true;
+  }
+}
+
+}  // namespace
+
 void TieringManager::NotifyICChanged(Tagged<FeedbackVector> vector) {
-  CodeKind code_kind = vector->has_optimized_code()
-                           ? vector->optimized_code(isolate_)->kind()
-                       : vector->shared_function_info()->HasBaselineCode()
+  CodeKind code_kind = vector->shared_function_info()->HasBaselineCode()
                            ? CodeKind::BASELINE
                            : CodeKind::INTERPRETED_FUNCTION;
+
+#ifndef V8_ENABLE_LEAPTIERING
+  if (vector->has_optimized_code()) {
+    code_kind = vector->optimized_code(isolate_)->kind();
+  }
+#endif  // !V8_ENABLE_LEAPTIERING
+
   if (code_kind == CodeKind::INTERPRETED_FUNCTION &&
       CanCompileWithBaseline(isolate_, vector->shared_function_info()) &&
-      !vector->shared_function_info()->sparkplug_compiled()) {
+      vector->shared_function_info()->cached_tiering_decision() ==
+          CachedTieringDecision::kPending) {
     // Don't delay tier-up if we haven't tiered up to baseline yet, but will --
     // baseline code is feedback independent.
     return;
@@ -432,7 +470,8 @@ void TieringManager::NotifyICChanged(Tagged<FeedbackVector> vector) {
     int new_budget = invocations * bytecodes;
     int current_budget = cell->interrupt_budget();
     if (v8_flags.profile_guided_optimization &&
-        shared->cached_tiering_decision() == CachedTieringDecision::kPending) {
+        shared->cached_tiering_decision() <=
+            CachedTieringDecision::kEarlySparkplug) {
       if (TieringOrTieredUpToOptimizedTier(vector)) {
         shared->set_cached_tiering_decision(CachedTieringDecision::kNormal);
       } else {
@@ -470,8 +509,8 @@ void TieringManager::NotifyICChanged(Tagged<FeedbackVector> vector) {
       }
     }
     if (!v8_flags.profile_guided_optimization ||
-        shared->cached_tiering_decision() == CachedTieringDecision::kPending ||
-        shared->cached_tiering_decision() == CachedTieringDecision::kNormal) {
+        ShouldResetInterruptBudgetByICChange(
+            shared->cached_tiering_decision())) {
       if (new_budget > current_budget) {
         if (v8_flags.trace_opt_verbose) {
           PrintF("[delaying optimization of %s, IC changed]\n",
@@ -512,10 +551,12 @@ void TieringManager::OnInterruptTick(DirectHandle<JSFunction> function,
 
   // Ensure that the feedback vector has been allocated.
   if (!had_feedback_vector) {
-    if (compile_sparkplug) {
+    if (compile_sparkplug && function->shared()->cached_tiering_decision() ==
+                                 CachedTieringDecision::kPending) {
       // Mark the function as compiled with sparkplug before the feedback vector
       // is created to initialize the interrupt budget for the next tier.
-      function->shared()->set_sparkplug_compiled(true);
+      function->shared()->set_cached_tiering_decision(
+          CachedTieringDecision::kEarlySparkplug);
     }
     JSFunction::CreateAndAttachFeedbackVector(isolate_, function,
                                               &is_compiled_scope);
@@ -559,7 +600,11 @@ void TieringManager::OnInterruptTick(DirectHandle<JSFunction> function,
     // been set by JSFunction::CreateAndAttachFeedbackVector, so no need to
     // set it again.
     if (had_feedback_vector) {
-      function->shared()->set_sparkplug_compiled(true);
+      if (function->shared()->cached_tiering_decision() ==
+          CachedTieringDecision::kPending) {
+        function->shared()->set_cached_tiering_decision(
+            CachedTieringDecision::kEarlySparkplug);
+      }
       function->SetInterruptBudget(isolate_);
     }
     return;

@@ -30,11 +30,7 @@ class WasmLiftoffSetupFrameConstants : public TypedFrameConstants {
  public:
   // Number of gp parameters, without the instance.
   static constexpr int kNumberOfSavedGpParamRegs = 3;
-#ifdef V8_TARGET_ARCH_S390X
   static constexpr int kNumberOfSavedFpParamRegs = 4;
-#else
-  static constexpr int kNumberOfSavedFpParamRegs = 2;
-#endif
 
   // There's one spilled value (which doesn't need visiting) below the instance.
   static constexpr int kInstanceSpillOffset =
@@ -46,7 +42,7 @@ class WasmLiftoffSetupFrameConstants : public TypedFrameConstants {
       TYPED_FRAME_PUSHED_VALUE_OFFSET(2)};
 
   // SP-relative.
-  static constexpr int kWasmInstanceOffset = 2 * kSystemPointerSize;
+  static constexpr int kWasmInstanceDataOffset = 2 * kSystemPointerSize;
   static constexpr int kDeclaredFunctionIndexOffset = 1 * kSystemPointerSize;
   static constexpr int kNativeModuleOffset = 0;
 };

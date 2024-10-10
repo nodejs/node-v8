@@ -10,6 +10,7 @@
   # Failing WPT tests
   'wpt/exception/type.tentative': [FAIL],
   'wpt/function/constructor.tentative': [FAIL],
+
   # TODO(v8): Should work after
   # https://github.com/WebAssembly/exception-handling/pull/257 landed and the
   # tests have been updated.
@@ -17,9 +18,6 @@
 
   # Failing spec tests after test update
   'proposals/js-types/function/constructor.tentative': [FAIL],
-  'proposals/gc/gc/casts.tentative': [FAIL],
-  'wpt/gc/casts.tentative': [FAIL],
-  'proposals/memory64/table/constructor': [FAIL],
   'wpt/module/moduleSource': [FAIL],
 
   # This is a spec test of the https://github.com/WebAssembly/esm-integration
@@ -59,6 +57,13 @@
   # WebAssembly.Function.type. The tests should be updated anyway since they
   # still use the old API (which works but is deprecated).
   'proposals/js-promise-integration/js-promise-integration/js-promise-integration': [FAIL],
+
+  # TODO(https://crbug.com/364913810): Investigate failing exception handling tests.
+  'proposals/memory64/exception/identity.tentative': [FAIL],
+  'proposals/memory64/exception/jsTag.tentative': [FAIL],
+  'proposals/js-promise-integration/exception/basic.tentative': [FAIL],
+  'proposals/js-promise-integration/exception/identity.tentative': [FAIL],
+  'proposals/js-promise-integration/exception/jsTag.tentative': [FAIL],
 }], # ALWAYS
 
 ['system == android', {
@@ -67,11 +72,11 @@
   'limits': [SKIP],
 }],  # 'system == android'
 
-['arch == s390 or arch == s390x or system == aix', {
+['arch == s390x or system == aix', {
   # https://bugs.chromium.org/p/v8/issues/detail?id=8402
   'instance/constructor': [SKIP],
   'constructor/instantiate': [SKIP],
-}],  # 'arch == s390 or arch == s390x or system == aix'
+}],  # 'arch == s390x or system == aix'
 
 ['arch == ppc64', {
   # Test needs larger than supported single code space.

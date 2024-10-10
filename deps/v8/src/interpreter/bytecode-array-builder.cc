@@ -390,7 +390,7 @@ class BytecodeNodeBuilder {
     BytecodeNode node(Create##name##Node(operands...));               \
     WriteJump(&node, label);                                          \
   }
-BYTECODE_LIST(DEFINE_BYTECODE_OUTPUT)
+BYTECODE_LIST(DEFINE_BYTECODE_OUTPUT, DEFINE_BYTECODE_OUTPUT)
 #undef DEFINE_BYTECODE_OUTPUT
 
 void BytecodeArrayBuilder::OutputJumpLoop(BytecodeLoopHeader* loop_header,
@@ -655,6 +655,13 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::LoadLiteral(double value) {
 BytecodeArrayBuilder& BytecodeArrayBuilder::LoadLiteral(
     const AstRawString* raw_string) {
   size_t entry = GetConstantPoolEntry(raw_string);
+  OutputLdaConstant(entry);
+  return *this;
+}
+
+BytecodeArrayBuilder& BytecodeArrayBuilder::LoadLiteral(
+    const AstConsString* cons_string) {
+  size_t entry = GetConstantPoolEntry(cons_string);
   OutputLdaConstant(entry);
   return *this;
 }
@@ -1598,6 +1605,11 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::Delete(Register object,
 size_t BytecodeArrayBuilder::GetConstantPoolEntry(
     const AstRawString* raw_string) {
   return constant_array_builder()->Insert(raw_string);
+}
+
+size_t BytecodeArrayBuilder::GetConstantPoolEntry(
+    const AstConsString* cons_string) {
+  return constant_array_builder()->Insert(cons_string);
 }
 
 size_t BytecodeArrayBuilder::GetConstantPoolEntry(AstBigInt bigint) {

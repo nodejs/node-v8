@@ -634,15 +634,9 @@ class FakeCodeEventLogger : public i::CodeEventLogger {
 #elif defined(__s390x__) || defined(_ARCH_S390X)
 #define GET_STACK_POINTER_TO(sp_addr) \
   __asm__ __volatile__("stg %%r15, %0" : "=m"(sp_addr))
-#elif defined(__s390__) || defined(_ARCH_S390)
-#define GET_STACK_POINTER_TO(sp_addr) \
-  __asm__ __volatile__("st 15, %0" : "=m"(sp_addr))
 #elif defined(__PPC64__) || defined(_ARCH_PPC64)
 #define GET_STACK_POINTER_TO(sp_addr) \
   __asm__ __volatile__("std 1, %0" : "=m"(sp_addr))
-#elif defined(__PPC__) || defined(_ARCH_PPC)
-#define GET_STACK_POINTER_TO(sp_addr) \
-  __asm__ __volatile__("stw 1, %0" : "=m"(sp_addr))
 #elif V8_TARGET_ARCH_RISCV64
 #define GET_STACK_POINTER_TO(sp_addr) \
   __asm__ __volatile__("add %0, sp, x0" : "=r"(sp_addr))

@@ -12,6 +12,7 @@
 #include "src/execution/isolate-utils.h"
 #include "src/handles/handles-inl.h"
 #include "src/heap/factory.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/numbers/hash-seed-inl.h"
 #include "src/objects/instance-type-inl.h"
 #include "src/objects/name-inl.h"
@@ -21,6 +22,7 @@
 #include "src/objects/string.h"
 #include "src/sandbox/external-pointer-inl.h"
 #include "src/sandbox/external-pointer.h"
+#include "src/sandbox/isolate.h"
 #include "src/strings/string-hasher-inl.h"
 #include "src/strings/unicode-inl.h"
 #include "src/torque/runtime-macro-shims.h"
@@ -387,7 +389,7 @@ class SequentialStringKey final : public StringTableKey {
     }
   }
 
-  Handle<String> GetHandleForInsertion() {
+  Handle<String> GetHandleForInsertion(Isolate* isolate) {
     DCHECK(!internalized_string_.is_null());
     return internalized_string_;
   }
@@ -463,7 +465,7 @@ class SeqSubStringKey final : public StringTableKey {
     }
   }
 
-  Handle<String> GetHandleForInsertion() {
+  Handle<String> GetHandleForInsertion(Isolate* isolate) {
     DCHECK(!internalized_string_.is_null());
     return internalized_string_;
   }
@@ -659,7 +661,7 @@ Handle<String> String::Flatten(Isolate* isolate, Handle<String> string,
   if (V8_LIKELY(shape.IsDirect())) return string;
 
   if (shape.IsCons()) {
-    DCHECK(!InAnySharedSpace(s));
+    DCHECK(!HeapLayout::InAnySharedSpace(s));
     Tagged<ConsString> cons = Cast<ConsString>(s);
     if (!cons->IsFlat()) {
       AllowGarbageCollection yes_gc;
@@ -786,8 +788,8 @@ Handle<String> String::Share(Isolate* isolate, Handle<String> string) {
     case StringTransitionStrategy::kInPlace:
       // A relaxed write is sufficient here, because at this point the string
       // has not yet escaped the current thread.
-      DCHECK(InAnySharedSpace(*string));
-      string->set_map_no_write_barrier(*new_map.ToHandleChecked());
+      DCHECK(HeapLayout::InAnySharedSpace(*string));
+      string->set_map_no_write_barrier(isolate, *new_map.ToHandleChecked());
       return string;
     case StringTransitionStrategy::kAlreadyTransitioned:
       return string;
@@ -856,7 +858,7 @@ bool String::IsFlat() const {
 
 bool String::IsShared() const {
   const bool result = StringShape(this).IsShared();
-  DCHECK_IMPLIES(result, InAnySharedSpace(this));
+  DCHECK_IMPLIES(result, HeapLayout::InAnySharedSpace(this));
   return result;
 }
 
@@ -1153,7 +1155,7 @@ void ExternalString::VisitExternalPointers(ObjectVisitor* visitor) {
 }
 
 Address ExternalString::resource_as_address() const {
-  Isolate* isolate = GetIsolateForSandbox(this);
+  IsolateForSandbox isolate = GetIsolateForSandbox(this);
   return resource_.load(isolate);
 }
 
@@ -1183,6 +1185,9 @@ void ExternalString::DisposeResource(Isolate* isolate) {
 
   // Dispose of the C++ object if it has not already been disposed.
   if (resource != nullptr) {
+    if (!IsShared() && !HeapLayout::InWritableSharedSpace(this)) {
+      resource->Unaccount(reinterpret_cast<v8::Isolate*>(isolate));
+    }
     resource->Dispose();
     resource_.store(isolate, kNullAddress);
   }

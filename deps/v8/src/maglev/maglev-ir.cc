@@ -401,7 +401,7 @@ void VirtualObject::List::Print(std::ostream& os, const char* prefix,
 size_t DeoptFrame::GetInputLocationsArraySize() const {
   size_t size = 0;
   const DeoptFrame* frame = this;
-  VirtualObject::List virtual_objects = GetVirtualObjects(*this);
+  VirtualObject::List virtual_objects = GetVirtualObjects(*frame);
   do {
     switch (frame->type()) {
       case DeoptFrame::FrameType::kInterpretedFrame:
@@ -479,6 +479,9 @@ DeoptInfo::DeoptInfo(Zone* zone, const DeoptFrame top_frame,
   for (size_t i = 0; i < input_locations_size; ++i) {
     new (&input_locations_[i]) InputLocation();
   }
+#ifdef DEBUG
+  input_location_count_ = input_locations_size;
+#endif  // DEBUG
 }
 
 bool LazyDeoptInfo::IsResultRegister(interpreter::Register reg) const {
@@ -1287,7 +1290,7 @@ void AllocateElementsArray::GenerateCode(MaglevAssembler* masm,
   RegisterSnapshot snapshot = register_snapshot();
   snapshot.live_registers.set(length);
 
-  // Return empty fixed array if lenght equal zero.
+  // Return empty fixed array if length equal zero.
   __ CompareInt32AndJumpIf(length, 0, kNotEqual, &allocate_elements,
                            Label::Distance::kNear);
   __ LoadRoot(elements, RootIndex::kEmptyFixedArray);
@@ -1481,8 +1484,8 @@ void CheckUint32IsSmi::GenerateCode(MaglevAssembler* masm,
                                     const ProcessingState& state) {
   Register reg = ToRegister(input());
   // Perform an unsigned comparison against Smi::kMaxValue.
-  __ Cmp(reg, Smi::kMaxValue);
-  __ EmitEagerDeoptIf(kUnsignedGreaterThan, DeoptimizeReason::kNotASmi, this);
+  __ CompareUInt32AndEmitEagerDeoptIf(reg, Smi::kMaxValue, kUnsignedGreaterThan,
+                                      DeoptimizeReason::kNotASmi, this);
 }
 
 void CheckedSmiUntag::SetValueLocationConstraints() {
@@ -1718,7 +1721,7 @@ void TryUnboxNumberOrOddball(MaglevAssembler* masm, DoubleRegister dst,
   // If Smi, convert to Float64.
   __ SmiToInt32(clobbered_src);
   __ Int32ToDouble(dst, clobbered_src);
-  __ Jump(&done, Label::kNear);
+  __ Jump(&done);
   __ bind(&is_not_smi);
   JumpToFailIfNotHeapNumberOrOddball(masm, clobbered_src, conversion_type,
                                      fail);
@@ -2750,21 +2753,22 @@ void LoadSignedIntDataViewElement::GenerateCode(MaglevAssembler* masm,
   // We ignore little endian argument if type is a byte size.
   if (type_ != ExternalArrayType::kExternalInt8Array) {
     if (is_little_endian_constant()) {
-      // TODO(v8:7700): Support big endian architectures.
-      static_assert(V8_TARGET_LITTLE_ENDIAN == 1);
-      if (!FromConstantToBool(masm, is_little_endian_input().node())) {
+      if (!V8_TARGET_BIG_ENDIAN_BOOL &&
+          !FromConstantToBool(masm, is_little_endian_input().node())) {
         DCHECK_EQ(reg_with_result, result_reg);
         __ ReverseByteOrder(result_reg, element_size);
       }
     } else {
-      ZoneLabelRef is_little_endian(masm), is_big_endian(masm);
+      ZoneLabelRef keep_byte_order(masm), reverse_byte_order(masm);
       DCHECK_NE(reg_with_result, ToRegister(is_little_endian_input()));
-      __ ToBoolean(ToRegister(is_little_endian_input()),
-                   CheckType::kCheckHeapObject, is_little_endian, is_big_endian,
-                   false);
-      __ bind(*is_big_endian);
+      __ ToBoolean(
+          ToRegister(is_little_endian_input()), CheckType::kCheckHeapObject,
+          V8_TARGET_BIG_ENDIAN_BOOL ? reverse_byte_order : keep_byte_order,
+          V8_TARGET_BIG_ENDIAN_BOOL ? keep_byte_order : reverse_byte_order,
+          false);
+      __ bind(*reverse_byte_order);
       __ ReverseByteOrder(reg_with_result, element_size);
-      __ bind(*is_little_endian);
+      __ bind(*keep_byte_order);
       if (reg_with_result != result_reg) {
         __ Move(result_reg, reg_with_result);
       }
@@ -2806,19 +2810,20 @@ void StoreSignedIntDataViewElement::GenerateCode(MaglevAssembler* masm,
   // We ignore little endian argument if type is a byte size.
   if (element_size > 1) {
     if (is_little_endian_constant()) {
-      // TODO(v8:7700): Support big endian architectures.
-      static_assert(V8_TARGET_LITTLE_ENDIAN == 1);
-      if (!FromConstantToBool(masm, is_little_endian_input().node())) {
+      if (!V8_TARGET_BIG_ENDIAN_BOOL &&
+          !FromConstantToBool(masm, is_little_endian_input().node())) {
         __ ReverseByteOrder(value, element_size);
       }
     } else {
-      ZoneLabelRef is_little_endian(masm), is_big_endian(masm);
-      __ ToBoolean(ToRegister(is_little_endian_input()),
-                   CheckType::kCheckHeapObject, is_little_endian, is_big_endian,
-                   false);
-      __ bind(*is_big_endian);
+      ZoneLabelRef keep_byte_order(masm), reverse_byte_order(masm);
+      __ ToBoolean(
+          ToRegister(is_little_endian_input()), CheckType::kCheckHeapObject,
+          V8_TARGET_BIG_ENDIAN_BOOL ? reverse_byte_order : keep_byte_order,
+          V8_TARGET_BIG_ENDIAN_BOOL ? keep_byte_order : reverse_byte_order,
+          false);
+      __ bind(*reverse_byte_order);
       __ ReverseByteOrder(value, element_size);
-      __ bind(*is_little_endian);
+      __ bind(*keep_byte_order);
     }
   }
 
@@ -2860,10 +2865,9 @@ void LoadDoubleDataViewElement::GenerateCode(MaglevAssembler* masm,
   __ LoadExternalPointerField(
       data_pointer, FieldMemOperand(object, JSDataView::kDataPointerOffset));
 
-  // TODO(v8:7700): Support big endian architectures.
-  static_assert(V8_TARGET_LITTLE_ENDIAN == 1);
   if (is_little_endian_constant()) {
-    if (FromConstantToBool(masm, is_little_endian_input().node())) {
+    if (!V8_TARGET_BIG_ENDIAN_BOOL &&
+        FromConstantToBool(masm, is_little_endian_input().node())) {
       __ LoadUnalignedFloat64(result_reg, data_pointer, index);
     } else {
       __ LoadUnalignedFloat64AndReverseByteOrder(result_reg, data_pointer,
@@ -2871,18 +2875,19 @@ void LoadDoubleDataViewElement::GenerateCode(MaglevAssembler* masm,
     }
   } else {
     Label done;
-    ZoneLabelRef is_little_endian(masm), is_big_endian(masm);
+    ZoneLabelRef keep_byte_order(masm), reverse_byte_order(masm);
     // TODO(leszeks): We're likely to be calling this on an existing boolean --
     // maybe that's a case we should fast-path here and re-use that boolean
     // value?
-    __ ToBoolean(ToRegister(is_little_endian_input()),
-                 CheckType::kCheckHeapObject, is_little_endian, is_big_endian,
-                 true);
-    __ bind(*is_little_endian);
+    __ ToBoolean(
+        ToRegister(is_little_endian_input()), CheckType::kCheckHeapObject,
+        V8_TARGET_BIG_ENDIAN_BOOL ? reverse_byte_order : keep_byte_order,
+        V8_TARGET_BIG_ENDIAN_BOOL ? keep_byte_order : reverse_byte_order, true);
+    __ bind(*keep_byte_order);
     __ LoadUnalignedFloat64(result_reg, data_pointer, index);
     __ Jump(&done);
     // We should swap the bytes if big endian.
-    __ bind(*is_big_endian);
+    __ bind(*reverse_byte_order);
     __ LoadUnalignedFloat64AndReverseByteOrder(result_reg, data_pointer, index);
     __ bind(&done);
   }
@@ -2918,28 +2923,28 @@ void StoreDoubleDataViewElement::GenerateCode(MaglevAssembler* masm,
   __ LoadExternalPointerField(
       data_pointer, FieldMemOperand(object, JSDataView::kDataPointerOffset));
 
-  // TODO(v8:7700): Support big endian architectures.
-  static_assert(V8_TARGET_LITTLE_ENDIAN == 1);
   if (is_little_endian_constant()) {
-    if (FromConstantToBool(masm, is_little_endian_input().node())) {
+    if (!V8_TARGET_BIG_ENDIAN_BOOL &&
+        FromConstantToBool(masm, is_little_endian_input().node())) {
       __ StoreUnalignedFloat64(data_pointer, index, value);
     } else {
       __ ReverseByteOrderAndStoreUnalignedFloat64(data_pointer, index, value);
     }
   } else {
     Label done;
-    ZoneLabelRef is_little_endian(masm), is_big_endian(masm);
+    ZoneLabelRef keep_byte_order(masm), reverse_byte_order(masm);
     // TODO(leszeks): We're likely to be calling this on an existing boolean --
     // maybe that's a case we should fast-path here and re-use that boolean
     // value?
-    __ ToBoolean(ToRegister(is_little_endian_input()),
-                 CheckType::kCheckHeapObject, is_little_endian, is_big_endian,
-                 true);
-    __ bind(*is_little_endian);
+    __ ToBoolean(
+        ToRegister(is_little_endian_input()), CheckType::kCheckHeapObject,
+        V8_TARGET_BIG_ENDIAN_BOOL ? reverse_byte_order : keep_byte_order,
+        V8_TARGET_BIG_ENDIAN_BOOL ? keep_byte_order : reverse_byte_order, true);
+    __ bind(*keep_byte_order);
     __ StoreUnalignedFloat64(data_pointer, index, value);
     __ Jump(&done);
     // We should swap the bytes if big endian.
-    __ bind(*is_big_endian);
+    __ bind(*reverse_byte_order);
     __ ReverseByteOrderAndStoreUnalignedFloat64(data_pointer, index, value);
     __ bind(&done);
   }
@@ -3378,8 +3383,9 @@ void CheckNotHole::SetValueLocationConstraints() {
 }
 void CheckNotHole::GenerateCode(MaglevAssembler* masm,
                                 const ProcessingState& state) {
-  __ CompareRoot(ToRegister(object_input()), RootIndex::kTheHoleValue);
-  __ EmitEagerDeoptIf(kEqual, DeoptimizeReason::kHole, this);
+  __ CompareRootAndEmitEagerDeoptIf(ToRegister(object_input()),
+                                    RootIndex::kTheHoleValue, kEqual,
+                                    DeoptimizeReason::kHole, this);
 }
 
 void ConvertHoleToUndefined::SetValueLocationConstraints() {
@@ -3759,10 +3765,10 @@ void HasInPrototypeChain::GenerateCode(MaglevAssembler* masm,
     // Check if we can determine the prototype directly from the {object_map}.
     ZoneLabelRef if_objectisdirect(masm);
     Register instance_type = scratch;
-    __ CompareInstanceTypeRange(map, instance_type, FIRST_TYPE,
-                                LAST_SPECIAL_RECEIVER_TYPE);
+    Condition jump_cond = __ CompareInstanceTypeRange(
+        map, instance_type, FIRST_TYPE, LAST_SPECIAL_RECEIVER_TYPE);
     __ JumpToDeferredIf(
-        kUnsignedLessThanEqual,
+        jump_cond,
         [](MaglevAssembler* masm, RegisterSnapshot snapshot,
            Register object_reg, Register map, Register instance_type,
            Register result_reg, HasInPrototypeChain* node,
@@ -3772,13 +3778,11 @@ void HasInPrototypeChain::GenerateCode(MaglevAssembler* masm,
           // check if we need to use the if_objectisspecial path in the runtime.
           __ JumpIfEqual(instance_type, JS_PROXY_TYPE, &return_runtime);
 
-          Register object_bitfield = instance_type;
-          __ LoadByte(object_bitfield,
-                      FieldMemOperand(map, Map::kBitFieldOffset));
           int mask = Map::Bits1::HasNamedInterceptorBit::kMask |
                      Map::Bits1::IsAccessCheckNeededBit::kMask;
-          __ TestInt32AndJumpIfAllClear(object_bitfield, mask,
-                                        *if_objectisdirect);
+          __ TestUint8AndJumpIfAllClear(
+              FieldMemOperand(map, Map::kBitFieldOffset), mask,
+              *if_objectisdirect);
 
           __ bind(&return_runtime);
           {
@@ -5067,10 +5071,9 @@ void ThrowIfNotSuperConstructor::GenerateCode(MaglevAssembler* masm,
   Register scratch = temps.Acquire();
   __ LoadMap(scratch, ToRegister(constructor()));
   static_assert(Map::kBitFieldOffsetEnd + 1 - Map::kBitFieldOffset == 1);
-  __ LoadUnsignedField(scratch, FieldMemOperand(scratch, Map::kBitFieldOffset),
-                       1);
-  __ TestInt32AndJumpIfAllClear(
-      scratch, Map::Bits1::IsConstructorBit::kMask,
+  __ TestUint8AndJumpIfAllClear(
+      FieldMemOperand(scratch, Map::kBitFieldOffset),
+      Map::Bits1::IsConstructorBit::kMask,
       __ MakeDeferredCode(
           [](MaglevAssembler* masm, ThrowIfNotSuperConstructor* node) {
             __ Push(ToRegister(node->constructor()),
@@ -5248,11 +5251,14 @@ void CheckNumber::GenerateCode(MaglevAssembler* masm,
         kEqual, &done,
         v8_flags.debug_code ? Label::Distance::kFar : Label::Distance::kNear);
     // Check if it is a BigInt.
-    __ CompareTaggedRoot(scratch, RootIndex::kBigIntMap);
+    __ CompareTaggedRootAndEmitEagerDeoptIf(
+        scratch, RootIndex::kBigIntMap, kNotEqual,
+        DeoptimizeReason::kNotANumber, this);
   } else {
-    __ CompareMapWithRoot(value, RootIndex::kHeapNumberMap, scratch);
+    __ CompareMapWithRootAndEmitEagerDeoptIf(
+        value, RootIndex::kHeapNumberMap, scratch, kNotEqual,
+        DeoptimizeReason::kNotANumber, this);
   }
-  __ EmitEagerDeoptIf(kNotEqual, DeoptimizeReason::kNotANumber, this);
   __ bind(&done);
 }
 
@@ -5333,8 +5339,9 @@ void CheckedNumberToUint8Clamped::GenerateCode(MaglevAssembler* masm,
   __ Jump(&done);
   __ bind(&is_not_smi);
   // Check if HeapNumber, deopt otherwise.
-  __ CompareMapWithRoot(value, RootIndex::kHeapNumberMap, scratch);
-  __ EmitEagerDeoptIf(kNotEqual, DeoptimizeReason::kNotANumber, this);
+  __ CompareMapWithRootAndEmitEagerDeoptIf(value, RootIndex::kHeapNumberMap,
+                                           scratch, kNotEqual,
+                                           DeoptimizeReason::kNotANumber, this);
   // If heap number, get double value.
   __ LoadHeapNumberValue(double_value, value);
   // Clamp.
@@ -5542,9 +5549,17 @@ void CallKnownJSFunction::GenerateCode(MaglevAssembler* masm,
   DCHECK_EQ(kJavaScriptCallTargetRegister, ToRegister(closure()));
   __ Move(kJavaScriptCallArgCountRegister, actual_parameter_count);
   if (shared_function_info().HasBuiltinId()) {
+    // TODO(42204201) Here we should statically validate the parameter count.
+    // However, for that, every builtin needs to know its expected parameter
+    // count. See also issue 343498932.
     __ CallBuiltin(shared_function_info().builtin_id());
   } else {
-    __ CallJSFunction(kJavaScriptCallTargetRegister);
+    // TODO(42204201): Instead of validating the parameter count, we should
+    // just hardcode the dispatch entry into the generated code. That way, it
+    // will be guaranteed that the parameter count is correct. However, this
+    // requires GC support to mark the dispatch entry as alive when embedded
+    // into generated code.
+    __ CallJSFunction(kJavaScriptCallTargetRegister, expected_parameter_count_);
   }
   masm->DefineExceptionHandlerAndLazyDeoptPoint(this);
 }
@@ -5707,7 +5722,21 @@ void CallKnownApiFunction::GenerateCallApiCallbackOptimizedInline(
                         scratch2);
 
   Register fp = __ GetFramePointer();
+#ifdef V8_TARGET_ARCH_ARM64
+  // This is a workaround for performance regression observed on Apple Silicon
+  // (https://crbug.com/347741609): reading argc value after the call via
+  //   MemOperand argc_operand = MemOperand(fp, FC::kFCIArgcOffset);
+  // is noticeably slower than using sp-based access:
+  MemOperand argc_operand = ExitFrameStackSlotOperand(FCA::kLengthOffset);
+#else
+  // We don't enable this workaround for other configurations because
+  // a) it's not possible to convert fp-based encoding to sp-based one:
+  //    V8 guarantees stack pointer to be only kSystemPointerSize-aligned,
+  //    while C function might require stack pointer to be 16-byte aligned on
+  //    certain platforms,
+  // b) local experiments on x64 didn't show improvements.
   MemOperand argc_operand = MemOperand(fp, FC::kFCIArgcOffset);
+#endif  // V8_TARGET_ARCH_ARM64
   {
     ASM_CODE_COMMENT_STRING(masm, "Initialize v8::FunctionCallbackInfo");
     // FunctionCallbackInfo::length_.
@@ -5882,16 +5911,17 @@ void CallCPPBuiltin::GenerateCode(MaglevAssembler* masm,
   __ LoadRoot(scratch, RootIndex::kTheHoleValue);
 
   // Push all arguments to the builtin (including the receiver).
-  static_assert(BuiltinArguments::kNumExtraArgsWithReceiver == 5);
-  static_assert(BuiltinArguments::kReceiverOffset == 4);
+  static_assert(BuiltinArguments::kReceiverIndex == 4);
   __ PushReverse(args());
 
-  static_assert(BuiltinArguments::kNewTargetOffset == 0);
-  static_assert(BuiltinArguments::kTargetOffset == 1);
-  static_assert(BuiltinArguments::kArgcOffset == 2);
-  static_assert(BuiltinArguments::kPaddingOffset == 3);
+  static_assert(BuiltinArguments::kNumExtraArgs == 4);
+  static_assert(BuiltinArguments::kNewTargetIndex == 0);
+  static_assert(BuiltinArguments::kTargetIndex == 1);
+  static_assert(BuiltinArguments::kArgcIndex == 2);
+  static_assert(BuiltinArguments::kPaddingIndex == 3);
   // Push stack arguments for CEntry.
-  Tagged<Smi> tagged_argc = Smi::FromInt(num_args());  // Includes receiver.
+  Tagged<Smi> tagged_argc = Smi::FromInt(BuiltinArguments::kNumExtraArgs +
+                                         num_args());  // Includes receiver.
   __ Push(scratch /* padding */, tagged_argc, target(), new_target());
 
   // Move values to fixed registers after all arguments are pushed. Registers
@@ -6448,8 +6478,7 @@ void AttemptOnStackReplacement(MaglevAssembler* masm,
     // A `0` return value means there is no OSR code available yet. Continue
     // execution in Maglev, OSR code will be picked up once it exists and is
     // cached on the feedback vector.
-    __ Cmp(maybe_target_code, 0);
-    __ JumpIf(kEqual, *no_code_for_osr);
+    __ CompareInt32AndJumpIf(maybe_target_code, 0, kEqual, *no_code_for_osr);
   }
 
   __ bind(&deopt);
@@ -6765,7 +6794,6 @@ void BranchIfJSReceiver::GenerateCode(MaglevAssembler* masm,
 
 void Switch::SetValueLocationConstraints() {
   UseAndClobberRegister(value());
-  // TODO(victorgomes): Create a arch-agnostic scratch register scope.
   set_temporaries_needed(1);
 }
 void Switch::GenerateCode(MaglevAssembler* masm, const ProcessingState& state) {

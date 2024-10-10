@@ -56,20 +56,20 @@ class WasmGCTester {
 
   uint8_t DefineFunction(FunctionSig* sig,
                          std::initializer_list<ValueType> locals,
-                         std::initializer_list<uint8_t> code) {
+                         std::initializer_list<const uint8_t> code) {
     return DefineFunctionImpl(builder_.AddFunction(sig), locals, code);
   }
 
   uint8_t DefineFunction(uint32_t sig_index,
                          std::initializer_list<ValueType> locals,
-                         std::initializer_list<uint8_t> code) {
+                         std::initializer_list<const uint8_t> code) {
     return DefineFunctionImpl(builder_.AddFunction(sig_index), locals, code);
   }
 
   void DefineExportedFunction(const char* name, FunctionSig* sig,
-                              std::initializer_list<uint8_t> code) {
+                              std::initializer_list<const uint8_t> code) {
     WasmFunctionBuilder* fun = builder_.AddFunction(sig);
-    fun->EmitCode(code.begin(), static_cast<uint32_t>(code.size()));
+    fun->EmitCode(code);
     builder_.AddExport(base::CStrVector(name), fun);
   }
 
@@ -122,23 +122,22 @@ class WasmGCTester {
   }
 
   void CheckResult(uint32_t function_index, int32_t expected) {
-    const FunctionSig* sig = sigs.i_v();
-    DCHECK(*sig == *instance_object_->module()->functions[function_index].sig);
+    const FunctionSig* sig = LookupCanonicalSigFor(function_index);
+    DCHECK_EQ(*sig, *sigs.i_v());
     CWasmArgumentsPacker packer(CWasmArgumentsPacker::TotalSize(sig));
     CheckResultImpl(function_index, sig, &packer, expected);
   }
 
   void CheckResult(uint32_t function_index, int32_t expected, int32_t arg) {
-    const FunctionSig* sig = sigs.i_i();
-    DCHECK(*sig == *instance_object_->module()->functions[function_index].sig);
+    const FunctionSig* sig = LookupCanonicalSigFor(function_index);
+    DCHECK_EQ(*sig, *sigs.i_i());
     CWasmArgumentsPacker packer(CWasmArgumentsPacker::TotalSize(sig));
     packer.Push(arg);
     CheckResultImpl(function_index, sig, &packer, expected);
   }
 
   MaybeHandle<Object> GetResultObject(uint32_t function_index) {
-    const FunctionSig* sig =
-        instance_object_->module()->functions[function_index].sig;
+    const FunctionSig* sig = LookupCanonicalSigFor(function_index);
     DCHECK_EQ(sig->parameter_count(), 0);
     DCHECK_EQ(sig->return_count(), 1);
     CWasmArgumentsPacker packer(CWasmArgumentsPacker::TotalSize(sig));
@@ -149,8 +148,7 @@ class WasmGCTester {
   }
 
   MaybeHandle<Object> GetResultObject(uint32_t function_index, int32_t arg) {
-    const FunctionSig* sig =
-        instance_object_->module()->functions[function_index].sig;
+    const FunctionSig* sig = LookupCanonicalSigFor(function_index);
     DCHECK_EQ(sig->parameter_count(), 1);
     DCHECK_EQ(sig->return_count(), 1);
     DCHECK(sig->parameters()[0] == kWasmI32);
@@ -163,8 +161,7 @@ class WasmGCTester {
   }
 
   void CheckHasThrown(uint32_t function_index, const char* expected = "") {
-    const FunctionSig* sig =
-        instance_object_->module()->functions[function_index].sig;
+    const FunctionSig* sig = LookupCanonicalSigFor(function_index);
     DCHECK_EQ(sig->parameter_count(), 0);
     CWasmArgumentsPacker packer(CWasmArgumentsPacker::TotalSize(sig));
     CheckHasThrownImpl(function_index, sig, &packer, expected);
@@ -172,8 +169,7 @@ class WasmGCTester {
 
   void CheckHasThrown(uint32_t function_index, int32_t arg,
                       const char* expected = "") {
-    const FunctionSig* sig =
-        instance_object_->module()->functions[function_index].sig;
+    const FunctionSig* sig = LookupCanonicalSigFor(function_index);
     DCHECK_EQ(sig->parameter_count(), 1);
     DCHECK(sig->parameters()[0] == kWasmI32);
     CWasmArgumentsPacker packer(CWasmArgumentsPacker::TotalSize(sig));
@@ -213,13 +209,20 @@ class WasmGCTester {
   const FlagScope<bool> flag_tierup;
   const FlagScope<bool> flag_wasm_deopt;
 
+  const FunctionSig* LookupCanonicalSigFor(uint32_t function_index) const {
+    auto* module = instance_object_->module();
+    CanonicalTypeIndex canonical_sig_id =
+        module->canonical_sig_id(module->functions[function_index].sig_index);
+    return GetTypeCanonicalizer()->LookupFunctionSignature(canonical_sig_id);
+  }
+
   uint8_t DefineFunctionImpl(WasmFunctionBuilder* fun,
                              std::initializer_list<ValueType> locals,
-                             std::initializer_list<uint8_t> code) {
+                             std::initializer_list<const uint8_t> code) {
     for (ValueType local : locals) {
       fun->AddLocal(local);
     }
-    fun->EmitCode(code.begin(), static_cast<uint32_t>(code.size()));
+    fun->EmitCode(code);
     return fun->func_index();
   }
 
@@ -251,13 +254,14 @@ class WasmGCTester {
 
   void CallFunctionImpl(uint32_t function_index, const FunctionSig* sig,
                         CWasmArgumentsPacker* packer) {
+    // The signature must be canonicalized.
+    DCHECK(GetTypeCanonicalizer()->Contains(sig));
     WasmCodeRefScope code_ref_scope;
-    const WasmModule* module = trusted_instance_data_->module();
-    Address wasm_call_target =
+    WasmCodePointer wasm_call_target =
         trusted_instance_data_->GetCallTarget(function_index);
     DirectHandle<Object> object_ref = instance_object_;
     DirectHandle<Code> c_wasm_entry =
-        compiler::CompileCWasmEntry(isolate_, sig, module);
+        compiler::CompileCWasmEntry(isolate_, sig);
     Execution::CallWasm(isolate_, c_wasm_entry, wasm_call_target, object_ref,
                         packer->argv());
   }

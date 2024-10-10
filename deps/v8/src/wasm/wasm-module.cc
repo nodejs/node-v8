@@ -241,11 +241,7 @@ bool IsWasmCodegenAllowed(Isolate* isolate, Handle<NativeContext> context) {
         v8::Utils::ToLocal(context),
         v8::Utils::ToLocal(isolate->factory()->empty_string()));
   }
-  auto codegen_callback = isolate->allow_code_gen_callback();
-  return codegen_callback == nullptr ||
-         codegen_callback(
-             v8::Utils::ToLocal(context),
-             v8::Utils::ToLocal(isolate->factory()->empty_string()));
+  return true;
 }
 
 DirectHandle<String> ErrorStringForCodegen(Isolate* isolate,
@@ -322,8 +318,8 @@ Handle<JSObject> GetTypeForGlobal(Isolate* isolate, bool is_mutable,
 }
 
 Handle<JSObject> GetTypeForMemory(Isolate* isolate, uint32_t min_size,
-                                  std::optional<uint32_t> max_size, bool shared,
-                                  bool is_memory64) {
+                                  std::optional<uint64_t> max_size, bool shared,
+                                  IndexType index_type) {
   Factory* factory = isolate->factory();
 
   Handle<JSFunction> object_function = isolate->object_function();
@@ -335,23 +331,29 @@ Handle<JSObject> GetTypeForMemory(Isolate* isolate, uint32_t min_size,
   JSObject::AddProperty(isolate, object, minimum_string,
                         factory->NewNumberFromUint(min_size), NONE);
   if (max_size.has_value()) {
-    JSObject::AddProperty(isolate, object, maximum_string,
-                          factory->NewNumberFromUint(max_size.value()), NONE);
+    Handle<UnionOf<Smi, HeapNumber, BigInt>> max;
+    if (index_type == IndexType::kI32) {
+      DCHECK_GE(kMaxUInt32, *max_size);
+      max = factory->NewNumberFromUint(static_cast<uint32_t>(*max_size));
+    } else {
+      max = BigInt::FromUint64(isolate, *max_size);
+    }
+    JSObject::AddProperty(isolate, object, maximum_string, max, NONE);
   }
   JSObject::AddProperty(isolate, object, shared_string,
                         factory->ToBoolean(shared), NONE);
 
-  auto index = is_memory64 ? "i64" : "i32";
-  JSObject::AddProperty(isolate, object, index_string,
-                        factory->InternalizeUtf8String(index), NONE);
+  JSObject::AddProperty(
+      isolate, object, index_string,
+      factory->InternalizeUtf8String(IndexTypeToStr(index_type)), NONE);
 
   return object;
 }
 
 Handle<JSObject> GetTypeForTable(Isolate* isolate, ValueType type,
                                  uint32_t min_size,
-                                 std::optional<uint32_t> max_size,
-                                 bool is_table64) {
+                                 std::optional<uint64_t> max_size,
+                                 IndexType index_type) {
   Factory* factory = isolate->factory();
 
   DirectHandle<String> element =
@@ -367,12 +369,18 @@ Handle<JSObject> GetTypeForTable(Isolate* isolate, ValueType type,
   JSObject::AddProperty(isolate, object, minimum_string,
                         factory->NewNumberFromUint(min_size), NONE);
   if (max_size.has_value()) {
-    JSObject::AddProperty(isolate, object, maximum_string,
-                          factory->NewNumberFromUint(max_size.value()), NONE);
+    Handle<UnionOf<Smi, HeapNumber, BigInt>> max;
+    if (index_type == IndexType::kI32) {
+      DCHECK_GE(kMaxUInt32, *max_size);
+      max = factory->NewNumberFromUint(static_cast<uint32_t>(*max_size));
+    } else {
+      max = BigInt::FromUint64(isolate, *max_size);
+    }
+    JSObject::AddProperty(isolate, object, maximum_string, max, NONE);
   }
-  auto index = is_table64 ? "i64" : "i32";
-  JSObject::AddProperty(isolate, object, index_string,
-                        factory->InternalizeUtf8String(index), NONE);
+  JSObject::AddProperty(
+      isolate, object, index_string,
+      factory->InternalizeUtf8String(IndexTypeToStr(index_type)), NONE);
 
   return object;
 }
@@ -438,7 +446,7 @@ Handle<JSArray> GetImports(Isolate* isolate,
           std::optional<uint32_t> maximum_size;
           if (table.has_maximum_size) maximum_size.emplace(table.maximum_size);
           type_value = GetTypeForTable(isolate, table.type, table.initial_size,
-                                       maximum_size, table.is_table64);
+                                       maximum_size, table.index_type);
         }
         import_kind = table_string;
         break;
@@ -451,7 +459,7 @@ Handle<JSArray> GetImports(Isolate* isolate,
           }
           type_value =
               GetTypeForMemory(isolate, memory.initial_pages, maximum_size,
-                               memory.is_shared, memory.is_memory64);
+                               memory.is_shared, memory.index_type);
         }
         import_kind = memory_string;
         break;
@@ -545,7 +553,7 @@ Handle<JSArray> GetExports(Isolate* isolate,
           std::optional<uint32_t> maximum_size;
           if (table.has_maximum_size) maximum_size.emplace(table.maximum_size);
           type_value = GetTypeForTable(isolate, table.type, table.initial_size,
-                                       maximum_size, table.is_table64);
+                                       maximum_size, table.index_type);
         }
         export_kind = table_string;
         break;
@@ -558,7 +566,7 @@ Handle<JSArray> GetExports(Isolate* isolate,
           }
           type_value =
               GetTypeForMemory(isolate, memory.initial_pages, maximum_size,
-                               memory.is_shared, memory.is_memory64);
+                               memory.is_shared, memory.index_type);
         }
         export_kind = memory_string;
         break;
@@ -667,9 +675,9 @@ int GetSourcePosition(const WasmModule* module, uint32_t func_index,
 size_t WasmModule::EstimateStoredSize() const {
   UPDATE_WHEN_CLASS_CHANGES(WasmModule,
 #if V8_ENABLE_DRUMBRAKE
-                            920
+                            896
 #else   // V8_ENABLE_DRUMBRAKE
-                            856
+                            832
 #endif  // V8_ENABLE_DRUMBRAKE
   );
   return sizeof(WasmModule) +                            // --
@@ -725,7 +733,7 @@ size_t IndirectNameMap::EstimateCurrentMemoryConsumption() const {
 }
 
 size_t TypeFeedbackStorage::EstimateCurrentMemoryConsumption() const {
-  UPDATE_WHEN_CLASS_CHANGES(TypeFeedbackStorage, 200);
+  UPDATE_WHEN_CLASS_CHANGES(TypeFeedbackStorage, 152);
   UPDATE_WHEN_CLASS_CHANGES(FunctionTypeFeedback, 48);
   // Not including sizeof(TFS) because that's contained in sizeof(WasmModule).
   base::SharedMutexGuard<base::kShared> lock(&mutex);
@@ -746,9 +754,9 @@ size_t TypeFeedbackStorage::EstimateCurrentMemoryConsumption() const {
 size_t WasmModule::EstimateCurrentMemoryConsumption() const {
   UPDATE_WHEN_CLASS_CHANGES(WasmModule,
 #if V8_ENABLE_DRUMBRAKE
-                            920
+                            896
 #else   // V8_ENABLE_DRUMBRAKE
-                            856
+                            832
 #endif  // V8_ENABLE_DRUMBRAKE
   );
   size_t result = EstimateStoredSize();

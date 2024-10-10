@@ -150,7 +150,7 @@ void RestoreAfterWasmToJsConversionBuiltinCall(
 
 void Builtins::Generate_WasmInterpreterEntry(MacroAssembler* masm) {
   // Input registers:
-  //  x7 (kWasmInstanceRegister): wasm_instance
+  //  x7 (kWasmImplicitArgRegister): wasm_instance
   //  x12: array_start
   //  w15: function_index
   Register array_start = x12;
@@ -163,9 +163,9 @@ void Builtins::Generate_WasmInterpreterEntry(MacroAssembler* masm) {
   // fp       Old RBP
   __ EnterFrame(StackFrame::WASM_INTERPRETER_ENTRY);
 
-  __ Str(kWasmInstanceRegister, MemOperand(sp, 0));
+  __ Str(kWasmImplicitArgRegister, MemOperand(sp, 0));
   __ Push(function_index, array_start);
-  __ Mov(kWasmInstanceRegister, xzr);
+  __ Mov(kWasmImplicitArgRegister, xzr);
   __ CallRuntime(Runtime::kWasmRunInterpreter, 3);
 
   // Deconstruct the stack frame.
@@ -434,7 +434,7 @@ void Builtins::Generate_GenericJSToWasmInterpreterWrapper(
   // Load the Wasm exported function data and the Wasm instance.
   // -------------------------------------------
   DEFINE_PINNED(function_data, kJSFunctionRegister);    // x1
-  DEFINE_PINNED(wasm_instance, kWasmInstanceRegister);  // x7
+  DEFINE_PINNED(wasm_instance, kWasmImplicitArgRegister);  // x7
   LoadFunctionDataAndWasmInstance(masm, function_data, wasm_instance);
 
   regs.ResetExcept(function_data, wasm_instance);
@@ -1500,12 +1500,11 @@ void Builtins::Generate_GenericWasmToJSInterpreterWrapper(
   // x0: number of arguments + 1 (receiver)
   // x1: target (JSFunction|JSBoundFunction|...)
 
-  // We are calling Call_ReceiverIsAny which can call
-  // AdaptorWithBuiltinExitFrame, which adds
-  // BuiltinExitFrameConstants::kNumExtraArgsWithoutReceiver additional tagged
-  // arguments to the stack. We must also scan these additional args in case of
-  // GC. We store the current stack pointer to be able to detect when this
-  // happens.
+  // The process of calling a JS function might increase the number of tagged
+  // values on the stack (arguments adaptation, BuiltinExitFrame arguments,
+  // v8::FunctionCallbackInfo implicit arguments, etc.). In any case these
+  // additional values must be visited by GC too.
+  // We store the current stack pointer to be able to detect when this happens.
   __ Mov(scratch, sp);
   __ Str(scratch,
          MemOperand(fp, WasmToJSInterpreterFrameConstants::kGCSPOffset));

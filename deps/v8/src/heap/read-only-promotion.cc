@@ -8,7 +8,7 @@
 
 #include "src/common/assert-scope.h"
 #include "src/execution/isolate.h"
-#include "src/heap/combined-heap.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/heap/heap.h"
 #include "src/objects/heap-object-inl.h"
 #include "src/sandbox/external-pointer-table.h"
@@ -22,6 +22,8 @@ using HeapObjectSet = std::unordered_set<Tagged<HeapObject>, Object::Hasher,
                                          Object::KeyEqualSafe>;
 using HeapObjectMap = std::unordered_map<Tagged<HeapObject>, Tagged<HeapObject>,
                                          Object::Hasher, Object::KeyEqualSafe>;
+using HeapObjectList = std::vector<Tagged<HeapObject>>;
+
 bool Contains(const HeapObjectSet& s, Tagged<HeapObject> o) {
   return s.count(o) != 0;
 }
@@ -31,7 +33,7 @@ bool Contains(const HeapObjectMap& s, Tagged<HeapObject> o) {
 
 class Committee final {
  public:
-  static std::vector<Tagged<HeapObject>> DeterminePromotees(
+  static HeapObjectList DeterminePromotees(
       Isolate* isolate, const DisallowGarbageCollection& no_gc,
       const SafepointScope& safepoint_scope) {
     return Committee(isolate).DeterminePromotees(safepoint_scope);
@@ -40,16 +42,25 @@ class Committee final {
  private:
   explicit Committee(Isolate* isolate) : isolate_(isolate) {}
 
-  std::vector<Tagged<HeapObject>> DeterminePromotees(
-      const SafepointScope& safepoint_scope) {
+  HeapObjectList DeterminePromotees(const SafepointScope& safepoint_scope) {
     DCHECK(promo_accepted_.empty());
     DCHECK(promo_rejected_.empty());
+
+    // List of promotees as discovered in insertion order. Using the
+    // `HeapObjectIterator` will visit pages in insertion order from a GC
+    // perspective which is deterministic independent of the absolute pages
+    // provided by the OS allocators in case of 32-bit builds (that don't use
+    // cages).
+    //
+    // We keep a separate HeapObjectList as there's no standard-equivalent for a
+    // hash set that can maintain insertion order.
+    HeapObjectList promo_accepted_list;
 
     // We assume that a full and precise GC has reclaimed all dead objects
     // and therefore that no filtering of unreachable objects is required here.
     HeapObjectIterator it(isolate_->heap(), safepoint_scope);
     for (Tagged<HeapObject> o = it.Next(); !o.is_null(); o = it.Next()) {
-      DCHECK(!InReadOnlySpace(o));
+      DCHECK(!HeapLayout::InReadOnlySpace(o));
 
       // Note that cycles prevent us from promoting/rejecting each subgraph as
       // we visit it, since locally we cannot determine whether the deferred
@@ -57,25 +68,38 @@ class Committee final {
       // could be solved if necessary (with more complex code), but for now
       // there are no performance issues.
       HeapObjectSet accepted_subgraph;  // Either all are accepted or none.
+      HeapObjectList accepted_subgraph_list;
       HeapObjectSet visited;            // Cycle detection.
-      if (!EvaluateSubgraph(o, &accepted_subgraph, &visited)) continue;
-      if (accepted_subgraph.empty()) continue;
+      if (!EvaluateSubgraph(o, &accepted_subgraph, &visited,
+                            &accepted_subgraph_list)) {
+        continue;
+      }
+      if (accepted_subgraph.empty()) {
+        continue;
+      }
 
       if (V8_UNLIKELY(v8_flags.trace_read_only_promotion)) {
         LogAcceptedPromotionSet(accepted_subgraph);
       }
       promo_accepted_.insert(accepted_subgraph.begin(),
                              accepted_subgraph.end());
+      promo_accepted_list.insert(promo_accepted_list.end(),
+                                 accepted_subgraph_list.begin(),
+                                 accepted_subgraph_list.end());
     }
 
-    // Return promotees as a sorted list. Note that sorting uses object
-    // addresses; the list order is deterministic only if heap layout
-    // itself is deterministic (see v8_flags.predictable).
-    // We must use full pointer comparison here as some objects may be located
-    // in trusted space, outside of the main pointer compression cage.
-    std::vector<Tagged<HeapObject>> promotees{promo_accepted_.begin(),
-                                              promo_accepted_.end()};
-    std::sort(promotees.begin(), promotees.end(), Object::FullPtrComparer());
+    // Remove duplicates from the promo_accepted_list. Note we have to jump
+    // through these hoops in order to preserve deterministic ordering
+    // (otherwise simply using the promo_accepted_ set would be sufficient).
+    HeapObjectSet seen_promotees;
+    HeapObjectList promotees;
+    promotees.reserve(promo_accepted_list.size());
+    for (Tagged<HeapObject> o : promo_accepted_list) {
+      if (Contains(seen_promotees, o)) continue;
+      seen_promotees.insert(o);
+      promotees.push_back(o);
+    }
+    CHECK_EQ(promotees.size(), promo_accepted_.size());
 
     return promotees;
   }
@@ -84,8 +108,8 @@ class Committee final {
   // Returns `true` if it is accepted, or if we've reached a cycle and `o`
   // will be processed further up the callchain.
   bool EvaluateSubgraph(Tagged<HeapObject> o, HeapObjectSet* accepted_subgraph,
-                        HeapObjectSet* visited) {
-    if (InReadOnlySpace(o)) return true;
+                        HeapObjectSet* visited, HeapObjectList* promotees) {
+    if (HeapLayout::InReadOnlySpace(o)) return true;
     if (Contains(promo_rejected_, o)) return false;
     if (Contains(promo_accepted_, o)) return true;
     if (Contains(*visited, o)) return true;
@@ -98,7 +122,7 @@ class Committee final {
       return false;
     }
     // Recurse into outgoing pointers.
-    CandidateVisitor v(this, accepted_subgraph, visited);
+    CandidateVisitor v(this, accepted_subgraph, visited, promotees);
     o->Iterate(isolate_, &v);
     if (!v.all_slots_are_promo_candidates()) {
       const auto& [it, inserted] = promo_rejected_.insert(o);
@@ -110,6 +134,7 @@ class Committee final {
     }
 
     accepted_subgraph->insert(o);
+    promotees->push_back(o);
     return true;
   }
 
@@ -180,10 +205,11 @@ class Committee final {
   class CandidateVisitor : public ObjectVisitor {
    public:
     CandidateVisitor(Committee* committee, HeapObjectSet* accepted_subgraph,
-                     HeapObjectSet* visited)
+                     HeapObjectSet* visited, HeapObjectList* promotees)
         : committee_(committee),
           accepted_subgraph_(accepted_subgraph),
-          visited_(visited) {}
+          visited_(visited),
+          promotees_(promotees) {}
 
     int first_rejected_slot_offset() const {
       return first_rejected_slot_offset_;
@@ -200,7 +226,7 @@ class Committee final {
         Tagged<HeapObject> heap_object;
         if (!maybe_object.GetHeapObject(&heap_object)) continue;
         if (!committee_->EvaluateSubgraph(heap_object, accepted_subgraph_,
-                                          visited_)) {
+                                          visited_, promotees_)) {
           first_rejected_slot_offset_ =
               static_cast<int>(slot.address() - host.address());
           DCHECK_GE(first_rejected_slot_offset_, 0);
@@ -225,6 +251,7 @@ class Committee final {
     Committee* const committee_;
     HeapObjectSet* const accepted_subgraph_;
     HeapObjectSet* const visited_;
+    HeapObjectList* const promotees_;
     int first_rejected_slot_offset_ = -1;
   };
 
@@ -314,6 +341,23 @@ class ReadOnlyPromotionImpl final : public AllStatic {
     for (auto [src, dst] : moves) {
       dst->Iterate(isolate, &v);
     }
+
+#ifdef V8_ENABLE_LEAPTIERING
+    // Iterate all entries in the JSDispatchTable as they could contain
+    // pointers to promoted Code objects.
+    JSDispatchTable* const jdt = GetProcessWideJSDispatchTable();
+    jdt->IterateActiveEntriesIn(heap->js_dispatch_table_space(),
+                                [&](JSDispatchHandle handle) {
+                                  Tagged<Code> old_code = jdt->GetCode(handle);
+                                  auto it = moves.find(old_code);
+                                  if (it == moves.end()) return;
+                                  Tagged<HeapObject> new_code = it->second;
+                                  CHECK(IsCode(new_code));
+                                  // TODO(saelo): is it worth logging something
+                                  // in this case?
+                                  jdt->SetCode(handle, Cast<Code>(new_code));
+                                });
+#endif  // V8_ENABLE_LEAPTIERING
   }
 
   static void DeleteDeadObjects(Isolate* isolate,
@@ -326,7 +370,7 @@ class ReadOnlyPromotionImpl final : public AllStatic {
     // and instead just iterates linearly over pages. Without this change the
     // verifier would fail on this now-dead object.
     for (auto [src, dst] : moves) {
-      CHECK(!InReadOnlySpace(src));
+      CHECK(!HeapLayout::InReadOnlySpace(src));
       isolate->heap()->CreateFillerObjectAt(src.address(), src->Size(isolate));
     }
   }
@@ -337,7 +381,7 @@ class ReadOnlyPromotionImpl final : public AllStatic {
     //
     // Known objects.
     Heap* heap = isolate->heap();
-    CHECK(InReadOnlySpace(
+    CHECK(HeapLayout::InReadOnlySpace(
         heap->promise_all_resolve_element_closure_shared_fun()));
     // TODO(jgruber): Extend here with more objects as they are added to
     // the promotion algorithm.
@@ -346,7 +390,8 @@ class ReadOnlyPromotionImpl final : public AllStatic {
     if (Builtins::kCodeObjectsAreInROSpace) {
       Builtins* builtins = isolate->builtins();
       for (int i = 0; i < Builtins::kBuiltinCount; i++) {
-        CHECK(InReadOnlySpace(builtins->code(static_cast<Builtin>(i))));
+        CHECK(HeapLayout::InReadOnlySpace(
+            builtins->code(static_cast<Builtin>(i))));
       }
     }
 #endif  // DEBUG
@@ -489,7 +534,7 @@ class ReadOnlyPromotionImpl final : public AllStatic {
 
     void PromoteCodePointerEntryFor(Tagged<Code> code) {
       // If we reach here, `code` is a moved Code object located in RO space.
-      CHECK(InReadOnlySpace(code));
+      CHECK(HeapLayout::InReadOnlySpace(code));
 
       IndirectPointerSlot slot = code->RawIndirectPointerField(
           Code::kSelfIndirectPointerOffset, kCodeIndirectPointerTag);

@@ -350,6 +350,8 @@ absl_cc_test(
     absl::config
     absl::container_memory
     absl::flat_hash_set
+    absl::hash
+    absl::hash_container_defaults
     absl::hash_generator_testing
     absl::memory
     absl::strings
@@ -755,6 +757,7 @@ absl_cc_library(
     absl::dynamic_annotations
     absl::endian
     absl::hash
+    absl::hash_function_defaults
     absl::hash_policy_traits
     absl::hashtable_debug_hooks
     absl::hashtablez_sampler

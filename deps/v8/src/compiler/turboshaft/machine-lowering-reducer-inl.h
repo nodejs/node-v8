@@ -183,7 +183,7 @@ class MachineLoweringReducer : public Next {
     if (ShouldSkipOptimizationStep()) goto no_change;
     // Block cloning only works for branches, but not for `DeoptimizeIf`. On the
     // other hand, explicit control flow makes the overall pipeline and
-    // escpecially the register allocator slower. So we only switch a
+    // especially the register allocator slower. So we only switch a
     // `DeoptiomizeIf` to a branch if it has a phi input, which indicates that
     // block cloning could be helpful.
     if (__ Get(condition).template Is<PhiOp>()) {
@@ -756,8 +756,8 @@ class MachineLoweringReducer : public Next {
               TagSmiOrOverflow(input_w32, &overflow, &done);
 
               if (BIND(overflow)) {
-                GOTO(done, AllocateHeapNumberWithValue(
-                               __ ChangeInt32ToFloat64(input_w32)));
+                GOTO(done,
+                     AllocateHeapNumber(__ ChangeInt32ToFloat64(input_w32)));
               }
 
               BIND(done, result);
@@ -769,8 +769,8 @@ class MachineLoweringReducer : public Next {
 
               GOTO_IF(__ Uint32LessThanOrEqual(input_w32, Smi::kMaxValue), done,
                       __ TagSmi(input_w32));
-              GOTO(done, AllocateHeapNumberWithValue(
-                             __ ChangeUint32ToFloat64(input_w32)));
+              GOTO(done,
+                   AllocateHeapNumber(__ ChangeUint32ToFloat64(input_w32)));
 
               BIND(done, result);
               return result;
@@ -798,8 +798,8 @@ class MachineLoweringReducer : public Next {
               }
 
               if (BIND(outside_smi_range)) {
-                GOTO(done, AllocateHeapNumberWithValue(
-                               __ ChangeInt64ToFloat64(input_w64)));
+                GOTO(done,
+                     AllocateHeapNumber(__ ChangeInt64ToFloat64(input_w64)));
               }
 
               BIND(done, result);
@@ -811,8 +811,8 @@ class MachineLoweringReducer : public Next {
 
               GOTO_IF(__ Uint64LessThanOrEqual(input_w64, Smi::kMaxValue), done,
                       __ TagSmi(__ TruncateWord64ToWord32(input_w64)));
-              GOTO(done, AllocateHeapNumberWithValue(
-                             __ ChangeInt64ToFloat64(input_w64)));
+              GOTO(done,
+                   AllocateHeapNumber(__ ChangeInt64ToFloat64(input_w64)));
 
               BIND(done, result);
               return result;
@@ -849,7 +849,7 @@ class MachineLoweringReducer : public Next {
           }
 
           if (BIND(outside_smi_range)) {
-            GOTO(done, AllocateHeapNumberWithValue(input_f64));
+            GOTO(done, AllocateHeapNumber(input_f64));
           }
 
           BIND(done, result);
@@ -862,7 +862,7 @@ class MachineLoweringReducer : public Next {
         DCHECK_EQ(input_rep, RegisterRepresentation::Float64());
         DCHECK_EQ(input_interpretation,
                   ConvertUntaggedToJSPrimitiveOp::InputInterpretation::kSigned);
-        return AllocateHeapNumberWithValue(V<Float64>::Cast(input));
+        return AllocateHeapNumber(V<Float64>::Cast(input));
       }
       case ConvertUntaggedToJSPrimitiveOp::JSPrimitiveKind::
           kHeapNumberOrUndefined: {
@@ -886,7 +886,7 @@ class MachineLoweringReducer : public Next {
         }
 
         if (BIND(allocate_heap_number)) {
-          GOTO(done, AllocateHeapNumberWithValue(input_f64));
+          GOTO(done, AllocateHeapNumber(input_f64));
         }
 
         BIND(done, result);
@@ -1256,7 +1256,7 @@ class MachineLoweringReducer : public Next {
             builder.AddReturn(MachineType::Int32());
             builder.AddParam(MachineType::TaggedPointer());
             auto desc = Linkage::GetSimplifiedCDescriptor(__ graph_zone(),
-                                                          builder.Build());
+                                                          builder.Get());
             auto ts_desc = TSCallDescriptor::Create(
                 desc, CanThrow::kNo, LazyDeoptOnThrow::kNo, __ graph_zone());
             OpIndex callee = __ ExternalConstant(
@@ -1734,7 +1734,7 @@ class MachineLoweringReducer : public Next {
             done, field);
 
         V<Float64> value = __ LoadHeapNumberValue(V<HeapNumber>::Cast(field));
-        GOTO(done, AllocateHeapNumberWithValue(value));
+        GOTO(done, AllocateHeapNumber(value));
       }
     }
 
@@ -2583,7 +2583,7 @@ class MachineLoweringReducer : public Next {
               // Our ElementsKind is HOLEY_ELEMENTS.
               __ StoreNonArrayBufferElement(
                   elements, AccessBuilder::ForFixedArrayElement(HOLEY_ELEMENTS),
-                  index, AllocateHeapNumberWithValue(value));
+                  index, AllocateHeapNumber(value));
               GOTO(done);
             }
 
@@ -2993,10 +2993,9 @@ class MachineLoweringReducer : public Next {
           __ ExternalConstant(ExternalReference::isolate_address());
       V<String> value_internalized = V<String>::Cast(__ Call(
           try_string_to_index_or_lookup_existing, {isolate_ptr, value},
-          TSCallDescriptor::Create(Linkage::GetSimplifiedCDescriptor(
-                                       __ graph_zone(), builder.Build()),
-                                   CanThrow::kNo, LazyDeoptOnThrow::kNo,
-                                   __ graph_zone())));
+          TSCallDescriptor::Create(
+              Linkage::GetSimplifiedCDescriptor(__ graph_zone(), builder.Get()),
+              CanThrow::kNo, LazyDeoptOnThrow::kNo, __ graph_zone())));
 
       // Now see if the results match.
       __ DeoptimizeIfNot(__ TaggedEqual(expected, value_internalized),
@@ -3441,7 +3440,7 @@ class MachineLoweringReducer : public Next {
     return __ Word32Equal(__ Word32Equal(value, 0), 0);
   }
 
-  V<HeapNumber> AllocateHeapNumberWithValue(V<Float64> value) {
+  V<HeapNumber> AllocateHeapNumber(V<Float64> value) {
     return __ AllocateHeapNumberWithValue(value, factory_);
   }
 

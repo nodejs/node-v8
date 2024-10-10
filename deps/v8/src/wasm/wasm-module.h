@@ -42,6 +42,16 @@ class WasmInterpreterRuntime;
 #endif  // V8_ENABLE_DRUMBRAKE
 class WellKnownImportsList;
 
+enum class IndexType : uint8_t { kI32, kI64 };
+
+inline constexpr const char* IndexTypeToStr(IndexType index_type) {
+  return index_type == IndexType::kI32 ? "i32" : "i64";
+}
+
+inline std::ostream& operator<<(std::ostream& os, IndexType index_type) {
+  return os << IndexTypeToStr(index_type);
+}
+
 // Reference to a string in the wire bytes.
 class WireBytesRef {
  public:
@@ -67,7 +77,8 @@ class WireBytesRef {
 struct WasmFunction {
   const FunctionSig* sig = nullptr;  // signature of the function.
   uint32_t func_index = 0;           // index into the function table.
-  uint32_t sig_index = 0;            // index into the signature table.
+  ModuleTypeIndex sig_index{0};      // index into the signature table.
+  // TODO(clemensb): Should we add canonical_sig_id and canonical_sig?
   WireBytesRef code = {};            // code of this function.
   bool imported = false;
   bool exported = false;
@@ -97,12 +108,12 @@ using WasmTagSig = FunctionSig;
 
 // Static representation of a wasm tag type.
 struct WasmTag {
-  explicit WasmTag(const WasmTagSig* sig, uint32_t sig_index)
+  explicit WasmTag(const WasmTagSig* sig, ModuleTypeIndex sig_index)
       : sig(sig), sig_index(sig_index) {}
   const FunctionSig* ToFunctionSig() const { return sig; }
 
   const WasmTagSig* sig;  // type signature of the tag.
-  uint32_t sig_index;
+  ModuleTypeIndex sig_index;
 };
 
 enum ModuleOrigin : uint8_t {
@@ -127,9 +138,9 @@ struct WasmMemory {
   uint32_t maximum_pages = 0;      // maximum size of the memory in 64k pages
   bool is_shared = false;          // true if memory is a SharedArrayBuffer
   bool has_maximum_pages = false;  // true if there is a maximum memory size
-  bool is_memory64 = false;        // true if the memory is 64 bit
-  bool imported = false;           // true if the memory is imported
-  bool exported = false;           // true if the memory is exported
+  IndexType index_type = IndexType::kI32;  // 32 or 64 bit memory?
+  bool imported = false;                   // true if the memory is imported
+  bool exported = false;                   // true if the memory is exported
   // Computed information, cached here for faster compilation.
   // Updated via {UpdateComputedInformation}.
   uintptr_t min_memory_size = 0;  // smallest size of any memory in bytes
@@ -143,11 +154,13 @@ struct WasmMemory {
   inline uint64_t GetMemory64GuardsSize() const {
     return 1ull << GetMemory64GuardsShift();
   }
+
+  bool is_memory64() const { return index_type == IndexType::kI64; }
 };
 
 inline void UpdateComputedInformation(WasmMemory* memory, ModuleOrigin origin) {
   const uintptr_t platform_max_pages =
-      memory->is_memory64 ? kV8MaxWasmMemory64Pages : kV8MaxWasmMemory32Pages;
+      memory->is_memory64() ? kV8MaxWasmMemory64Pages : kV8MaxWasmMemory32Pages;
   memory->min_memory_size =
       std::min(platform_max_pages, uintptr_t{memory->initial_pages}) *
       kWasmPageSize;
@@ -163,7 +176,7 @@ inline void UpdateComputedInformation(WasmMemory* memory, ModuleOrigin origin) {
   } else if (origin != kWasmOrigin) {
     // Asm.js modules can't use trap handling.
     memory->bounds_checks = kExplicitBoundsChecks;
-  } else if (memory->is_memory64 && !v8_flags.wasm_memory64_trap_handling) {
+  } else if (memory->is_memory64() && !v8_flags.wasm_memory64_trap_handling) {
     // Memory64 currently always requires explicit bounds checks.
     memory->bounds_checks = kExplicitBoundsChecks;
   } else if (trap_handler::IsTrapHandlerEnabled()) {
@@ -432,6 +445,8 @@ class V8_EXPORT_PRIVATE AsmJsOffsetInformation {
 
 // Used as the supertype for a type at the top of the type hierarchy.
 constexpr uint32_t kNoSuperType = std::numeric_limits<uint32_t>::max();
+// For convenience, we currently rely on these being interchangeable:
+static_assert(kNoSuperType == TypeIndex::kInvalid);
 
 struct TypeDefinition {
   enum Kind : int8_t { kFunction, kStruct, kArray };
@@ -439,21 +454,21 @@ struct TypeDefinition {
   constexpr TypeDefinition(const FunctionSig* sig, uint32_t supertype,
                            bool is_final, bool is_shared)
       : function_sig(sig),
-        supertype(supertype),
+        supertype{supertype},
         kind(kFunction),
         is_final(is_final),
         is_shared(is_shared) {}
   constexpr TypeDefinition(const StructType* type, uint32_t supertype,
                            bool is_final, bool is_shared)
       : struct_type(type),
-        supertype(supertype),
+        supertype{supertype},
         kind(kStruct),
         is_final(is_final),
         is_shared(is_shared) {}
   constexpr TypeDefinition(const ArrayType* type, uint32_t supertype,
                            bool is_final, bool is_shared)
       : array_type(type),
-        supertype(supertype),
+        supertype{supertype},
         kind(kArray),
         is_final(is_final),
         is_shared(is_shared) {}
@@ -479,7 +494,7 @@ struct TypeDefinition {
     const StructType* struct_type;
     const ArrayType* array_type;
   };
-  uint32_t supertype = kNoSuperType;
+  ModuleTypeIndex supertype{kNoSuperType};
   Kind kind = kFunction;
   bool is_final = false;
   bool is_shared = false;
@@ -487,7 +502,8 @@ struct TypeDefinition {
 };
 
 struct V8_EXPORT_PRIVATE WasmDebugSymbols {
-  enum class Type { None, SourceMap, EmbeddedDWARF, ExternalDWARF };
+  static constexpr int kNumTypes = 3;
+  enum Type { SourceMap, EmbeddedDWARF, ExternalDWARF, None };
   Type type = Type::None;
   WireBytesRef external_url;
 };
@@ -633,13 +649,16 @@ struct TypeFeedbackStorage {
 struct WasmTable {
   ValueType type = kWasmVoid;
   uint32_t initial_size = 0;
+  // TODO(369904698): Allow true 64-bit declared maximum sizes (for memory64).
   uint32_t maximum_size = 0;
   bool has_maximum_size = false;
-  bool is_table64 = false;
+  IndexType index_type = IndexType::kI32;
   bool shared = false;
   bool imported = false;
   bool exported = false;
   ConstantExpression initial_value = {};
+
+  bool is_table64() const { return index_type == IndexType::kI64; }
 };
 
 // Static representation of a module.
@@ -686,7 +705,7 @@ struct V8_EXPORT_PRIVATE WasmModule {
   std::vector<TypeDefinition> types;  // by type index
   // Maps each type index to its global (cross-module) canonical index as per
   // isorecursive type canonicalization.
-  std::vector<uint32_t> isorecursive_canonical_type_ids;
+  std::vector<CanonicalTypeIndex> isorecursive_canonical_type_ids;
   std::vector<WasmFunction> functions;
   std::vector<WasmGlobal> globals;
   std::vector<WasmDataSegment> data_segments;
@@ -709,7 +728,7 @@ struct V8_EXPORT_PRIVATE WasmModule {
 
   const ModuleOrigin origin;
   mutable LazilyGeneratedNames lazily_generated_names;
-  WasmDebugSymbols debug_symbols;
+  std::array<WasmDebugSymbols, WasmDebugSymbols::kNumTypes> debug_symbols{};
 
   // Asm.js source position information. Only available for modules compiled
   // from asm.js.
@@ -739,7 +758,7 @@ struct V8_EXPORT_PRIVATE WasmModule {
       types.back().subtyping_depth = types[type.supertype].subtyping_depth + 1;
     }
     // Isorecursive canonical type will be computed later.
-    isorecursive_canonical_type_ids.push_back(kNoSuperType);
+    isorecursive_canonical_type_ids.push_back(CanonicalTypeIndex{kNoSuperType});
   }
 
   void AddSignatureForTesting(const FunctionSig* sig, uint32_t supertype,
@@ -763,6 +782,12 @@ struct V8_EXPORT_PRIVATE WasmModule {
   // ================ Accessors ================================================
   bool has_type(uint32_t index) const { return index < types.size(); }
 
+  TypeDefinition type(ModuleTypeIndex index) const {
+    size_t num_types = types.size();
+    V8_ASSUME(index.index < num_types);
+    return types[index.index];
+  }
+
   bool has_signature(uint32_t index) const {
     return index < types.size() &&
            types[index].kind == TypeDefinition::kFunction;
@@ -772,6 +797,13 @@ struct V8_EXPORT_PRIVATE WasmModule {
     size_t num_types = types.size();
     V8_ASSUME(index < num_types);
     return types[index].function_sig;
+  }
+
+  CanonicalTypeIndex canonical_sig_id(uint32_t index) const {
+    DCHECK(has_signature(index));
+    size_t num_types = isorecursive_canonical_type_ids.size();
+    V8_ASSUME(index < num_types);
+    return isorecursive_canonical_type_ids[index];
   }
 
   bool has_struct(uint32_t index) const {
@@ -795,14 +827,12 @@ struct V8_EXPORT_PRIVATE WasmModule {
     return types[index].array_type;
   }
 
-  uint32_t supertype(uint32_t index) const {
+  ModuleTypeIndex supertype(uint32_t index) const {
     size_t num_types = types.size();
     V8_ASSUME(index < num_types);
     return types[index].supertype;
   }
-  bool has_supertype(uint32_t index) const {
-    return supertype(index) != kNoSuperType;
-  }
+  bool has_supertype(uint32_t index) const { return supertype(index).valid(); }
 
   // Linear search. Returns -1 if types are empty.
   int MaxCanonicalTypeIndex() const {
@@ -812,7 +842,7 @@ struct V8_EXPORT_PRIVATE WasmModule {
   }
 
   bool function_is_shared(int func_index) const {
-    return types[functions[func_index].sig_index].is_shared;
+    return type(functions[func_index].sig_index).is_shared;
   }
 
   bool function_was_validated(int func_index) const {
@@ -906,9 +936,13 @@ V8_EXPORT_PRIVATE int GetSubtypingDepth(const WasmModule* module,
 struct V8_EXPORT_PRIVATE ModuleWireBytes {
   explicit ModuleWireBytes(base::Vector<const uint8_t> module_bytes)
       : module_bytes_(module_bytes) {}
-  ModuleWireBytes(const uint8_t* start, const uint8_t* end)
+  constexpr ModuleWireBytes(const uint8_t* start, const uint8_t* end)
       : module_bytes_(start, static_cast<int>(end - start)) {
     DCHECK_GE(kMaxInt, end - start);
+  }
+
+  bool operator==(ModuleWireBytes other) const {
+    return module_bytes_ == other.module_bytes_;
   }
 
   // Get a string stored in the module bytes representing a name.
@@ -961,12 +995,12 @@ Handle<JSObject> GetTypeForFunction(Isolate* isolate, const FunctionSig* sig,
 Handle<JSObject> GetTypeForGlobal(Isolate* isolate, bool is_mutable,
                                   ValueType type);
 Handle<JSObject> GetTypeForMemory(Isolate* isolate, uint32_t min_size,
-                                  std::optional<uint32_t> max_size, bool shared,
-                                  bool is_memory64);
+                                  std::optional<uint64_t> max_size, bool shared,
+                                  IndexType index_type);
 Handle<JSObject> GetTypeForTable(Isolate* isolate, ValueType type,
                                  uint32_t min_size,
-                                 std::optional<uint32_t> max_size,
-                                 bool is_table64);
+                                 std::optional<uint64_t> max_size,
+                                 IndexType index_type);
 Handle<JSArray> GetImports(Isolate* isolate,
                            DirectHandle<WasmModuleObject> module);
 Handle<JSArray> GetExports(Isolate* isolate,

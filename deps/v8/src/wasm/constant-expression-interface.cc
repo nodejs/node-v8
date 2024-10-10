@@ -56,7 +56,7 @@ void ConstantExpressionInterface::UnOp(FullDecoder* decoder, WasmOpcode opcode,
     case kExprAnyConvertExtern: {
       const char* error_message = nullptr;
       result->runtime_value = WasmValue(
-          JSToWasmObject(isolate_, input.runtime_value.to_ref(), kWasmAnyRef, 0,
+          JSToWasmObject(isolate_, input.runtime_value.to_ref(), kWasmAnyRef,
                          &error_message)
               .ToHandleChecked(),
           ValueType::RefMaybeNull(HeapType::kAny, input.type.nullability()));
@@ -120,8 +120,8 @@ void ConstantExpressionInterface::RefFunc(FullDecoder* decoder,
     return;
   }
   if (!generate_value()) return;
-  uint32_t sig_index = module_->functions[function_index].sig_index;
-  bool function_is_shared = module_->types[sig_index].is_shared;
+  ModuleTypeIndex sig_index = module_->functions[function_index].sig_index;
+  bool function_is_shared = module_->type(sig_index).is_shared;
   ValueType type = ValueType::Ref(module_->functions[function_index].sig_index);
   Handle<WasmFuncRef> func_ref = WasmTrustedInstanceData::GetOrCreateFuncRef(
       isolate_,
@@ -213,6 +213,7 @@ WasmValue DefaultValueForType(ValueType type, Isolate* isolate) {
     case kVoid:
     case kRtt:
     case kRef:
+    case kTop:
     case kBottom:
       UNREACHABLE();
   }
