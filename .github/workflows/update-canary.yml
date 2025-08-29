@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 env:
-  CC: clang
-  CXX: clang++
+  CC: clang-19
+  CXX: clang++-19
 
 jobs:
   updateCanary:
@@ -15,6 +15,10 @@ jobs:
     if: github.repository == 'nodejs/node-v8' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     steps:
+      - name: Install Clang 19
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-19
       - name: Clone node-v8
         uses: actions/checkout@v4
         with:
