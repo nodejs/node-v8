@@ -16,13 +16,13 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Clone node-v8
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: node-v8
           token: ${{ secrets.CANARY_UPDATE }}
 
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: lts/*
 
@@ -30,7 +30,7 @@ jobs:
         run: npm install -g @node-core/utils
 
       - name: Cache V8 clone
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: v8
           key: v8-clone
