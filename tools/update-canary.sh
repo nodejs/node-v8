@@ -20,6 +20,9 @@ git-node v8 major --branch=lkgr --base-dir="$GITHUB_WORKSPACE"
 # Canary-base is the last good version of canary, and is manually updated with any V8 patches or backports.
 git cherry-pick `git log upstream/canary-base -1 --format=format:%H --grep "src: update NODE_MODULE_VERSION"`...upstream/canary-base
 
+# Clean the repository so we're sure the build doesn't accidentally depend on gitignored files
+git clean -fdx
+
 # Verify that Node.js can be compiled and executed
 python3 ./configure
 make -j $(getconf _NPROCESSORS_ONLN) V=
