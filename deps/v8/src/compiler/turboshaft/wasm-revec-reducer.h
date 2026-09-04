@@ -61,7 +61,7 @@ namespace v8::internal::compiler::turboshaft {
   V(F32x4Trunc, F32x8Trunc)                                \
   V(F32x4NearestInt, F32x8NearestInt)
 
-#define SIMD256_UNARY_SIGN_EXTENSION_OP(V)                              \
+#define SIMD256_UNARY_EXTENSION_OP(V)                                   \
   V(I64x2SConvertI32x4Low, I64x4SConvertI32x4, I64x2SConvertI32x4High)  \
   V(I64x2UConvertI32x4Low, I64x4UConvertI32x4, I64x2UConvertI32x4High)  \
   V(I32x4SConvertI16x8Low, I32x8SConvertI16x8, I32x4SConvertI16x8High)  \
@@ -164,7 +164,7 @@ namespace v8::internal::compiler::turboshaft {
   V(F64x2RelaxedMax, F64x4RelaxedMax)              \
   V(I16x8DotI8x16I7x16S, I16x16DotI8x32I7x32S)
 
-#define SIMD256_BINOP_SIGN_EXTENSION_OP(V)                           \
+#define SIMD256_BINOP_EXTENSION_OP(V)                                \
   V(I16x8ExtMulLowI8x16S, I16x16ExtMulI8x16S, I16x8ExtMulHighI8x16S) \
   V(I16x8ExtMulLowI8x16U, I16x16ExtMulI8x16U, I16x8ExtMulHighI8x16U) \
   V(I32x4ExtMulLowI16x8S, I32x8ExtMulI16x8S, I32x4ExtMulHighI16x8S)  \
@@ -199,6 +199,7 @@ namespace v8::internal::compiler::turboshaft {
   V(I16x8, I16x16)          \
   V(I32x4, I32x8)           \
   V(I64x2, I64x4)           \
+  V(F16x8, F16x16)          \
   V(F32x4, F32x8)           \
   V(F64x2, F64x4)
 
@@ -249,6 +250,8 @@ bool IsSplat(const T& node_group) {
   DCHECK_EQ(node_group.size(), 2);
   return node_group[1] == node_group[0];
 }
+
+bool IsExtensionOp(const Operation& op);
 
 class ForcePackNode;
 class ShufflePackNode;
@@ -491,9 +494,9 @@ class SLPTree : public NON_EXPORTED_BASE(ZoneObject) {
   struct LaneExtendInfo {
     OpIndex extract_from;
     Simd128ExtractLaneOp::Kind extract_kind;
-    int extract_lane_index;
+    uint8_t extract_lane_index;  // Lane index is always 0-15, use uint8_t
     ChangeOp::Kind change_kind;
-    int replace_lane_index;
+    uint8_t replace_lane_index;  // Lane index is always 0-15, use uint8_t
   };
 
   PackNode* BuildTree(const NodeGroup& roots);
@@ -607,6 +610,16 @@ class WasmRevecAnalyzer {
   void MergeSLPTree(SLPTree& slp_tree);
   bool ShouldReduce() const { return should_reduce_; }
 
+  // Percentage (0-100) of this function's SIMD128 operations that were
+  // combined into SIMD256 operations. Only meaningful once the analysis has
+  // decided to vectorize (i.e. when ShouldReduce() is true).
+  int revectorized_percent() const {
+    if (simd128_op_count_ == 0) return 0;
+    DCHECK_LE(revectorized_simd128_count_, simd128_op_count_);
+    return static_cast<int>(revectorized_simd128_count_ * 100 /
+                            simd128_op_count_);
+  }
+
   PackNode* GetPackNode(const OpIndex ig_index) {
     auto it = revectorizable_node_.find(ig_index);
     if (it != revectorizable_node_.end()) {
@@ -662,6 +675,12 @@ class WasmRevecAnalyzer {
   ZoneUnorderedMap<OpIndex, ZoneVector<PackNode*>>
       revectorizable_intersect_node_{phase_zone_};
   bool should_reduce_{false};
+  // Numerator/denominator for revectorized_percent(): number of SIMD128
+  // operations combined into SIMD256, and the total number of SIMD128
+  // operations in the function. Force-packed and intersect nodes are excluded
+  // from the numerator.
+  size_t revectorized_simd128_count_{0};
+  size_t simd128_op_count_{0};
   Simd128UseMap* use_map_{nullptr};
   ZoneUnorderedSet<OpIndex> reorder_inputs_{phase_zone_};
   // Used as a local hash-set, always clear after use.
@@ -690,15 +709,20 @@ class WasmRevecReducer : public UniformReducerAdapter<WasmRevecReducer, Next> {
     DCHECK(!pnode->is_force_packing());
 
     for (OpIndex use : analyzer_.uses(ig_index)) {
-      // Extract128 is needed for the additional Simd128 store before
-      // Simd256 store in case of OOB trap at the higher 128-bit
-      // address.
       PackNode* use_pnode = analyzer_.GetPackNode(use);
       if (use_pnode != nullptr && !use_pnode->is_force_packing()) {
         DCHECK_GE(use_pnode->nodes().size(), 2);
-        if (__ input_graph().Get(use).opcode != Opcode::kStore ||
-            use_pnode->nodes()[0] != use ||
-            use_pnode->nodes()[0] > use_pnode->nodes()[1]) {
+        const Operation& use_op = __ input_graph().Get(use);
+
+        // Extract128 is needed for the additional Simd128 store before
+        // Simd256 store in case of OOB trap at the higher 128-bit address.
+        bool is_first_store = use_op.opcode == Opcode::kStore &&
+                              use_pnode->nodes()[0] == use &&
+                              use_pnode->nodes()[0] < use_pnode->nodes()[1];
+
+        // Packed extension unary/binary ops still use SIMD128 inputs
+        // and need an Extract128 node.
+        if (!IsExtensionOp(use_op) && !is_first_store) {
           continue;
         }
       }
@@ -749,7 +773,7 @@ class WasmRevecReducer : public UniformReducerAdapter<WasmRevecReducer, Next> {
     V<Simd256> og_index = pnode->RevectorizedNode();
     // Skip revectorized node.
     if (!og_index.valid()) {
-      OpIndex base = __ MapToNewGraph(load_transform.base());
+      V<WordPtr> base = __ MapToNewGraph(load_transform.base());
       V<WordPtr> index = __ MapToNewGraph(load_transform.index());
       int offset = load_transform.offset;
       DCHECK_EQ(load_transform.offset, 0);
@@ -775,9 +799,9 @@ class WasmRevecReducer : public UniformReducerAdapter<WasmRevecReducer, Next> {
 
         if (offset0 != offset1) {
           V<WordPtr> og_offset0 = __ WordPtrConstant(offset0.word64());
-          base =
-              __ WordBinop(add_op.left(), og_offset0, WordBinopOp::Kind::kAdd,
-                           WordRepresentation::Word64());
+          base = V<WordPtr>::Cast(__ WordBinop(add_op.left(), og_offset0,
+                                               WordBinopOp::Kind::kAdd,
+                                               WordRepresentation::Word64()));
         }
       }
 
@@ -846,9 +870,8 @@ class WasmRevecReducer : public UniformReducerAdapter<WasmRevecReducer, Next> {
       OptionalOpIndex index = __ MapToNewGraph(store.index());
       V<Simd256> value = analyzer_.GetReducedInput(pnode);
       DCHECK(value.valid());
-
       __ Store(base, index, value, store.kind, MemoryRepresentation::Simd256(),
-               store.write_barrier, start.offset);
+               store.write_barrier, store.memory_order(), start.offset);
 
       // Set an arbitrary valid OpIndex here to skip reduce later.
       pnode->SetRevectorizedNode(ig_index);
@@ -930,6 +953,7 @@ class WasmRevecReducer : public UniformReducerAdapter<WasmRevecReducer, Next> {
     if (!og_index.valid()) {
       V<Simd256> input = analyzer_.GetReducedInput(pnode);
       if (!input.valid()) {
+        DCHECK(IsExtensionOp(unary));
         V<Simd128> input_128 = __ MapToNewGraph(unary.input());
         og_index = __ Simd256Unary(input_128, GetSimd256UnaryKind(unary.kind));
       } else {
@@ -951,6 +975,7 @@ class WasmRevecReducer : public UniformReducerAdapter<WasmRevecReducer, Next> {
     // Skip revectorized node.
     if (!og_index.valid()) {
       if (pnode->GetOperandsSize() < 2) {
+        DCHECK(IsExtensionOp(op));
         V<Simd128> left = __ MapToNewGraph(op.left());
         V<Simd128> right = __ MapToNewGraph(op.right());
         og_index = __ Simd256Binop(left, right, GetSimd256BinOpKind(op.kind));
@@ -1048,8 +1073,17 @@ class WasmRevecReducer : public UniformReducerAdapter<WasmRevecReducer, Next> {
               __ input_graph().Get(load_index).template Cast<LoadOp>();
 
           const int bytes_per_lane = is_32 ? 4 : 8;
-          const int splat_index = pnode->info().splat_index() * bytes_per_lane;
-          const int offset = splat_index + load.offset;
+          // Mask splat_index to get the lane offset within the 128-bit vector.
+          // For 32-bit lanes: mask is 3 (bits 0-1), for 64-bit lanes: mask is 1
+          // (bit 0).
+          const int lane_mask = is_32 ? 3 : 1;
+          // splat_index*bytes_per_lane is at most 12 (for 32-bit) or 8 (for
+          // 64-bit); load.offset is the WASM memarg immediate (up to
+          // INT32_MAX). Compute in int64 to avoid signed-int32 overflow that
+          // would sign-extend to a negative base.
+          const int64_t splat_index =
+              (pnode->info().splat_index() & lane_mask) * bytes_per_lane;
+          const int64_t offset = splat_index + load.offset;
 
           V<WordPtr> base = __ WordPtrAdd(__ MapToNewGraph(load.base()),
                                           __ IntPtrConstant(offset));
@@ -1324,12 +1358,12 @@ class WasmRevecReducer : public UniformReducerAdapter<WasmRevecReducer, Next> {
       SIMD256_UNARY_SIMPLE_OP(UNOP_KIND_MAPPING)
 #undef UNOP_KIND_MAPPING
 
-#define SIGN_EXTENSION_UNOP_KIND_MAPPING(from_1, to, from_2) \
-  case Simd128UnaryOp::Kind::k##from_1:                      \
-  case Simd128UnaryOp::Kind::k##from_2:                      \
+#define EXTENSION_UNOP_KIND_MAPPING(from_1, to, from_2) \
+  case Simd128UnaryOp::Kind::k##from_1:                 \
+  case Simd128UnaryOp::Kind::k##from_2:                 \
     return Simd256UnaryOp::Kind::k##to;
-      SIMD256_UNARY_SIGN_EXTENSION_OP(SIGN_EXTENSION_UNOP_KIND_MAPPING)
-#undef SIGN_EXTENSION_UNOP_KIND_MAPPING
+      SIMD256_UNARY_EXTENSION_OP(EXTENSION_UNOP_KIND_MAPPING)
+#undef EXTENSION_UNOP_KIND_MAPPING
       default:
         UNIMPLEMENTED();
     }
@@ -1343,12 +1377,12 @@ class WasmRevecReducer : public UniformReducerAdapter<WasmRevecReducer, Next> {
       SIMD256_BINOP_SIMPLE_OP(BINOP_KIND_MAPPING)
 #undef BINOP_KIND_MAPPING
 
-#define SIGN_EXTENSION_BINOP_KIND_MAPPING(from_1, to, from_2) \
-  case Simd128BinopOp::Kind::k##from_1:                       \
-  case Simd128BinopOp::Kind::k##from_2:                       \
+#define EXTENSION_BINOP_KIND_MAPPING(from_1, to, from_2) \
+  case Simd128BinopOp::Kind::k##from_1:                  \
+  case Simd128BinopOp::Kind::k##from_2:                  \
     return Simd256BinopOp::Kind::k##to;
-      SIMD256_BINOP_SIGN_EXTENSION_OP(SIGN_EXTENSION_BINOP_KIND_MAPPING)
-#undef SIGN_EXTENSION_BINOP_KIND_MAPPING
+      SIMD256_BINOP_EXTENSION_OP(EXTENSION_BINOP_KIND_MAPPING)
+#undef EXTENSION_BINOP_KIND_MAPPING
       default:
         UNIMPLEMENTED();
     }
