@@ -182,6 +182,12 @@ void WasmGCTypeAnalyzer::ProcessOperations(const Block& block) {
       case Opcode::kIsNull:
         ProcessIsNull(op.Cast<IsNullOp>());
         break;
+      case Opcode::kAnyConvertExtern:
+        ProcessAnyConvertExtern(op.Cast<AnyConvertExternOp>());
+        break;
+      case Opcode::kExternConvertAny:
+        ProcessExternConvertAny(op.Cast<ExternConvertAnyOp>());
+        break;
       case Opcode::kParameter:
         ProcessParameter(op.Cast<ParameterOp>());
         break;
@@ -191,11 +197,17 @@ void WasmGCTypeAnalyzer::ProcessOperations(const Block& block) {
       case Opcode::kStructSet:
         ProcessStructSet(op.Cast<StructSetOp>());
         break;
+      case Opcode::kStructAtomicRMW:
+        ProcessStructAtomicRMW(op.Cast<StructAtomicRMWOp>());
+        break;
       case Opcode::kArrayGet:
         ProcessArrayGet(op.Cast<ArrayGetOp>());
         break;
       case Opcode::kArrayLength:
         ProcessArrayLength(op.Cast<ArrayLengthOp>());
+        break;
+      case Opcode::kArrayAtomicRMW:
+        ProcessArrayAtomicRMW(op.Cast<ArrayAtomicRMWOp>());
         break;
       case Opcode::kGlobalGet:
         ProcessGlobalGet(op.Cast<GlobalGetOp>());
@@ -250,7 +262,49 @@ void WasmGCTypeAnalyzer::ProcessIsNull(const IsNullOp& is_null) {
   input_type_map_[graph_.Index(is_null)] = GetResolvedType(is_null.object());
 }
 
+void WasmGCTypeAnalyzer::ProcessAnyConvertExtern(const AnyConvertExternOp& op) {
+  wasm::ValueType input_type = GetResolvedType(op.object());
+  input_type_map_[graph_.Index(op)] = input_type;
+  DCHECK(input_type.is_ref() || input_type.is_bottom() ||
+         input_type == wasm::ValueType());
+  if (input_type == wasm::ValueType()) return;
+  wasm::ValueType result_type =
+      input_type.is_uninhabited()
+          ? wasm::kWasmBottom
+          : wasm::ValueType::Generic(wasm::GenericKind::kAny,
+                                     input_type.nullability(), op.is_shared);
+  RefineTypeKnowledge(graph_.Index(op), result_type, op);
+}
+
+void WasmGCTypeAnalyzer::ProcessExternConvertAny(const ExternConvertAnyOp& op) {
+  wasm::ValueType input_type = GetResolvedType(op.object());
+  input_type_map_[graph_.Index(op)] = input_type;
+  DCHECK(input_type.is_ref() || input_type.is_bottom() ||
+         input_type == wasm::ValueType());
+  if (input_type == wasm::ValueType()) return;
+  wasm::ValueType result_type =
+      input_type.is_uninhabited()
+          ? wasm::kWasmBottom
+          : wasm::ValueType::Generic(wasm::GenericKind::kExtern,
+                                     input_type.nullability(),
+                                     input_type.is_shared());
+  RefineTypeKnowledge(graph_.Index(op), result_type, op);
+}
+
+// In the JS-to-Wasm inlining pipeline, the entry-point is a JS function, so
+// `signature_` (the Wasm signature of the compiled function) is null.
+// The ParameterOp nodes represent the outer JS arguments, not the inlined
+// Wasm function's parameters (which have been replaced by the arguments
+// passed at the inlined call sites). Therefore, we cannot type the outer JS
+// parameters using a Wasm signature, and we skip them. Type information
+// will instead propagate from typed operations inside the inlined Wasm
+// bodies (like casts, struct.get, etc.).
 void WasmGCTypeAnalyzer::ProcessParameter(const ParameterOp& parameter) {
+  if (!signature_) {
+    DCHECK_EQ(data_->pipeline_kind(), TurboshaftPipelineKind::kJS);
+    DCHECK(v8_flags.wasm_in_js_inlining_opt);
+    return;
+  }
   if (parameter.parameter_index != wasm::kWasmInstanceDataParameterIndex) {
     RefineTypeKnowledge(graph_.Index(parameter),
                         signature_->GetParam(parameter.parameter_index - 1),
@@ -264,11 +318,23 @@ void WasmGCTypeAnalyzer::ProcessStructGet(const StructGetOp& struct_get) {
       RefineTypeKnowledgeNotNull(struct_get.object(), struct_get);
   input_type_map_[graph_.Index(struct_get)] = type;
   wasm::ValueType new_type;
-  if (struct_get.is_get_desc()) {
+  if (type.is_uninhabited()) {
+    new_type = wasm::kWasmBottom;
+  } else if (struct_get.is_get_desc()) {
     // Descriptor load.
     const wasm::TypeDefinition& type_def = module_->type(struct_get.type_index);
     DCHECK(type_def.has_descriptor());
-    new_type = wasm::ValueType::Ref(module_->heap_type(type_def.descriptor));
+    // Exactness is only propagated if the actual type of the struct
+    // exactly matches the type immediate.
+    wasm::Exactness exactness = type.exactness();
+    if (type.is_none_or_bottom()) {
+      // Subsumption dictates that get_desc(none) <: get_desc(exact $s).
+      exactness = wasm::kExact;
+    } else if (type.has_index() && type.ref_index() != struct_get.type_index) {
+      exactness = wasm::kAnySubtype;
+    }
+    new_type = wasm::ValueType::Ref(module_->heap_type(type_def.descriptor))
+                   .AsExact(exactness);
   } else {
     // Regular field load.
     new_type = struct_get.type->field(struct_get.field_index).Unpacked();
@@ -281,6 +347,23 @@ void WasmGCTypeAnalyzer::ProcessStructSet(const StructSetOp& struct_set) {
   wasm::ValueType type =
       RefineTypeKnowledgeNotNull(struct_set.object(), struct_set);
   input_type_map_[graph_.Index(struct_set)] = type;
+}
+
+void WasmGCTypeAnalyzer::ProcessStructAtomicRMW(
+    const StructAtomicRMWOp& struct_atomic_rmw) {
+  // Struct atomic-rmw operations perform a null check.
+  wasm::ValueType type =
+      RefineTypeKnowledgeNotNull(struct_atomic_rmw.object(), struct_atomic_rmw);
+  input_type_map_[graph_.Index(struct_atomic_rmw)] = type;
+  wasm::ValueType new_type;
+  if (type.is_uninhabited()) {
+    new_type = wasm::kWasmBottom;
+  } else {
+    new_type =
+        struct_atomic_rmw.type->field(struct_atomic_rmw.field_index).Unpacked();
+  }
+  RefineTypeKnowledge(graph_.Index(struct_atomic_rmw), new_type,
+                      struct_atomic_rmw);
 }
 
 void WasmGCTypeAnalyzer::ProcessArrayGet(const ArrayGetOp& array_get) {
@@ -300,6 +383,17 @@ void WasmGCTypeAnalyzer::ProcessArrayLength(const ArrayLengthOp& array_length) {
   input_type_map_[graph_.Index(array_length)] = type;
 }
 
+void WasmGCTypeAnalyzer::ProcessArrayAtomicRMW(
+    const ArrayAtomicRMWOp& array_atomic_rmw) {
+  // Array atomic-rmw operations trap on null. (Typically already on the array
+  // length access needed for the bounds check.)
+  RefineTypeKnowledgeNotNull(array_atomic_rmw.array(), array_atomic_rmw);
+  // The result type is at least the static array element type.
+  RefineTypeKnowledge(graph_.Index(array_atomic_rmw),
+                      array_atomic_rmw.element_type.Unpacked(),
+                      array_atomic_rmw);
+}
+
 void WasmGCTypeAnalyzer::ProcessGlobalGet(const GlobalGetOp& global_get) {
   RefineTypeKnowledge(graph_.Index(global_get), global_get.global->type,
                       global_get);
@@ -308,62 +402,32 @@ void WasmGCTypeAnalyzer::ProcessGlobalGet(const GlobalGetOp& global_get) {
 void WasmGCTypeAnalyzer::ProcessRefFunc(const WasmRefFuncOp& ref_func) {
   wasm::ModuleTypeIndex sig_index =
       module_->functions[ref_func.function_index].sig_index;
-  RefineTypeKnowledge(graph_.Index(ref_func),
-                      wasm::ValueType::Ref(module_->heap_type(sig_index)),
-                      ref_func);
+  wasm::ValueType type = wasm::ValueType::Ref(module_->heap_type(sig_index));
+  if (ref_func.function_index >= module_->num_imported_functions ||
+      module_->functions[ref_func.function_index].exact) {
+    type = type.AsExact();
+  }
+  RefineTypeKnowledge(graph_.Index(ref_func), type, ref_func);
 }
 
 void WasmGCTypeAnalyzer::ProcessAllocateArray(
     const WasmAllocateArrayOp& allocate_array) {
   wasm::ModuleTypeIndex type_index =
       graph_.Get(allocate_array.rtt()).Cast<RttCanonOp>().type_index;
-  RefineTypeKnowledge(graph_.Index(allocate_array),
-                      wasm::ValueType::Ref(module_->heap_type(type_index)),
-                      allocate_array);
+  RefineTypeKnowledge(
+      graph_.Index(allocate_array),
+      wasm::ValueType::Ref(module_->heap_type(type_index)).AsExact(),
+      allocate_array);
 }
-
 void WasmGCTypeAnalyzer::ProcessAllocateStruct(
     const WasmAllocateStructOp& allocate_struct) {
-  Operation& rtt = graph_.Get(allocate_struct.rtt());
-  wasm::ModuleTypeIndex type_index;
-  if (RttCanonOp* canon = rtt.TryCast<RttCanonOp>()) {
-    type_index = canon->type_index;
-  } else if (LoadOp* load = rtt.TryCast<LoadOp>()) {
-    DCHECK(load->kind.tagged_base && load->offset == WasmStruct::kHeaderSize);
-    OpIndex descriptor = load->base();
-    wasm::ValueType desc_type = types_table_.Get(descriptor);
-    if (!desc_type.has_index()) {
-      // We hope that this happens rarely or never. If there is evidence that
-      // we get this case a lot, we should store the original struct.new
-      // operation's type index immediate on the {WasmAllocateStructOp} to
-      // use it as a better upper bound than "structref" here.
-      RefineTypeKnowledge(graph_.Index(allocate_struct), wasm::kWasmStructRef,
-                          allocate_struct);
-      return;
-    }
-    const wasm::TypeDefinition& desc_typedef =
-        module_->type(desc_type.ref_index());
-    if (!desc_typedef.is_descriptor()) {
-      // This can only happen in unreachable code.
-      RefineTypeKnowledge(graph_.Index(allocate_struct), wasm::kWasmBottom,
-                          allocate_struct);
-      return;
-    }
-    type_index = desc_typedef.describes;
-  } else {
-    // While the graph builder only emits the two patterns above, other
-    // graph modifications (e.g. loop unrolling) can create other situations
-    // (e.g. Phi nodes).
-    // Similar to the comment above, we could be smarter here if the AllocateOp
-    // knew its own type index. Having dedicated "LoadRttOp" would likely
-    // also be helpful, e.g. by enabling us to type Phis that hold RTTs.
-    RefineTypeKnowledge(graph_.Index(allocate_struct), wasm::kWasmStructRef,
-                        allocate_struct);
-    return;
-  }
-  RefineTypeKnowledge(graph_.Index(allocate_struct),
-                      wasm::ValueType::Ref(module_->heap_type(type_index)),
-                      allocate_struct);
+  RefineTypeKnowledge(
+      graph_.Index(allocate_struct),
+      wasm::ValueType::Ref(allocate_struct.type_index,
+                           allocate_struct.struct_type->is_shared(),
+                           wasm::RefTypeKind::kStruct)
+          .AsExact(),
+      allocate_struct);
 }
 
 wasm::ValueType WasmGCTypeAnalyzer::GetTypeForPhiInput(const PhiOp& phi,
@@ -459,6 +523,9 @@ void WasmGCTypeAnalyzer::ProcessBranchOnTarget(const BranchOp& branch,
               target.index().id(), branch.condition().id(),
               OpcodeName(condition.opcode), graph_.Index(branch).id(),
               OpcodeName(branch.opcode));
+          RefineTypeKnowledge(check.object(), wasm::kWasmBottom, branch);
+        } else if (check.config.to.is_nullable()) {
+          RefineTypeKnowledgeNotNull(check.object(), branch);
         }
       }
     } break;
@@ -475,6 +542,7 @@ void WasmGCTypeAnalyzer::ProcessBranchOnTarget(const BranchOp& branch,
               target.index().id(), branch.condition().id(),
               OpcodeName(condition.opcode), graph_.Index(branch).id(),
               OpcodeName(branch.opcode));
+          RefineTypeKnowledge(is_null.object(), wasm::kWasmBottom, branch);
           return;
         }
         RefineTypeKnowledge(is_null.object(),
