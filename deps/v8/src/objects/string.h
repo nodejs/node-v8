@@ -237,6 +237,14 @@ V8_OBJECT class String : public Name {
       const DisallowGarbageCollection& no_gc V8_LIFETIME_BOUND,
       const SharedStringAccessGuardIfNeeded& access_guard) const;
 
+  // Get chars from sequential or external strings. For callers that already
+  // have this string's shape at hand, avoiding a redundant map load.
+  template <typename Char>
+  inline const Char* GetDirectStringChars(
+      StringShape shape,
+      const DisallowGarbageCollection& no_gc V8_LIFETIME_BOUND,
+      const SharedStringAccessGuardIfNeeded& access_guard) const;
+
   // Returns the address of the character at an offset into this string.
   // Requires: this->IsFlat()
   const uint8_t* AddressOfCharacterAt(uint32_t start_index,
@@ -433,6 +441,10 @@ V8_OBJECT class String : public Name {
   template <EqualityType kEqType = EqualityType::kWholeString, typename Char>
   inline bool IsEqualTo(base::Vector<const Char> str) const;
 
+  // Convenience method for the above using std::string_view instead.
+  template <EqualityType kEqType = EqualityType::kWholeString>
+  inline bool IsEqualTo(std::string_view str) const;
+
   // Check if this string matches the given vector of characters, either as a
   // whole string or just a prefix.
   //
@@ -442,8 +454,8 @@ V8_OBJECT class String : public Name {
   inline bool IsEqualTo(base::Vector<const Char> str,
                         LocalIsolate* isolate) const;
 
-  V8_EXPORT_PRIVATE bool HasOneBytePrefix(base::Vector<const char> str);
-  V8_EXPORT_PRIVATE inline bool IsOneByteEqualTo(base::Vector<const char> str);
+  V8_EXPORT_PRIVATE bool HasOneBytePrefix(std::string_view str);
+  V8_EXPORT_PRIVATE inline bool IsOneByteEqualTo(std::string_view str);
 
   // Returns true if the |str| is a valid ECMAScript identifier.
   static bool IsIdentifier(Isolate* isolate, DirectHandle<String> str);
@@ -799,7 +811,7 @@ V8_OBJECT class String : public Name {
                        bool* out_one_byte_content = nullptr);
 
  public:
-  uint32_t length_;
+  V8_TQ_CONST uint32_t length_ V8_TQ_TYPE(int32);
 } V8_OBJECT_END;
 
 template <>
@@ -953,7 +965,9 @@ V8_OBJECT class SeqOneByteString : public SeqString {
   friend class compiler::AccessBuilder;
   friend class TorqueGeneratedSeqOneByteStringAsserts;
 
-  FLEXIBLE_ARRAY_MEMBER(Char, chars);
+  V8_TQ_TAIL_NAME(chars);
+  V8_TQ_TAIL_LENGTH(length);
+  FLEXIBLE_ARRAY_MEMBER(Char, chars, V8_TQ_CONST V8_TQ_TYPE(char8));
 } V8_OBJECT_END;
 
 template <>
@@ -1028,7 +1042,9 @@ V8_OBJECT class SeqTwoByteString : public SeqString {
   friend class compiler::AccessBuilder;
   friend class TorqueGeneratedSeqTwoByteStringAsserts;
 
-  FLEXIBLE_ARRAY_MEMBER(Char, chars);
+  V8_TQ_TAIL_NAME(chars);
+  V8_TQ_TAIL_LENGTH(length);
+  FLEXIBLE_ARRAY_MEMBER(Char, chars, V8_TQ_CONST V8_TQ_TYPE(char16));
 } V8_OBJECT_END;
 
 template <>
@@ -1263,16 +1279,7 @@ V8_OBJECT class ExternalString : public UncachedExternalString {
   inline Address resource_as_address(Isolate* isolate) const;
   // TODO(pthier): Pass isolate from all callers and remove this overload.
   inline Address resource_as_address() const;
-  inline void set_address_as_resource(Isolate* isolate, Address address);
-  inline uint32_t GetResourceRefForDeserialization();
-  // The previous contents of the external pointer fields, as returned by
-  // SetResourceRefForSerialization() and put back by RestoreResourceRefs().
-  struct ResourceRefs {
-    ExternalPointer_t resource;
-    ExternalPointer_t resource_data;
-  };
-  inline ResourceRefs SetResourceRefForSerialization(uint32_t ref);
-  inline void RestoreResourceRefs(Isolate* isolate, ResourceRefs refs);
+  inline void InitResourceDataAfterDeserialization(Isolate* isolate);
 
   // Disposes string's resource object if it has not already been disposed.
   inline void DisposeResource(Isolate* isolate);
@@ -1322,6 +1329,9 @@ V8_OBJECT class ExternalOneByteString : public ExternalString {
   // Used only during serialization.
   inline void set_resource(Isolate* isolate, const Resource* buffer);
 
+  inline const Resource* ExchangeResource(Isolate* isolate,
+                                          const Resource* resource);
+
   // Update the pointer cache to the external character array.
   // The cached pointer is always valid, as the external character array does =
   // not move during lifetime.  Deserialization is the only exception, after
@@ -1357,6 +1367,9 @@ V8_OBJECT class ExternalTwoByteString : public ExternalString {
 
   // Used only during serialization.
   inline void set_resource(Isolate* isolate, const Resource* buffer);
+
+  inline const Resource* ExchangeResource(Isolate* isolate,
+                                          const Resource* resource);
 
   // Update the pointer cache to the external character array.
   // The cached pointer is always valid, as the external character array does =
