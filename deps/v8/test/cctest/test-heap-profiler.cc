@@ -29,6 +29,7 @@
 
 #include <ctype.h>
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
@@ -41,6 +42,7 @@
 #include "src/base/hashmap.h"
 #include "src/base/logging.h"
 #include "src/base/strings.h"
+#include "src/base/unique-array.h"
 #include "src/codegen/assembler-inl.h"
 #include "src/debug/debug.h"
 #include "src/flags/flags.h"
@@ -293,8 +295,8 @@ bool HasString(v8::Isolate* isolate, const v8::HeapGraphNode* node,
 void EnsureNoUninstrumentedInternals(v8::Isolate* isolate,
                                      const v8::HeapGraphNode* node) {
   for (int i = 0; i < 20; ++i) {
-    auto buffer = v8::base::OwnedVector<char>::NewForOverwrite(10);
-    std::string_view str = i::IntToStringView(i, buffer.as_vector());
+    std::array<char, 10> buffer;
+    std::string_view str = i::IntToStringView(i, buffer);
     // GetProperty requires a null-terminated string.
     const v8::HeapGraphNode* internal = GetProperty(
         isolate, node, v8::HeapGraphEdge::kInternal, std::string(str).c_str());
@@ -1365,12 +1367,12 @@ TEST(HeapSnapshotJSONSerialization) {
   snapshot->Serialize(&stream, v8::HeapSnapshot::kJSON);
   CHECK_GT(stream.size(), 0);
   CHECK_EQ(1, stream.eos_signaled());
-  auto json = v8::base::OwnedVector<char>::NewForOverwrite(stream.size());
-  stream.WriteTo(json.as_vector());
+  auto json = v8::base::UniqueArray<char>::NewForOverwrite(stream.size());
+  stream.WriteTo(json.as_span());
 
   // Verify that snapshot string is valid JSON.
   v8::internal::OneByteResource* json_res =
-      new v8::internal::OneByteResource(json.as_vector());
+      new v8::internal::OneByteResource(json.as_span());
   v8::Local<v8::String> json_string =
       v8::String::NewExternalOneByte(env.isolate(), json_res).ToLocalChecked();
   v8::Local<v8::Context> context = v8::Context::New(env.isolate());
@@ -3090,11 +3092,11 @@ TEST(ManyLocalsInSharedContext) {
   // Check all the objects have got their names.
   // ... well check just every 15th because otherwise it's too slow in debug.
   for (int i = 0; i < num_objects - 1; i += 15) {
-    v8::base::EmbeddedVector<char, 100> var_name;
+    std::array<char, 100> var_name;
     v8::base::SNPrintF(var_name, "f_%d", i);
     const v8::HeapGraphNode* f_object =
         GetProperty(env.isolate(), context_object,
-                    v8::HeapGraphEdge::kContextVariable, var_name.begin());
+                    v8::HeapGraphEdge::kContextVariable, var_name.data());
     CHECK(f_object);
   }
 }
@@ -3193,9 +3195,9 @@ static const v8::HeapGraphNode* GetNodeByPath(v8::Isolate* isolate,
       const v8::HeapGraphNode* to_node = edge->GetToNode();
       v8::String::Utf8Value edge_name(isolate, edge->GetName());
       v8::String::Utf8Value node_name(isolate, to_node->GetName());
-      v8::base::EmbeddedVector<char, 100> name;
+      std::array<char, 100> name;
       v8::base::SNPrintF(name, "%s::%s", *edge_name, *node_name);
-      if (strstr(name.begin(), path[current_depth])) {
+      if (strstr(name.data(), path[current_depth])) {
         node = to_node;
         break;
       }
@@ -4481,8 +4483,8 @@ TEST(SamplingHeapProfilerPretenuredInlineAllocations) {
 
   GrowNewSpaceToMaximumCapacity(CcTest::heap());
 
-  auto source = v8::base::OwnedVector<char>::NewForOverwrite(1024);
-  v8::base::SNPrintF(source.as_vector(),
+  std::array<char, 1024> source;
+  v8::base::SNPrintF(source,
                      "var number_elements = %d;"
                      "var elements = new Array(number_elements);"
                      "function f() {"
@@ -4500,7 +4502,7 @@ TEST(SamplingHeapProfilerPretenuredInlineAllocations) {
                      i::PretenuringHandler::GetMinMementoCountForTesting() + 1);
 
   v8::Local<v8::Function> f =
-      v8::Local<v8::Function>::Cast(CompileRun(source.begin()));
+      v8::Local<v8::Function>::Cast(CompileRun(source.data()));
 
   // Make sure the function is producing pre-tenured objects.
   auto res = f->Call(env.local(), env->Global(), 0, nullptr).ToLocalChecked();
@@ -4632,6 +4634,133 @@ TEST(SamplingHeapProfilerSampleIsLive) {
   CHECK_GT(dead_samples, 0);
 
   heap_profiler->StopSamplingHeapProfiler();
+}
+
+namespace {
+
+uintptr_t sample_context_calls = 0;
+
+void* CountingSampleContextExtractor(v8::Isolate*) {
+  return reinterpret_cast<void*>(++sample_context_calls << 1);
+}
+
+void* NullSampleContextExtractor(v8::Isolate*) {
+  ++sample_context_calls;
+  return nullptr;
+}
+
+// Checks that each sample's context is the one the counting extractor returned
+// for it, and returns the number of samples whose object was collected.
+size_t CheckCountingSampleContexts(
+    const std::vector<v8::AllocationProfile::Sample>& samples) {
+  CHECK(!samples.empty());
+  size_t dead_samples = 0;
+  for (const auto& sample : samples) {
+    // Sample ids and extractor calls both count from 1.
+    CHECK_EQ(reinterpret_cast<void*>(sample.sample_id << 1), sample.context);
+    if (!sample.is_live) ++dead_samples;
+  }
+  return dead_samples;
+}
+
+}  // namespace
+
+TEST(SamplingHeapProfilerSampleContext) {
+  v8::HandleScope scope(CcTest::isolate());
+  LocalContext env;
+  v8::HeapProfiler* heap_profiler = env.isolate()->GetHeapProfiler();
+
+  // Suppress randomness to avoid flakiness in tests.
+  i::v8_flags.sampling_heap_profiler_suppress_randomness = true;
+
+  sample_context_calls = 0;
+  CHECK(heap_profiler->StartSamplingHeapProfiler(
+      64, 16,
+      static_cast<v8::HeapProfiler::SamplingFlags>(
+          v8::HeapProfiler::kSamplingForceGC |
+          v8::HeapProfiler::kSamplingIncludeObjectsCollectedByMajorGC |
+          v8::HeapProfiler::kSamplingIncludeObjectsCollectedByMinorGC),
+      CountingSampleContextExtractor));
+
+  CompileRun(
+      "var retained = [];\n"
+      "for (var i = 0; i < 500; i++) retained.push(new Array(10));\n"
+      "for (var i = 0; i < 500; i++) new Array(10);\n");
+
+  std::unique_ptr<v8::AllocationProfile> profile(
+      heap_profiler->GetAllocationProfile());
+  CHECK(profile);
+  CHECK_GT(CheckCountingSampleContexts(profile->GetSamples()), 0);
+  CheckCountingSampleContexts(heap_profiler->GetSamplingHeapProfilerSamples());
+
+  heap_profiler->StopSamplingHeapProfiler();
+}
+
+TEST(SamplingHeapProfilerSampleContextMinorGC) {
+  // The samples must be collected by a minor GC.
+  if (i::v8_flags.single_generation || i::v8_flags.gc_global ||
+      i::v8_flags.stress_compaction) {
+    return;
+  }
+  i::ManualGCScope manual_gc_scope;
+  v8::HandleScope scope(CcTest::isolate());
+  LocalContext env;
+  v8::HeapProfiler* heap_profiler = env.isolate()->GetHeapProfiler();
+
+  // Suppress randomness to avoid flakiness in tests.
+  i::v8_flags.sampling_heap_profiler_suppress_randomness = true;
+
+  sample_context_calls = 0;
+  CHECK(heap_profiler->StartSamplingHeapProfiler(
+      64, 16, v8::HeapProfiler::kSamplingIncludeObjectsCollectedByMinorGC,
+      CountingSampleContextExtractor));
+
+  CompileRun("for (var i = 0; i < 500; i++) new Array(10);\n");
+  {
+    i::DisableConservativeStackScanningScopeForTesting no_stack_scanning(
+        CcTest::heap());
+    i::heap::InvokeMinorGC(CcTest::heap());
+  }
+  CHECK(i::Heap::IsYoungGenerationCollector(
+      CcTest::heap()->current_or_last_garbage_collector()));
+
+  std::unique_ptr<v8::AllocationProfile> profile(
+      heap_profiler->GetAllocationProfile());
+  CHECK(profile);
+  CHECK_GT(CheckCountingSampleContexts(profile->GetSamples()), 0);
+
+  heap_profiler->StopSamplingHeapProfiler();
+}
+
+TEST(SamplingHeapProfilerNullSampleContext) {
+  v8::HandleScope scope(CcTest::isolate());
+  LocalContext env;
+  v8::HeapProfiler* heap_profiler = env.isolate()->GetHeapProfiler();
+
+  // Suppress randomness to avoid flakiness in tests.
+  i::v8_flags.sampling_heap_profiler_suppress_randomness = true;
+
+  for (v8::SampleContextExtractor extractor :
+       {static_cast<v8::SampleContextExtractor>(nullptr),
+        NullSampleContextExtractor}) {
+    sample_context_calls = 0;
+    CHECK(heap_profiler->StartSamplingHeapProfiler(
+        64, 16, v8::HeapProfiler::kSamplingNoFlags, extractor));
+    CompileRun(
+        "var retained = [];\n"
+        "for (var i = 0; i < 100; i++) retained.push(new Array(10));\n");
+
+    std::unique_ptr<v8::AllocationProfile> profile(
+        heap_profiler->GetAllocationProfile());
+    CHECK(profile);
+    CHECK(!profile->GetSamples().empty());
+    for (const auto& sample : profile->GetSamples()) {
+      CHECK_NULL(sample.context);
+    }
+    CHECK_EQ(extractor == nullptr, sample_context_calls == 0);
+
+    heap_profiler->StopSamplingHeapProfiler();
+  }
 }
 
 TEST(HeapSnapshotPrototypeNotJSReceiver) {
@@ -5004,7 +5133,8 @@ TEST(HeapSnapshotWithWasmInstance) {
       isolate, trusted_instance_data_node,
       {"data_segments", "dispatch_table0", "dispatch_table_for_imports",
        "dispatch_tables", "instance_object", "managed_native_module", "map",
-       "memory_bases_and_sizes", "native_context"});
+       "memory_bases_and_sizes", "native_context",
+       "shared_memory_backing_stores"});
 
   // "module_object" should be the same as the global "module".
   const v8::HeapGraphNode* module_node =

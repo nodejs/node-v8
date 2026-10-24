@@ -180,7 +180,7 @@ class Typer::Visitor : public Reducer {
       DECLARE_IMPOSSIBLE_CASE(LoadImmutable)
       DECLARE_IMPOSSIBLE_CASE(StorePair)
       DECLARE_IMPOSSIBLE_CASE(Store)
-      DECLARE_IMPOSSIBLE_CASE(StoreIndirectPointer)
+      DECLARE_IMPOSSIBLE_CASE(StoreTrustedPointer)
       DECLARE_IMPOSSIBLE_CASE(StackSlot)
       DECLARE_IMPOSSIBLE_CASE(Word32Popcnt)
       DECLARE_IMPOSSIBLE_CASE(Word64Popcnt)
@@ -1297,6 +1297,9 @@ Type Typer::Visitor::TypeMajorGCForCompilerTesting(Node* node) {
   UNREACHABLE();
 }
 Type Typer::Visitor::TypeStaticAssert(Node* node) { UNREACHABLE(); }
+#if V8_ENABLE_SANDBOX
+Type Typer::Visitor::TypeLoadTrustedPointer(Node* node) { UNREACHABLE(); }
+#endif
 Type Typer::Visitor::TypeSLVerifierHint(Node* node) { UNREACHABLE(); }
 
 // JS comparison operators.
@@ -1526,8 +1529,7 @@ Type Typer::Visitor::TypeJSCreateGeneratorObject(Node* node) {
 }
 
 Type Typer::Visitor::TypeJSCreateClosure(Node* node) {
-  SharedFunctionInfoRef shared =
-      JSCreateClosureNode{node}.Parameters().shared_info();
+  SharedFunctionInfoRef shared = JSCreateClosureNode{node}.shared_info();
   if (IsClassConstructor(shared.kind())) {
     return Type::ClassConstructor();
   } else {

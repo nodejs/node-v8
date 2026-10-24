@@ -504,6 +504,7 @@ void SimplifiedLoweringVerifier::VisitNode(Node* node,
       CASE(Dead)
       CASE(Plug)
       CASE(MajorGCForCompilerTesting)
+      IF_SANDBOX(CASE, LoadTrustedPointer)
       CASE(StaticAssert)
       // Simplified change operators
       CASE(ChangeTaggedSignedToInt32)
@@ -634,7 +635,7 @@ void SimplifiedLoweringVerifier::VisitNode(Node* node,
       CASE(LoadImmutable)
       CASE(Store)
       CASE(StorePair)
-      CASE(StoreIndirectPointer)
+      CASE(StoreTrustedPointer)
       CASE(StackSlot)
       CASE(Word32Popcnt)
       CASE(Word64Popcnt)

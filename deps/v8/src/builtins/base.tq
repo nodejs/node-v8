@@ -13,7 +13,6 @@
 #include 'src/objects/elements-kind.h'
 #include 'src/objects/free-space.h'
 #include 'src/objects/hash-seed-wrapper.h'
-#include 'src/objects/js-atomics-synchronization.h'
 #include 'src/objects/js-disposable-stack.h'
 #include 'src/objects/js-function.h'
 #include 'src/objects/js-generator.h'
@@ -301,7 +300,10 @@ type TrustedPointer
 type TrustedPointer<To : type extends ExposedTrustedObject> extends
     TrustedPointer;
 type ProtectedPointer extends Tagged;
-type ProtectedPointer<To : type extends TrustedObject> extends ProtectedPointer;
+// A protected pointer may also hold a Smi or a weak reference, as
+// ProtectedTaggedMember<UnionOf<...>> does in C++.
+type ProtectedPointer<To : type extends TrustedObject|Smi|
+                      Weak<TrustedObject>> extends ProtectedPointer;
 extern class InstructionStream extends TrustedObject;
 type BuiltinPtr extends Smi generates 'BuiltinPtr';
 
@@ -311,8 +313,6 @@ type Numeric = Number|BigInt;
 extern class TransitionArray extends WeakFixedArray;
 
 type InstanceType extends uint16 constexpr 'InstanceType';
-
-type NoSharedNameSentinel extends Smi;
 
 // Specialized types. The following three type definitions don't correspond to
 // actual C++ classes, but have Is... methods that check additional constraints.
@@ -605,9 +605,6 @@ const kNameDictionaryInitialCapacity:
     constexpr int32 generates 'NameDictionary::kInitialCapacity';
 const kSwissNameDictionaryInitialCapacity:
     constexpr int32 generates 'SwissNameDictionary::kInitialCapacity';
-
-const kWasmArrayHeaderSize:
-    constexpr int32 generates 'WasmArray::kHeaderSize';
 
 const kHeapObjectHeaderSize: constexpr int32 generates 'sizeof(HeapObject)';
 

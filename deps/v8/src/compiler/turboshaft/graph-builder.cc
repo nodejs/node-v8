@@ -1402,13 +1402,15 @@ OpIndex GraphBuilder::Process(
           MemoryRepresentation::FromMachineType(LoadRepresentationOf(op));
       Node* base = node->InputAt(0);
       Node* index = node->InputAt(1);
-      // It's ok to merge LoadImmutable into Load after scheduling.
       LoadOp::Kind kind = opcode == IrOpcode::kUnalignedLoad
                               ? LoadOp::Kind::RawUnaligned()
                               : LoadOp::Kind::RawAligned();
       if (__ output_graph().Get(Map(base)).outputs_rep().at(0) ==
           RegisterRepresentation::Tagged()) {
         kind = LoadOp::Kind::TaggedBase();
+      }
+      if (opcode == IrOpcode::kLoadImmutable) {
+        kind = kind.Immutable();
       }
       if (index->opcode() == IrOpcode::kInt32Constant) {
         int32_t offset = OpParameter<int32_t>(index->op());
@@ -1434,6 +1436,14 @@ OpIndex GraphBuilder::Process(
       return __ Load(Map(node->InputAt(0)), Map(node->InputAt(1)),
                      LoadOp::Kind::Trapping(), loaded_rep);
     }
+#if V8_ENABLE_SANDBOX
+    case IrOpcode::kLoadTrustedPointer: {
+      auto params = OpParameter<LoadTrustedPointerParameters>(op);
+      return __ LoadTrustedPointer(Map(node->InputAt(0)),
+                                   LoadOp::Kind::TaggedBase(), params.tag,
+                                   params.offset + kHeapObjectTag);
+    }
+#endif
 
     case IrOpcode::kStore:
     case IrOpcode::kUnalignedStore: {
@@ -1769,7 +1779,7 @@ OpIndex GraphBuilder::Process(
 
       __ Store(object, final_value, kind, final_rep, final_write_barrier,
                access.offset, initializing_transitioning,
-               access.indirect_pointer_tag);
+               access.trusted_pointer_tag);
       return OpIndex::Invalid();
     }
     case IrOpcode::kLoadFromObject:
