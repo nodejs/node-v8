@@ -258,6 +258,30 @@ Handle<LoadHandler> LoadHandler::LoadProxyFast(
 }
 
 // static
+bool DataHandler::AreEquivalent(const MaybeObjectDirectHandle& a,
+                                const MaybeObjectDirectHandle& b) {
+  if (a.is_identical_to(b)) return true;
+  if (a.is_null() || b.is_null()) return false;
+  if (LoadHandler::IsFastProxyHandler(*a) &&
+      LoadHandler::IsFastProxyHandler(*b)) {
+    Tagged<DataHandler> handler_a =
+        Cast<DataHandler>((*a).GetHeapObjectAssumeStrong());
+    Tagged<DataHandler> handler_b =
+        Cast<DataHandler>((*b).GetHeapObjectAssumeStrong());
+    // Compare all data fields except for the counter, which does not affect
+    // the behavior of the handler. Update this when changing the layout of
+    // fast proxy handlers (see LoadProxyFast above).
+    static_assert(LoadHandler::kProxyDataFieldCount == 5);
+    static_assert(LoadHandler::kProxyCounterDataIndex == 5);
+    return handler_a->data1() == handler_b->data1() &&
+           handler_a->data2() == handler_b->data2() &&
+           handler_a->data3() == handler_b->data3() &&
+           handler_a->data4() == handler_b->data4();
+  }
+  return false;
+}
+
+// static
 Handle<LoadHandler> LoadHandler::LoadInterceptorHolderIsLookupStartupObject(
     Isolate* isolate, DirectHandle<Map> lookup_start_object_map,
     DirectHandle<InterceptorInfo> interceptor_info) {
@@ -509,11 +533,6 @@ Handle<StoreHandler> StoreHandler::StoreInterceptorHolderIsReceiver(
 }
 
 // static
-MaybeObjectHandle StoreHandler::StoreGlobal(Handle<PropertyCell> cell) {
-  return MaybeObjectHandle::Weak(cell);
-}
-
-// static
 Handle<Object> StoreHandler::StoreProxy(Isolate* isolate,
                                         DirectHandle<Map> receiver_map,
                                         Handle<JSProxy> proxy,
@@ -670,9 +689,6 @@ void PrintSmiStoreHandler(int raw_handler, std::ostream& os) {
       break;
     case StoreHandler::Kind::kProxy:
       os << "kProxy";
-      break;
-    case StoreHandler::Kind::kSharedStructField:
-      os << "kSharedStructField";
       break;
     case StoreHandler::Kind::kKindsNumber:
       UNREACHABLE();

@@ -232,12 +232,12 @@ void MaglevAssembler::StringFromCharCode(RegisterSnapshot register_snapshot,
                                          Register result, Register char_code,
                                          Register scratch,
                                          CharCodeMaskMode mask_mode) {
-  AssertZeroExtended(char_code);
   DCHECK_NE(char_code, scratch);
   ZoneLabelRef done(this);
   if (mask_mode == CharCodeMaskMode::kMustApplyMask) {
     AndP(char_code, char_code, Operand(0xFFFF));
   }
+  AssertZeroExtended(char_code);
   CmpU32(char_code, Operand(String::kMaxOneByteCharCode));
   JumpToDeferredIf(
       kUnsignedGreaterThan,
@@ -509,8 +509,8 @@ void MaglevAssembler::TruncateDoubleToInt32(Register dst, DoubleRegister src) {
   TryInlineTruncateDoubleToI(dst, src, *done);
   Jump(slow_path);
   bind(*done);
-  // Zero extend the converted value to complete the truncation.
-  LoadU32(dst, dst);
+  // Sign extend the converted value to complete the truncation.
+  LoadS32(dst, dst);
 }
 
 void MaglevAssembler::TryTruncateDoubleToInt32(Register dst, DoubleRegister src,
@@ -521,6 +521,9 @@ void MaglevAssembler::TryTruncateDoubleToInt32(Register dst, DoubleRegister src,
 
   // Convert the input float64 value to int32.
   ConvertDoubleToInt32(dst, src);
+  // cfdbr only writes the low 32 bits, so sign-extend the result to
+  // maintain the kInt32 representation.
+  LoadS32(dst, dst);
 
   // Convert that int32 value back to float64.
   ConvertIntToDouble(temp, dst);
@@ -585,6 +588,9 @@ void MaglevAssembler::TryChangeFloat64ToIndex(Register result,
   DoubleRegister temp = temps.AcquireScratchDouble();
   // Convert the input float64 value to int32.
   ConvertDoubleToInt32(result, value);
+  // cfdbr only writes the low 32 bits, so sign-extend the result to
+  // maintain the kInt32 representation.
+  LoadS32(result, result);
   // Convert that int32 value back to float64.
   ConvertIntToDouble(temp, result);
   // Check that the result of the float64->int32->float64 is equal to

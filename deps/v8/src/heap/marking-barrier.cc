@@ -23,7 +23,7 @@
 #include "src/heap/safepoint.h"
 #include "src/objects/descriptor-array.h"
 #include "src/objects/heap-object.h"
-#include "src/objects/js-array-buffer.h"
+#include "src/objects/js-array-buffer-inl.h"
 #include "src/objects/objects-inl.h"
 
 namespace v8 {
@@ -41,7 +41,7 @@ MarkingBarrier::MarkingBarrier(LocalHeap* local_heap)
 
 MarkingBarrier::~MarkingBarrier() { DCHECK(typed_slots_map_.empty()); }
 
-void MarkingBarrier::Write(Tagged<HeapObject> host, IndirectPointerSlot slot) {
+void MarkingBarrier::Write(Tagged<HeapObject> host, TrustedPointerSlot slot) {
 #ifdef V8_ENABLE_SANDBOX
   DCHECK(IsCurrentMarkingBarrier(host));
   DCHECK(is_activated_ || shared_heap_worklists_.has_value());
@@ -131,10 +131,11 @@ void MarkingBarrier::Write(Tagged<JSArrayBuffer> host,
                            ArrayBufferExtension* extension) {
   DCHECK(IsCurrentMarkingBarrier(host));
   DCHECK(!HeapLayout::InWritableSharedSpace(host));
-  DCHECK(MemoryChunk::FromHeapObject(host)->IsMarking());
+  DCHECK(is_activated_);
 
   if (is_minor()) {
-    if (HeapLayout::InYoungGeneration(host)) {
+    if (extension->age() == ArrayBufferExtension::Age::kYoung) {
+      DCHECK(HeapLayout::InYoungGeneration(host));
       extension->YoungMark();
     }
   } else {
@@ -282,7 +283,7 @@ void MarkingBarrier::ActivateAll(Heap* heap, bool is_compacting) {
         [](Isolate* client) {
           // Force the RecordWrite builtin into the incremental marking code
           // path.
-          client->heap()->SetIsMarkingFlag(true);
+          client->heap()->SetIsSharedMarkingFlag(true);
           client->heap()->safepoint()->IterateLocalHeaps(
               [](LocalHeap* local_heap) {
                 local_heap->marking_barrier()->ActivateShared();
@@ -328,12 +329,7 @@ void MarkingBarrier::DeactivateAll(Heap* heap) {
   if (heap->isolate()->is_shared_space_isolate()) {
     heap->isolate()->global_safepoint()->IterateClientIsolates(
         [](Isolate* client) {
-          // We can't just simply disable the marking barrier for all clients. A
-          // client may still need it to be set for incremental marking in the
-          // local heap.
-          const bool is_marking =
-              client->heap()->incremental_marking()->IsMarking();
-          client->heap()->SetIsMarkingFlag(is_marking);
+          client->heap()->SetIsSharedMarkingFlag(false);
           client->heap()->safepoint()->IterateLocalHeaps(
               [](LocalHeap* local_heap) {
                 local_heap->marking_barrier()->DeactivateShared();

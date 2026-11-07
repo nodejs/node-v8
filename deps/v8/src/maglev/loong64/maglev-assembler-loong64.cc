@@ -279,13 +279,12 @@ void MaglevAssembler::StringFromCharCode(RegisterSnapshot register_snapshot,
                                          Register result, Register char_code,
                                          Register scratch,
                                          CharCodeMaskMode mask_mode) {
-  // AssertZeroExtended(char_code);
-  MacroAssembler::lu32i_d(char_code, 0);
   DCHECK_NE(char_code, scratch);
   ZoneLabelRef done(this);
   if (mask_mode == CharCodeMaskMode::kMustApplyMask) {
     And(char_code, char_code, Operand(0xFFFF));
   }
+  AssertZeroExtended(char_code);
   // Allocate two-bytes string if {char_code} doesn't fit one byte.
   MacroAssembler::Branch(  // FIXME: reimplement with JumpToDeferredIf
       MakeDeferredCode(
@@ -462,6 +461,10 @@ void MaglevAssembler::StringCharCodeOrCodePointAt(
                                   offsetof(SlicedString, offset_));
     LoadTaggedField(string, string, offsetof(SlicedString, parent_));
     Add_w(index, index, Operand(offset));
+    // Add_w yields a sign-extended Word32. Normalize it to its unsigned form
+    // so that a (corrupted) negative offset cannot be interpreted as a
+    // negative index by the subsequent address computation.
+    Bstrpick_d(index, index, 31, 0);
     MacroAssembler::Branch(&loop, Label::kNear);
   }
 
@@ -506,7 +509,8 @@ void MaglevAssembler::StringCharCodeOrCodePointAt(
     bind(&two_byte_string);
     // {instance_type} is unused from this point, so we can use as scratch.
     Register scratch = scratch1;
-    slli_d(scratch, index, 1);
+    Bstrpick_d(scratch, index, 31, 0);
+    slli_d(scratch, scratch, 1);
     Add_d(scratch, scratch,
           Operand(OFFSET_OF_DATA_START(SeqTwoByteString) - kHeapObjectTag));
 
@@ -534,6 +538,7 @@ void MaglevAssembler::StringCharCodeOrCodePointAt(
                              Label::kNear);
 
       Register second_code_point = scratch;
+      Bstrpick_d(index, index, 31, 0);
       slli_d(index, index, 1);
       Add_d(index, index,
             Operand(OFFSET_OF_DATA_START(SeqTwoByteString) - kHeapObjectTag));
@@ -596,8 +601,8 @@ void MaglevAssembler::SeqOneByteStringCharCodeAt(Register result,
                           AbortReason::kUnexpectedValue);
   }
 
-  // TODO(loong64): is index an uint32 value?
-  Add_d(scratch, index,
+  Bstrpick_d(scratch, index, 31, 0);
+  Add_d(scratch, scratch,
         Operand(OFFSET_OF_DATA_START(SeqOneByteString) - kHeapObjectTag));
   Ld_bu(result, MemOperand(string, scratch));
 }

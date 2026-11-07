@@ -32,8 +32,6 @@ class JSMap;
 class JSPrimitiveWrapper;
 class JSRegExp;
 class JSSet;
-class JSSharedArray;
-class JSSharedStruct;
 class Object;
 class Oddball;
 class SharedObjectConveyorHandles;
@@ -151,10 +149,6 @@ class ValueSerializer {
       V8_WARN_UNUSED_RESULT;
   Maybe<bool> WriteJSArrayBufferView(Tagged<JSArrayBufferView> array_buffer);
   Maybe<bool> WriteJSError(DirectHandle<JSObject> error) V8_WARN_UNUSED_RESULT;
-  Maybe<bool> WriteJSSharedArray(DirectHandle<JSSharedArray> shared_array)
-      V8_WARN_UNUSED_RESULT;
-  Maybe<bool> WriteJSSharedStruct(DirectHandle<JSSharedStruct> shared_struct)
-      V8_WARN_UNUSED_RESULT;
 #if V8_ENABLE_WEBASSEMBLY
   Maybe<bool> WriteWasmModule(DirectHandle<WasmModuleObject> object)
       V8_WARN_UNUSED_RESULT;

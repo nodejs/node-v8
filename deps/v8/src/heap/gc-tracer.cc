@@ -14,8 +14,8 @@
 #include "src/base/logging.h"
 #include "src/base/platform/time.h"
 #include "src/base/strings.h"
+#include "src/base/thread-id.h"
 #include "src/common/globals.h"
-#include "src/execution/thread-id.h"
 #include "src/heap/base/unsafe-json-emitter.h"
 #include "src/heap/cppgc-internal/metric-recorder.h"
 #include "src/heap/cppgc-js/cpp-heap.h"
@@ -401,6 +401,7 @@ void GCTracer::StartInSafepoint(base::TimeTicks time) {
   size_t new_lo_space_size =
       (heap_->new_lo_space() ? heap_->new_lo_space()->SizeOfObjects() : 0);
   current_.young_object_size = new_space_size + new_lo_space_size;
+  current_.gc_with_stack = heap_->IsGCWithStack();
   current_.start_atomic_pause_time = time;
 }
 
@@ -965,7 +966,7 @@ void GCTracer::PrintNVP() const {
       .p("reduce_memory", current_.reduce_memory)
       .p("time_to_safepoint",
          current_.scopes[Scope::TIME_TO_SAFEPOINT].InMillisecondsF())
-      .p("stack", heap_->IsGCWithStack())
+      .p("stack", current_.gc_with_stack)
       .p("reason", ToString(current_.gc_reason))
       .p("collector_reason",
          current_.collector_reason ? current_.collector_reason : "")
@@ -1073,8 +1074,6 @@ void GCTracer::PrintNVP() const {
           .p("mark.conservative_stack",
              current_scope(Scope::MINOR_MS_MARK_CONSERVATIVE_STACK))
           .p("clear", current_scope(Scope::MINOR_MS_CLEAR))
-          .p("clear.string_forwarding_table",
-             current_scope(Scope::MINOR_MS_CLEAR_STRING_FORWARDING_TABLE))
           .p("clear.string_table",
              current_scope(Scope::MINOR_MS_CLEAR_STRING_TABLE))
           .p("clear.global_handles",
@@ -1121,8 +1120,6 @@ void GCTracer::PrintNVP() const {
           .p("clear", current_scope(Scope::MC_CLEAR))
           .p("clear.external_string_table",
              current_scope(Scope::MC_CLEAR_EXTERNAL_STRING_TABLE))
-          .p("clear.string_forwarding_table",
-             current_scope(Scope::MC_CLEAR_STRING_FORWARDING_TABLE))
           .p("clear.weak_global_handles",
              current_scope(Scope::MC_CLEAR_WEAK_GLOBAL_HANDLES))
           .p("clear.dependent_code",

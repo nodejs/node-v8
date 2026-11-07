@@ -232,12 +232,12 @@ void MaglevAssembler::StringFromCharCode(RegisterSnapshot register_snapshot,
                                          Register result, Register char_code,
                                          Register scratch,
                                          CharCodeMaskMode mask_mode) {
-  AssertZeroExtended(char_code);
   DCHECK_NE(char_code, scratch);
   ZoneLabelRef done(this);
   if (mask_mode == CharCodeMaskMode::kMustApplyMask) {
     AndU64(char_code, char_code, Operand(0xFFFF));
   }
+  AssertZeroExtended(char_code);
   CmpU32(char_code, Operand(String::kMaxOneByteCharCode));
   JumpToDeferredIf(
       kUnsignedGreaterThan,
@@ -511,8 +511,8 @@ void MaglevAssembler::TruncateDoubleToInt32(Register dst, DoubleRegister src) {
   TryInlineTruncateDoubleToI(dst, src, *done, temp);
   Jump(slow_path);
   bind(*done);
-  // Zero extend the converted value to complete the truncation.
-  ZeroExtend<int>(dst, dst);
+  // Sign extend the converted value to complete the truncation.
+  extsw(dst, dst);
 }
 
 void MaglevAssembler::TryTruncateDoubleToInt32(Register dst, DoubleRegister src,
@@ -524,7 +524,7 @@ void MaglevAssembler::TryTruncateDoubleToInt32(Register dst, DoubleRegister src,
 
   // Convert the input float64 value to int32.
   ConvertDoubleToInt64(src, dst, temp);
-  ZeroExtend<int>(dst, dst);
+  extsw(dst, dst);
 
   // Convert that int32 value back to float64.
   ConvertIntToDouble(dst, temp);

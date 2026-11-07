@@ -4,6 +4,7 @@
 
 #include "src/heap/heap-write-barrier.h"
 
+#include "src/common/thread-local-storage.h"
 #include "src/heap/heap-layout-inl.h"
 #include "src/heap/heap-write-barrier-inl.h"
 #include "src/heap/heap.h"
@@ -22,16 +23,18 @@ namespace v8::internal {
 class DescriptorArray;
 
 namespace {
-thread_local MarkingBarrier* current_marking_barrier = nullptr;
+__attribute__((tls_model(V8_TLS_MODEL))) thread_local MarkingBarrier*
+    current_marking_barrier V8_CONSTINIT = nullptr;
 }  // namespace
 
 MarkingBarrier* WriteBarrier::CurrentMarkingBarrier(
     Tagged<HeapObject> verification_candidate) {
   MarkingBarrier* marking_barrier = current_marking_barrier;
-  DCHECK_NOT_NULL(marking_barrier);
 #if DEBUG
+  if (marking_barrier) {
     LocalHeap* local_heap = LocalHeap::Current();
     DCHECK_EQ(marking_barrier, local_heap->marking_barrier());
+  }
 #endif  // DEBUG
   return marking_barrier;
 }
@@ -137,6 +140,9 @@ void WriteBarrier::SharedSlow(Tagged<TrustedObject> host,
 void WriteBarrier::MarkingSlow(Tagged<JSArrayBuffer> host,
                                ArrayBufferExtension* extension) {
   MarkingBarrier* marking_barrier = CurrentMarkingBarrier(host);
+  if (!marking_barrier) [[unlikely]] {
+    return;
+  }
   marking_barrier->Write(host, extension);
 }
 
@@ -144,32 +150,45 @@ void WriteBarrier::MarkingSlow(Tagged<HeapObject> host,
                                ExternalPointerSlot slot,
                                ExternalPointerHandle handle) {
 #ifdef V8_COMPRESS_POINTERS
-  if (!slot.HasExternalPointerHandle()) return;
-
   DCHECK_EQ(handle, slot.Relaxed_LoadHandle());
 
   MarkingBarrier* marking_barrier = CurrentMarkingBarrier(host);
-  IsolateForPointerCompression isolate(marking_barrier->heap()->isolate());
+  if (!marking_barrier) [[unlikely]] {
+    return;
+  }
 
+  Isolate* isolate = marking_barrier->heap()->isolate();
+  if (IsSharedExternalPointerType(slot.tag_range())) {
+    if (marking_barrier->is_not_major() &&
+        !isolate->isolate_data()->is_shared_marking()) {
+      return;
+    }
+  } else if (!marking_barrier->is_activated()) {
+    return;
+  }
+
+  IsolateForPointerCompression isolate_for_compression(isolate);
   ExternalPointerTable& table =
-      isolate.GetExternalPointerTableFor(slot.tag_range());
+      isolate_for_compression.GetExternalPointerTableFor(slot.tag_range());
   ExternalPointerTable::Space* space =
-      isolate.GetExternalPointerTableSpaceFor(slot.tag_range(), host.address());
+      isolate_for_compression.GetExternalPointerTableSpaceFor(slot.tag_range(),
+                                                              host.address());
   DCHECK(!space->is_internal_read_only_space());
 
   table.Mark(space, handle, slot.address(), slot.tag_range());
 
   if (marking_barrier->is_minor() && HeapLayout::InYoungGeneration(host)) {
-    MutablePage* host_page =
-        MutablePage::FromHeapObject(marking_barrier->heap()->isolate(), host);
+    MutablePage* host_page = MutablePage::FromHeapObject(isolate, host);
     RememberedSet<SURVIVOR_TO_EXTERNAL_POINTER>::Insert<AccessMode::ATOMIC>(
         host_page, host_page->Offset(slot.address()));
   }
+#else
+  UNREACHABLE();
 #endif  // V8_COMPRESS_POINTERS
 }
 
 void WriteBarrier::MarkingSlow(Tagged<HeapObject> host,
-                               IndirectPointerSlot slot) {
+                               TrustedPointerSlot slot) {
   MarkingBarrier* marking_barrier = CurrentMarkingBarrier(host);
   marking_barrier->Write(host, slot);
 }
@@ -243,13 +262,13 @@ int WriteBarrier::MarkingFromCode(Address raw_host, Address raw_slot) {
   return 0;
 }
 
-int WriteBarrier::IndirectPointerMarkingFromCode(Address raw_host,
-                                                 Address raw_slot,
-                                                 Address raw_tag) {
+int WriteBarrier::TrustedPointerMarkingFromCode(Address raw_host,
+                                                Address raw_slot,
+                                                Address raw_tag) {
   Tagged<HeapObject> host = Cast<HeapObject>(Tagged<Object>(raw_host));
-  IndirectPointerTag tag = static_cast<IndirectPointerTag>(raw_tag);
-  DCHECK(IsValidIndirectPointerTag(tag));
-  IndirectPointerSlot slot(raw_slot, tag);
+  TrustedPointerTag tag = static_cast<TrustedPointerTag>(raw_tag);
+  DCHECK(IsValidTrustedPointerTag(tag));
+  TrustedPointerSlot slot(raw_slot, tag);
 
 #if DEBUG
   DCHECK(!HeapLayout::InWritableSharedSpace(host));
@@ -295,10 +314,8 @@ int WriteBarrier::SharedMarkingFromCode(Address raw_host, Address raw_slot) {
 
 int WriteBarrier::SharedFromCode(Address raw_host, Address raw_slot) {
   Tagged<HeapObject> host = Cast<HeapObject>(Tagged<Object>(raw_host));
-
-  if (!HeapLayout::InWritableSharedSpace(host)) {
-    SharedHeapBarrierSlow(host, raw_slot);
-  }
+  DCHECK(!HeapLayout::InWritableSharedSpace(host));
+  SharedHeapBarrierSlow(host, raw_slot);
 
   // Called by WriteBarrierCodeStubAssembler, which doesn't accept void type
   return 0;

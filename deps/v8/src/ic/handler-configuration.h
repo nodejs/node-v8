@@ -268,7 +268,6 @@ V8_OBJECT class StoreHandler final : public DataHandler {
     kConstField,
     kAccessorFromPrototype,
     kNativeDataProperty,
-    kSharedStructField,
     kApiSetter,
     kGlobalProxy,
     kNormal,
@@ -329,11 +328,6 @@ V8_OBJECT class StoreHandler final : public DataHandler {
                                        PropertyConstness constness,
                                        Representation representation);
 
-  // Creates a Smi-handler for storing a field to a JSSharedStruct.
-  static inline Handle<Smi> StoreSharedStructField(
-      Isolate* isolate, InternalIndex descriptor, FieldIndex field_index,
-      Representation representation);
-
   // Create a store transition handler which doesn't check prototype chain.
   static MaybeObjectHandle StoreOwnTransition(Isolate* isolate,
                                               Handle<Map> transition_map);
@@ -368,10 +362,6 @@ V8_OBJECT class StoreHandler final : public DataHandler {
                                    DirectHandle<Map> receiver_map,
                                    Handle<JSProxy> proxy,
                                    DirectHandle<JSReceiver> receiver);
-
-  // Creates a handler for storing a property to the property cell of a global
-  // object.
-  static MaybeObjectHandle StoreGlobal(Handle<PropertyCell> cell);
 
   // Creates a Smi-handler for storing a property to a global proxy object.
   static inline DirectHandle<Smi> StoreGlobalProxy(Isolate* isolate);

@@ -479,18 +479,17 @@ void Int32MultiplyWithOverflow::GenerateCode(MaglevAssembler* masm,
   __ MacroAssembler::Branch(&end, ne, res, Operand(zero_reg),
                             Label::Distance::kNear);
   {
+    // Both inputs are sign-extended, which MulOverflow32 above relies on as
+    // well, so their bitwise or is negative exactly when one of them is.
     Register maybeNegative = scratch;
     __ Or(maybeNegative, left, Operand(right));
-    // TODO(Vladimir Kempik): consider usage of bexti instruction if Zbs
-    // extension is available
-    __ And(maybeNegative, maybeNegative, Operand(0x80000000));  // 1 << 31
     // If one of them is negative, we must have a -0 result, which is non-int32,
     // so deopt.
     // TODO(leszeks): Consider splitting these deopts to have distinct deopt
     // reasons. Otherwise, the reason has to match the above.
     __ RecordComment("-- Jump to eager deopt if the result is negative zero");
     Label* deopt_label = __ GetDeoptLabel(this, DeoptimizeReason::kOverflow);
-    __ MacroAssembler::Branch(deopt_label, ne, maybeNegative,
+    __ MacroAssembler::Branch(deopt_label, lt, maybeNegative,
                               Operand(zero_reg));
   }
 
@@ -837,8 +836,14 @@ void Float64RoundToFloat32::GenerateCode(MaglevAssembler* masm,
                                          const ProcessingState& state) {
   DoubleRegister input = ToDoubleRegister(ValueInput());
   DoubleRegister result = ToDoubleRegister(this->result());
-  __ fcvt_s_d(result, input);
-  __ fcvt_d_s(result, result);
+  MaglevAssembler::TemporaryRegisterScope temps(masm);
+  DoubleRegister scratch = temps.AcquireScratchDouble();
+  // fcvt_s_d/fcvt_d_s turn every NaN into the positive canonical NaN. Copy
+  // the sign back from the input, matching CodeGenerator's kRiscvCvtSD and
+  // kRiscvCvtDS. For non-NaN values the sign is already correct.
+  __ fcvt_s_d(scratch, input);
+  __ fcvt_d_s(scratch, scratch);
+  __ fsgnj_d(result, scratch, input);
 }
 
 void Float64Round::GenerateCode(MaglevAssembler* masm,
@@ -1022,7 +1027,9 @@ void CheckJSDataViewBounds::GenerateCode(MaglevAssembler* masm,
     __ bind(&limit_not_zero);
   }
   Label index_no_oob;
-  __ SignExtendWord(index, index);
+  // {index} is sign-extended, so a negative index is a huge unsigned value
+  // and fails the check below.
+  __ AssertSignExtended(index);
   __ MacroAssembler::Branch(&index_no_oob, ult, index, Operand(limit),
                             Label::Distance::kNear);
   __ EmitEagerDeopt(this, DeoptimizeReason::kOutOfBounds);

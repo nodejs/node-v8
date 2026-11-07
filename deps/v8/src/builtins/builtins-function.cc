@@ -160,12 +160,9 @@ MaybeDirectHandle<Object> CreateDynamicFunction(Isolate* isolate,
         JSFunction::GetDerivedMap(isolate, target, new_target));
 
     DirectHandle<SharedFunctionInfo> shared_info(function->shared(), isolate);
-    DirectHandle<Map> map =
-        Map::AsLanguageMode(isolate, initial_map, shared_info);
-
     DirectHandle<Context> context(function->context(), isolate);
     function = Factory::JSFunctionBuilder{isolate, shared_info, context}
-                   .set_map(map)
+                   .set_map(initial_map)
                    .set_allocation_type(AllocationType::kYoung)
                    .Build();
   }
@@ -299,7 +296,8 @@ BUILTIN(FunctionPrototypeToString) {
     return *JSBoundFunction::ToString(isolate, Cast<JSBoundFunction>(receiver));
   }
   if (IsJSFunction(*receiver)) {
-    return *JSFunction::ToString(isolate, Cast<JSFunction>(receiver));
+    RETURN_RESULT_OR_FAILURE(
+        isolate, JSFunction::ToString(isolate, Cast<JSFunction>(receiver)));
   }
   // With the revised toString behavior, all callable objects are valid
   // receivers for this method.
@@ -313,8 +311,6 @@ BUILTIN(FunctionPrototypeToString) {
                                 "Function.prototype.toString"),
                             isolate->factory()->Function_string()));
 }
-
-#ifndef V8_FUNCTION_ARGUMENTS_CALLER_ARE_OWN_PROPS
 
 namespace {
 
@@ -373,8 +369,6 @@ BUILTIN(FunctionPrototypeLegacyCallerSetter) {
   isolate->CountUsage(v8::Isolate::kFunctionPrototypeCaller);
   return ReadOnlyRoots(isolate).undefined_value();
 }
-
-#endif  // !V8_FUNCTION_ARGUMENTS_CALLER_ARE_OWN_PROPS
 
 }  // namespace internal
 }  // namespace v8

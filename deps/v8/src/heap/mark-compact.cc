@@ -31,6 +31,7 @@
 #include "src/heap/base-page.h"
 #include "src/heap/base/basic-slot-set.h"
 #include "src/heap/concurrent-marking.h"
+#include "src/heap/cppgc-js/cpp-heap.h"
 #include "src/heap/ephemeron-remembered-set.h"
 #include "src/heap/evacuation-allocator-inl.h"
 #include "src/heap/evacuation-verifier.h"
@@ -84,11 +85,10 @@
 #include "src/objects/objects.h"
 #include "src/objects/slots-inl.h"
 #include "src/objects/smi.h"
-#include "src/objects/string-forwarding-table-inl.h"
 #include "src/objects/transitions-inl.h"
 #include "src/objects/visitors.h"
-#include "src/sandbox/indirect-pointer-tag.h"
 #include "src/sandbox/trusted-pointer-table.h"
+#include "src/sandbox/trusted-pointer-tag.h"
 #include "src/snapshot/shared-heap-serializer.h"
 #include "src/tasks/cancelable-task.h"
 #include "src/tracing/tracing-category-observer.h"
@@ -974,7 +974,7 @@ void MarkCompactCollector::SweepArrayBufferExtensions() {
 // they should keep alive its embedded pointers (which would otherwise be
 // dropped).
 // - Prefix of the string table.
-// - If V8_ENABLE_SANDBOX, client Isolates' waiter queue node
+// - If V8_COMPRESS_POINTERS, client Isolates' waiter queue node
 // ExternalPointer_t in shared Isolates.
 class MarkCompactCollector::CustomRootBodyMarkingVisitor final
     : public ObjectVisitorWithCageBases {
@@ -1180,7 +1180,7 @@ class InternalizedStringTableCleaner final : public RootVisitor {
   int pointers_removed_ = 0;
 };
 
-#ifdef V8_ENABLE_SANDBOX
+#ifdef V8_COMPRESS_POINTERS
 class MarkExternalPointerFromExternalStringTable : public RootVisitor {
  public:
   explicit MarkExternalPointerFromExternalStringTable(
@@ -1246,7 +1246,7 @@ class MarkExternalPointerFromExternalStringTable : public RootVisitor {
 
   MarkExternalPointerTableVisitor visitor;
 };
-#endif  // V8_ENABLE_SANDBOX
+#endif  // V8_COMPRESS_POINTERS
 
 // Implementation of WeakObjectRetainer for mark compact GCs. All marked objects
 // are retained.
@@ -1384,12 +1384,12 @@ class RecordMigratedSlotVisitor
   inline void VisitExternalPointer(Tagged<HeapObject> host,
                                    ExternalPointerSlot slot) final {}
 
-  inline void VisitIndirectPointer(Tagged<HeapObject> host,
-                                   IndirectPointerSlot slot,
-                                   IndirectPointerMode mode) final {}
+  inline void VisitTrustedPointer(Tagged<HeapObject> host,
+                                  TrustedPointerSlot slot,
+                                  TrustedPointerMode mode) final {}
 
   inline void VisitTrustedPointerTableEntry(Tagged<HeapObject> host,
-                                            IndirectPointerSlot slot) final {}
+                                            TrustedPointerSlot slot) final {}
 
   inline void VisitProtectedPointer(Tagged<TrustedObject> host,
                                     ProtectedPointerSlot slot) final {
@@ -1611,7 +1611,7 @@ class EvacuateVisitorBase : public HeapObjectVisitor {
     if (V8_LIKELY(dest != CODE_SPACE)) {
       DCHECK_VALID_REGULAR_OBJECT_SIZE(size);
       DCHECK(IsAligned(size, kTaggedSize));
-      base->heap_->CopyBlock(dst_addr, src_addr, size);
+      Heap::CopyBlock(dst_addr, src_addr, object_size);
       if (mode != MigrationMode::kFast) {
         base->ExecuteMigrationObservers(dest, src, dst, size);
       }
@@ -2124,8 +2124,7 @@ void MarkCompactCollector::MarkObjectsFromClientHeap(Isolate* client) {
     }
   }
 
-#ifdef V8_ENABLE_SANDBOX
-  DCHECK(IsSharedExternalPointerType(kExternalStringResourceTag));
+#ifdef V8_COMPRESS_POINTERS
   DCHECK(IsSharedExternalPointerType(kExternalStringResourceDataTag));
   // All ExternalString resources are stored in the shared external pointer
   // table. Mark entries from client heaps.
@@ -2135,7 +2134,7 @@ void MarkCompactCollector::MarkObjectsFromClientHeap(Isolate* client) {
   MarkExternalPointerFromExternalStringTable external_string_visitor(
       &shared_table, shared_space);
   client_heap->external_string_table_.Iterate(&external_string_visitor);
-#endif  // V8_ENABLE_SANDBOX
+#endif  // V8_COMPRESS_POINTERS
 }
 
 bool MarkCompactCollector::MarkTransitiveClosureFixpoint() {
@@ -2539,17 +2538,7 @@ void MarkCompactCollector::RetainMaps() {
                 MarkingHelper::WorklistTarget::kRegular, map);
           }
         }
-        Tagged<Object> prototype = map->prototype();
-        if (age > 0 && IsHeapObject(prototype) &&
-            MarkingHelper::IsUnmarkedAndNotAlwaysLive(
-                heap_, marking_state_, Cast<HeapObject>(prototype))) {
-          // The prototype is not marked, age the map.
-          new_age = age - 1;
-        } else {
-          // The prototype and the constructor are marked, this map keeps only
-          // transition tree alive, not JSObjects. Do not age the map.
-          new_age = age;
-        }
+        new_age = age > 0 ? age - 1 : 0;
       } else {
         new_age = v8_flags.retain_maps_for_n_gc;
       }
@@ -2827,283 +2816,12 @@ ParallelItemBuilder MakeParallelItem(const char* name,
 
 }  // namespace
 
-class FullStringForwardingTableCleaner final
-    : public StringForwardingTableCleanerBase {
- public:
-  explicit FullStringForwardingTableCleaner(Heap* heap)
-      : StringForwardingTableCleanerBase(heap), heap_(heap) {
-    USE(heap_);
-  }
-
-  // Transition all strings in the forwarding table to
-  // ThinStrings/ExternalStrings and clear the table afterwards.
-  void TransitionStrings() {
-    DCHECK(!heap_->IsGCWithStack() ||
-           v8_flags.transition_strings_during_gc_with_stack);
-    StringForwardingTable* forwarding_table =
-        isolate_->string_forwarding_table();
-#ifdef V8_COMPRESS_POINTERS
-    // Black allocate EPT entries for external strings, since marking is already
-    // finished when we transition strings. We only transition strings that are
-    // alive.
-    isolate_->shared_external_pointer_space()->set_allocate_black(true);
-#endif  // V8_COMPRESS_POINTERS
-    forwarding_table->IterateElements(
-        [&](StringForwardingTable::Record* record) {
-          TransitionStrings(record);
-        });
-    forwarding_table->Reset();
-#ifdef V8_COMPRESS_POINTERS
-    isolate_->shared_external_pointer_space()->set_allocate_black(false);
-#endif  // V8_COMPRESS_POINTERS
-  }
-
-  // When performing GC with a stack, we conservatively assume that
-  // the GC could have been triggered by optimized code. Optimized code
-  // assumes that flat strings don't transition during GCs, so we are not
-  // allowed to transition strings to ThinString/ExternalString in that
-  // case.
-  // Instead we mark forward objects to keep them alive and update entries
-  // of evacuated objects later.
-  void ProcessFullWithStack() {
-    DCHECK(heap_->IsGCWithStack() &&
-           !v8_flags.transition_strings_during_gc_with_stack);
-    StringForwardingTable* forwarding_table =
-        isolate_->string_forwarding_table();
-    forwarding_table->IterateElements(
-        [&](StringForwardingTable::Record* record) {
-          MarkForwardObject(record);
-        });
-  }
-
- private:
-  void MarkForwardObject(StringForwardingTable::Record* record) {
-    Tagged<Object> original = record->OriginalStringObject(isolate_);
-    if (!IsHeapObject(original)) {
-      DCHECK_EQ(original, StringForwardingTable::deleted_element());
-      return;
-    }
-    Tagged<String> original_string = Cast<String>(original);
-    if (MarkingHelper::IsMarkedOrAlwaysLive(heap_, marking_state_,
-                                            original_string)) {
-      Tagged<Object> forward = record->ForwardStringObjectOrHash(isolate_);
-      if (!IsHeapObject(forward) ||
-          (MarkingHelper::GetLivenessMode(heap_, Cast<HeapObject>(forward)) ==
-           MarkingHelper::LivenessMode::kAlwaysLive)) {
-        return;
-      }
-      if (marking_state_->TryMarkAndAccountLiveBytes(
-              Cast<HeapObject>(forward))) {
-        // Visit the forward string. This is necessary as
-        // TryMarkAndAccountLiveBytes only marks the forward string itself, but
-        // doesn't visit any of its fields. For i.e. ExternalStrings we need
-        // to mark the EPT entries for the external resources as well.
-        marking_visitor_->Visit(Cast<HeapObject>(forward));
-        // If we just marked the forwarded string, it wasn't kept alive by
-        // anything but this entry in the forwarding table.
-        // This could mean that previous entries in the table with
-        // `original_string` equal to the current `forward_string` might have
-        // been considered dead. This is in general not a problem, but we need
-        // to reset the hash to not be a forwarding index anymore.
-        // I.e. An internalized string gets externalized (creating an entry A in
-        // the forwarding table with the external resource), followed by
-        // internalization of a shared string with the same content (creating an
-        // entry B in the forwarding table with the internalized string of A
-        // being the forwarded string of B).
-        // If the string in A is only live due to B, we dispose the external
-        // resource in A. When we later iterate entry B, we mark the forwarded
-        // string (the string in entry A) as alive, which now still has the
-        // forwarding index as it's hash (as it was considered dead previously).
-        Cast<String>(forward)->set_raw_hash_field(record->raw_hash(isolate_));
-      }
-    } else {
-      DisposeExternalResource(record);
-      record->set_original_string(StringForwardingTable::deleted_element());
-    }
-  }
-
-  void TransitionStrings(StringForwardingTable::Record* record) {
-    Tagged<Object> original = record->OriginalStringObject(isolate_);
-    if (!IsHeapObject(original)) {
-      DCHECK_EQ(original, StringForwardingTable::deleted_element());
-      return;
-    }
-    if (MarkingHelper::IsMarkedOrAlwaysLive(heap_, marking_state_,
-                                            Cast<HeapObject>(original))) {
-      Tagged<String> original_string = Cast<String>(original);
-      if (IsThinString(original_string)) {
-        original_string = Cast<ThinString>(original_string)->actual();
-      }
-      TryExternalize(original_string, record);
-      TryInternalize(original_string, record);
-      if (!HeapLayout::InReadOnlySpace(original_string)) {
-        original_string->set_raw_hash_field(record->raw_hash(isolate_));
-      }
-    } else {
-      DisposeExternalResource(record);
-    }
-  }
-
-  void TryExternalize(Tagged<String> original_string,
-                      StringForwardingTable::Record* record) {
-    // If the string is already external, dispose the resource.
-    if (IsExternalString(original_string)) {
-      record->DisposeUnusedExternalResource(isolate_, original_string);
-      return;
-    }
-
-    bool is_one_byte;
-    v8::String::ExternalStringResourceBase* external_resource =
-        record->external_resource(&is_one_byte);
-    if (external_resource == nullptr) return;
-
-    if (is_one_byte) {
-      // The string could have been internalized in the meantime and converted
-      // to a ThinString, with the actual string pointing to a
-      // non-externalizable string (e.g. in RO space).
-      if (V8_UNLIKELY(!original_string->SupportsExternalization(
-              v8::String::Encoding::ONE_BYTE_ENCODING))) {
-        DisposeExternalResource(record);
-        return;
-      }
-      original_string->MakeExternalDuringGC(
-          isolate_,
-          reinterpret_cast<v8::String::ExternalOneByteStringResource*>(
-              external_resource));
-    } else {
-      // The string could have been internalized in the meantime and converted
-      // to a ThinString, with the actual string pointing to a
-      // non-externalizable string (e.g. in RO space).
-      if (V8_UNLIKELY(!original_string->SupportsExternalization(
-              v8::String::Encoding::TWO_BYTE_ENCODING))) {
-        DisposeExternalResource(record);
-        return;
-      }
-      original_string->MakeExternalDuringGC(
-          isolate_, reinterpret_cast<v8::String::ExternalStringResource*>(
-                        external_resource));
-    }
-  }
-
-  void TryInternalize(Tagged<String> original_string,
-                      StringForwardingTable::Record* record) {
-    if (IsInternalizedString(original_string)) return;
-    Tagged<Object> forward = record->ForwardStringObjectOrHash(isolate_);
-    if (!IsHeapObject(forward)) {
-      return;
-    }
-    Tagged<InternalizedString> forward_string =
-        Cast<InternalizedString>(forward);
-
-    // Mark the forwarded string to keep it alive.
-    if (MarkingHelper::GetLivenessMode(heap_, forward_string) !=
-        MarkingHelper::LivenessMode::kAlwaysLive) {
-      if (marking_state_->TryMarkAndAccountLiveBytes(forward_string)) {
-        // Visit the forward string. This is necessary as
-        // TryMarkAndAccountLiveBytes only marks the forward string itself, but
-        // doesn't visit any of its fields. For i.e. ExternalStrings we need
-        // to mark the EPT entries for the external resources as well.
-        marking_visitor_->Visit(Cast<HeapObject>(forward));
-        // If we just marked the forwarded string, it wasn't kept alive by
-        // anything but this entry in the forwarding table.
-        // This could mean that previous entries in the table with
-        // `original_string` equal to the current `forward_string` might have
-        // been considered dead. This is in general not a problem, but we need
-        // to reset the hash to not be a forwarding index anymore.
-        // I.e. An internalized string gets externalized (creating an entry A in
-        // the forwarding table with the external resource), followed by
-        // internalization of a shared string with the same content (creating an
-        // entry B in the forwarding table with the internalized string of A
-        // being the forwarded string of B).
-        // If the string in A is only live due to B, we dispose the external
-        // resource in A. When we later iterate entry B, we mark the forwarded
-        // string (the string in entry A) as alive, which now still has the
-        // forwarding index as it's hash (as it was considered dead previously).
-        forward_string->set_raw_hash_field(record->raw_hash(isolate_));
-      }
-    }
-    // Transition the original string to a ThinString and override the
-    // forwarding index with the correct hash.
-    original_string->MakeThin(isolate_, forward_string);
-    // Record the slot in the old-to-old remembered set. This is
-    // required as the internalized string could be relocated during
-    // compaction.
-    ObjectSlot slot(&Cast<ThinString>(original_string)->actual_);
-    MarkCompactCollector::RecordSlot(original_string, slot, forward_string);
-  }
-
-  Heap* const heap_;
-};
-
-namespace {
-
-class SharedStructTypeRegistryCleaner final : public RootVisitor {
- public:
-  explicit SharedStructTypeRegistryCleaner(Heap* heap) : heap_(heap) {}
-
-  void VisitRootPointers(Root root, const char* description,
-                         FullObjectSlot start, FullObjectSlot end) override {
-    UNREACHABLE();
-  }
-
-  void VisitCompressedRootPointers(Root root, const char* description,
-                                   OffHeapObjectSlot start,
-                                   OffHeapObjectSlot end) override {
-    DCHECK_EQ(root, Root::kSharedStructTypeRegistry);
-    // The SharedStructTypeRegistry holds the canonical SharedStructType
-    // instance maps weakly. Visit all Map pointers in [start, end), deleting
-    // it if unmarked.
-    auto* marking_state = heap_->marking_state();
-    Isolate* const isolate = heap_->isolate();
-    for (OffHeapObjectSlot p = start; p < end; p++) {
-      Tagged<Object> o = p.load(isolate);
-      DCHECK(!IsString(o));
-      if (IsMap(o)) {
-        Tagged<HeapObject> map = Cast<Map>(o);
-        DCHECK(HeapLayout::InAnySharedSpace(map));
-        if (MarkingHelper::IsMarkedOrAlwaysLive(heap_, marking_state, map)) {
-          continue;
-        }
-        elements_removed_++;
-        p.store(SharedStructTypeRegistry::deleted_element());
-      }
-    }
-  }
-
-  int ElementsRemoved() const { return elements_removed_; }
-
- private:
-  Heap* heap_;
-  int elements_removed_ = 0;
-};
-
-}  // namespace
-
 void MarkCompactCollector::ClearNonLiveReferences() {
   TRACE_GC(heap_->tracer(), GCTracer::Scope::MC_CLEAR);
 
   auto parallel_clearing_job = std::make_unique<ParallelClearingJob>(this);
   Isolate* const isolate = heap_->isolate();
   std::atomic<int> string_table_removed_count{0};
-
-  if (isolate->is_shared_space_isolate() ||
-      V8_UNLIKELY(v8_flags.always_use_string_forwarding_table)) {
-    TRACE_GC(heap_->tracer(),
-             GCTracer::Scope::MC_CLEAR_STRING_FORWARDING_TABLE);
-    // Clear string forwarding table. Live strings are transitioned to
-    // ThinStrings/ExternalStrings in the cleanup process, if this is a GC
-    // without stack.
-    // Clearing the string forwarding table must happen before clearing
-    // the string table, as entries in the forwarding table can keep
-    // internalized strings alive.
-    FullStringForwardingTableCleaner forwarding_table_cleaner(heap_);
-    if (!heap_->IsGCWithStack() ||
-        v8_flags.transition_strings_during_gc_with_stack) {
-      forwarding_table_cleaner.TransitionStrings();
-    } else {
-      forwarding_table_cleaner.ProcessFullWithStack();
-    }
-  }
 
   {
     // Clear Isolate::topmost_script_having_context slot if it's not alive.
@@ -3172,27 +2890,6 @@ void MarkCompactCollector::ClearNonLiveReferences() {
       TRACE_GC_NOTE_WITH_FLOW("ClearStringTableJob started",
                               perfetto::Flow::ProcessScoped(item->trace_id()));
     }
-  }
-
-  if (isolate->is_shared_space_isolate() &&
-      isolate->shared_struct_type_registry()) {
-    [[maybe_unused]] auto item =
-        MakeParallelItem(
-            "ClearSharedStructTypeRegistry",
-            [this, isolate](ParallelItem* item, JobDelegate* delegate) {
-              TRACE_GC1_WITH_FLOW(
-                  heap()->tracer(),
-                  GCTracer::Scope::MC_CLEAR_SHARED_STRUCT_TYPE_REGISTRY,
-                  delegate,
-                  perfetto::TerminatingFlow::ProcessScoped(item->trace_id()));
-              auto* registry = isolate->shared_struct_type_registry();
-              SharedStructTypeRegistryCleaner cleaner(heap());
-              registry->IterateElements(isolate, &cleaner);
-              registry->NotifyElementsRemoved(cleaner.ElementsRemoved());
-            })
-            .Enqueue(parallel_clearing_job);
-    TRACE_GC_NOTE_WITH_FLOW("ClearSharedStructTypeRegistryJob started",
-                            perfetto::Flow::ProcessScoped(item->trace_id()));
   }
 
   auto clear_external_string_table =
@@ -3720,7 +3417,7 @@ void MarkCompactCollector::FlushBytecodeFromSFI(
   // Mark the new entry in the trusted pointer table as alive.
   TrustedPointerTable& table = heap_->isolate()->trusted_pointer_table();
   TrustedPointerTable::Space* space = heap_->trusted_pointer_space();
-  table.Mark(space, uncompiled_data->self_indirect_pointer_handle());
+  table.Mark(space, uncompiled_data->self_trusted_pointer_handle());
 #endif
 
   shared_info->set_uncompiled_data(uncompiled_data);
@@ -3762,13 +3459,13 @@ void MarkCompactCollector::ProcessOldCodeCandidates() {
     bool is_unpublished =
         flushing_candidate->HasUnpublishedTrustedData(isolate);
     if (is_unpublished) {
-      IndirectPointerHandle handle =
-          flushing_candidate->Relaxed_ReadField<IndirectPointerHandle>(
+      TrustedPointerHandle handle =
+          flushing_candidate->Relaxed_ReadField<TrustedPointerHandle>(
               offsetof(SharedFunctionInfo, trusted_function_data_));
 
       // Read the object from the table. It is now an UncompiledData.
       Address obj_addr = isolate->trusted_pointer_table().GetMaybeUnpublished(
-          handle, kBytecodeArrayIndirectPointerTag);
+          handle, kBytecodeArrayTrustedPointerTag);
       Tagged<TrustedObject> trusted_obj =
           UncheckedCast<TrustedObject>(Tagged<Object>(obj_addr));
       Tagged<UncompiledData> uncompiled_data =
@@ -4074,13 +3771,13 @@ void RightTrimDescriptorArray(Heap* heap, Tagged<DescriptorArray> array,
       array->GetDescriptorSlot(old_nof_all_descriptors).address();
   MutablePage* chunk = MutablePage::FromHeapObject(heap->isolate(), array);
   RememberedSet<OLD_TO_NEW>::RemoveRange(chunk, start, end,
-                                         SlotSet::FREE_EMPTY_BUCKETS);
+                                         SlotSet::KEEP_EMPTY_BUCKETS);
   RememberedSet<OLD_TO_NEW_BACKGROUND>::RemoveRange(
-      chunk, start, end, SlotSet::FREE_EMPTY_BUCKETS);
+      chunk, start, end, SlotSet::KEEP_EMPTY_BUCKETS);
   RememberedSet<OLD_TO_SHARED>::RemoveRange(chunk, start, end,
-                                            SlotSet::FREE_EMPTY_BUCKETS);
+                                            SlotSet::KEEP_EMPTY_BUCKETS);
   RememberedSet<OLD_TO_OLD>::RemoveRange(chunk, start, end,
-                                         SlotSet::FREE_EMPTY_BUCKETS);
+                                         SlotSet::KEEP_EMPTY_BUCKETS);
   const Address aligned_start = ALIGN_TO_ALLOCATION_ALIGNMENT(start);
   const Address aligned_end = ALIGN_TO_ALLOCATION_ALIGNMENT(end);
   if (aligned_start < aligned_end) {
@@ -4130,12 +3827,35 @@ void MarkCompactCollector::TrimDescriptorArray(
   DCHECK_IMPLIES(to_trim == 0, descriptors->number_of_all_descriptors() ==
                                    number_of_own_descriptors);
   if (to_trim > 0) {
+#ifdef V8_ENABLE_DESCRIPTOR_ARRAY_LOOKUP_TABLE
+    const int old_nof_descriptors = descriptors->number_of_descriptors();
+    // TODO(572302954): add heuristics for trimming the lookup table too.
+    if (number_of_own_descriptors <=
+        DescriptorArray::kMaxElementsForLinearSearch) {
+      descriptors->set_lookup_table(ReadOnlyRoots(heap_).undefined_value(),
+                                    SKIP_WRITE_BARRIER);
+    } else if (old_nof_descriptors - number_of_own_descriptors <=
+               number_of_own_descriptors) {
+      descriptors->RemoveFromLookupTable(old_nof_descriptors,
+                                         number_of_own_descriptors);
+    } else {
+      descriptors->RebuildLookupTable(number_of_own_descriptors);
+    }
+#endif  // V8_ENABLE_DESCRIPTOR_ARRAY_LOOKUP_TABLE
     descriptors->set_number_of_descriptors(number_of_own_descriptors);
     if (can_trim) {
       RightTrimDescriptorArray(heap_, descriptors, to_trim);
+    } else {
+      MemsetTagged(descriptors->GetDescriptorSlot(number_of_own_descriptors),
+                   ReadOnlyRoots(heap_).undefined_value(),
+                   to_trim * DescriptorArray::kEntrySize);
     }
     TrimEnumCache(heap_, map, descriptors);
+#ifdef V8_ENABLE_DESCRIPTOR_ARRAY_LOOKUP_TABLE
+    DCHECK(descriptors->VerifyLookupTable());
+#else
     descriptors->Sort();
+#endif  // V8_ENABLE_DESCRIPTOR_ARRAY_LOOKUP_TABLE
   }
   DCHECK_IMPLIES(can_trim, descriptors->number_of_all_descriptors() ==
                                number_of_own_descriptors);
@@ -5850,18 +5570,6 @@ void MarkCompactCollector::UpdatePointersAfterEvacuation() {
     heap_->external_string_table_.UpdateReferences(
         &UpdateReferenceInExternalStringTableEntry);
 
-    // Update pointers in string forwarding table.
-    // When GC was performed without a stack, the table was cleared and this
-    // does nothing. In the case this was a GC with stack, we need to update
-    // the entries for evacuated objects.
-    // All entries are objects in shared space (unless
-    // --always-use-forwarding-table), so we only need to update pointers during
-    // a shared GC.
-    if (heap_->isolate()->is_shared_space_isolate() ||
-        V8_UNLIKELY(v8_flags.always_use_string_forwarding_table)) {
-      heap_->isolate()->string_forwarding_table()->UpdateAfterFullEvacuation();
-    }
-
     EvacuationWeakObjectRetainer evacuation_object_retainer;
     heap_->ProcessWeakListRoots(&evacuation_object_retainer);
   }
@@ -5964,7 +5672,7 @@ void MarkCompactCollector::UpdatePointersInPointerTables() {
                                             Address content) {
       Tagged<ExposedTrustedObject> relocated_object = process_entry(content);
       if (relocated_object.is_null()) return;
-      DCHECK_EQ(handle, relocated_object->self_indirect_pointer_handle());
+      DCHECK_EQ(handle, relocated_object->self_trusted_pointer_handle());
       table.Update(handle, relocated_object.ptr());
     });
   };
