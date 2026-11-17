@@ -18,7 +18,7 @@ git-node v8 major --branch=lkgr --base-dir="$GITHUB_WORKSPACE"
 
 # Cherry-pick the floating V8 patches Node.js maintains on master.
 # Canary-base is the last good version of canary, and is manually updated with any V8 patches or backports.
-git cherry-pick `git log upstream/canary-base -1 --format=format:%H --grep "src: update NODE_MODULE_VERSION"`...upstream/canary-base
+git cherry-pick --empty=drop `git log upstream/canary-base -1 --format=format:%H --grep "src: update NODE_MODULE_VERSION"`...upstream/canary-base
 
 # Clean the repository so we're sure the build doesn't accidentally depend on gitignored files
 git clean -fdx
