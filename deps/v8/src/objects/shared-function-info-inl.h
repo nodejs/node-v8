@@ -13,10 +13,10 @@
 #include "src/base/macros.h"
 #include "src/base/platform/mutex.h"
 #include "src/base/strong-alias.h"
+#include "src/base/synchronization-point-support.h"
 #include "src/builtins/builtins.h"
 #include "src/codegen/optimized-compilation-info.h"
 #include "src/common/globals.h"
-#include "src/common/synchronization-point-support.h"
 #include "src/handles/handles-inl.h"
 #include "src/heap/heap-write-barrier-inl.h"
 #include "src/objects/abstract-code.h"
@@ -377,14 +377,9 @@ bool SharedFunctionInfo::HasSharedName() const {
 }
 
 Tagged<String> SharedFunctionInfo::Name() const {
-  if (!HasSharedName()) return GetReadOnlyRoots().empty_string();
   Tagged<Object> value = name_or_scope_info(kAcquireLoad);
-  if (IsScopeInfo(value)) {
-    if (Cast<ScopeInfo>(value)->HasFunctionName()) {
-      return Cast<String>(Cast<ScopeInfo>(value)->FunctionName());
-    }
-    return GetReadOnlyRoots().empty_string();
-  }
+  if (IsScopeInfo(value)) value = Cast<ScopeInfo>(value)->FunctionName();
+  if (value == kNoSharedNameSentinel) return GetReadOnlyRoots().empty_string();
   return Cast<String>(value);
 }
 
@@ -756,6 +751,20 @@ Tagged<ScopeInfo> SharedFunctionInfo::GetOuterScopeInfo() const {
     return info->OuterScopeInfo();
   }
   return Cast<ScopeInfo>(outer_scope_info());
+}
+
+uint32_t SharedFunctionInfo::context_extension_count() const {
+  DCHECK(is_wrapped());
+  if (!HasOuterScopeInfo()) return 0;
+  uint32_t count = 0;
+  Tagged<ScopeInfo> scope_info = GetOuterScopeInfo();
+  while (true) {
+    DCHECK_EQ(scope_info->scope_type(), WITH_SCOPE);
+    count++;
+    if (!scope_info->HasOuterScopeInfo()) break;
+    scope_info = scope_info->OuterScopeInfo();
+  }
+  return count;
 }
 
 Tagged<ScopeInfo> SharedFunctionInfo::TryGetScopeInfoForMerge() const {

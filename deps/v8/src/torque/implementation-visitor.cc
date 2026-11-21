@@ -761,22 +761,6 @@ void ImplementationVisitor::Visit(Builtin* builtin) {
                      << "Descriptor::kJSTarget);\n";
         csa_ccfile() << "  USE(" << generated_name << ");\n";
         expected_types = {TypeOracle::GetJSFunctionType()};
-      } else if (param_name == "dispatchHandle") {
-        if (V8_JS_LINKAGE_INCLUDES_DISPATCH_HANDLE_BOOL) {
-          csa_ccfile() << "  TNode<JSDispatchHandleT> " << generated_name
-                       << " = "
-                          "UncheckedParameter<JSDispatchHandleT>(Descriptor::"
-                          "kJSDispatchHandle);\n";
-        } else {
-          csa_ccfile() << "  TNode<JSDispatchHandleT> " << generated_name
-                       << " = "
-                          "ReinterpretCast<JSDispatchHandleT>("
-                          "LoadJSFunctionDispatchHandle("
-                          "UncheckedParameter<JSFunction>("
-                       << "Descriptor::kJSTarget)));\n";
-        }
-        csa_ccfile() << "  USE(" << generated_name << ");\n";
-        expected_types = {TypeOracle::GetDispatchHandleType()};
       } else {
         Error(
             "Unexpected implicit parameter \"", param_name,
@@ -1821,8 +1805,6 @@ VisitResult ImplementationVisitor::Visit(NewExpression* expr) {
   Arguments allocate_arguments;
   allocate_arguments.parameters.push_back(layout.size);
   allocate_arguments.parameters.push_back(object_map);
-  allocate_arguments.parameters.push_back(
-      GenerateBoolConstant(expr->pretenured));
   allocate_arguments.parameters.push_back(
       GenerateBoolConstant(expr->clear_padding));
   VisitResult allocate_result = GenerateCall(
@@ -3440,8 +3422,9 @@ VisitResult ImplementationVisitor::Visit(CallMethodExpression* expr) {
   StackScope scope(this);
   Arguments arguments;
   std::string method_name = expr->method->name->value;
-  TypeVector specialization_types =
-      TypeVisitor::ComputeTypeVector(expr->method->generic_arguments);
+  // Method calls don't use the generic arguments, but resolve them anyway so
+  // that invalid types are still reported.
+  TypeVisitor::ComputeTypeVector(expr->method->generic_arguments);
   LocationReference target = GetLocationReference(expr->target);
   if (!target.IsVariableAccess()) {
     VisitResult result = GenerateFetchFromLocation(target);
@@ -3456,7 +3439,6 @@ VisitResult ImplementationVisitor::Visit(CallMethodExpression* expr) {
     arguments.parameters.push_back(Visit(arg));
   }
   arguments.labels = LabelsFromIdentifiers(expr->labels);
-  TypeVector argument_types = arguments.parameters.ComputeTypeVector();
   DCHECK_EQ(expr->method->namespace_qualification.size(), 0);
   QualifiedName qualified_name = QualifiedName(method_name);
   Callable* callable = LookupMethod(method_name, target_type, arguments, {});
@@ -4347,7 +4329,7 @@ void ImplementationVisitor::GenerateEnumVerifiers(
     NamespaceScope cc_namespaces(cc_contents, {"v8", "internal", ""});
 
     cc_contents << "class EnumVerifier {\n";
-    for (const auto& desc : GlobalContext::Get().ast()->EnumDescriptions()) {
+    for (const auto& desc : GlobalContext::ast()->EnumDescriptions()) {
       std::stringstream alias_checks;
       cc_contents << "  // " << desc.name << " (" << desc.pos << ")\n";
       cc_contents << "  void VerifyEnum_" << desc.name << "("

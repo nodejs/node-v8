@@ -4,6 +4,15 @@
 
 #include "experimental/redline/engine/prelude.h"
 
+#include <algorithm>
+#include <utility>
+#include <vector>
+
+#include "experimental/redline/base/log.h"
+#include "experimental/redline/fast/ast.h"
+#include "experimental/redline/fast/parser.h"
+#include "experimental/redline/fast/printer.h"
+
 namespace redline {
 
 namespace {
@@ -68,6 +77,51 @@ var prettyPrinted = function(v) { try { return String(v); } catch (e) { return "
 var deepEquals = function(a, b) { return a == b; };
 var promiseTestChain = Promise.resolve();
 var MjsUnitAssertionError = function(m) { this.message = m; };
+var Test262Error = function(m) {
+  if (!(this instanceof Test262Error)) return new Test262Error(m);
+  this.message = m || "";
+};
+Test262Error.prototype.toString = function() { return "Test262Error: " + this.message; };
+Test262Error.thrower = __redline_noop;
+var $ERROR = __redline_noop;
+var $DONE = __redline_noop;
+var $DONOTEVALUATE = __redline_noop;
+var __consolePrintHandle__ = __redline_noop;
+var isNegativeZero = function(v) { return v === 0 && 1 / v === -Infinity; };
+var isPrimitive = function(v) { return !v || (typeof v !== "object" && typeof v !== "function"); };
+var formatIdentityFreeValue = function(v) { return isPrimitive(v) && typeof v !== "symbol" ? prettyPrinted(v) : undefined; };
+var formatSimpleValue = prettyPrinted;
+var compareArray = function(a, b) { return !!(a && b && a.length === b.length); };
+compareArray.isSameValue = Object.is;
+compareArray.format = prettyPrinted;
+var assert = function(c) { return !!c; };
+assert._isSameValue = function(a, b) { return Object.is(a, b); };
+assert.sameValue = function(a, b) { return Object.is(a, b); };
+assert.notSameValue = function(a, b) { return !Object.is(a, b); };
+assert.throws = function(e, f) { return __redline_call(f); };
+assert.compareArray = compareArray;
+assert._formatIdentityFreeValue = formatIdentityFreeValue;
+assert._toString = formatSimpleValue;
+var __redline_realm = function(r, g) {
+  var o = {
+    evalScript: function(s) {
+      var cr = r === undefined && typeof Realm === "object" && Realm.current ? Realm.current() : r;
+      return typeof Realm === "object" && Realm.eval && cr !== undefined ? Realm.eval(cr, s) : __redline_call(s);
+    },
+    createRealm: function() {
+      var nr = typeof Realm === "object" && Realm.createAllowCrossRealmAccess ? Realm.createAllowCrossRealmAccess() : undefined;
+      var ng = nr !== undefined && typeof Realm === "object" && Realm.global ? Realm.global(nr) : (nr !== undefined && Realm.eval ? Realm.eval(nr, "this") : globalThis);
+      return __redline_realm(nr, ng);
+    },
+    detachArrayBuffer: function(b) { try { %ArrayBufferDetach(b); } catch (e) {} },
+    gc: function() { try { gc(); } catch (e) {} },
+    global: g || globalThis,
+    IsHTMLDDA: __redline_noop
+  };
+  try { (g || globalThis).$262 = o; } catch (e) {}
+  return o;
+};
+var $262 = __redline_realm(undefined, globalThis);
 var load = __redline_noop;
 var quit = __redline_noop;
 var testRunner = { quit: __redline_noop };
@@ -77,5 +131,92 @@ try { if (typeof d8 === "object" && d8.file) d8.file.execute = __redline_noop; }
 }  // namespace
 
 std::string_view DefaultPrelude() { return kDefaultPrelude; }
+
+// static
+std::unique_ptr<ScriptTree> ScriptTree::Parse(std::string_view prelude,
+                                              std::string_view program,
+                                              std::string* error) {
+  fast::ParseError parse_error;
+  size_t prelude_count = 0;
+  if (!prelude.empty()) {
+    std::unique_ptr<fast::Tree> alone =
+        fast::Parser::ParseScript(prelude, fast::ParseOptions(), &parse_error);
+    if (alone == nullptr) {
+      *error = "the prelude does not parse: " + parse_error.ToString();
+      return nullptr;
+    }
+    prelude_count = alone->root()->body.size();
+  }
+  std::unique_ptr<fast::Tree> alone =
+      fast::Parser::ParseScript(program, fast::ParseOptions(), &parse_error);
+  if (alone == nullptr) {
+    *error = "the program does not parse: " + parse_error.ToString();
+    return nullptr;
+  }
+  const size_t program_count = alone->root()->body.size();
+  std::unique_ptr<ScriptTree> script(new ScriptTree());
+  if (prelude.empty()) {
+    script->tree_ = std::move(alone);
+  } else {
+    std::string text;
+    text.reserve(prelude.size() + 1 + program.size());
+    text.append(prelude).append("\n").append(program);
+    script->tree_ =
+        fast::Parser::ParseScript(text, fast::ParseOptions(), &parse_error);
+    if (script->tree_ == nullptr) {
+      *error = "the script does not parse: " + parse_error.ToString();
+      return nullptr;
+    }
+  }
+  const std::vector<fast::Statement*>& body = script->tree_->root()->body;
+  // For example, a prelude that ends without a semicolon can continue in
+  // the first statement of the program.
+  if (body.size() != prelude_count + program_count) {
+    *error = StringPrintf(
+        "the script has %zu top-level statements, not %zu of the prelude and "
+        "%zu of the program",
+        body.size(), prelude_count, program_count);
+    return nullptr;
+  }
+  for (size_t i = 0; i < prelude_count; i++) {
+    fast::Walk(body[i], [&](fast::Node* node) {
+      script->first_program_id_ =
+          std::max(script->first_program_id_, node->id + 1);
+      return true;
+    });
+  }
+  script->prelude_statements_ = prelude_count;
+  return script;
+}
+
+size_t ScriptTree::PreludeStatementsNow() const {
+  const std::vector<fast::Statement*>& body = tree_->root()->body;
+  return static_cast<size_t>(std::count_if(
+      body.begin(), body.end(),
+      [this](const fast::Statement* s) { return FromPrelude(s); }));
+}
+
+size_t ScriptTree::ProgramNodes() const {
+  size_t nodes = 1;  // the root
+  for (const fast::Statement* statement : tree_->root()->body) {
+    if (!FromPrelude(statement)) {
+      nodes += fast::CountNodes(statement);
+    }
+  }
+  return nodes;
+}
+
+std::string ScriptTree::PrintProgram() {
+  // Print the root with only the program statements, then restore it.
+  std::vector<fast::Statement*>& body = tree_->root()->body;
+  std::vector<fast::Statement*> all = body;
+  body.erase(std::remove_if(
+                 body.begin(), body.end(),
+                 [this](const fast::Statement* s) { return FromPrelude(s); }),
+             body.end());
+  std::string text = fast::Print(tree_->root());
+  body = std::move(all);
+  return text;
+}
 
 }  // namespace redline

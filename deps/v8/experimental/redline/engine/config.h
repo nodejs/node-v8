@@ -7,10 +7,12 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "experimental/redline/core/selection.h"
+#include "experimental/redline/corpus/feature_weights.h"
 #include "experimental/redline/engine/stages.h"
 #include "experimental/redline/exec/target_options.h"
 #include "experimental/redline/minimizer/minimizer.h"
@@ -93,6 +95,15 @@ struct FuzzConfig {
   bool value_prefix = true;
   int prefix_min_values = 10;
   int prefix_extra_values = 5;
+  // Also prefix the empty program when a chain starts from scratch, like
+  // Fuzzilli's GenerativeEngine (buildPrefix() before build()). Then the
+  // first generators of a new program have values to use.
+  bool prefix_from_scratch = true;
+  // A chain from the empty program uses only the CodeGen mutator until
+  // this many of its links ran without an error (min 1). Then a new
+  // program gets several rounds of generated code, like the 10
+  // instructions of Fuzzilli's GenerativeEngine.
+  int scratch_codegen_links = 3;
   bool minimize = true;
   // Minimizer probes run with a timeout derived from the execution time of
   // the program being reduced:
@@ -123,6 +134,28 @@ struct FuzzConfig {
   // params as JSON text (engine/amplifier.h). "none" turns the step off.
   std::string amplify_strategy = "flags";
   std::string amplify_params = "{}";
+  // The "coverage" block: coverage counters and change-based fuzzing
+  // (exec/coverage.h, corpus/feature_weights.h). They need a d8 built with
+  // sanitizer_coverage_flags="inline-8bit-counters,pc-table". `targets_file`
+  // is a file of tools/change_targets.py (empty: no targets).
+  std::string targets_file;
+  bool watch_optimized = true;
+  // Change-based fuzzing: use the focus of the targets file
+  // (corpus/feature_weights.h).
+  bool focus = true;
+  // Report the crashes of minimizer probes and determinism reruns too.
+  bool harvest_crashes = true;
+  // Give each new target process a random set of extra d8 flags
+  // (engine/d8_flags.h). The reruns, the minimization and the crash triage
+  // of a program keep the flags of the process that ran it.
+  bool randomize_d8_flags = false;
+  // The flag profile of randomize_d8_flags: "maglev", "turbolev" or "fuzzilli"
+  // (engine/d8_flags.h).
+  std::string d8_flag_profile = "maglev";
+  // Coverage counters: the minimizer keeps only the new code edges and the
+  // target features of a program (Worker::MinimizationProperty).
+  bool minimize_code_edges = true;
+  FeatureWeights::Params feature_weights;
   MinimizerOptions minimizer;
   // The minimizer's reducers, in the order they run (stages.minimize.reducers).
   // Empty: the default order (Minimizer::DefaultOrder).
@@ -149,8 +182,10 @@ struct FuzzConfig {
   // stage parameters are the policy fields above; the "stages" block of
   // the configuration groups them by stage:
   //   "stages": {
-  //     "prefix":   {"enabled": true, "min_values": 10, "extra_values": 5},
-  //     "mutate":   {"consecutive": 5, "rounds": 0, "log": "events",
+  //     "prefix":   {"enabled": true, "min_values": 10, "extra_values": 5,
+  //                  "from_scratch": true},
+  //     "mutate":   {"consecutive": 5, "rounds": 0, "scratch_codegen": 3,
+  //                  "log": "events",
   //                  "capture": {"on": ["timeout"], "mutators": ["Splice"],
   //                  "max": 50}},
   //     "check":    {"min_reruns": 5, "min_stable_reruns": 1, "max_reruns": 50,
@@ -175,8 +210,9 @@ struct FuzzConfig {
   // that is deterministic enough.
   int crash_reruns_stop_after = 2;
   // Crash files saved per signature; later crashes with the same signature
-  // are only counted. The first `minimize_crashes_per_signature` of them
-  // are minimized (if they reproduce).
+  // are only counted. At most `minimize_crashes_per_signature` crashes of
+  // one signature hold a minimize slot at the same time. A crash gives back
+  // its slot if Redline does not minimize it.
   int max_crashes_per_signature = 5;
   int minimize_crashes_per_signature = 2;
   // For crashes that do not reproduce in a fresh target: up to this many of
@@ -186,13 +222,45 @@ struct FuzzConfig {
   int crash_history = 100;
   // ... spending at most this long per crash.
   double crash_history_budget_sec = 90;
+  // A state-dependent crash also gets NAME.bundle.js, a d8 bundle of the
+  // needed history and the crash program for `d8 --bundle-reprl`. Redline
+  // runs it in up to this many plain d8 processes, within
+  // crash_history_budget_sec, and writes how many crashed (0: no runs).
+  int crash_bundle_runs = 3;
   // Budget for minimizing crashes (they are rare and worth more tests than
   // corpus programs).
-  MinimizerOptions crash_minimizer{/*max_tests=*/1000,
+  MinimizerOptions crash_minimizer{/*max_tests=*/2000,
                                    /*max_time_ms=*/120000,
-                                   /*max_rounds=*/4,
-                                   /*target_time_ms=*/30000,
+                                   /*max_rounds=*/10,
+                                   /*target_time_ms=*/120000,
                                    /*min_tests=*/200};
+  // The reducers of the crash minimizer, in the order they run
+  // (crash_minimizer.reducers). An empty list gives the default order,
+  // Minimizer::CrashOrder().
+  std::vector<std::string> crash_minimizer_reducers;
+  // The d8 flags of NAME.repro.js (DESIGN.md 5.6). Redline removes the flags
+  // that the crash does not need. Each candidate list of flags runs in
+  // crash_flag_runs fresh plain d8 processes, and each run must crash with
+  // the signature. The search stops after crash_flag_processes processes or
+  // after crash_flag_budget_sec. 0 for one of them turns the search off.
+  // crash_flag_processes counts the first check with all flags too, and a
+  // value below crash_flag_runs becomes crash_flag_runs. crash_flag_runs
+  // also sets the size of the rate check of a crash that reproduces alone
+  // (DESIGN.md 5.6). This applies if the search is on and the value is
+  // larger than 5.
+  int crash_flag_runs = 2;
+  int crash_flag_processes = 200;
+  double crash_flag_budget_sec = 60;
+  // The time limit of the tests of the minimizer of an amplified crash
+  // (DESIGN.md 5.6). It starts after the start check. Each test runs the
+  // script in fresh plain d8 processes with the flags of the amplify step.
+  // 0: Redline does not minimize amplified crashes.
+  double crash_amplified_budget_sec = 300;
+  // The time limit of the steps of the minimization of NAME.bundle.js
+  // (DESIGN.md 5.6). It starts after the start check. Each test runs the
+  // bundle in fresh plain d8 processes. 0: Redline does not minimize
+  // bundles.
+  double crash_bundle_min_budget_sec = 300;
 
   // Applies --config (a file, or inline JSON starting with '{') then the
   // command line flags. `for_run` is false only for --dump-config: then no
@@ -203,9 +271,10 @@ struct FuzzConfig {
   // parameter or weight name (called by Load).
   static bool ValidateSelection(const SelectionSettings& selection,
                                 std::string* error);
-  // Reports a reducer name in stages.minimize.reducers that does not exist.
+  // Reports a reducer name in a reducer list that does not exist. `key` is
+  // the configuration key of the list, for the message.
   static bool ValidateReducers(const std::vector<std::string>& names,
-                               std::string* error);
+                               std::string_view key, std::string* error);
   // The JSON part of Load() alone (no flags, no prelude, no validation),
   // for the selftest.
   static bool LoadJsonForTest(const JsonValue& json, FuzzConfig* config,

@@ -9,6 +9,7 @@
 #include "src/common/assert-scope.h"
 #include "src/logging/counters-scopes.h"
 #include "src/snapshot/serializer-deserializer.h"
+#include "src/tracing/trace-event.h"
 
 namespace v8 {
 namespace internal {
@@ -123,7 +124,7 @@ void ContextDeserializer::DeserializeEmbedderFields(
       callback.callback(v8::Utils::ToLocal(obj), index, {buffer.data(), size},
                         callback.data);
     } else {
-      DCHECK(IsEmbedderDataArray(*heap_object));
+      DCHECK(IsNativeContext(*heap_object));
       v8::DeserializeContextDataCallback callback =
           embedder_fields_deserializer.context_callback;
       DCHECK_NOT_NULL(callback.callback);

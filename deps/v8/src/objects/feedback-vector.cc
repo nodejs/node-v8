@@ -231,7 +231,7 @@ DirectHandle<ClosureFeedbackCellArray> ClosureFeedbackCellArray::New(
 
   // Pre-allocate the cells s.t. we can initialize `result` without further
   // allocation.
-  DirectHandleVector<FeedbackCell> cells(isolate);
+  DirectHandleSmallVector<FeedbackCell, 8> cells(isolate);
   cells.reserve(length);
   for (uint32_t i = 0; i < length; i++) {
     DirectHandle<FeedbackCell> cell = isolate->factory()->NewNoClosuresCell();
@@ -1315,7 +1315,7 @@ KeyedAccessLoadMode FeedbackNexus::GetKeyedAccessLoadMode() const {
   if (GetKeyType() == IcCheckType::kProperty) {
     return KeyedAccessLoadMode::kInBounds;
   }
-  MapsAndHandlers maps_and_handlers(isolate_);
+  MapsAndHandlers maps_and_handlers(config()->isolate());
   ExtractMapsAndHandlers(&maps_and_handlers);
   KeyedAccessLoadMode mode = KeyedAccessLoadMode::kInBounds;
   for (auto [_, handler] : maps_and_handlers) {
@@ -1383,7 +1383,7 @@ KeyedAccessStoreMode FeedbackNexus::GetKeyedAccessStoreMode() const {
 
   if (GetKeyType() == IcCheckType::kProperty) return mode;
 
-  MapsAndHandlers maps_and_handlers(isolate_);
+  MapsAndHandlers maps_and_handlers(config()->isolate());
   ExtractMapsAndHandlers(&maps_and_handlers);
   for (auto [_, maybe_code_handler] : maps_and_handlers) {
     // The first handler that isn't the slow handler will have the bits we need.

@@ -258,7 +258,7 @@ void RegExpMacroAssemblerARM64::CheckCharacterLT(base::uc16 limit,
 void RegExpMacroAssemblerARM64::CheckCharacters(
     base::Vector<const base::uc16> str, int cp_offset, Label* on_failure,
     bool check_end_of_string) {
-  // This method is only ever called from the cctests.
+  // This method is only ever called from the unittests.
 
   if (check_end_of_string) {
     // Is last character of required match inside string.
@@ -386,7 +386,7 @@ void RegExpMacroAssemblerARM64::CheckNotBackReferenceIgnoreCase(
 
     __ Bind(&loop_check);
     __ Cmp(capture_start_address, capture_end_address);
-    __ B(lt, &loop);
+    __ B(lo, &loop);
     __ B(&success);
 
     __ Bind(&fail);
@@ -521,7 +521,7 @@ void RegExpMacroAssemblerARM64::CheckNotBackReference(int start_reg,
   __ Cmp(w10, w11);
   BranchOrBacktrack(ne, on_no_match);
   __ Cmp(capture_start_address, capture_end_address);
-  __ B(lt, &loop);
+  __ B(lo, &loop);
 
   // Move current character position to position after match.
   __ Sub(current_input_offset().X(), current_position_address, input_end());

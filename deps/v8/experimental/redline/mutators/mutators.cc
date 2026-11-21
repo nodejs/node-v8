@@ -15,6 +15,7 @@
 #include "experimental/redline/core/weighted_selector.h"
 #include "experimental/redline/fast/printer.h"
 #include "experimental/redline/generators/codegen.h"
+#include "experimental/redline/generators/values_generators.h"
 #include "experimental/redline/mutators/explore.h"
 #include "experimental/redline/mutators/mutator.h"
 #include "experimental/redline/mutators/probing.h"
@@ -399,6 +400,26 @@ REDLINE_TUNABLE(kOperationRandomNumberMax,
 REDLINE_TUNABLE(kOperationPropertyNameAttempts,
                 "mutators.Operation.property_name_attempts", 4, 1, 16,
                 "draws to find a property name different from the current one");
+REDLINE_TUNABLE(kOperationCharEditChance, "mutators.Operation.char_edit_chance",
+                0.4, 0, 1,
+                "probability that a string literal gets a one-character edit "
+                "(add, remove or replace) rather than a new value");
+
+// The regular expression flags that do not change the syntax of the
+// pattern. The `u` and `v` flags do, so the mutator never toggles them.
+constexpr std::string_view kSyntaxNeutralRegExpFlags = "dgimsy";
+
+// A printable ASCII character for a one-character string edit.
+char RandomStringChar(Random& r) {
+  constexpr std::string_view kChars =
+      "abcxyzABCXYZ0189 _-.,:/\\'\"`$#@!?%&*+=<>()[]{}|~^";
+  return kChars[r.Index(kChars.size())];
+}
+
+// True if `pos` is not inside a multi-byte WTF-8 sequence of `s`.
+bool IsCharBoundary(const std::string& s, size_t pos) {
+  return pos >= s.size() || (static_cast<unsigned char>(s[pos]) & 0xC0) != 0x80;
+}
 
 class OperationMutator final : public Mutator {
  public:
@@ -420,6 +441,8 @@ class OperationMutator final : public Mutator {
         case NodeKind::kNumericLiteral:
         case NodeKind::kBooleanLiteral:
         case NodeKind::kMemberExpression:
+        case NodeKind::kRegExpLiteral:
+        case NodeKind::kIfStatement:
           return true;
         case NodeKind::kStringLiteral:
           return !n->Cast<StringLiteral>()->value.empty() ||
@@ -599,22 +622,43 @@ class OperationMutator final : public Mutator {
         }
         std::string old = s->value;
         std::string v;
-        switch (r.Index(5)) {
-          case 0:
-            v = std::string(r.Pick(ctx.env->strings()));
-            break;
-          case 1:
-            v = std::string(r.Pick(ctx.env->property_names()));
-            break;
-          case 2:
-            v = old + old;
-            break;
-          case 3:
-            v = old.substr(0, old.size() / 2);
-            break;
-          default:
-            v = old + "x";
-            break;
+        if (r.Chance(kOperationCharEditChance())) {
+          // One character added, removed or replaced (Fuzzilli's
+          // OperationMutator edits strings the same way).
+          v = old;
+          const size_t pos = r.Index(old.size() + 1);
+          const size_t action = old.empty() ? 0 : r.Index(3);
+          if (!IsCharBoundary(old, pos)) {
+            return false;
+          }
+          if (action == 0) {
+            v.insert(pos, 1, RandomStringChar(r));
+          } else if (pos >= old.size() ||
+                     static_cast<unsigned char>(old[pos]) >= 0x80) {
+            return false;  // Only ASCII characters are removed or replaced.
+          } else if (action == 1) {
+            v.erase(pos, 1);
+          } else {
+            v[pos] = RandomStringChar(r);
+          }
+        } else {
+          switch (r.Index(5)) {
+            case 0:
+              v = std::string(r.Pick(ctx.env->strings()));
+              break;
+            case 1:
+              v = std::string(r.Pick(ctx.env->property_names()));
+              break;
+            case 2:
+              v = old + old;
+              break;
+            case 3:
+              v = old.substr(0, old.size() / 2);
+              break;
+            default:
+              v = old + "x";
+              break;
+          }
         }
         if (v == old) {
           return false;
@@ -660,6 +704,38 @@ class OperationMutator final : public Mutator {
             "property ." + std::string(old) + " -> ." + std::string(name);
         return true;
       }
+      case NodeKind::kRegExpLiteral: {
+        // Toggles one flag that does not change the pattern syntax.
+        auto* re = node->Cast<RegExpLiteral>();
+        const char flag = kSyntaxNeutralRegExpFlags[r.Index(
+            kSyntaxNeutralRegExpFlags.size())];
+        std::string flags(re->regexp_flags);
+        const size_t at = flags.find(flag);
+        if (at == std::string::npos) {
+          flags.push_back(flag);
+        } else {
+          flags.erase(at, 1);
+        }
+        ctx.detail =
+            "regexp flags /" + std::string(re->regexp_flags) + " -> /" + flags;
+        re->regexp_flags = t->Intern(flags);
+        return true;
+      }
+      case NodeKind::kIfStatement: {
+        // Inverts the condition (Fuzzilli: BeginIf.inverted), or removes an
+        // inversion.
+        auto* s = node->Cast<IfStatement>();
+        if (s->test->Is<UnaryExpression>() &&
+            s->test->Cast<UnaryExpression>()->op == UnaryOp::kNot) {
+          s->test = s->test->Cast<UnaryExpression>()->argument;
+          ctx.detail = "if condition: inversion removed";
+        } else {
+          s->test = mk::Unary(t, UnaryOp::kNot, s->test);
+          ctx.detail = "if condition inverted";
+        }
+        b.Invalidate();
+        return true;
+      }
       default:
         return false;
     }
@@ -684,6 +760,50 @@ REDLINE_TUNABLE(kInputLiteralChance, "mutators.Input.literal_chance", 0.15, 0,
                 1,
                 "probability that a value reference is replaced by a literal "
                 "rather than another variable");
+REDLINE_TUNABLE(kInputSubtypeChance, "mutators.Input.subtype_chance", 0.5, 0, 1,
+                "probability that a visible variable of an object subtype (an "
+                "array, a map, a function and others) is an acceptable "
+                "replacement for an object");
+
+// Types whose values are objects with a more specific behavior. A variable
+// of such a type can replace a plain object. Fuzzilli's InputMutator
+// (aware) uses subtypes the same way.
+bool IsObjectSubtype(JsType type) {
+  switch (type) {
+    case JsType::kArray:
+    case JsType::kFunction:
+    case JsType::kClass:
+    case JsType::kRegExp:
+    case JsType::kMap:
+    case JsType::kSet:
+    case JsType::kPromise:
+    case JsType::kTypedArray:
+    case JsType::kArrayBuffer:
+    case JsType::kDate:
+    case JsType::kError:
+    case JsType::kDataView:
+    case JsType::kSharedArrayBuffer:
+    case JsType::kWeakMap:
+    case JsType::kWeakSet:
+    case JsType::kWeakRef:
+    case JsType::kFinalizationRegistry:
+    case JsType::kIterator:
+    case JsType::kDisposableStack:
+    case JsType::kAsyncDisposableStack:
+    case JsType::kTemporalInstant:
+    case JsType::kTemporalDuration:
+    case JsType::kTemporalPlainDate:
+    case JsType::kTemporalPlainTime:
+    case JsType::kTemporalPlainDateTime:
+    case JsType::kTemporalPlainYearMonth:
+    case JsType::kTemporalPlainMonthDay:
+    case JsType::kTemporalZonedDateTime:
+    case JsType::kIntlLocale:
+      return true;
+    default:
+      return false;
+  }
+}
 
 class InputMutator final : public Mutator {
  public:
@@ -732,6 +852,8 @@ class InputMutator final : public Mutator {
         }
         if (type == JsType::kUnknown || v.type == type ||
             v.type == JsType::kUnknown ||
+            (type == JsType::kObject && IsObjectSubtype(v.type) &&
+             r.Chance(kInputSubtypeChance())) ||
             r.Chance(kInputTypeMismatchChance())) {
           options.push_back(&v);
         }
@@ -879,6 +1001,10 @@ REDLINE_TUNABLE(kInsertExtraContinueChance,
                 "mutators.Insert.extra_continue_chance", 0.6, 0, 1,
                 "probability of inserting one more generator output beyond the "
                 "minimum (geometric)");
+REDLINE_TUNABLE(kInsertMemberSlotWeight, "mutators.Insert.member_slot_weight",
+                1, 0, 100,
+                "weight of a member slot (class body or object literal) "
+                "against a statement slot when CodeGen picks where to insert");
 
 class InsertMutator final : public Mutator {
  public:
@@ -890,13 +1016,14 @@ class InsertMutator final : public Mutator {
   InsertMutator(std::string name, std::string_view description, double weight,
                 std::vector<std::string> generator_names, bool prefer_functions,
                 int min_count = 1, int extra_count = 2, bool at_top = false,
-                int max_simultaneous = 1)
+                int max_simultaneous = 1, bool cannot_throw = false)
       : Mutator(std::move(name), description, weight, false, max_simultaneous),
         generator_names_(std::move(generator_names)),
         prefer_functions_(prefer_functions),
         min_count_(min_count),
         extra_count_(extra_count),
-        at_top_(at_top) {}
+        at_top_(at_top),
+        cannot_throw_(cannot_throw) {}
 
   // How many generator outputs one application inserts: min_count plus a
   // geometrically distributed 0..extra_count.
@@ -909,6 +1036,20 @@ class InsertMutator final : public Mutator {
   bool Mutate(Builder& b, MutationContext& ctx) override {
     Random& r = b.rng();
     Builder::Slot slot;
+    // Like Fuzzilli's CodeGenMutator, CodeGen also inserts into class bodies
+    // and object literals: member slots compete with statement slots.
+    if (!at_top_ && generator_names_.empty() && kInsertMemberSlotWeight() > 0) {
+      std::vector<Builder::MemberSlot> member_slots = b.MemberSlots();
+      if (!member_slots.empty()) {
+        const double members = kInsertMemberSlotWeight() *
+                               static_cast<double>(member_slots.size());
+        const double statements =
+            static_cast<double>(b.InsertionSlots().size());
+        if (r.Chance(members / (members + statements))) {
+          return InsertMembers(b, ctx, r.Pick(member_slots));
+        }
+      }
+    }
     if (at_top_) {
       std::vector<Builder::Slot> slots = b.InsertionSlots();
       for (const Builder::Slot& s : slots) {
@@ -936,6 +1077,7 @@ class InsertMutator final : public Mutator {
       }
     }
     GenContext gen = ContextForSlot(b, slot, ctx);
+    gen.cannot_throw = cannot_throw_;
     std::vector<Statement*> out;
     gen.out = &out;
     int count =
@@ -968,6 +1110,33 @@ class InsertMutator final : public Mutator {
   }
 
  private:
+  // Inserts the output of one member generator at `slot`.
+  bool InsertMembers(Builder& b, MutationContext& ctx,
+                     const Builder::MemberSlot& slot) {
+    GenContext gen = ContextForNode(b, slot.owner, ctx);
+    std::vector<Node*> members;
+    std::vector<Statement*> unused;
+    gen.member_owner = slot.owner;
+    gen.member_out = &members;
+    Generator* g = PickGenerator(gen);
+    if (g == nullptr) {
+      return false;
+    }
+    g->stats().invocations++;
+    if (!g->Generate(gen, &unused) || members.empty()) {
+      return false;
+    }
+    g->stats().produced++;
+    NoteGeneratorUsed(g);
+    Builder::MemberSlot cursor = slot;
+    for (Node* member : members) {
+      b.InsertMember(cursor, member);
+      cursor.index++;
+    }
+    ctx.detail = "inserted member " + g->name();
+    return true;
+  }
+
   // Asks the generator strategy for one generator that is applicable here
   // and, if this mutator has a generator list, on that list.
   Generator* PickGenerator(const GenContext& gen) {
@@ -991,6 +1160,7 @@ class InsertMutator final : public Mutator {
   int min_count_;
   int extra_count_;
   bool at_top_;
+  bool cannot_throw_;
 };
 
 // --- Expression mutator
@@ -1003,6 +1173,101 @@ REDLINE_TUNABLE(kExpressionComplexCandidateChance,
                 "mutators.Expression.complex_candidate_chance", 0.2, 0, 1,
                 "probability that a spread, template, function or class "
                 "expression is kept as a candidate");
+REDLINE_TUNABLE(kExpressionAccessorChance,
+                "mutators.Expression.accessor_chance", 0.35, 0, 1,
+                "probability that Expression converts a property or method "
+                "into a getter or setter");
+REDLINE_TUNABLE(kExpressionAccessorBothChance,
+                "mutators.Expression.accessor_both_chance", 0.5, 0, 1,
+                "probability that an Object.defineProperty accessor defines "
+                "both get and set");
+REDLINE_TUNABLE(kExpressionAccessorGetterChance,
+                "mutators.Expression.accessor_getter_chance", 0.75, 0, 1,
+                "probability that a single accessor is a getter rather than a "
+                "setter");
+REDLINE_TUNABLE(kExpressionAccessorMaxStatements,
+                "mutators.Expression.accessor_max_statements", 2, 0, 16,
+                "most generated statements in an accessor body before "
+                "returning");
+
+bool CanMoveIntoAccessor(Expression* expr) {
+  if (expr == nullptr) {
+    return true;
+  }
+  Requirements req = AnalyzeRequirements(expr);
+  return !req.needs_function && !req.needs_async && !req.needs_generator &&
+         !req.needs_break && !req.needs_continue && !req.needs_arguments &&
+         !req.needs_super && !req.needs_new_target && !req.has_external_label;
+}
+
+bool MethodCanBecomeReturnedFunction(FunctionExpression* fn) {
+  if (fn == nullptr || fn->body == nullptr) {
+    return false;
+  }
+  if (AnalyzeRequirements(fn->body).needs_super) {
+    return false;
+  }
+  for (Expression* param : fn->params) {
+    if (param != nullptr && AnalyzeRequirements(param).needs_super) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool IsForbiddenObjectAccessorKey(Expression* key) {
+  if (key == nullptr || key->Is<PrivateIdentifier>()) {
+    return true;
+  }
+  if (auto* id = key->As<Identifier>()) {
+    return id->name == "__proto__";
+  }
+  if (auto* s = key->As<StringLiteral>()) {
+    return s->value == "__proto__";
+  }
+  return false;
+}
+
+bool IsForbiddenClassAccessorKey(Expression* key) {
+  if (key == nullptr || key->Is<PrivateIdentifier>()) {
+    return true;
+  }
+  if (auto* id = key->As<Identifier>()) {
+    return id->name == "constructor" || id->name == "prototype" ||
+           id->name == "__proto__";
+  }
+  if (auto* s = key->As<StringLiteral>()) {
+    return s->value == "constructor" || s->value == "prototype" ||
+           s->value == "__proto__";
+  }
+  return !key->Is<NumericLiteral>();
+}
+
+bool IsInPatternOrAssignmentTarget(Builder& b, Node* node) {
+  for (Node *p = node, *up = b.ParentOf(p); up != nullptr;
+       p = up, up = b.ParentOf(p)) {
+    if (up->Is<AssignmentPattern>()) {
+      if (up->Cast<AssignmentPattern>()->right == p) {
+        break;
+      }
+      return true;
+    }
+    if (up->IsPattern()) {
+      return true;
+    }
+    if (up->Is<AssignmentExpression>() &&
+        up->Cast<AssignmentExpression>()->left == p) {
+      return true;
+    }
+    if (up->Is<ForInStatement>() && up->Cast<ForInStatement>()->left == p) {
+      return true;
+    }
+    if (up->Is<ForOfStatement>() && up->Cast<ForOfStatement>()->left == p) {
+      return true;
+    }
+  }
+  return false;
+}
 
 class ExpressionMutator final : public Mutator {
  public:
@@ -1015,6 +1280,9 @@ class ExpressionMutator final : public Mutator {
 
   bool Mutate(Builder& b, MutationContext& ctx) override {
     Random& r = b.rng();
+    if (r.Chance(kExpressionAccessorChance()) && MutateAccessor(b, ctx)) {
+      return true;
+    }
     std::vector<Expression*> candidates = b.ValueExpressions();
     for (int attempt = 0;
          attempt < kExpressionMaxAttempts.AsInt() && !candidates.empty();
@@ -1140,6 +1408,9 @@ class ExpressionMutator final : public Mutator {
         if (gen.syntax.in_async && !gen.syntax.in_static_block && !exp_left) {
           return mk::Await(t, e);
         }
+        if (!CanMoveIntoAccessor(e)) {
+          return nullptr;
+        }
         return mk::Call(t, mk::ArrowExpr(t, {}, e), {});
       case 11:
         return mk::Logical(t, CodeGen::RandomLogicalOp(r), e,
@@ -1152,6 +1423,249 @@ class ExpressionMutator final : public Mutator {
         std::string_view p = gen.builder.FreshName("x");
         return mk::Call(t, mk::ArrowExpr(t, {p}, mk::Id(t, p)), {e});
       }
+    }
+  }
+
+  static bool IsAccessorCandidate(Builder& b, Node* n) {
+    if (IsInPatternOrAssignmentTarget(b, n)) {
+      return false;
+    }
+    switch (n->kind) {
+      case NodeKind::kAssignmentExpression: {
+        auto* e = n->Cast<AssignmentExpression>();
+        if (e->op != AssignOp::kAssign ||
+            b.RoleOf(e) != ExpressionRole::kValue ||
+            !e->left->Is<MemberExpression>()) {
+          return false;
+        }
+        auto* m = e->left->Cast<MemberExpression>();
+        if (m->optional || m->object->Is<Super>() ||
+            m->property->Is<PrivateIdentifier>() ||
+            (!m->computed && !m->property->Is<Identifier>())) {
+          return false;
+        }
+        return CanMoveIntoAccessor(e->right);
+      }
+      case NodeKind::kProperty: {
+        auto* prop = n->Cast<Property>();
+        Node* parent = b.ParentOf(prop);
+        if (parent == nullptr || !parent->Is<ObjectExpression>() ||
+            b.RoleOf(parent) != ExpressionRole::kValue ||
+            prop->property_kind != PropertyKind::kInit ||
+            IsForbiddenObjectAccessorKey(prop->key)) {
+          return false;
+        }
+        if (prop->method) {
+          return prop->value->Is<FunctionExpression>() &&
+                 MethodCanBecomeReturnedFunction(
+                     prop->value->Cast<FunctionExpression>());
+        }
+        return CanMoveIntoAccessor(prop->value);
+      }
+      case NodeKind::kMethodDefinition: {
+        auto* m = n->Cast<MethodDefinition>();
+        Node* parent = b.ParentOf(m);
+        if (parent == nullptr || !parent->Is<ClassBody>() ||
+            m->method_kind != MethodKind::kMethod || m->computed ||
+            IsForbiddenClassAccessorKey(m->key)) {
+          return false;
+        }
+        return MethodCanBecomeReturnedFunction(m->value);
+      }
+      case NodeKind::kPropertyDefinition: {
+        auto* f = n->Cast<PropertyDefinition>();
+        Node* parent = b.ParentOf(f);
+        if (parent == nullptr || !parent->Is<ClassBody>() ||
+            f->is_auto_accessor || f->computed ||
+            IsForbiddenClassAccessorKey(f->key)) {
+          return false;
+        }
+        return CanMoveIntoAccessor(f->value);
+      }
+      default:
+        return false;
+    }
+  }
+
+  bool MutateAccessor(Builder& b, MutationContext& ctx) {
+    Random& r = b.rng();
+    std::vector<Node*> candidates =
+        b.Collect([&](Node* n) { return IsAccessorCandidate(b, n); });
+    for (int attempt = 0;
+         attempt < kExpressionMaxAttempts.AsInt() && !candidates.empty();
+         attempt++) {
+      Node* node = candidates[r.Index(candidates.size())];
+      if (ConvertToAccessor(b, node, ctx)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool ConvertToAccessor(Builder& b, Node* node, MutationContext& ctx) {
+    Random& r = b.rng();
+    Tree* t = b.tree();
+    GenContext gen = ContextForNode(b, node, ctx);
+    const int max_stmts = kExpressionAccessorMaxStatements.AsInt();
+    switch (node->kind) {
+      case NodeKind::kAssignmentExpression: {
+        auto* e = node->Cast<AssignmentExpression>();
+        auto* m = e->left->Cast<MemberExpression>();
+        Expression* key_expr =
+            m->computed ? m->property
+                        : mk::Str(t, m->property->Cast<Identifier>()->name);
+        bool both = r.Chance(kExpressionAccessorBothChance());
+        bool has_get = both || r.Chance(kExpressionAccessorGetterChance());
+        bool has_set = both || !has_get;
+        std::vector<Node*> desc_props;
+        if (has_get) {
+          GenContext g_ctx = gen.Nested(true, false, false, false);
+          int n_stmts = static_cast<int>(r.Range(0, max_stmts));
+          std::vector<Statement*> g_body = CodeGen(g_ctx).Body(g_ctx, n_stmts);
+          g_body.push_back(mk::Return(t, e->right));
+          desc_props.push_back(
+              mk::Method(t, "get", mk::Function(t, "", {}, std::move(g_body))));
+        }
+        if (has_set) {
+          std::string_view param = b.FreshName("v");
+          GenContext s_ctx = gen.Nested(true, false, false, false);
+          s_ctx.Declare(param, JsType::kUnknown);
+          int n_stmts = static_cast<int>(r.Range(0, max_stmts));
+          std::vector<Statement*> s_body = CodeGen(s_ctx).Body(s_ctx, n_stmts);
+          if (!has_get) {
+            s_body.push_back(mk::ExprStmt(t, e->right));
+          }
+          desc_props.push_back(mk::Method(
+              t, "set", mk::Function(t, "", {param}, std::move(s_body))));
+        }
+        desc_props.push_back(mk::Prop(t, "configurable", mk::Bool(t, true)));
+        desc_props.push_back(mk::Prop(t, "enumerable", mk::Bool(t, r.Coin())));
+        Expression* replacement = mk::CallMethod(
+            t, mk::Id(t, "Object"), "defineProperty",
+            {m->object, key_expr, mk::Object(t, std::move(desc_props))});
+        std::string old = Describe(e);
+        if (ReplaceAnchored(b, e, replacement) == nullptr) {
+          return false;
+        }
+        ctx.detail = "expression `" + old + "` -> accessor defineProperty";
+        return true;
+      }
+      case NodeKind::kProperty: {
+        auto* prop = node->Cast<Property>();
+        std::string old = Describe(prop);
+        if (prop->method) {
+          auto* fn = prop->value->Cast<FunctionExpression>();
+          fn->name = nullptr;
+          GenContext g_ctx = gen.Nested(true, false, false, false);
+          int n_stmts = static_cast<int>(r.Range(0, max_stmts));
+          std::vector<Statement*> g_body = CodeGen(g_ctx).Body(g_ctx, n_stmts);
+          g_body.push_back(mk::Return(t, fn));
+          FunctionExpression* getter =
+              mk::Function(t, "", {}, std::move(g_body));
+          if (prop->start >= 0) {
+            mk::Anchor(getter, prop->start);
+          }
+          prop->property_kind = PropertyKind::kGet;
+          prop->method = false;
+          prop->shorthand = false;
+          prop->value = getter;
+          b.Invalidate();
+          ctx.detail = "property `" + old + "` -> getter";
+          return true;
+        }
+        if (prop->key == prop->value && prop->key->Is<Identifier>()) {
+          prop->key = mk::Id(t, prop->key->Cast<Identifier>()->name);
+        }
+        Expression* old_val = prop->value;
+        bool is_get = r.Chance(kExpressionAccessorGetterChance());
+        FunctionExpression* acc_fn = nullptr;
+        if (is_get) {
+          GenContext g_ctx = gen.Nested(true, false, false, false);
+          int n_stmts = static_cast<int>(r.Range(0, max_stmts));
+          std::vector<Statement*> g_body = CodeGen(g_ctx).Body(g_ctx, n_stmts);
+          g_body.push_back(mk::Return(t, old_val));
+          acc_fn = mk::Function(t, "", {}, std::move(g_body));
+          prop->property_kind = PropertyKind::kGet;
+        } else {
+          std::string_view param = b.FreshName("v");
+          GenContext s_ctx = gen.Nested(true, false, false, false);
+          s_ctx.Declare(param, JsType::kUnknown);
+          int n_stmts = static_cast<int>(r.Range(0, max_stmts));
+          std::vector<Statement*> s_body = CodeGen(s_ctx).Body(s_ctx, n_stmts);
+          if (old_val != nullptr) {
+            s_body.push_back(mk::ExprStmt(t, old_val));
+          }
+          acc_fn = mk::Function(t, "", {param}, std::move(s_body));
+          prop->property_kind = PropertyKind::kSet;
+        }
+        if (prop->start >= 0) {
+          mk::Anchor(acc_fn, prop->start);
+        }
+        prop->shorthand = false;
+        prop->method = false;
+        prop->value = acc_fn;
+        b.Invalidate();
+        ctx.detail =
+            "property `" + old + (is_get ? "` -> getter" : "` -> setter");
+        return true;
+      }
+      case NodeKind::kMethodDefinition: {
+        auto* m = node->Cast<MethodDefinition>();
+        std::string old = Describe(m);
+        FunctionExpression* fn = m->value;
+        fn->name = nullptr;
+        GenContext g_ctx = gen.Nested(true, false, false, false);
+        int n_stmts = static_cast<int>(r.Range(0, max_stmts));
+        std::vector<Statement*> g_body = CodeGen(g_ctx).Body(g_ctx, n_stmts);
+        g_body.push_back(mk::Return(t, fn));
+        FunctionExpression* getter = mk::Function(t, "", {}, std::move(g_body));
+        if (m->start >= 0) {
+          mk::Anchor(getter, m->start);
+        }
+        m->method_kind = MethodKind::kGet;
+        m->value = getter;
+        b.Invalidate();
+        ctx.detail = "class method `" + old + "` -> getter";
+        return true;
+      }
+      case NodeKind::kPropertyDefinition: {
+        auto* f = node->Cast<PropertyDefinition>();
+        std::string old = Describe(f);
+        bool is_get = r.Chance(kExpressionAccessorGetterChance());
+        FunctionExpression* acc_fn = nullptr;
+        if (is_get) {
+          GenContext g_ctx = gen.Nested(true, false, false, false);
+          int n_stmts = static_cast<int>(r.Range(0, max_stmts));
+          CodeGen cg(g_ctx);
+          std::vector<Statement*> g_body = cg.Body(g_ctx, n_stmts);
+          Expression* ret_val =
+              f->value != nullptr ? f->value : cg.Value(JsType::kUnknown, 1);
+          g_body.push_back(mk::Return(t, ret_val));
+          acc_fn = mk::Function(t, "", {}, std::move(g_body));
+        } else {
+          std::string_view param = b.FreshName("v");
+          GenContext s_ctx = gen.Nested(true, false, false, false);
+          s_ctx.Declare(param, JsType::kUnknown);
+          int n_stmts = static_cast<int>(r.Range(0, max_stmts));
+          std::vector<Statement*> s_body = CodeGen(s_ctx).Body(s_ctx, n_stmts);
+          if (f->value != nullptr) {
+            s_body.push_back(mk::ExprStmt(t, f->value));
+          }
+          acc_fn = mk::Function(t, "", {param}, std::move(s_body));
+        }
+        MethodDefinition* m = mk::ClassMethod(
+            t, f->key, acc_fn, is_get ? MethodKind::kGet : MethodKind::kSet,
+            f->is_static);
+        m->computed = f->computed;
+        if (ReplaceAnchored(b, f, m) == nullptr) {
+          return false;
+        }
+        ctx.detail =
+            "class field `" + old + (is_get ? "` -> getter" : "` -> setter");
+        return true;
+      }
+      default:
+        return false;
     }
   }
 };
@@ -1525,6 +2039,17 @@ REDLINE_TUNABLE(kSpliceAnyTypeRewireChance,
                 "mutators.Splice.any_type_rewire_chance", 0.5, 0, 1,
                 "probability of rewiring an external input to a variable of "
                 "any type when none of its type is visible");
+REDLINE_TUNABLE(kSpliceSliceChance, "mutators.Splice.slice_chance", 0.6, 0, 1,
+                "probability of splicing earlier statements from the donor "
+                "block that feed the spliced statement");
+REDLINE_TUNABLE(kSpliceMaxSliceStatements,
+                "mutators.Splice.max_slice_statements", 3, 0, 16,
+                "most preceding statements from the donor block included in a "
+                "slice");
+REDLINE_TUNABLE(kSpliceMutatingStatementChance,
+                "mutators.Splice.mutating_statement_chance", 0.5, 0, 1,
+                "probability of including an earlier statement that uses or "
+                "mutates a needed variable");
 
 // Clones a statement from a donor tree into the destination, renaming the
 // donor's own bindings to avoid clashes and rewiring references to
@@ -1611,42 +2136,137 @@ class SpliceMutator final : public Mutator {
     Random& r = b.rng();
     Tree* t = b.tree();
     ScopeAnalysis& donor_scopes = donor.scopes();
-    // Nodes inside the donor statement.
+    std::vector<Statement*> slice = {donor_stmt};
+    const int max_extra = kSpliceMaxSliceStatements.AsInt();
+    if (max_extra > 0 && r.Chance(kSpliceSliceChance())) {
+      Builder::Slot donor_slot = donor.SlotOf(donor_stmt);
+      if (donor_slot.valid() && donor_slot.index > 0) {
+        Builder::Context dest_ctx = b.ContextAtSlot(slot);
+        const size_t max_nodes =
+            static_cast<size_t>(kSpliceMaxDonorNodes.AsInt());
+        for (size_t idx = donor_slot.index;
+             idx > 0 && static_cast<int>(slice.size()) - 1 < max_extra;) {
+          absl::flat_hash_set<const Node*> slice_nodes;
+          for (Statement* s : slice) {
+            Walk(s, [&](Node* n) {
+              slice_nodes.insert(n);
+              return true;
+            });
+          }
+          absl::flat_hash_set<Binding*> needed;
+          for (Statement* s : slice) {
+            Walk(s, [&](Node* n) {
+              if (auto* id = n->As<Identifier>()) {
+                Binding* binding = donor_scopes.BindingOf(id);
+                if (binding != nullptr && binding->name != "arguments") {
+                  bool declared_in_slice = false;
+                  for (Identifier* d : binding->declarations) {
+                    if (slice_nodes.count(d)) {
+                      declared_in_slice = true;
+                      break;
+                    }
+                  }
+                  if (!declared_in_slice) {
+                    needed.insert(binding);
+                  }
+                }
+              }
+              return true;
+            });
+          }
+          if (needed.empty()) {
+            break;
+          }
+          Statement* prev = (*donor_slot.list)[--idx];
+          if (IsDirective(prev) || prev->Is<EmptyStatement>() ||
+              prev->Is<BreakStatement>() || prev->Is<ContinueStatement>() ||
+              prev->Is<ReturnStatement>() || prev->Is<DebuggerStatement>()) {
+            continue;
+          }
+          if (auto* vd = prev->As<VariableDeclaration>()) {
+            if (vd->declaration_kind == VariableKind::kUsing ||
+                vd->declaration_kind == VariableKind::kAwaitUsing) {
+              continue;
+            }
+          }
+          if (UsesPrivateNameOfEnclosingClass(prev) ||
+              CountNodes(prev) > max_nodes ||
+              !Compatible(AnalyzeRequirements(prev), dest_ctx)) {
+            continue;
+          }
+          bool declares_needed = false;
+          bool uses_needed = false;
+          Walk(prev, [&](Node* n) {
+            if (auto* id = n->As<Identifier>()) {
+              Binding* binding = donor_scopes.BindingOf(id);
+              if (binding != nullptr && needed.count(binding)) {
+                if (std::find(binding->declarations.begin(),
+                              binding->declarations.end(),
+                              id) != binding->declarations.end()) {
+                  declares_needed = true;
+                } else {
+                  uses_needed = true;
+                }
+              }
+            }
+            return true;
+          });
+          if (declares_needed ||
+              (uses_needed && r.Chance(kSpliceMutatingStatementChance()))) {
+            slice.insert(slice.begin(), prev);
+          }
+        }
+      }
+    }
+    // Nodes inside the donor slice.
     absl::flat_hash_set<const Node*> inside;
-    Walk(donor_stmt, [&](Node* n) {
-      inside.insert(n);
-      return true;
-    });
+    for (Statement* s : slice) {
+      Walk(s, [&](Node* n) {
+        inside.insert(n);
+        return true;
+      });
+    }
     // Clone and map donor nodes to clone nodes.
-    Statement* clone = t->Clone(donor_stmt);
+    std::vector<Statement*> clones;
+    clones.reserve(slice.size());
     absl::flat_hash_map<const Node*, Node*> to_clone;
-    ParallelWalk(donor_stmt, clone, [&](Node* a, Node* c) { to_clone[a] = c; });
+    size_t total_nodes = 0;
+    for (Statement* s : slice) {
+      Statement* clone = t->Clone(s);
+      clones.push_back(clone);
+      ParallelWalk(s, clone, [&](Node* a, Node* c) { to_clone[a] = c; });
+      total_nodes += CountNodes(s);
+    }
     // Classify bindings touched by the donor. They are collected in the
     // order of their first occurrence in the (source-ordered) walk so that
     // the renaming below is deterministic for a given seed.
     std::vector<Binding*> internal, external;
     absl::flat_hash_set<Binding*> seen;
-    Walk(donor_stmt, [&](Node* n) {
-      if (auto* id = n->As<Identifier>()) {
-        Binding* binding = donor_scopes.BindingOf(id);
-        if (binding == nullptr || !seen.insert(binding).second) {
-          return true;
-        }
-        bool declared_inside = false;
-        for (Identifier* d : binding->declarations) {
-          if (inside.count(d)) {
-            declared_inside = true;
+    for (Statement* s : slice) {
+      Walk(s, [&](Node* n) {
+        if (auto* id = n->As<Identifier>()) {
+          Binding* binding = donor_scopes.BindingOf(id);
+          if (binding == nullptr || !seen.insert(binding).second) {
+            return true;
           }
+          bool declared_inside = false;
+          for (Identifier* d : binding->declarations) {
+            if (inside.count(d)) {
+              declared_inside = true;
+            }
+          }
+          (declared_inside ? internal : external).push_back(binding);
         }
-        (declared_inside ? internal : external).push_back(binding);
-      }
-      return true;
-    });
+        return true;
+      });
+    }
     // Names in the destination and in the donor must not collide with fresh
     // names.
     b.ReserveNames(donor_scopes.all_names());
     const absl::flat_hash_set<std::string_view>& dest_names =
         b.scopes().all_names();
+    absl::flat_hash_set<std::string_view> used_names(dest_names.begin(),
+                                                     dest_names.end());
     std::vector<Variable> visible = b.VisibleAtSlot(slot);
     auto rename = [&](Binding* binding, std::string_view new_name) {
       std::string_view interned = t->Intern(new_name);
@@ -1665,12 +2285,16 @@ class SpliceMutator final : public Mutator {
     };
     int renamed = 0, rewired = 0, declared = 0;
     for (Binding* binding : internal) {
-      if (dest_names.count(binding->name) || binding->name == "arguments") {
-        if (binding->name == "arguments") {
-          continue;
-        }
-        rename(binding, b.FreshName(binding->name));
+      if (binding->name == "arguments") {
+        continue;
+      }
+      if (used_names.count(binding->name)) {
+        std::string_view fresh = b.FreshName(binding->name);
+        rename(binding, fresh);
+        used_names.insert(fresh);
         renamed++;
+      } else {
+        used_names.insert(binding->name);
       }
     }
     std::vector<Statement*> prologue;
@@ -1705,9 +2329,10 @@ class SpliceMutator final : public Mutator {
         rewired++;
       } else {
         // Declare a stand-in before the spliced statement.
-        std::string_view name = dest_names.count(binding->name)
+        std::string_view name = used_names.count(binding->name)
                                     ? b.FreshName(binding->name)
                                     : t->Intern(binding->name);
+        used_names.insert(name);
         if (name != binding->name) {
           rename(binding, name);
         }
@@ -1717,11 +2342,14 @@ class SpliceMutator final : public Mutator {
         declared++;
       }
     }
-    prologue.push_back(clone);
+    for (Statement* c : clones) {
+      prologue.push_back(c);
+    }
     b.InsertAll(slot, prologue);
     ctx.detail = StringPrintf(
-        "spliced %s (%zu nodes; %d renamed, %d rewired, %d declared)",
-        donor_stmt->kind_name(), CountNodes(donor_stmt), renamed, rewired,
+        "spliced %s (%zu stmts, %zu nodes; %d renamed, %d rewired, %d "
+        "declared)",
+        donor_stmt->kind_name(), slice.size(), total_nodes, renamed, rewired,
         declared);
     return true;
   }
@@ -1875,19 +2503,24 @@ std::unique_ptr<MutatorSet> MutatorSet::CreateDefault() {
   // Weight 0: never picked at random; the worker applies it to the parent of
   // every mutation chain so that the mutators have fresh values to work with
   // (10-15 values, like Fuzzilli's buildPrefix()). Only generators that
-  // cannot throw: an exception in the prefix would fail every mutant of the
-  // chain.
+  // cannot throw, in a context that makes CodeGen produce values that cannot
+  // throw: an exception in the prefix would fail every mutant of the chain.
+  std::vector<std::string> prefix_generators = {
+      "IntegerDecl", "FloatDecl",      "StringDecl", "BooleanDecl",
+      "BigIntDecl",  "RegExpDecl",     "SymbolDecl", "ArrayDecl",
+      "ObjectDecl",  "TypedArrayDecl", "ArrowDecl",  "TemplateDecl"};
+  for (const std::string& name : CannotThrowValueGenerators()) {
+    prefix_generators.push_back(name);
+  }
   add(std::make_unique<InsertMutator>(
       "Prefix",
       "fresh value declarations at the top of a mutation chain's parent", 0,
-      std::vector<std::string>{"IntegerDecl", "FloatDecl", "StringDecl",
-                               "BooleanDecl", "BigIntDecl", "RegExpDecl",
-                               "SymbolDecl", "ArrayDecl", "ObjectDecl",
-                               "TypedArrayDecl", "ArrowDecl", "TemplateDecl"},
-      false,
+      std::move(prefix_generators), false,
       /*min_count=*/10,
       /*extra_count=*/5,
-      /*at_top=*/true));
+      /*at_top=*/true,
+      /*max_simultaneous=*/1,
+      /*cannot_throw=*/true));
   add(std::make_unique<SpliceMutator>());
   add(std::make_unique<CombineMutator>());
   add(std::make_unique<InputMutator>());

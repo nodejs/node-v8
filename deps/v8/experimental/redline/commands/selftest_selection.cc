@@ -30,6 +30,7 @@
 #include "experimental/redline/engine/stages.h"
 #include "experimental/redline/fast/parser.h"
 #include "experimental/redline/fast/printer.h"
+#include "experimental/redline/generators/codegen.h"
 #include "experimental/redline/generators/generator.h"
 #include "experimental/redline/mutators/mutator.h"
 
@@ -299,9 +300,33 @@ std::string FirstDifference(const std::string& expected,
                       line_at(actual, i).c_str());
 }
 
+// Removes the spaces and tabs at the end of each line. Gerrit marks trailing
+// whitespace, so the golden files must not have it.
+std::string StripTrailingWhitespace(const std::string& text) {
+  std::string out;
+  out.reserve(text.size());
+  size_t start = 0;
+  while (start < text.size()) {
+    size_t newline = text.find('\n', start);
+    size_t end = newline == std::string::npos ? text.size() : newline;
+    size_t last = end;
+    while (last > start && (text[last - 1] == ' ' || text[last - 1] == '\t')) {
+      last--;
+    }
+    out.append(text, start, last - start);
+    if (newline == std::string::npos) {
+      break;
+    }
+    out += '\n';
+    start = newline + 1;
+  }
+  return out;
+}
+
 void CompareOrWrite(Checker* checker, const std::string& check_name,
-                    const std::string& path, const std::string& trace,
+                    const std::string& path, const std::string& raw_trace,
                     bool write_golden) {
+  const std::string trace = StripTrailingWhitespace(raw_trace);
   std::string error;
   if (write_golden) {
     bool ok = WriteStringToFile(path, trace, &error);
@@ -405,26 +430,28 @@ void CheckStageConfig(Checker* checker) {
     FuzzConfig config;
     std::string error = load(
         R"({"consecutive_mutations": 9,
-                "stages": {"prefix": {"min_values": 3, "extra_values": 1},
-                           "mutate": {"consecutive": 2, "rounds": 1, "log": "events",
+                "stages": {"prefix": {"min_values": 3, "extra_values": 1, "from_scratch": false},
+                           "mutate": {"consecutive": 2, "rounds": 1, "scratch_codegen": 2, "log": "events",
                                       "capture": {"on": "timeout,invalid", "mutators": ["Input"], "max": 3}},
                            "check": {"min_reruns": 2, "max_reruns": 8, "capture": {"on": ["flaky"]}},
                            "minimize": {"enabled": false, "max_tests": 12},
                            "publish": {"save_corpus": false, "stats": false}}})",
         &config);
-    bool ok =
-        error.empty() && config.prefix_min_values == 3 &&
-        config.prefix_extra_values == 1 && config.consecutive_mutations == 2 &&
-        config.mutation_rounds == 1 && config.stage(Stage::kMutate).events &&
-        config.stage(Stage::kMutate).capture.on.size() == 2 &&
-        config.stage(Stage::kMutate).capture.mutators ==
-            std::vector<std::string>{"Input"} &&
-        config.stage(Stage::kMutate).capture.max == 3 &&
-        config.min_reruns == 2 && config.max_reruns == 8 &&
-        config.stage(Stage::kCheck)
-            .capture.Matches(CaptureTrigger::kFlaky, "") &&
-        !config.minimize && config.minimizer.max_tests == 12 &&
-        !config.save_corpus && !config.stage(Stage::kPublish).stats;
+    bool ok = error.empty() && config.prefix_min_values == 3 &&
+              config.prefix_extra_values == 1 && !config.prefix_from_scratch &&
+              config.consecutive_mutations == 2 &&
+              config.mutation_rounds == 1 &&
+              config.scratch_codegen_links == 2 &&
+              config.stage(Stage::kMutate).events &&
+              config.stage(Stage::kMutate).capture.on.size() == 2 &&
+              config.stage(Stage::kMutate).capture.mutators ==
+                  std::vector<std::string>{"Input"} &&
+              config.stage(Stage::kMutate).capture.max == 3 &&
+              config.min_reruns == 2 && config.max_reruns == 8 &&
+              config.stage(Stage::kCheck)
+                  .capture.Matches(CaptureTrigger::kFlaky, "") &&
+              !config.minimize && config.minimizer.max_tests == 12 &&
+              !config.save_corpus && !config.stage(Stage::kPublish).stats;
     checker->Check(
         "stages: block sets the stage parameters and wins over flat keys", ok,
         error.empty() ? "" : error);
@@ -434,6 +461,8 @@ void CheckStageConfig(Checker* checker) {
     bool round_trip =
         JsonValue::Parse(config.ToJson(), &again, &parse_error) &&
         again.Get("stages").Get("mutate").GetInt("consecutive", 0) == 2 &&
+        again.Get("stages").Get("mutate").GetInt("scratch_codegen", 0) == 2 &&
+        !again.Get("stages").Get("prefix").GetBool("from_scratch", true) &&
         again.Get("stages").Get("mutate").Get("capture").Get("on").is_array() &&
         !again.Get("stages").Get("minimize").GetBool("enabled", true);
     checker->Check(
@@ -764,8 +793,56 @@ void CheckConfigDump(Checker* checker) {
   TunableRegistry::Instance().Reset();
 }
 
-// The "init" and "accept" blocks and stages.minimize.reducers: values land
-// in their fields, mistakes are reported.
+// A --config flag with the two d8 keys, for the checks of the d8 flags.
+constexpr const char* kD8ArgsConfig =
+    R"(--config={"d8_args": ["--file-a"], "d8_extra_args": ["--extra-a"]})";
+
+// Loads the configuration of `redline fuzz ARGS` and returns its d8 flags,
+// with a space between two flags. If the configuration is not correct, it
+// returns the error.
+std::string LoadedD8Args(std::initializer_list<std::string> args) {
+  std::vector<const char*> argv = {"redline", "fuzz"};
+  for (const std::string& arg : args) {
+    argv.push_back(arg.c_str());
+  }
+  Flags flags = Flags::Parse(static_cast<int>(argv.size()), argv.data(), 2);
+  FuzzConfig config;
+  std::string error;
+  if (!FuzzConfig::Load(flags, &config, &error, /*for_run=*/false)) {
+    return "error: " + error;
+  }
+  std::string joined;
+  for (const std::string& arg : config.target.args) {
+    joined += (joined.empty() ? "" : " ") + arg;
+  }
+  return joined;
+}
+
+// Loads the configuration of `redline fuzz --config=JSON` with all steps of
+// FuzzConfig::Load, also the validation. Returns the error, or empty.
+std::string LoadFullConfig(const std::string& json, FuzzConfig* config) {
+  const std::string arg = "--config=" + json;
+  std::vector<const char*> argv = {"redline", "fuzz", arg.c_str()};
+  Flags flags = Flags::Parse(static_cast<int>(argv.size()), argv.data(), 2);
+  std::string error;
+  FuzzConfig::Load(flags, config, &error, /*for_run=*/false);
+  TunableRegistry::Instance().Reset();
+  return error;
+}
+
+// The flag --d8-args replaces the d8_args key of the configuration. The
+// d8_extra_args key of the configuration stays after the flags of --d8-args.
+void CheckD8ArgLayers(Checker* checker) {
+  std::string got = LoadedD8Args({kD8ArgsConfig, "--d8-args=--base-a --base-b",
+                                  "--d8-extra-args=--extra-b"});
+  checker->Check("config: --d8-args keeps the d8_extra_args of --config",
+                 got == "--base-a --base-b --extra-a --extra-b", got);
+  TunableRegistry::Instance().Reset();
+}
+
+// The "init" and "accept" blocks, stages.minimize.reducers and
+// crash_minimizer.reducers: the values go to their fields, and the loader
+// reports the mistakes.
 void CheckStrategyBlocks(Checker* checker) {
   auto load = [](const std::string& text, FuzzConfig* config) -> std::string {
     JsonValue json;
@@ -776,7 +853,11 @@ void CheckStrategyBlocks(Checker* checker) {
     if (!FuzzConfig::LoadJsonForTest(json, config, &error)) {
       return error;
     }
-    return FuzzConfig::ValidateReducers(config->minimizer_reducers, &error)
+    return FuzzConfig::ValidateReducers(config->minimizer_reducers,
+                                        "stages.minimize.reducers", &error) &&
+                   FuzzConfig::ValidateReducers(
+                       config->crash_minimizer_reducers,
+                       "crash_minimizer.reducers", &error)
                ? ""
                : error;
   };
@@ -791,7 +872,8 @@ void CheckStrategyBlocks(Checker* checker) {
               config.imports == std::vector<std::string>{"a.js", "dir"} &&
               config.import_root == "/r" && config.import_all &&
               config.minimizer_reducers ==
-                  std::vector<std::string>{"truncate", "statements"};
+                  std::vector<std::string>{"truncate", "statements"} &&
+              config.crash_minimizer_reducers.empty();
     checker->Check("init, accept, reducers: the blocks set their fields", ok,
                    error);
     error =
@@ -802,6 +884,94 @@ void CheckStrategyBlocks(Checker* checker) {
     checker->Check(
         "init: generate clears the imports and sets the program count", ok,
         error);
+  }
+  {
+    // The crash minimizer has its own reducer order. The dump gives the
+    // default order when the configuration gives none.
+    FuzzConfig config;
+    std::string error = load(
+        R"({"crash_minimizer": {"max_rounds": 7, "reducers": ["unwrap", "dataflow"]}})",
+        &config);
+    JsonValue dumped;
+    std::string parse_error;
+    FuzzConfig defaults;
+    const bool dumped_ok =
+        load("{}", &defaults).empty() &&
+        JsonValue::Parse(defaults.ToJson(), &dumped, &parse_error);
+    const JsonValue& order = dumped.Get("crash_minimizer").Get("reducers");
+    std::vector<std::string> dumped_order;
+    if (order.is_array()) {
+      for (const JsonValue& name : order.as_array()) {
+        dumped_order.push_back(name.as_string());
+      }
+    }
+    const bool ok = error.empty() && config.crash_minimizer.max_rounds == 7 &&
+                    config.crash_minimizer_reducers ==
+                        std::vector<std::string>{"unwrap", "dataflow"} &&
+                    config.minimizer_reducers.empty() && dumped_ok &&
+                    dumped_order == std::vector<std::string>(
+                                        Minimizer::CrashOrder().begin(),
+                                        Minimizer::CrashOrder().end());
+    checker->Check(
+        "crash_minimizer: the block sets the reducers, the dump gives the "
+        "default order",
+        ok, error.empty() ? parse_error : error);
+    // The dump of the order that is not the default loads back to the same
+    // order. An empty list gives the default order, as for
+    // stages.minimize.reducers.
+    FuzzConfig again;
+    std::string again_error = load(config.ToJson(), &again);
+    FuzzConfig empty;
+    if (again_error.empty()) {
+      again_error = load(R"({"crash_minimizer": {"reducers": []}})", &empty);
+    }
+    checker->Check(
+        "crash_minimizer: the dumped reducers load back, an empty list gives "
+        "the default order",
+        again_error.empty() && again.crash_minimizer.max_rounds == 7 &&
+            again.crash_minimizer_reducers ==
+                std::vector<std::string>{"unwrap", "dataflow"} &&
+            empty.crash_minimizer_reducers.empty(),
+        again_error);
+  }
+  {
+    // The keys of the flag search and the time limits of the crash
+    // minimizers. FuzzConfig::Load changes values out of range to the
+    // nearest valid values. Values that are not the default load back from
+    // the dump.
+    FuzzConfig low, high, again;
+    std::string error = LoadFullConfig(
+        R"({"crash_flag_runs": 3, "crash_flag_processes": 2, "crash_flag_budget_sec": -3})",
+        &low);
+    if (error.empty()) {
+      error = LoadFullConfig(
+          R"({"crash_flag_runs": 0, "crash_flag_processes": -5, "crash_flag_budget_sec": 20, "crash_amplified_budget_sec": -1, "crash_bundle_min_budget_sec": -1})",
+          &high);
+    }
+    if (error.empty()) {
+      error = load(high.ToJson(), &again);
+    }
+    checker->Check(
+        "crash flags: the keys of the flag search",
+        error.empty() && low.crash_flag_runs == 3 &&
+            low.crash_flag_processes == 3 && low.crash_flag_budget_sec == 0 &&
+            high.crash_flag_runs == 1 && high.crash_flag_processes == 0 &&
+            again.crash_flag_runs == 1 && again.crash_flag_processes == 0 &&
+            again.crash_flag_budget_sec == 20 &&
+            high.crash_amplified_budget_sec == 0 &&
+            again.crash_amplified_budget_sec == 0 &&
+            low.crash_amplified_budget_sec == 300 &&
+            high.crash_bundle_min_budget_sec == 0 &&
+            again.crash_bundle_min_budget_sec == 0,
+        StringPrintf("%s runs %d/%d, processes %d/%d, budget %g/%g, "
+                     "amplified budget %g/%g/%g, bundle budget %g",
+                     error.c_str(), low.crash_flag_runs, high.crash_flag_runs,
+                     low.crash_flag_processes, high.crash_flag_processes,
+                     low.crash_flag_budget_sec, again.crash_flag_budget_sec,
+                     low.crash_amplified_budget_sec,
+                     high.crash_amplified_budget_sec,
+                     again.crash_amplified_budget_sec,
+                     again.crash_bundle_min_budget_sec));
   }
   struct Case {
     const char* name;
@@ -821,7 +991,13 @@ void CheckStrategyBlocks(Checker* checker) {
        R"({"accept": {"strategy": "rarity"}})", "unknown accept strategy"},
       {"minimize: unknown reducer is an error",
        R"({"stages": {"minimize": {"reducers": ["statements", "shrink"]}}})",
-       "unknown reducer \"shrink\""},
+       "unknown reducer \"shrink\" in stages.minimize.reducers"},
+      {"crash_minimizer: unknown reducer is an error",
+       R"({"crash_minimizer": {"reducers": ["dataflow", "shrink"]}})",
+       "unknown reducer \"shrink\" in crash_minimizer.reducers"},
+      {"crash_minimizer: reducers that are not a list are an error",
+       R"({"crash_minimizer": {"reducers": "dataflow"}})",
+       "crash_minimizer.reducers must be a list of reducer names"},
   };
   for (const Case& c : cases) {
     FuzzConfig config;
@@ -967,6 +1143,49 @@ void CheckEdgeCases(Checker* checker) {
         "random: full int64 Range and trailing zero weight in Weighted",
         weighted_ok);
   }
+  // CodeGen recursion cap under adversarial tunable settings.
+  {
+    TunableRegistry& reg = TunableRegistry::Instance();
+    std::string err;
+    bool set_ok = reg.Set("codegen.argument.reuse_chance", 0.0, &err) &&
+                  reg.Set("codegen.value.variable_chance", 0.0, &err) &&
+                  reg.Set("codegen.argument.optional_stop_chance", 0.0, &err) &&
+                  reg.Set("codegen.expression.max_depth", 16.0, &err) &&
+                  reg.Set("codegen.argument.max_depth", 16.0, &err) &&
+                  reg.Set("codegen.max_expr_depth", 10.0, &err);
+    std::unique_ptr<GeneratorSet> generators = GeneratorSet::CreateDefault();
+    const Environment& env = Environment::Default();
+    Random rng(12345);
+    bool depth_ok = set_ok;
+    for (int i = 0; i < 300 && depth_ok; i++) {
+      auto tree = std::make_unique<fast::Tree>();
+      tree->set_root(tree->New<fast::Program>());
+      Builder builder(tree.get(), &rng);
+      GenContext ctx(builder, *generators, env);
+      CodeGen cg(ctx);
+      fast::Expression* e1 = cg.Expression(0);
+      fast::Expression* e2 = cg.BuiltinCall();
+      fast::Expression* e3 = cg.Construct();
+      if (ctx.expr_depth != 0 || e1 == nullptr || e2 == nullptr ||
+          e3 == nullptr) {
+        depth_ok = false;
+        break;
+      }
+      tree->root()->body.push_back(cg.Stmt(e1));
+      tree->root()->body.push_back(cg.Stmt(e2));
+      tree->root()->body.push_back(cg.Stmt(e3));
+      fast::ParseError parse_err;
+      if (fast::Parser::ParseScript(fast::Print(tree->root()),
+                                    fast::ParseOptions(),
+                                    &parse_err) == nullptr) {
+        err = parse_err.message;
+        depth_ok = false;
+      }
+    }
+    reg.Reset();
+    checker->Check("codegen: expression recursion depth stays bounded",
+                   depth_ok, err);
+  }
 }
 
 }  // namespace
@@ -1019,6 +1238,7 @@ void RunSelectionChecks(Checker* checker, const std::string& testdata_dir,
   }
   CheckTunables(checker);
   CheckConfigDump(checker);
+  CheckD8ArgLayers(checker);
   CheckAdaptiveWindow(checker);
   CheckAmplifyConfig(checker);
   CheckWrapInTry(checker);
@@ -1081,6 +1301,34 @@ void RunPresetChecks(Checker* checker) {
     bool ok = FuzzConfig::Load(flags, &config, &error, /*for_run=*/false);
     checker->Check(("presets: " + BaseName(path) + " loads").c_str(), ok,
                    error);
+    // The flag --d8-args keeps the d8_extra_args of the preset. A d8_args
+    // key in --config removes them.
+    std::string text;
+    JsonValue json;
+    if (!ok || !ReadFileToString(path, &text, &error) ||
+        !JsonValue::Parse(text, &json, &error) ||
+        !json.Get("d8_extra_args").is_array() ||
+        json.Get("d8_extra_args").as_array().empty()) {
+      continue;
+    }
+    std::string preset_flags;
+    for (const JsonValue& flag : json.Get("d8_extra_args").as_array()) {
+      if (flag.is_string()) {
+        preset_flags += " " + flag.as_string();
+      }
+    }
+    std::string got =
+        LoadedD8Args({arg, "--d8-args=--base-a", "--d8-extra-args=--extra-b"});
+    checker->Check(
+        ("presets: --d8-args keeps the d8_extra_args of " + BaseName(path))
+            .c_str(),
+        got == "--base-a" + preset_flags + " --extra-b", got);
+    got = LoadedD8Args({arg, kD8ArgsConfig, "--d8-args=--base-a",
+                        "--d8-extra-args=--extra-b"});
+    checker->Check(("presets: a d8_args key removes the d8_extra_args of " +
+                    BaseName(path))
+                       .c_str(),
+                   got == "--base-a --extra-a --extra-b", got);
   }
   TunableRegistry::Instance().Reset();
 }

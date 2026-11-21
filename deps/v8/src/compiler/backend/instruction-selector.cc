@@ -93,6 +93,10 @@ InstructionSelector::InstructionSelector(
       node_count_(node_count),
       phi_states_(zone)
 #endif
+#if V8_ENABLE_WEBASSEMBLY && V8_ENABLE_SANDBOX
+      ,
+      params_to_decompress_(zone)
+#endif
 #if V8_TARGET_ARCH_ARM64 || defined(V8_ENABLE_APX_F)
       ,
       ccmp_cascade_info_(zone)
@@ -435,12 +439,6 @@ OptionalOpIndex InstructionSelector::FindProjection(OpIndex node,
   return OpIndex::Invalid();
 }
 
-void InstructionSelector::UpdateRenames(Instruction* instruction) {
-  for (size_t i = 0; i < instruction->InputCount(); i++) {
-    TryRename(instruction->InputAt(i));
-  }
-}
-
 void InstructionSelector::UpdateRenamesInPhi(PhiInstruction* phi) {
   for (size_t i = 0; i < phi->operands().size(); i++) {
     int vreg = phi->operands()[i];
@@ -464,14 +462,16 @@ int InstructionSelector::GetRename(int virtual_register) {
   return rename;
 }
 
-void InstructionSelector::TryRename(InstructionOperand* op) {
-  if (!op->IsUnallocated()) return;
+bool InstructionSelector::TryRename(InstructionOperand* op) {
+  if (!op->IsUnallocated()) return false;
   UnallocatedOperand* unalloc = UnallocatedOperand::cast(op);
   int vreg = unalloc->virtual_register();
   int rename = GetRename(vreg);
   if (rename != vreg) {
     *unalloc = UnallocatedOperand(*unalloc, rename);
+    return true;
   }
+  return false;
 }
 
 void InstructionSelector::SetRename(OpIndex node, OpIndex rename) {
@@ -590,76 +590,85 @@ void InstructionSelector::MarkAsRepresentation(MachineRepresentation rep,
 
 namespace {
 
+InstructionOperand ConstantOperandForDeopt(Isolate* isolate,
+                                           OperandGenerator* g,
+                                           const Constant& constant,
+                                           MachineType type) {
+  if (!RelocInfo::IsNoInfo(constant.rmode())) return InstructionOperand();
+  MachineRepresentation rep = type.representation();
+  switch (constant.type()) {
+    case Constant::kInt32:
+    case Constant::kInt64: {
+      int64_t value = constant.ToInt64();
+      if (rep == MachineRepresentation::kBit) {
+        return static_cast<uint32_t>(value) <= 1
+                   ? g->UseImmediate(static_cast<int32_t>(value))
+                   : InstructionOperand();
+      }
+      CHECK(rep != MachineRepresentation::kWord8 &&
+            rep != MachineRepresentation::kWord16);
+      if (rep == MachineRepresentation::kWord32) {
+        return g->UseImmediate(static_cast<int32_t>(value));
+      }
+      if (rep == MachineRepresentation::kWord64) {
+        DCHECK(Is64());
+        return g->UseImmediate64(value);
+      }
+      if (rep == MachineRepresentation::kTagged && HAS_SMI_TAG(value)) {
+        if constexpr (Is64()) {
+          return g->UseImmediate64(PointerCompressionIsEnabled()
+                                       ? int64_t{static_cast<uint32_t>(value)}
+                                       : value);
+        } else {
+          return g->UseImmediate(static_cast<int32_t>(value));
+        }
+      }
+      return InstructionOperand();
+    }
+    case Constant::kFloat32:
+      return (rep == MachineRepresentation::kFloat32 ||
+              rep == MachineRepresentation::kTagged)
+                 ? g->UseImmediate(constant)
+                 : InstructionOperand();
+    case Constant::kFloat64:
+      return (rep == MachineRepresentation::kFloat64 ||
+              rep == MachineRepresentation::kTagged)
+                 ? g->UseImmediate(constant)
+                 : InstructionOperand();
+    case Constant::kHeapObject:
+    case Constant::kCompressedHeapObject: {
+      if (constant.type() == Constant::kCompressedHeapObject
+              ? type != MachineType::AnyTagged()
+              : rep != MachineRepresentation::kTagged) {
+        return InstructionOperand();
+      }
+      Handle<HeapObject> object = constant.ToHeapObject();
+      RootIndex root_index;
+      if (isolate->roots_table().IsRootHandle(object, &root_index) &&
+          root_index == RootIndex::kOptimizedOut) {
+        return InstructionOperand();
+      }
+      return g->UseImmediate(constant);
+    }
+    case Constant::kExternalReference:
+    case Constant::kRpoNumber:
+      return InstructionOperand();
+  }
+  UNREACHABLE();
+}
+
 InstructionOperand OperandForDeopt(Isolate* isolate, OperandGenerator* g,
                                    OpIndex input, FrameStateInputKind kind,
-                                   MachineRepresentation rep) {
-  if (rep == MachineRepresentation::kNone) {
+                                   MachineType type) {
+  if (type.representation() == MachineRepresentation::kNone) {
     return g->TempImmediate(FrameStateDescriptor::kImpossibleValue);
   }
 
-  const Operation& op = g->turboshaft_graph()->Get(input);
-  if (const ConstantOp* constant = op.TryCast<ConstantOp>()) {
-    using Kind = ConstantOp::Kind;
-    switch (constant->kind) {
-      case Kind::kWord32:
-      case Kind::kWord64:
-      case Kind::kSmi:
-      case Kind::kFloat32:
-      case Kind::kFloat64:
-        return g->UseImmediate(input);
-      case Kind::kNumber:
-        if (rep == MachineRepresentation::kWord32) {
-          const double d = constant->number().get_scalar();
-          Tagged<Smi> smi = Smi::FromInt(static_cast<int32_t>(d));
-          CHECK_EQ(smi.value(), d);
-          return g->UseImmediate(static_cast<int32_t>(smi.ptr()));
-        }
-        return g->UseImmediate(input);
-      case Kind::kHeapObject:
-      case Kind::kCompressedHeapObject:
-      case Kind::kTrustedHeapObject: {
-        if (!CanBeTaggedOrCompressedPointer(rep)) {
-          // If we have inconsistent static and dynamic types, e.g. if we
-          // smi-check a string, we can get here with a heap object that
-          // says it is a smi. In that case, we return an invalid instruction
-          // operand, which will be interpreted as an optimized-out value.
-
-          // TODO(jarin) Ideally, we should turn the current instruction
-          // into an abort (we should never execute it).
-          return InstructionOperand();
-        }
-
-        Handle<HeapObject> object = constant->handle();
-        RootIndex root_index;
-        if (isolate->roots_table().IsRootHandle(object, &root_index) &&
-            root_index == RootIndex::kOptimizedOut) {
-          // For an optimized-out object we return an invalid instruction
-          // operand, so that we take the fast path for optimized-out values.
-          return InstructionOperand();
-        }
-
-        return g->UseImmediate(input);
-      }
-      default:
-        UNIMPLEMENTED();
+  if (const ConstantOp* constant = g->Get(input).TryCast<ConstantOp>()) {
+    if (constant->kind == ConstantOp::Kind::kTaggedIndex) {
+      UNIMPLEMENTED();
     }
-  } else if (const TaggedBitcastOp* bitcast =
-                 op.TryCast<Opmask::kTaggedBitcastSmi>()) {
-    const Operation& bitcast_input = g->Get(bitcast->input());
-    if (const ConstantOp* cst =
-            bitcast_input.TryCast<Opmask::kWord32Constant>()) {
-      if constexpr (Is64()) {
-        return g->UseImmediate64(cst->word32());
-      } else {
-        return g->UseImmediate(cst->word32());
-      }
-    } else if (Is64() && bitcast_input.Is<Opmask::kWord64Constant>()) {
-      if (rep == MachineRepresentation::kWord32) {
-        return g->UseImmediate(bitcast_input.Cast<ConstantOp>().word32());
-      } else {
-        return g->UseImmediate64(bitcast_input.Cast<ConstantOp>().word64());
-      }
-    }
+    return ConstantOperandForDeopt(isolate, g, g->ToConstant(input), type);
   }
 
   switch (kind) {
@@ -673,7 +682,79 @@ InstructionOperand OperandForDeopt(Isolate* isolate, OperandGenerator* g,
   UNREACHABLE();
 }
 
+std::optional<size_t> GetFrameStateInputOffset(const Instruction* instruction) {
+  if (instruction->arch_opcode() == kArchDeoptimize) return 0;
+  if (instruction->flags_mode() == kFlags_deoptimize) {
+    return DeoptFrameStateOffsetField::decode(instruction->opcode());
+  }
+  if (!instruction->IsTailCall() && instruction->IsCallWithDescriptorFlags() &&
+      instruction->HasCallDescriptorFlag(CallDescriptor::kNeedsFrameState)) {
+    // Frame state starts at input 1 (after the callee).
+    return 1;
+  }
+  return std::nullopt;
+}
+
 }  // namespace
+
+void InstructionSelector::UpdateRenames(Instruction* instruction) {
+  bool renamed = false;
+  for (size_t i = 0; i < instruction->InputCount(); i++) {
+    renamed |= TryRename(instruction->InputAt(i));
+  }
+  if (!renamed) return;
+
+  // Operations lowered via EmitIdentity (e.g. single-input phis or zero/sign
+  // extensions) may rename FrameState inputs to constants after OperandForDeopt
+  // has already emitted UnallocatedOperands. Convert those into
+  // ImmediateOperands so the register allocator does not materialize them into
+  // registers.
+  std::optional<size_t> frame_state_offset =
+      GetFrameStateInputOffset(instruction);
+  if (!frame_state_offset.has_value()) return;
+
+  ImmediateOperand* state_id_op =
+      ImmediateOperand::cast(instruction->InputAt(*frame_state_offset));
+  int state_id = sequence()->GetImmediate(state_id_op).ToInt32();
+  FrameStateDescriptor* descriptor =
+      sequence()->GetDeoptimizationEntry(state_id).descriptor();
+  size_t input_index = *frame_state_offset + 1;
+  UpdateDeoptFrameStateConstantInputs(instruction, descriptor, &input_index);
+}
+
+void InstructionSelector::UpdateDeoptFrameStateConstantInputs(
+    Instruction* instruction, FrameStateDescriptor* descriptor,
+    size_t* input_index) {
+  if (descriptor->outer_state() != nullptr) {
+    UpdateDeoptFrameStateConstantInputs(instruction, descriptor->outer_state(),
+                                        input_index);
+  }
+  UpdateDeoptStateValueConstantInputs(
+      instruction, descriptor->GetStateValueDescriptors(), input_index);
+}
+
+void InstructionSelector::UpdateDeoptStateValueConstantInputs(
+    Instruction* instruction, StateValueList* values, size_t* input_index) {
+  OperandGenerator g(this);
+  for (auto [desc, nested] : *values) {
+    if (desc->IsNested()) {
+      UpdateDeoptStateValueConstantInputs(instruction, nested, input_index);
+    } else if (desc->IsPlain()) {
+      InstructionOperand* op = instruction->InputAt((*input_index)++);
+      if (!op->IsUnallocated()) continue;
+      int vreg = UnallocatedOperand::cast(op)->virtual_register();
+      if (!sequence()->IsConstant(vreg)) continue;
+      InstructionOperand imm = ConstantOperandForDeopt(
+          isolate(), &g, sequence()->GetConstant(vreg), desc->type());
+      if (imm.IsInvalid()) {
+        *op = g.TempImmediate(FrameStateDescriptor::kImpossibleValue);
+        *desc = StateValueDescriptor::Plain(MachineType::None());
+      } else {
+        *op = imm;
+      }
+    }
+  }
+}
 
 enum class ObjectType { kRegularObject, kStringConcat };
 
@@ -754,8 +835,8 @@ size_t AddOperandToStateValueDescriptor(
         // TODO(nicohartmann@): Fix this once we have explicit truncations.
         UNIMPLEMENTED();
       }
-      InstructionOperand instr_op = OperandForDeopt(
-          selector->isolate(), g, input, kind, type.representation());
+      InstructionOperand instr_op =
+          OperandForDeopt(selector->isolate(), g, input, kind, type);
       if (instr_op.kind() == InstructionOperand::INVALID) {
         // Invalid operand means the value is impossible or optimized-out.
         values->PushOptimizedOut();
@@ -1150,6 +1231,37 @@ void InstructionSelector::InitializeCallBuffer(
         MachineRepresentation rep = location.GetType().representation();
 
         OpIndex output = buffer->output_nodes[i].node;
+#if V8_ENABLE_WEBASSEMBLY && V8_ENABLE_SANDBOX
+        bool is_wasm_tagged_return = false;
+        if (!is_tail_call && buffer->descriptor->IsAnyWasmFunctionCall() &&
+            location.GetType() == MachineType::AnyTagged() && output.valid()) {
+          RegisterRepresentation out_rep;
+          if (buffer->output_nodes.size() == 1) {
+            for (OpIndex call_use : turboshaft_uses(output)) {
+              if (const DidntThrowOp* didnt_throw =
+                      this->Get(call_use).TryCast<DidntThrowOp>()) {
+                if (IsReallyUsed(call_use)) {
+                  is_wasm_tagged_return = true;
+                  out_rep = didnt_throw->outputs_rep()[0];
+                }
+                break;
+              }
+            }
+          } else if (IsReallyUsed(output)) {
+            is_wasm_tagged_return = true;
+            out_rep = Cast<ProjectionOp>(output).rep;
+          }
+          if (is_wasm_tagged_return) {
+            if (out_rep == RegisterRepresentation::Compressed()) {
+              rep = MachineRepresentation::kCompressed;
+            } else {
+              DCHECK_EQ(out_rep, RegisterRepresentation::Tagged());
+              buffer->output_nodes[i].needs_decompression = true;
+            }
+          }
+        }
+#endif  // V8_ENABLE_WEBASSEMBLY && V8_ENABLE_SANDBOX
+
         InstructionOperand op = !output.valid()
                                     ? g.TempLocation(location)
                                     : g.DefineAsLocation(output, location);
@@ -1157,6 +1269,19 @@ void InstructionSelector::InitializeCallBuffer(
 
         // Caller frame slots are defined later via Peek in VisitCall.
         if (!UnallocatedOperand::cast(op).HasFixedSlotPolicy()) {
+#if V8_ENABLE_WEBASSEMBLY && V8_ENABLE_SANDBOX
+          if (is_wasm_tagged_return) {
+            InstructionOperand temp_op = g.TempLocation(location);
+            MarkAsRepresentation(location.GetType().representation(), temp_op);
+            buffer->outputs.push_back(temp_op);
+            buffer->output_nodes[i].op =
+                location.IsRegister()
+                    ? g.UseRegisterForVreg(
+                          UnallocatedOperand::cast(temp_op).virtual_register())
+                    : temp_op;
+            continue;
+          }
+#endif  // V8_ENABLE_WEBASSEMBLY && V8_ENABLE_SANDBOX
           buffer->outputs.push_back(op);
           buffer->output_nodes[i].node = {};
         }
@@ -1533,6 +1658,40 @@ void InstructionSelector::VisitBlock(const Block* block) {
     }
   }
 
+#if V8_ENABLE_WEBASSEMBLY && V8_ENABLE_SANDBOX
+  if (!params_to_decompress_.empty()) {
+    DCHECK_NE(param_instructions_start_, -1);
+    OperandGenerator g(this);
+    ZoneVector<std::pair<OpIndex, InstructionOperand>> decompress_ops(zone());
+    decompress_ops.reserve(params_to_decompress_.size());
+    for (auto [node, index] : params_to_decompress_) {
+      LinkageLocation location = linkage()->GetParameterLocation(index);
+      InstructionOperand temp_op = g.TempLocation(location);
+      Emit(kArchNop, temp_op);
+      InstructionOperand use_op =
+          location.IsRegister()
+              ? g.UseRegisterForVreg(
+                    UnallocatedOperand::cast(temp_op).virtual_register())
+              : temp_op;
+      decompress_ops.push_back({node, use_op});
+    }
+    int nop_instructions_end = current_num_instructions();
+    for (auto [node, use_op] : decompress_ops) {
+      EmitDecompressTaggedParam(node, use_op);
+    }
+    // `instructions_` is stored in reverse execution order (higher indices are
+    // executed earlier in the block). Rotate so that all `kArchNop` parameter
+    // definitions are at the highest indices (executed first on function
+    // entry), followed by all `EmitDecompressTaggedParam` instructions, before
+    // any physical parameter register can be reused as an output.
+    std::rotate(instructions_.begin() + param_instructions_start_,
+                instructions_.begin() + nop_instructions_end,
+                instructions_.end());
+    params_to_decompress_.clear();
+  }
+  param_instructions_start_ = -1;
+#endif  // V8_ENABLE_WEBASSEMBLY && V8_ENABLE_SANDBOX
+
   // We're done with the block.
   InstructionBlock* instruction_block =
       sequence()->InstructionBlockAt(this->rpo_number(block));
@@ -1813,8 +1972,50 @@ void InstructionSelector::EmitBinarySearchSwitch(
   Emit(kArchBinarySearchSwitch, 0, nullptr, input_count, inputs, 0, nullptr);
 }
 
+bool InstructionSelector::CanEmitIdentityForTaggedBitcast(OpIndex node) {
+  // HeapObject bitcasts are only used for raw pointer access across regions
+  // where GC cannot happen.
+  if (this->Get(node).Cast<TaggedBitcastOp>().kind ==
+      TaggedBitcastOp::Kind::kHeapObject) {
+    return true;
+  }
+  // Because instructions are selected bottom-up within {current_block_}, all
+  // same-block uses of {node} have already been visited. EmitIdentity is safe
+  // if all uses are in {current_block_} (and not Phis) at the same effect
+  // level, ensuring no call or allocation can intervene between {node} and its
+  // uses.
+  const int node_vreg = GetVirtualRegister(node);
+  auto CheckUse = [&](auto& self, OpIndex use) -> bool {
+    if (!InCurrentBlock(use) || Is<PhiOp>(use)) return false;
+    int use_vreg = virtual_registers_[use.id()];
+    if (IsUsed(use) &&
+        (use_vreg == InstructionOperand::kInvalidVirtualRegister ||
+         GetRename(use_vreg) != node_vreg)) {
+      // {use} emitted an instruction consuming {node_vreg}; verify that no
+      // effectful operation (such as a call) lies between {node} and {use}.
+      return GetEffectLevel(use) == current_effect_level_;
+    }
+    // {use} was either covered by a downstream instruction (!IsUsed(use)) or
+    // itself emitted identity (GetRename(use_vreg) == node_vreg), so check its
+    // transitive uses instead.
+    for (OpIndex transitive_use : turboshaft_uses(use)) {
+      if (!self(self, transitive_use)) return false;
+    }
+    return true;
+  };
+  for (OpIndex use : turboshaft_uses(node)) {
+    if (!CheckUse(CheckUse, use)) return false;
+  }
+  return true;
+}
+
 void InstructionSelector::VisitBitcastTaggedToWord(OpIndex node) {
-  EmitIdentity(node);
+  if (CanEmitIdentityForTaggedBitcast(node)) {
+    return EmitIdentity(node);
+  }
+  OperandGenerator g(this);
+  Emit(kArchNop, g.DefineSameAsFirst(node),
+       g.Use(this->Get(node).Cast<TaggedBitcastOp>().input()));
 }
 
 void InstructionSelector::VisitBitcastWordToTagged(OpIndex node) {
@@ -1824,24 +2025,14 @@ void InstructionSelector::VisitBitcastWordToTagged(OpIndex node) {
 }
 
 void InstructionSelector::VisitBitcastSmiToWord(OpIndex node) {
-  // TODO(dmercadier): using EmitIdentity here is not ideal, because users of
-  // {node} will then use its input, which may not have the Word32
-  // representation. This might in turn lead to the register allocator wrongly
-  // tracking Tagged values that are in fact just Smis. However, using
-  // Emit(kArchNop) hurts performance because it inserts a gap move which cannot
-  // always be eliminated because the operands may have different sizes (and the
-  // move is then truncating or extending). As a temporary work-around until the
-  // register allocator is fixed, we use Emit(kArchNop) in DEBUG mode to silence
-  // the register allocator verifier.
   // Loong64/RISCV64 port needs this gap move to sign-extend the Smis in 64-bit
   // registers.
-#if defined(DEBUG) || defined(V8_TARGET_ARCH_LOONG64) || \
-    defined(V8_TARGET_ARCH_RISCV64)
+#if defined(V8_TARGET_ARCH_LOONG64) || defined(V8_TARGET_ARCH_RISCV64)
   OperandGenerator g(this);
   Emit(kArchNop, g.DefineSameAsFirst(node),
        g.Use(this->Get(node).Cast<TaggedBitcastOp>().input()));
 #else
-  EmitIdentity(node);
+  VisitBitcastTaggedToWord(node);
 #endif
 }
 
@@ -1877,7 +2068,6 @@ VISIT_UNSUPPORTED_OP(Int64LessThan)
 VISIT_UNSUPPORTED_OP(Int64LessThanOrEqual)
 VISIT_UNSUPPORTED_OP(Uint64LessThan)
 VISIT_UNSUPPORTED_OP(Uint64LessThanOrEqual)
-VISIT_UNSUPPORTED_OP(BitcastWord32ToWord64)
 VISIT_UNSUPPORTED_OP(ChangeInt32ToInt64)
 VISIT_UNSUPPORTED_OP(ChangeInt64ToFloat64)
 VISIT_UNSUPPORTED_OP(ChangeUint32ToUint64)
@@ -2011,14 +2201,16 @@ IF_WASM(VISIT_UNSUPPORTED_OP, MemoryFill)
 
 IF_SIMD128(VISIT_UNSUPPORTED_OP, I32x4AddPairwise)
 IF_SIMD128(VISIT_UNSUPPORTED_OP, I32x4DotI8x16S)
+#endif  // !V8_TARGET_ARCH_ARM64
 
+#if !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_LOONG64
 IF_SIMD128(VISIT_UNSUPPORTED_OP, I8x16MoveLane)
 IF_SIMD128(VISIT_UNSUPPORTED_OP, I16x8MoveLane)
 IF_SIMD128(VISIT_UNSUPPORTED_OP, I32x4MoveLane)
 IF_SIMD128(VISIT_UNSUPPORTED_OP, I64x2MoveLane)
 IF_SIMD128(VISIT_UNSUPPORTED_OP, F32x4MoveLane)
 IF_SIMD128(VISIT_UNSUPPORTED_OP, F64x2MoveLane)
-#endif  // !V8_TARGET_ARCH_ARM64
+#endif  // !V8_TARGET_ARCH_ARM64 && !V8_TARGET_ARCH_LOONG64
 
 IF_SIMD128(VISIT_UNSUPPORTED_OP, F16x8MoveLane)
 
@@ -2027,9 +2219,31 @@ void InstructionSelector::VisitParameter(OpIndex node) {
   const int index = parameter.parameter_index;
   OperandGenerator g(this);
 
+#if V8_ENABLE_WEBASSEMBLY && V8_ENABLE_SANDBOX
+  if (param_instructions_start_ == -1) {
+    // ParameterOps are only present at the beginning of the entry block (and
+    // thus visited last during the reverse iteration in `VisitBlock`).
+    DCHECK_EQ(current_block_->index().id(), 0);
+    param_instructions_start_ = static_cast<int>(instructions_.size());
+  }
+#endif  // V8_ENABLE_WEBASSEMBLY && V8_ENABLE_SANDBOX
+
   if (linkage()->GetParameterLocation(index).IsNullRegister()) {
     EmitMoveParamToFPR(node, index);
   } else {
+#if V8_ENABLE_WEBASSEMBLY && V8_ENABLE_SANDBOX
+    // Parameter 0 is the Wasm instance data (or import data) in trusted space,
+    // which uses a different cage base and must not be decompressed.
+    const CallDescriptor* incoming = linkage()->GetIncomingDescriptor();
+    if ((incoming->IsAnyWasmFunctionCall() || incoming->IsWasmImportWrapper() ||
+         incoming->IsWasmCapiFunction()) &&
+        index > 0 &&
+        (parameter.rep == RegisterRepresentation::Tagged() ||
+         parameter.rep == RegisterRepresentation::Compressed())) {
+      params_to_decompress_.push_back({node, index});
+      return;
+    }
+#endif  // V8_ENABLE_WEBASSEMBLY && V8_ENABLE_SANDBOX
     InstructionOperand op =
         linkage()->ParameterHasSecondaryLocation(index)
             ? g.DefineAsDualLocation(
@@ -2438,13 +2652,14 @@ void InstructionSelector::VisitTailCall(OpIndex node) {
     buffer.instruction_args.push_back(g.TempImmediate(callee->shifted_tag()));
   }
 
-  // Add an immediate operand that represents the offset to the first slot
-  // that is unused with respect to the stack pointer that has been updated
-  // for the tail call instruction. Backends that pad arguments can write the
-  // padding value at this offset from the stack.
-  const int optional_padding_offset =
+  // Add an immediate operand carrying the callee's unpadded stack parameter
+  // slot count. Backends that pad odd stack argument areas use this both to
+  // check whether a padding slot is present and to zero that slot above the
+  // parameters (and above any return address on the stack).
+  const int unpadded_stack_param_slots =
       callee->GetOffsetToFirstUnusedStackSlot() - 1;
-  buffer.instruction_args.push_back(g.TempImmediate(optional_padding_offset));
+  buffer.instruction_args.push_back(
+      g.TempImmediate(unpadded_stack_param_slots));
 
   const int first_unused_slot_offset =
       kReturnAddressStackSlotCount + stack_param_delta;
@@ -2992,7 +3207,13 @@ void InstructionSelector::VisitNode(OpIndex node) {
       DCHECK_EQ(this->rpo_number(this->block(schedule(), node)).ToInt(), 0);
       MachineType type =
           linkage()->GetParameterType(op.Cast<ParameterOp>().parameter_index);
-      MarkAsRepresentation(type.representation(), node);
+      MachineRepresentation rep = type.representation();
+#if V8_ENABLE_WEBASSEMBLY && V8_ENABLE_SANDBOX
+      if (op.Cast<ParameterOp>().rep == RegisterRepresentation::Compressed()) {
+        rep = MachineRepresentation::kCompressed;
+      }
+#endif  // V8_ENABLE_WEBASSEMBLY && V8_ENABLE_SANDBOX
+      MarkAsRepresentation(rep, node);
       return VisitParameter(node);
     }
     case Opcode::kChange: {
@@ -3117,8 +3338,6 @@ void InstructionSelector::VisitNode(OpIndex node) {
           return VisitTruncateInt64ToInt32(node);
         case ChangeOp::Kind::kBitcast:
           switch (multi(change.from, change.to)) {
-            case multi(Rep::Word32(), Rep::Word64()):
-              return VisitBitcastWord32ToWord64(node);
             case multi(Rep::Word32(), Rep::Float32()):
               return VisitBitcastInt32ToFloat32(node);
             case multi(Rep::Word64(), Rep::Float64()):
@@ -3642,7 +3861,7 @@ void InstructionSelector::VisitNode(OpIndex node) {
       MarkAsRepresentation(loaded_type.representation(), node);
       if (load.kind.maybe_unaligned) {
         DCHECK(!load.kind.with_trap_handler);
-        DCHECK(!load.kind.is_atomic);
+        DCHECK(!load.kind.is_atomic());
         if (loaded_type.representation() == MachineRepresentation::kWord8 ||
             InstructionSelector::AlignmentRequirements()
                 .IsUnalignedLoadSupported(loaded_type.representation())) {
@@ -3650,7 +3869,7 @@ void InstructionSelector::VisitNode(OpIndex node) {
         } else {
           return VisitUnalignedLoad(node);
         }
-      } else if (load.kind.is_atomic) {
+      } else if (load.kind.is_atomic()) {
         if (load.result_rep == Rep::Word32()) {
           return VisitWord32AtomicLoad(node);
         } else if (load.result_rep == Rep::Word64()) {
@@ -3687,7 +3906,7 @@ void InstructionSelector::VisitNode(OpIndex node) {
         } else {
           return VisitUnalignedStore(node);
         }
-      } else if (store.kind.is_atomic) {
+      } else if (store.kind.is_atomic()) {
         if (store.stored_rep.SizeInBytes() == 8) {
           return VisitWord64AtomicStore(node);
         } else {
@@ -3726,6 +3945,7 @@ void InstructionSelector::VisitNode(OpIndex node) {
         case multi(Rep::Word32(), Rep::Tagged()):
         case multi(Rep::Word64(), Rep::Tagged()):
           if (cast.kind == TaggedBitcastOp::Kind::kSmi) {
+            DCHECK_EQ(cast.from, Rep::WordPtr());
             MarkAsRepresentation(MachineRepresentation::kTaggedSigned, node);
             return EmitIdentity(node);
           } else {
@@ -4342,10 +4562,16 @@ FrameStateDescriptor* InstructionSelector::GetFrameStateDescriptor(
       this->turboshaft_graph()->Get(node).template Cast<FrameStateOp>();
   auto* desc = GetFrameStateDescriptorInternal(instruction_zone(),
                                                this->turboshaft_graph(), state);
-  *max_unoptimized_frame_height_ =
-      std::max(*max_unoptimized_frame_height_,
-               desc->total_conservative_frame_size_in_bytes() +
-                   (desc->max_arguments() * kSystemPointerSize));
+  // Include the maximum stack size needed by each parent frame in the deopt
+  // chain, as a parent frame may have another call site with more outgoing
+  // arguments than the inlined call site leading to this frame state.
+  for (FrameStateDescriptor* iter = desc; iter != nullptr;
+       iter = iter->outer_state()) {
+    *max_unoptimized_frame_height_ =
+        std::max(*max_unoptimized_frame_height_,
+                 iter->total_conservative_frame_size_in_bytes() +
+                     (iter->max_arguments() * kSystemPointerSize));
+  }
   return desc;
 }
 

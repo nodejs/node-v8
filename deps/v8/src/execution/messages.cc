@@ -26,6 +26,7 @@
 #include "src/roots/roots.h"
 #include "src/sandbox/trusted-pointer-inl.h"
 #include "src/strings/string-builder-inl.h"
+#include "src/tracing/trace-event.h"
 
 namespace v8 {
 namespace internal {
@@ -414,14 +415,10 @@ DirectHandle<String> MessageFormatter::Format(
     DCHECK(!args[i].is_null());
     arg_strings[i] = Object::NoSideEffectsToString(isolate, args[i]);
   }
-  v8::TryCatch try_catch(reinterpret_cast<v8::Isolate*>(isolate));
-  try_catch.SetVerbose(false);
-  try_catch.SetCaptureMessage(false);
   MaybeHandle<String> maybe_result_string = MessageFormatter::TryFormat(
       isolate, index, base::VectorOf(arg_strings, args.size()));
   Handle<String> result_string;
   if (!maybe_result_string.ToHandle(&result_string)) {
-    DCHECK(isolate->has_exception());
     return isolate->factory()->InternalizeString("<error>");
   }
   // A string that has been obtained from JS code in this way is
@@ -476,7 +473,7 @@ MaybeHandle<String> MessageFormatter::TryFormat(
           args.size() - remaining_args.size(), args.size(), template_string);
   }
 
-  return indirect_handle(builder.Finish(), isolate);
+  return indirect_handle(builder.Finish(kDontThrow), isolate);
 }
 
 MaybeDirectHandle<JSObject> ErrorUtils::Construct(
@@ -1078,12 +1075,17 @@ bool ErrorUtils::HasErrorStackSymbolOwnProperty(Isolate* isolate,
   // TODO(v8:5962): consider adding object->IsWasmExceptionPackage() here
   // once it's guaranteed that WasmExceptionPackage has |error_stack_symbol|
   // property.
-  DirectHandle<Name> name = isolate->factory()->error_stack_symbol();
+
+  // We are not using JSReceiver::HasOwnProperty() here because we don't want
+  // IsErrorObject() predicate to throw exception upon failed access check
+  // when querying the error_stack_symbol.
   if (IsJSError(*object)) {
-    DCHECK(JSReceiver::HasOwnProperty(isolate, object, name).FromMaybe(false));
+    DCHECK(!ErrorUtils::GetErrorStackProperty(isolate, object)
+                .error_stack_symbol_holder.is_null());
     return true;
   }
-  return JSReceiver::HasOwnProperty(isolate, object, name).FromMaybe(false);
+  return !ErrorUtils::GetErrorStackProperty(isolate, object)
+              .error_stack_symbol_holder.is_null();
 }
 
 // static

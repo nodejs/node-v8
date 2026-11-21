@@ -120,15 +120,6 @@
 #define FOREACH_PRE_STAGED_FEATURE_FLAG(JS_FEATURE, WASM_FEATURE,              \
                                         INTERNAL_FEATURE) /*   (80 columns) */ \
                                                                                \
-  /* V8 side owner: leszeks */                                                 \
-  INTERNAL_FEATURE(always_specialize_for_script_context,                       \
-                   "always specialize for script contexts in optimized code")  \
-                                                                               \
-  /* V8 side owner: leszeks */                                                 \
-  INTERNAL_FEATURE(                                                            \
-      code_cache_source_hash_sha256,                                           \
-      "hashing code cache source string with SHA256 instead of string length") \
-                                                                               \
   /* Reference-Typed Strings Proposal. */                                      \
   /* https://github.com/WebAssembly/stringref */                               \
   /* V8 side owner: jkummerow */                                               \
@@ -172,8 +163,15 @@
                                                                                \
   JS_FEATURE(js_defer_import_eval, "defer import eval")                        \
                                                                                \
-  JS_FEATURE(js_regexp_buffer_boundaries,                                      \
-             "RegExp \\A \\z \\Z buffer boundary assertions")                  \
+  JS_FEATURE(js_iterator_chunking, "iterator chunking")                        \
+                                                                               \
+  /* https://crbug.com/408032143 */                                            \
+  JS_FEATURE(js_nonextensible_applies_to_private,                              \
+             "non-extensibility includes private fields")                      \
+                                                                               \
+  /* V8 side owner: leszeks */                                                 \
+  INTERNAL_FEATURE(always_specialize_for_script_context,                       \
+                   "always specialize for script contexts in optimized code")  \
                                                                                \
   /* Custom Descriptors proposal. */                                           \
   /* https://github.com/WebAssembly/custom-descriptors */                      \
@@ -226,6 +224,9 @@
                                                                                \
   JS_FEATURE(js_import_text, "import text")                                    \
                                                                                \
+  JS_FEATURE(js_regexp_buffer_boundaries,                                      \
+             "RegExp \\A \\z \\Z buffer boundary assertions")                  \
+                                                                               \
   /* Legacy exception handling proposal. */                                    \
   /* https://github.com/WebAssembly/exception-handling */                      \
   /* V8 side owner: thibaudm */                                                \
@@ -238,6 +239,11 @@
                                                                                \
   INTERNAL_FEATURE(homomorphic_ic,                                             \
                    "Homomorphic IC state for same-handler highly polymorphic " \
-                   "ICs")
+                   "ICs")                                                      \
+                                                                               \
+  /* V8 side owner: leszeks */                                                 \
+  INTERNAL_FEATURE(                                                            \
+      code_cache_source_hash_sha256,                                           \
+      "hashing code cache source string with SHA256 instead of string length")
 
 #endif  // V8_FLAGS_FEATURE_FLAGS_H_

@@ -34,6 +34,7 @@
 #include "src/snapshot/embedded/embedded-data.h"
 #include "src/snapshot/serializer-deserializer.h"
 #include "src/snapshot/serializer-inl.h"
+#include "src/snapshot/trusted-section-serializer.h"
 
 namespace v8 {
 namespace internal {
@@ -340,10 +341,10 @@ void Serializer::PutBackReference(Tagged<HeapObject> object,
                                   SerializerReference reference) {
   uint32_t index = reference.back_ref_index();
   DCHECK_EQ(object, *back_refs_[index]);
-  uint32_t pos = static_cast<uint32_t>(sink_.Position());
+  size_t pos = sink_.Position();
   sink_.Put(kBackref, "Backref");
   sink_.PutUint30(index, "BackRefIndex");
-  uint8_t len = static_cast<uint8_t>(sink_.Position() - pos);
+  uint8_t len = base::checked_cast<uint8_t>(sink_.Position() - pos);
   backref_locations_.push_back({pos, index, len});
   if (index >= backref_counts_.size()) {
     backref_counts_.resize(num_back_refs_, 0);
@@ -412,6 +413,48 @@ ExternalReferenceEncoder::Value Serializer::EncodeExternalReference(
     v8::base::OS::Abort();
   }
   return result.FromJust();
+}
+
+// The untrusted section must not contain external pointers or their tags, so
+// it refers to them by index into a table in the trusted section.
+bool Serializer::SerializeTrustedExternalReference(
+    ExternalReferenceEncoder::Value reference, ExternalPointerTag tag) {
+  TrustedSectionSerializer* trusted = trusted_serializer();
+  if (!V8_ENABLE_SANDBOX_BOOL || trusted == nullptr) return false;
+  sink_.Put(kTrustedExternalRef, "TrustedExternalRef");
+  sink_.PutUint30(trusted->AddExternalReference(reference, tag),
+                  "TrustedExternalRefIndex");
+  return true;
+}
+
+bool Serializer::SerializeTrustedExternalStringResource(
+    ExternalReferenceEncoder::Value reference) {
+  TrustedSectionSerializer* trusted = trusted_serializer();
+  if (!V8_ENABLE_SANDBOX_BOOL || trusted == nullptr) return false;
+  sink_.Put(kTrustedExternalRef, "TrustedExternalRef");
+  sink_.PutUint30(
+      trusted->AddCppHeapPointer(reference, kExternalStringResourceTag),
+      "TrustedExternalRefIndex");
+  return true;
+}
+
+// The untrusted section can only reach exposed trusted objects, and exports
+// all of them. Which trusted objects a code cache may contain is decided by
+// SERIALIZABLE_TRUSTED_OBJECT_MAP_ROOT_LIST (see Serializer::PutRoot).
+bool Serializer::SerializeTrustedExport(Tagged<HeapObject> obj) {
+  TrustedSectionSerializer* trusted = trusted_serializer();
+  if (!V8_ENABLE_SANDBOX_BOOL || trusted == nullptr ||
+      !IsExposedTrustedObject(obj)) {
+    return false;
+  }
+  if (v8_flags.trace_serializer) {
+    PrintF(" Encoding trusted export reference to: ");
+    ShortPrint(obj);
+    PrintF("\n");
+  }
+  sink_.Put(kTrustedExportRef, "TrustedExportRef");
+  sink_.PutUint30(trusted->Export(obj), "TrustedExportIndex");
+  return true;
 }
 
 void Serializer::RegisterObjectIsPending(Tagged<HeapObject> obj) {
@@ -524,6 +567,12 @@ void Serializer::Pad(int padding_offset) {
   while (!IsAligned(sink_.Position() + padding_offset, kPointerAlignment)) {
     sink_.Put(kNop, "Padding");
   }
+}
+
+void Serializer::FinishUntrustedSection() {
+  sink_.Put(kSynchronize, "EndOfUntrustedSection");
+  OptimizeBackReferences();
+  Pad();
 }
 
 void Serializer::InitializeCodeAddressMap() {
@@ -776,11 +825,12 @@ void Serializer::ObjectSerializer::SerializeNativeContext() {
 }
 
 void Serializer::ObjectSerializer::SerializeExternalString() {
-  // For external strings with known resources, their external pointer slots
-  // are serialized via VisitExternalPointer. For the rest we serialize them
-  // to look like ordinary sequential strings.
+  // For external strings with known resources, their resource slots are
+  // serialized via VisitCppHeapPointer. For the rest we serialize them to
+  // look like ordinary sequential strings.
   auto string = Cast<ExternalString>(object_);
-  Address resource = string->resource_as_address(isolate());
+  Address resource = reinterpret_cast<Address>(string->resource(isolate()));
+  CHECK(resource);
   ExternalReferenceEncoder::Value reference;
   if (serializer_->external_reference_encoder_.TryEncode(resource).To(
           &reference)) {
@@ -893,32 +943,6 @@ void Serializer::ObjectSerializer::SerializeStringAsSequentialString(
     sink_->Put(static_cast<uint8_t>(0), "StringPadding");
   }
 }
-
-// Clear and later restore the next link in the weak cell or allocation site.
-// TODO(all): replace this with proper iteration of weak slots in serializer.
-class V8_NODISCARD UnlinkWeakNextScope {
- public:
-  explicit UnlinkWeakNextScope(Heap* heap, Tagged<HeapObject> object) {
-    Isolate* isolate = heap->isolate();
-    if (TryCast<AllocationSiteWithWeakNext>(object, &object_)) {
-      next_ = object_->weak_next();
-      object_->set_weak_next(ReadOnlyRoots(isolate).undefined_value());
-    }
-  }
-
-  ~UnlinkWeakNextScope() {
-    if (next_ == Smi::zero()) return;
-    object_->set_weak_next(
-        Cast<UnionOf<Undefined, AllocationSiteWithWeakNext>>(next_),
-        UPDATE_WRITE_BARRIER);
-  }
-
- private:
-  Tagged<AllocationSiteWithWeakNext> object_;
-  Tagged<UnionOf<Smi, Undefined, AllocationSiteWithWeakNext>> next_ =
-      Smi::zero();
-  DISALLOW_GARBAGE_COLLECTION(no_gc_)
-};
 
 void Serializer::ObjectSerializer::Serialize(SlotType slot_type) {
   RecursionScope recursion(serializer_);
@@ -1053,7 +1077,6 @@ void Serializer::ObjectSerializer::SerializeObject() {
 
 void Serializer::ObjectSerializer::SerializeContent(Tagged<Map> map, int size) {
   Tagged<HeapObject> raw = *object_;
-  UnlinkWeakNextScope unlink_weak_next(isolate()->heap(), raw);
   // Iterate references first.
   VisitObjectBody(isolate(), map, raw, this);
   // Then output data payload, if any.
@@ -1172,7 +1195,11 @@ void Serializer::ObjectSerializer::VisitPointers(Tagged<HeapObject> host,
 
 void Serializer::ObjectSerializer::VisitInstructionStreamPointer(
     Tagged<Code> host, InstructionStreamSlot slot) {
-  DCHECK(!host->has_instruction_stream());
+  // Copies of the interpreter entry trampoline created for profiling have an
+  // on-heap InstructionStream, which is not serialized.
+  CHECK_WITH_MSG(!host->has_instruction_stream(),
+                 "Snapshots cannot contain copies of the interpreter entry "
+                 "trampoline (see --interpreted-frames-native-stack).");
 }
 
 // All of these visitor functions are unreachable since we don't serialize
@@ -1205,7 +1232,7 @@ void Serializer::ObjectSerializer::VisitCodeTarget(
 void Serializer::ObjectSerializer::OutputExternalReference(
     Address target, int target_size, bool sandboxify, ExternalPointerTag tag) {
   DCHECK_LE(target_size, sizeof(target));  // Must fit in Address.
-  DCHECK_IMPLIES(sandboxify, V8_ENABLE_SANDBOX_BOOL);
+  DCHECK_IMPLIES(sandboxify, COMPRESS_POINTERS_BOOL);
   DCHECK_IMPLIES(sandboxify,
                  tag != kExternalPointerNullTag || target == kNullAddress);
   ExternalReferenceEncoder::Value encoded_reference;
@@ -1269,6 +1296,26 @@ void Serializer::ObjectSerializer::VisitCppHeapPointer(
   OutputRawData(slot.address());
 
   PtrComprCageBase cage_base(isolate());
+
+  if (IsExternalString(*object_)) {
+    // API-registered resource (other external strings are serialized as
+    // sequential strings, see SerializeExternalString()); emit its index.
+    Address resource = reinterpret_cast<Address>(
+        Cast<ExternalString>(*object_)->resource(isolate()));
+    CHECK(resource);
+    ExternalReferenceEncoder::Value reference =
+        serializer_->EncodeExternalReference(resource);
+    DCHECK(reference.is_from_api());
+    // Untrusted sections refer to it through the trusted section instead, like
+    // for external pointers.
+    if (!serializer_->SerializeTrustedExternalStringResource(reference)) {
+      sink_->Put(kExternalStringResource, "ExternalStringResource");
+      sink_->PutUint30(reference.index(), "external string resource index");
+    }
+    bytes_processed_so_far_ += kCppHeapPointerSlotSize;
+    return;
+  }
+
   // Currently there's only very limited support for CppHeapPointerSlot
   // serialization.
   //
@@ -1299,7 +1346,7 @@ void Serializer::ObjectSerializer::VisitExternalPointer(
       InstanceTypeChecker::IsExternalString(instance_type)) {
     // If necessary, output any raw data preceding this slot.
     OutputRawData(slot.address());
-#ifdef V8_ENABLE_SANDBOX
+#ifdef V8_COMPRESS_POINTERS
     ExternalPointerHandle handle = slot.Relaxed_LoadHandle();
     const ExternalPointerTable& table =
         IsolateForSandbox(isolate()).GetExternalPointerTableFor(
@@ -1312,7 +1359,7 @@ void Serializer::ObjectSerializer::VisitExternalPointer(
 #else
     Address value = slot.load(isolate());
     ExternalPointerTag tag = kExternalPointerNullTag;
-#endif  // V8_ENABLE_SANDBOX
+#endif  // V8_COMPRESS_POINTERS
     if (slot.tag_range() == kExternalStringResourceDataTag ||
         slot.tag_range() == kArrayBufferExtensionTag) {
       // resource_data_ is initialized in PostProcessExternalString, and
@@ -1327,7 +1374,7 @@ void Serializer::ObjectSerializer::VisitExternalPointer(
       sink_->PutRaw(reinterpret_cast<const uint8_t*>(&kNullExternalPointer),
                     kExternalPointerSlotSize, "null external pointer");
     } else {
-      const bool sandboxify = V8_ENABLE_SANDBOX_BOOL;
+      const bool sandboxify = COMPRESS_POINTERS_BOOL;
       OutputExternalReference(value, kSystemPointerSize, sandboxify, tag);
     }
     bytes_processed_so_far_ += kExternalPointerSlotSize;
@@ -1389,10 +1436,8 @@ void Serializer::ObjectSerializer::VisitProtectedPointer(
   SBXCHECK(OutsideSandbox(host.address()));
   Tagged<Object> content = slot.load(isolate());
 
-  // Similar to the indirect pointer case, if the slot is empty (i.e. contains
-  // Smi::zero()), then we skip it here.
-  if (content == Smi::zero()) return;
-  DCHECK(!IsSmi(content));
+  // Empty slots (Smi::zero()) and Smi slots can be skipped here.
+  if (IsSmi(content)) return;
 
   // If necessary, output any raw data preceding this slot.
   OutputRawData(slot.address());

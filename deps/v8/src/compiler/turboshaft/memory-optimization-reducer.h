@@ -191,7 +191,7 @@ class MemoryOptimizationReducer : public Next {
   // CopyingPhase.
 
   void Analyze() {
-    auto* info = __ data() -> info();
+    auto* info = __ data()->info();
 #if V8_ENABLE_WEBASSEMBLY
     bool is_wasm = info->IsWasm() || info->IsWasmBuiltin();
 #else
@@ -218,7 +218,7 @@ class MemoryOptimizationReducer : public Next {
     if (analyzer_->skipped_write_barriers.count(ig_index)) {
       __ Store(__ MapToNewGraph(store.base()), __ MapToNewGraph(store.index()),
                __ MapToNewGraph(store.value()), store.kind, store.stored_rep,
-               skipped_write_barrier_kind_, store.memory_order(), store.offset,
+               skipped_write_barrier_kind_, store.offset,
                store.element_size_log2,
                store.maybe_initializing_or_transitioning,
                store.trusted_pointer_tag());
@@ -236,8 +236,8 @@ class MemoryOptimizationReducer : public Next {
             IsSmiDecision::kFalse) {
       __ Store(__ MapToNewGraph(store.base()), __ MapToNewGraph(store.index()),
                __ MapToNewGraph(store.value()), store.kind, store.stored_rep,
-               WriteBarrierKind::kPointerWriteBarrier, store.memory_order(),
-               store.offset, store.element_size_log2,
+               WriteBarrierKind::kPointerWriteBarrier, store.offset,
+               store.element_size_log2,
                store.maybe_initializing_or_transitioning,
                store.trusted_pointer_tag());
       return V<None>::Invalid();
@@ -418,7 +418,7 @@ class MemoryOptimizationReducer : public Next {
         __ WordPtrAdd(obj_addr, __ IntPtrConstant(kHeapObjectTag)));
   }
 
-#if V8_ENABLE_SANDBOX
+#ifdef V8_COMPRESS_POINTERS
   V<WordPtr> REDUCE(LoadExternalPointer)(V<Word32> handle,
                                          ExternalPointerTagRange tag_range) {
     // Decode loaded external pointer.
@@ -465,7 +465,7 @@ class MemoryOptimizationReducer : public Next {
     __ BindReachable(done);
     return __ Word64BitwiseAnd(pointer, kExternalPointerPayloadMask);
   }
-#endif  // V8_ENABLE_SANDBOX
+#endif  // V8_COMPRESS_POINTERS
 
   V<None> REDUCE(MajorGCForCompilerTesting)() {
     __ template CallRuntime<runtime::MajorGCForCompilerTesting>(
@@ -475,7 +475,7 @@ class MemoryOptimizationReducer : public Next {
 
  private:
   std::optional<MemoryAnalyzer> analyzer_;
-  Isolate* isolate_ = __ data() -> isolate();
+  Isolate* isolate_ = __ data()->isolate();
   const TSCallDescriptor* allocate_builtin_descriptor_ = nullptr;
 #if V8_ENABLE_WEBASSEMBLY
   const TSCallDescriptor* allocate_wasm_shared_builtin_descriptor_ = nullptr;

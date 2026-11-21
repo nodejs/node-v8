@@ -303,6 +303,8 @@ enum class CheckBoundsFlag : uint8_t {
 using CheckBoundsFlags = base::Flags<CheckBoundsFlag>;
 DEFINE_OPERATORS_FOR_FLAGS(CheckBoundsFlags)
 
+std::ostream& operator<<(std::ostream&, CheckBoundsFlags);
+
 class CheckBoundsParameters final {
  public:
   CheckBoundsParameters(const FeedbackSource& feedback, CheckBoundsFlags flags)
@@ -1075,6 +1077,7 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* ChangeTaggedToUint32();
   const Operator* ChangeTaggedToFloat64();
   const Operator* ChangeTaggedToTaggedSigned();
+  const Operator* ChangeTaggedToTaggedPointer();
   const Operator* ChangeSmiOrHoleToFloat64();
   const Operator* ChangeNumberOrHoleToFloat64();
   const Operator* ChangeInt31ToTaggedSigned();
@@ -1221,8 +1224,8 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* ArgumentsLength();
   const Operator* RestLength(int formal_parameter_count);
 
-  const Operator* NewDoubleElements(AllocationType);
-  const Operator* NewSmiOrObjectElements(AllocationType);
+  const Operator* NewDoubleElements();
+  const Operator* NewSmiOrObjectElements();
 
   // new-arguments-elements arguments-length
   const Operator* NewArgumentsElements(CreateArgumentsType type,

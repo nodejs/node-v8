@@ -1123,10 +1123,6 @@ void InstructionSelector::VisitTryTruncateFloat64ToUint32(OpIndex node) {
   Emit(kMips64TruncUwD, output_count, outputs, 1, inputs);
 }
 
-void InstructionSelector::VisitBitcastWord32ToWord64(OpIndex node) {
-  UNIMPLEMENTED();
-}
-
 void InstructionSelector::VisitChangeInt32ToInt64(OpIndex node) {
   Mips64OperandGenerator g(this);
   const ChangeOp& change_op = this->Get(node).template Cast<ChangeOp>();
@@ -2964,6 +2960,11 @@ InstructionSelector::AlignmentRequirements() {
     return MachineOperatorBuilder::AlignmentRequirements::
         NoUnalignedAccessSupport();
   }
+}
+
+void InstructionSelector::EmitDecompressTaggedParam(
+    OpIndex node, InstructionOperand temp_op) {
+  UNREACHABLE();
 }
 
 #undef SIMD_BINOP_LIST

@@ -60,14 +60,6 @@ CpuFeatureSet SimulatorFeaturesFromCommandLine() {
 }
 #endif  // USE_SIMULATOR
 
-#if defined(V8_HOST_ARCH_ARM64) && !defined(USE_SIMULATOR) && defined(__clang__)
-__attribute__((target("sve"))) unsigned ReadSVEVectorLengthInBytes() {
-  // SVE vector length when all byte elements are used.
-  constexpr unsigned sv_all_bytes = 31;
-  return static_cast<unsigned>(__builtin_sve_svcntb_pat(sv_all_bytes));
-}
-#endif
-
 constexpr CpuFeatureSet CpuFeaturesFromCompiler() {
   CpuFeatureSet features;
 #if defined(__ARM_FEATURE_JCVT) && !defined(V8_TARGET_OS_IOS)
@@ -98,6 +90,12 @@ constexpr CpuFeatureSet CpuFeaturesFromCompiler() {
 #endif
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
   features.Add(FP16);
+#endif
+#if defined(__ARM_FEATURE_SME)
+  features.Add(SME);
+#endif
+#if defined(__ARM_FEATURE_SME2)
+  features.Add(SME2);
 #endif
 #if defined(__ARM_FEATURE_SVE)
   features.Add(SVE);
@@ -140,20 +138,6 @@ bool CpuFeatures::SupportsSimd128() {
 #endif  // V8_ENABLE_SIMD128
 }
 
-// TODO(whunt): simulate 256-bit vector registers.
-unsigned CpuFeatures::svevlen() {
-#ifdef USE_SIMULATOR
-  return kSimd128Size;
-#elif defined(V8_HOST_ARCH_ARM64) && defined(__clang__)
-  if (!base::CPU::GetInstance().has_sve()) {
-    return 0;
-  }
-  return ReadSVEVectorLengthInBytes();
-#else
-  return 0;
-#endif
-}
-
 void CpuFeatures::ProbeImpl(bool cross_compile) {
   // Only use statically determined features for cross compile (snapshot).
   if (cross_compile) {
@@ -170,6 +154,8 @@ void CpuFeatures::ProbeImpl(bool cross_compile) {
 
 #ifdef USE_SIMULATOR
   supported_ |= SimulatorFeaturesFromCommandLine();
+  // TODO(whunt): Simulate 256-bit scalable vector registers.
+  vlen_ = kQRegSizeInBits;
 #else
   // Probe for additional features at runtime.
   base::CPU cpu;
@@ -201,8 +187,18 @@ void CpuFeatures::ProbeImpl(bool cross_compile) {
   if (cpu.has_mops()) {
     runtime.Add(MOPS);
   }
+  if (cpu.has_sme()) {
+    runtime.Add(SME);
+    streaming_vlen_ = cpu.streaming_vlen();
+    DCHECK_NE(streaming_vlen_, base::CPU::kUnknownVlen);
+  }
+  if (cpu.has_sme2()) {
+    runtime.Add(SME2);
+  }
   if (cpu.has_sve()) {
     runtime.Add(SVE);
+    vlen_ = cpu.vlen();
+    DCHECK_NE(vlen_, base::CPU::kUnknownVlen);
   }
   if (cpu.has_sve2()) {
     runtime.Add(SVE2);
@@ -609,6 +605,19 @@ void Assembler::CheckLabelLinkChain(Label const* label) {
 #endif
 }
 
+namespace {
+
+bool LinkChainHasInternalReference(Instruction* link) {
+  while (true) {
+    if (link->IsUnresolvedInternalReference()) return true;
+    Instruction* next_link = link->ImmPCOffsetTarget();
+    if (link == next_link) return false;
+    link = next_link;
+  }
+}
+
+}  // namespace
+
 void Assembler::RemoveBranchFromLabelLinkChain(Instruction* branch,
                                                Label* label,
                                                Instruction* label_veneer) {
@@ -671,38 +680,50 @@ void Assembler::RemoveBranchFromLabelLinkChain(Instruction* branch,
         prev_link->IsTargetInImmPCOffsetRange(next_link)) {
       prev_link->SetImmPCOffsetTarget(zone(), options(), next_link);
     } else if (label_veneer != nullptr) {
-      // Use the veneer for all previous links in the chain.
-      prev_link->SetImmPCOffsetTarget(zone(), options(), prev_link);
+      // Internal references must stay linked until bind(), and branches before
+      // {branch} might not reach them. If an older link is an internal
+      // reference, resolve all branches in the chain to {label_veneer} and
+      // re-thread only the internal references.
+      Instruction* last_kept_link;
+      if (LinkChainHasInternalReference(next_link)) {
+        last_kept_link = nullptr;
+        link = InstructionAt(label->pos());
+      } else {
+        last_kept_link = prev_link;
+        link = next_link;
+      }
 
       bool end_of_chain = false;
-      link = next_link;
       while (!end_of_chain) {
         next_link = link->ImmPCOffsetTarget();
         end_of_chain = (link == next_link);
-        link->SetImmPCOffsetTarget(zone(), options(), label_veneer);
-        // {link} is now resolved; remove it from {unresolved_branches_} so
-        // we won't later try to process it again, which would fail because
-        // by walking the chain of its label's unresolved branch instructions,
-        // we won't find it: {prev_link} is now the end of that chain after
-        // its update above.
-        if (link->IsCondBranchImm() || link->IsCompareBranch()) {
-          static_assert(Instruction::ImmBranchRange(CondBranchType) ==
-                        Instruction::ImmBranchRange(CompareBranchType));
-          int max_reachable_pc = static_cast<int>(InstructionOffset(link)) +
-                                 Instruction::ImmBranchRange(CondBranchType);
-          unresolved_branches_.erase(max_reachable_pc);
-        } else if (link->IsTestBranch()) {
-          // Add 1 to account for branch type tag bit.
-          int max_reachable_pc = static_cast<int>(InstructionOffset(link)) +
-                                 Instruction::ImmBranchRange(TestBranchType) +
-                                 1;
-          unresolved_branches_.erase(max_reachable_pc);
-        } else {
-          // Other branch types and internal references are not handled by
-          // veneers.
+        const int link_offset = static_cast<int>(InstructionOffset(link));
+        if (link->IsUnresolvedInternalReference()) {
+          if (last_kept_link == nullptr) {
+            label->link_to(link_offset);
+            branch_link_chain_back_edge_.erase(link_offset);
+          } else {
+            last_kept_link->SetImmPCOffsetTarget(zone(), options(), link);
+            branch_link_chain_back_edge_.insert_or_assign(
+                link_offset,
+                static_cast<int>(InstructionOffset(last_kept_link)));
+          }
+          last_kept_link = link;
+        } else if (link != branch) {
+          // The branch being removed is skipped here because it was unlinked
+          // above and the caller patches it to the veneer.
+          link->SetImmPCOffsetTarget(zone(), options(), label_veneer);
+          // {link} is now resolved and unlinked; drop it from
+          // {unresolved_branches_} so EmitVeneers won't revisit it.
+          DeleteUnresolvedBranchInfoForBranch(link);
+          branch_link_chain_back_edge_.erase(link_offset);
         }
         link = next_link;
       }
+
+      // Terminate the chain.
+      DCHECK_NOT_NULL(last_kept_link);
+      last_kept_link->SetImmPCOffsetTarget(zone(), options(), last_kept_link);
     } else {
       // The assert below will fire.
       // Some other work could be attempted to fix up the chain, but it would be
@@ -837,6 +858,22 @@ int Assembler::LinkAndGetByteOffsetTo(Label* label) {
   return offset;
 }
 
+void Assembler::DeleteUnresolvedBranchInfoForBranch(Instruction* branch) {
+  const int branch_offset = static_cast<int>(InstructionOffset(branch));
+  if (branch->IsCondBranchImm() || branch->IsCompareBranch()) {
+    static_assert(Instruction::ImmBranchRange(CondBranchType) ==
+                  Instruction::ImmBranchRange(CompareBranchType));
+    unresolved_branches_.erase(branch_offset +
+                               Instruction::ImmBranchRange(CondBranchType));
+  } else if (branch->IsTestBranch()) {
+    // Add one to account for branch type tag bit.
+    unresolved_branches_.erase(branch_offset +
+                               Instruction::ImmBranchRange(TestBranchType) + 1);
+  } else {
+    // Other branch types are not handled by veneers.
+  }
+}
+
 void Assembler::DeleteUnresolvedBranchInfoForLabelTraverse(Label* label) {
   DCHECK(label->is_linked());
   CheckLabelLinkChain(label);
@@ -891,18 +928,10 @@ void Assembler::DeleteUnresolvedBranchInfoForLabel(Label* label) {
   }
 }
 
-bool Assembler::IsConstantPoolAt(Instruction* instr) {
-  // The constant pool marker is made of two instructions. These instructions
-  // will never be emitted by the JIT, so checking for the first one is enough:
-  // 0: ldr xzr, #<size of pool>
-  bool result = instr->IsLdrLiteralX() && (instr->Rt() == kZeroRegCode);
-
-  // It is still worth asserting the marker is complete.
-  // 4: blr xzr
-  DCHECK(!result || (instr->following()->IsBranchAndLinkToRegister() &&
-                     instr->following()->Rn() == kZeroRegCode));
-
-  return result;
+bool Assembler::IsConstantPoolAt(const Instruction* instr) {
+  // The constant pool marker is "udf #<size of pool>", which the JIT emits
+  // nowhere else.
+  return instr->IsUdf();
 }
 
 int Assembler::ConstantPoolSizeAt(Instruction* instr) {
@@ -924,13 +953,13 @@ int Assembler::ConstantPoolSizeAt(Instruction* instr) {
   }
 #endif
   if (IsConstantPoolAt(instr)) {
-    return instr->ImmLLiteral();
+    return instr->ImmUdf();
   } else {
     return -1;
   }
 }
 
-void Assembler::EmitPoolGuard() {
+void Assembler::EmitVeneersGuard() {
   // We must generate only one instruction as this is used in scopes that
   // control the size of the code generated.
   Emit(BLR | Rn(xzr));
@@ -954,7 +983,7 @@ void Assembler::br(const Register& xn) {
 void Assembler::blr(const Register& xn) {
   DCHECK(xn.Is64Bits());
   // The pattern 'blr xzr' is used as a guard to detect when execution falls
-  // through the constant pool. It should not be emitted.
+  // through the veneer pool. It should not be emitted.
   DCHECK_NE(xn, xzr);
   Emit(BLR | Rn(xn));
 }
@@ -1570,9 +1599,6 @@ void Assembler::ldrsw(const Register& rt, const MemOperand& src) {
 }
 
 void Assembler::ldr_pcrel(const CPURegister& rt, int imm19) {
-  // The pattern 'ldr xzr, #offset' is used to indicate the beginning of a
-  // constant pool. It should not be emitted.
-  DCHECK(!rt.IsZero());
   Emit(LoadLiteralOpFor(rt) | ImmLLiteral(imm19) | Rt(rt));
 }
 
@@ -4904,23 +4930,21 @@ void Assembler::near_call(HeapNumberRequest request) {
 
 void ConstantPool::EmitPrologue(Alignment require_alignment) {
   // Recorded constant pool size is expressed in number of 32-bits words,
-  // and includes prologue and alignment, but not the jump around the pool
-  // and the size of the marker itself.
+  // and includes alignment, but not the jump around the pool and the size of
+  // the marker itself. The marker is permanently undefined, so it also traps
+  // if execution runs into the pool.
   const int marker_size = 1;
   int word_count =
       ComputeSize(Jump::kOmitted, require_alignment) / kInt32Size - marker_size;
-  assm_->Emit(LDR_x_lit | Assembler::ImmLLiteral(word_count) |
-              Assembler::Rt(xzr));
-  assm_->EmitPoolGuard();
+  assm_->Emit(UDF | Assembler::ImmUdf(word_count));
 }
 
 int ConstantPool::PrologueSize(Jump require_jump) const {
   // Prologue is:
   //   b   over  ;; if require_jump
-  //   ldr xzr, #pool_size
-  //   blr xzr
+  //   udf #pool_size
   int prologue_size = require_jump == Jump::kRequired ? kInstrSize : 0;
-  prologue_size += 2 * kInstrSize;
+  prologue_size += kInstrSize;
   return prologue_size;
 }
 
@@ -4953,12 +4977,12 @@ void ConstantPool::Check(Emission force_emit, Jump require_jump,
     // the constant pool.
     int worst_case_size = ComputeSize(Jump::kRequired, Alignment::kRequired);
     assm_->CheckVeneerPool(false, require_jump == Jump::kRequired,
-                           assm_->kVeneerDistanceMargin + worst_case_size +
+                           Assembler::kVeneerDistanceMargin + worst_case_size +
                                static_cast<int>(margin));
 
     // Check that the code buffer is large enough before emitting the constant
     // pool (this includes the gap to the relocation information).
-    int needed_space = worst_case_size + assm_->kGap;
+    int needed_space = worst_case_size + Assembler::kGap;
     while (assm_->buffer_space() <= needed_space) {
       assm_->GrowBuffer();
     }
@@ -5055,6 +5079,7 @@ void Assembler::EmitVeneers(bool force_emit, bool need_protection,
       Label veneer_size_check;
       bind(&veneer_size_check);
 #endif
+      const int key = it->first;
       Label* label = it->second;
       Instruction* veneer = reinterpret_cast<Instruction*>(pc_);
       Instruction* branch = InstructionAt(pc_offset);
@@ -5063,7 +5088,9 @@ void Assembler::EmitVeneers(bool force_emit, bool need_protection,
       b(label);  // This may end up pointing at yet another veneer later on.
       DCHECK_EQ(SizeOfCodeGeneratedSince(&veneer_size_check),
                 static_cast<uint64_t>(kVeneerCodeSize));
-      it = unresolved_branches_.erase(it);
+      // RemoveBranchFromLabelLinkChain may erase from {unresolved_branches_}.
+      unresolved_branches_.erase(key);
+      it = unresolved_branches_.begin();
     }
   }
 

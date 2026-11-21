@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "include/libplatform/libplatform.h"
+#include "include/v8-initialization.h"
 #include "include/v8-profiler.h"
 #include "src/api/api-inl.h"
 #include "src/base/vector.h"
@@ -104,6 +105,7 @@ class MockPlatform final : public v8::Platform {
   }
 
   void ExecuteTasks() { task_runner_->ExecuteTasks(); }
+  void ExecuteNestedTasks() { task_runner_->ExecuteNestedTasks(); }
 
  private:
   class MockTaskRunner final : public TaskRunner {
@@ -116,7 +118,8 @@ class MockPlatform final : public v8::Platform {
 
     void PostNonNestableTaskImpl(std::unique_ptr<Task> task,
                                  const SourceLocation& location) override {
-      PostTask(std::move(task));
+      base::MutexGuard lock_scope(&tasks_lock_);
+      non_nestable_tasks_.push(std::move(task));
     }
 
     void PostDelayedTaskImpl(std::unique_ptr<Task> task,
@@ -145,12 +148,25 @@ class MockPlatform final : public v8::Platform {
 
     // The test must call this repeatedly if delayed tasks were posted, until
     // all such tasks have been executed.
-    void ExecuteTasks() {
+    void ExecuteTasks() { ExecuteTasksImpl(/* include_non_nestable */ true); }
+
+    void ExecuteNestedTasks() {
+      ExecuteTasksImpl(/* include_non_nestable */ false);
+    }
+
+   private:
+    void ExecuteTasksImpl(bool include_non_nestable) {
       std::queue<std::unique_ptr<v8::Task>> tasks;
       while (true) {
         {
           base::MutexGuard lock_scope(&tasks_lock_);
           tasks.swap(tasks_);
+          if (include_non_nestable) {
+            while (!non_nestable_tasks_.empty()) {
+              tasks.push(std::move(non_nestable_tasks_.front()));
+              non_nestable_tasks_.pop();
+            }
+          }
           // Move all delayed tasks which are ready for execution to {tasks_}.
           base::TimeTicks now = base::TimeTicks::Now();
           for (auto it = delayed_tasks_.begin(), end = delayed_tasks_.end();
@@ -174,10 +190,10 @@ class MockPlatform final : public v8::Platform {
       }
     }
 
-   private:
     base::Mutex tasks_lock_;
     // We do not execute tasks concurrently, so we only need one list of tasks.
     std::queue<std::unique_ptr<v8::Task>> tasks_;
+    std::queue<std::unique_ptr<v8::Task>> non_nestable_tasks_;
     std::list<std::pair<std::unique_ptr<v8::Task>, base::TimeTicks>>
         delayed_tasks_;
   };
@@ -380,11 +396,10 @@ constexpr const char* kExportNames[] = {"a", "b", "c"};
 // Create a valid module with 3 functions.
 ZoneBuffer GetValidModuleBytes(Zone* zone) {
   ZoneBuffer buffer(zone);
-  TestSignatures sigs;
   WasmModuleBuilder builder(zone);
   uint8_t i = 0;
   for (const char* export_name : kExportNames) {
-    WasmFunctionBuilder* f = builder.AddFunction(sigs.i_iii());
+    WasmFunctionBuilder* f = builder.AddFunction(TestSignatures::i_iii());
     f->EmitCode({kExprLocalGet, i, kExprEnd});
     CHECK_GE(3, ++i);
     builder.AddExport(export_name, f);
@@ -533,20 +548,19 @@ STREAM_TEST(TestCutAfterOneFunctionCompilerFinishesFirst) {
 // Create a module with an invalid global section.
 ZoneBuffer GetModuleWithInvalidSection(Zone* zone) {
   ZoneBuffer buffer(zone);
-  TestSignatures sigs;
   WasmModuleBuilder builder(zone);
   // Add an invalid global to the module. The decoder will fail there.
   builder.AddGlobal(kWasmVoid, true, WasmInitExpr::GlobalGet(12));
   {
-    WasmFunctionBuilder* f = builder.AddFunction(sigs.i_iii());
+    WasmFunctionBuilder* f = builder.AddFunction(TestSignatures::i_iii());
     f->EmitCode({kExprLocalGet, 0, kExprEnd});
   }
   {
-    WasmFunctionBuilder* f = builder.AddFunction(sigs.i_iii());
+    WasmFunctionBuilder* f = builder.AddFunction(TestSignatures::i_iii());
     f->EmitCode({kExprLocalGet, 1, kExprEnd});
   }
   {
-    WasmFunctionBuilder* f = builder.AddFunction(sigs.i_iii());
+    WasmFunctionBuilder* f = builder.AddFunction(TestSignatures::i_iii());
     f->EmitCode({kExprLocalGet, 2, kExprEnd});
   }
   builder.WriteTo(&buffer);
@@ -1282,11 +1296,10 @@ STREAM_TEST(TestModuleWithDataSection) {
 STREAM_TEST(TestModuleWithImportedFunction) {
   StreamTester tester(isolate);
   ZoneBuffer buffer(tester.zone());
-  TestSignatures sigs;
   WasmModuleBuilder builder(tester.zone());
-  builder.AddImport("Test", sigs.i_iii());
+  builder.AddImport("Test", TestSignatures::i_iii());
   {
-    WasmFunctionBuilder* f = builder.AddFunction(sigs.i_iii());
+    WasmFunctionBuilder* f = builder.AddFunction(TestSignatures::i_iii());
     f->EmitCode({kExprLocalGet, 0, kExprEnd});
   }
   builder.WriteTo(&buffer);
@@ -1314,13 +1327,12 @@ STREAM_TEST(TestIncrementalCaching) {
       });
 
   ZoneBuffer buffer(tester.zone());
-  TestSignatures sigs;
   WasmModuleBuilder builder(tester.zone());
   builder.AddMemory(1);
 
   std::string_view function_names[] = {"f0", "f1", "f2"};
   for (int i = 0; i < 3; ++i) {
-    WasmFunctionBuilder* f = builder.AddFunction(sigs.v_v());
+    WasmFunctionBuilder* f = builder.AddFunction(TestSignatures::v_v());
 
     constexpr int64_t val = 0x123456789abc;
     constexpr int index = 0x1234;
@@ -1891,7 +1903,7 @@ STREAM_TEST(RegressCachingTimeoutStuckAfterHardThreshold) {
 
   // Set the hard threshold to 2x a single function's code size, so that a
   // single function stays below it while two or more functions reach it.
-  v8_flags.wasm_caching_hard_threshold = static_cast<int>(2 * one_func_size);
+  v8_flags.wasm_caching_hard_threshold.Set(static_cast<int>(2 * one_func_size));
 
   // Step 2: Before the timeout expires, tier up more functions such that the
   // hard threshold is reached. This triggers caching immediately and resets
@@ -2030,9 +2042,8 @@ STREAM_TEST(TestProfilingMidStreaming) {
   // Build module with one exported (named) function.
   ZoneBuffer buffer(zone);
   {
-    TestSignatures sigs;
     WasmModuleBuilder builder(zone);
-    WasmFunctionBuilder* f = builder.AddFunction(sigs.v_v());
+    WasmFunctionBuilder* f = builder.AddFunction(TestSignatures::v_v());
     f->EmitCode({kExprEnd});
     builder.AddExport("foo", f);
     builder.WriteTo(&buffer);
@@ -2069,10 +2080,9 @@ STREAM_TEST(TierDownWithError) {
 
   ZoneBuffer buffer(zone);
   {
-    TestSignatures sigs;
     WasmModuleBuilder builder(zone);
     // Type error at i32.add.
-    builder.AddFunction(sigs.v_v())->Emit(kExprI32Add);
+    builder.AddFunction(TestSignatures::v_v())->Emit(kExprI32Add);
     builder.WriteTo(&buffer);
   }
 
@@ -2095,22 +2105,27 @@ STREAM_TEST(Regress1334651) {
 }
 
 STREAM_TEST(StreamingErrorCrashKeyReused) {
-  static int alloc_count = 0;
+  struct State {
+    int alloc_count = 0;
+    int set_count = 0;
+    std::string last_value;
+  };
   static int dummy_key = 0;
-  int set_count = 0;
-  std::string last_value;
+  static State* state = nullptr;
+  State local_state;
+  state = &local_state;
 
-  isolate->SetCrashKeyStringCallbacks(
+  v8::V8::SetCrashKeyCallbacks(
       [](const char key[], v8::CrashKeySize size) -> v8::CrashKey {
         CHECK_EQ(0, strcmp(key, "v8-wasm-streaming-error"));
         CHECK_EQ(v8::CrashKeySize::Size1024, size);
-        ++alloc_count;
+        ++state->alloc_count;
         return &dummy_key;
       },
-      [&](v8::CrashKey key, const std::string_view value) {
+      [](v8::CrashKey key, std::string_view value) {
         CHECK_EQ(&dummy_key, key);
-        ++set_count;
-        last_value = std::string(value);
+        ++state->set_count;
+        state->last_value = std::string(value);
       });
 
   {
@@ -2120,9 +2135,9 @@ STREAM_TEST(StreamingErrorCrashKeyReused) {
     tester.FinishStream();
     tester.RunCompilerTasks();
     CHECK(tester.IsPromiseRejected());
-    CHECK_EQ(1, alloc_count);
-    CHECK_EQ(1, set_count);
-    CHECK_EQ("StreamingDecoder failed", last_value);
+    CHECK_EQ(1, local_state.alloc_count);
+    CHECK_EQ(1, local_state.set_count);
+    CHECK_EQ("StreamingDecoder failed", local_state.last_value);
   }
 
   {
@@ -2133,12 +2148,306 @@ STREAM_TEST(StreamingErrorCrashKeyReused) {
     tester.FinishStream();
     tester.RunCompilerTasks();
     CHECK(tester.IsPromiseRejected());
-    CHECK_EQ(1, alloc_count);
-    CHECK_EQ(2, set_count);
-    CHECK(last_value.starts_with("ModuleDecoder: "));
+    CHECK_EQ(1, local_state.alloc_count);
+    CHECK_EQ(2, local_state.set_count);
+    CHECK(local_state.last_value.starts_with("ModuleDecoder: "));
   }
 
-  isolate->SetCrashKeyStringCallbacks(nullptr, nullptr);
+  // A secondary (e.g. worker) Isolate uses the process-wide callbacks
+  // registered via V8::SetCrashKeyCallbacks.
+  {
+    std::unique_ptr<v8::ArrayBuffer::Allocator> allocator(
+        v8::ArrayBuffer::Allocator::NewDefaultAllocator());
+    v8::Isolate::CreateParams create_params;
+    create_params.array_buffer_allocator = allocator.get();
+    v8::Isolate* worker_isolate = v8::Isolate::New(create_params);
+    {
+      v8::Isolate::Scope isolate_scope(worker_isolate);
+      v8::HandleScope handle_scope(worker_isolate);
+      v8::Local<v8::Context> worker_context = v8::Context::New(worker_isolate);
+      v8::Context::Scope context_scope(worker_context);
+
+      StreamTester tester(worker_isolate);
+      const uint8_t truncated_header[] = {0x00, 0x01, 0x02, 0x03};
+      tester.OnBytesReceived(truncated_header, arraysize(truncated_header));
+      tester.FinishStream();
+      tester.RunCompilerTasks();
+      CHECK(tester.IsPromiseRejected());
+      CHECK_EQ(1, local_state.alloc_count);
+      CHECK_EQ(3, local_state.set_count);
+      CHECK_EQ("StreamingDecoder failed", local_state.last_value);
+    }
+    worker_isolate->Dispose();
+  }
+
+  // Eager baseline compilation failing after OnFinishedStream (via
+  // CompilationStateCallback -> DoSync<Fail>() in async mode, or synchronously
+  // in OnFinishedStream in single-threaded mode).
+  if (!i::v8_flags.wasm_jitless) {
+    i::FlagScope<bool> eager_compile(&i::v8_flags.wasm_lazy_compilation, false);
+    i::FlagScope<int> tasks_scope(&i::v8_flags.wasm_num_compilation_tasks,
+                                  i::v8_flags.single_threaded
+                                      ? 0
+                                      : i::v8_flags.wasm_num_compilation_tasks);
+    StreamTester tester(isolate);
+    ZoneBuffer buffer(tester.zone());
+    WasmModuleBuilder builder(tester.zone());
+    builder.AddFunction(TestSignatures::v_v())->Emit(kExprI32Add);
+    builder.WriteTo(&buffer);
+    tester.OnBytesReceived(buffer.begin(), buffer.size());
+    tester.FinishStream();
+    tester.RunCompilerTasks();
+    CHECK(tester.IsPromiseRejected());
+    CHECK_EQ(1, local_state.alloc_count);
+    CHECK_EQ(4, local_state.set_count);
+    const char* expected_reason = i::v8_flags.wasm_num_compilation_tasks == 0
+                                      ? "CompilationState failed"
+                                      : "CompilationStateCallback failed";
+    CHECK_EQ(expected_reason, local_state.last_value);
+  }
+
+  v8::V8::SetCrashKeyCallbacks(nullptr, nullptr);
+  state = nullptr;
+  CHECK(!i::V8::HasCrashKeyCallbacks());
+  CHECK(!reinterpret_cast<i::Isolate*>(isolate)->HasCrashKeyStringCallbacks());
+}
+
+STREAM_TEST(TestCompilationHintsInliningDuringStreaming) {
+  if (i::v8_flags.wasm_jitless) return;
+  EXPERIMENTAL_FLAG_SCOPE(compilation_hints);
+  FLAG_VALUE_SCOPE(liftoff_only, false);
+
+  const uint8_t caller_code[] = {
+      ADD_COUNT(U32V_1(0),                     // locals count
+                kExprLocalGet, 0,              // local.get 0
+                kExprCallFunction, U32V_1(1),  // call 1
+                kExprEnd)                      // end
+  };
+  const uint8_t callee_code[] = {
+      ADD_COUNT(U32V_1(0),                   // locals count
+                kExprLocalGet, 0, kExprEnd)  // local.get 0; end
+  };
+
+  struct TestConfig {
+    bool use_liftoff;
+    int tier_mask;
+  };
+  const TestConfig configs[] = {
+      {.use_liftoff = true, .tier_mask = 0},
+      {.use_liftoff = true, .tier_mask = 1},
+      {.use_liftoff = false, .tier_mask = 0},
+  };
+  for (size_t i = 0; i < arraysize(configs); ++i) {
+    FLAG_VALUE_SCOPE(liftoff, configs[i].use_liftoff);
+    FLAG_VALUE_SCOPE(wasm_tier_mask_for_testing, configs[i].tier_mask);
+    StreamTester tester(isolate);
+
+    const uint8_t bytes_before_bodies[] = {
+        WASM_MODULE_HEADER,
+        SECTION(Type, ENTRY_COUNT(1), SIG_ENTRY_x_x(kI32Code, kI32Code)),
+        SECTION(Function, ENTRY_COUNT(2), SIG_INDEX(0), SIG_INDEX(0)),
+        // Vary the export name so each iteration has a distinct prefix hash.
+        SECTION(Export, ENTRY_COUNT(1),
+                ADD_COUNT(static_cast<uint8_t>('a' + i)), kExternalFunction,
+                FUNC_INDEX(0)),
+        SECTION(Unknown,
+                ADD_COUNT('m', 'e', 't', 'a', 'd', 'a', 't', 'a', '.', 'c', 'o',
+                          'd', 'e', '.', 'c', 'o', 'm', 'p', 'i', 'l', 'a', 't',
+                          'i', 'o', 'n', '_', 'p', 'r', 'i', 'o', 'r', 'i', 't',
+                          'y'),
+                ENTRY_COUNT(1), 0 /* func_index */, 0 /* byte_offset */,
+                ADD_COUNT(0 /* compilation_priority */,
+                          0 /* optimization_priority */)),
+        SECTION(Unknown,
+                ADD_COUNT('m', 'e', 't', 'a', 'd', 'a', 't', 'a', '.', 'c', 'o',
+                          'd', 'e', '.', 'i', 'n', 's', 't', 'r', '_', 'f', 'r',
+                          'e', 'q'),
+                ENTRY_COUNT(2),                                  // 2 functions
+                0 /* func_index */, ENTRY_COUNT(1),              // 1 hint
+                3 /* byte_offset */, ADD_COUNT(64 /* freq */),   // call 1
+                1 /* func_index */, ENTRY_COUNT(1),              // 1 hint
+                1 /* byte_offset */, ADD_COUNT(64 /* freq */)),  // local.get 0
+        kCodeSectionCode,
+        U32V_1(1 + arraysize(caller_code) + arraysize(callee_code)),
+        U32V_1(2),
+    };
+
+    // Receive module header, sections, and caller body, then run compiler
+    // tasks before callee's body has arrived.
+    tester.OnBytesReceived(bytes_before_bodies, arraysize(bytes_before_bodies));
+    tester.OnBytesReceived(caller_code, arraysize(caller_code));
+    tester.RunCompilerTasks();
+    CHECK(tester.IsPromisePending());
+
+    // Now deliver callee's body and finish the stream.
+    tester.OnBytesReceived(callee_code, arraysize(callee_code));
+    tester.FinishStream();
+    tester.RunCompilerTasks();
+    CHECK(tester.IsPromiseFulfilled());
+  }
+}
+
+// Regression test for crbug.com/580857997: finishing a stream (success,
+// decoding/validation failure, baseline compilation failure, or
+// deserialization) must schedule a non-nestable foreground task rather than
+// completing synchronously inside an API interrupt.
+STREAM_TEST(FinishStreamInApiInterruptIsDeferred) {
+  FlagScope<bool> no_cache(&v8_flags.wasm_native_module_cache, false);
+  Zone zone(reinterpret_cast<i::Isolate*>(isolate)->allocator(), ZONE_NAME);
+  ZoneBuffer valid_bytes = GetValidModuleBytes(&zone);
+  ZoneBuffer cached_bytes =
+      GetValidCompiledModuleBytes(isolate, &zone, valid_bytes);
+  ZoneBuffer invalid_bytes = GetModuleWithInvalidSection(&zone);
+  ZoneBuffer invalid_code_bytes(&zone);
+  {
+    WasmModuleBuilder builder(&zone);
+    builder.AddFunction(TestSignatures::v_v())
+        ->EmitCode({kExprI32Add, kExprEnd});
+    builder.WriteTo(&invalid_code_bytes);
+  }
+
+  StreamTester success_tester(isolate);
+  // Pre-compile the functions so FinishStream() is the last finisher.
+  success_tester.OnBytesReceived(valid_bytes.begin(), valid_bytes.size());
+  success_tester.RunCompilerTasks();
+  CHECK(success_tester.IsPromisePending());
+
+  StreamTester compile_error_tester(isolate);
+  {
+    // Disable lazy compilation so the invalid function body fails in
+    // CompilationState rather than ValidateFunctionsStreamingJob.
+    FlagScope<bool> eager_compile(&v8_flags.wasm_lazy_compilation, false);
+    compile_error_tester.OnBytesReceived(invalid_code_bytes.begin(),
+                                         invalid_code_bytes.size());
+    compile_error_tester.RunCompilerTasks();
+    CHECK(compile_error_tester.IsPromisePending());
+  }
+
+  StreamTester error_tester(isolate);
+  StreamTester cached_tester(isolate);
+  cached_tester.SetHasCompiledModuleBytes();
+
+  struct InterruptData {
+    MockPlatform* platform;
+    ZoneBuffer* valid_bytes;
+    ZoneBuffer* cached_bytes;
+    ZoneBuffer* invalid_bytes;
+    StreamTester* success_tester;
+    StreamTester* compile_error_tester;
+    StreamTester* error_tester;
+    StreamTester* cached_tester;
+    bool interrupt_ran = false;
+  } data{platform,        &valid_bytes,          &cached_bytes, &invalid_bytes,
+         &success_tester, &compile_error_tester, &error_tester, &cached_tester};
+
+  isolate->RequestInterrupt(
+      [](v8::Isolate* isolate, void* raw_data) {
+        i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
+        CHECK(i_isolate->is_executing_api_interrupt());
+        auto* d = static_cast<InterruptData*>(raw_data);
+
+        d->success_tester->FinishStream();
+        CHECK(d->success_tester->IsPromisePending());
+
+        d->compile_error_tester->FinishStream();
+        CHECK(d->compile_error_tester->IsPromisePending());
+
+        d->error_tester->OnBytesReceived(d->invalid_bytes->begin(),
+                                         d->invalid_bytes->size());
+        d->error_tester->FinishStream();
+        CHECK(d->error_tester->IsPromisePending());
+
+        d->cached_tester->OnBytesReceived(d->valid_bytes->begin(),
+                                          d->valid_bytes->size());
+        d->cached_tester->FinishStreamWithCachedModuleBytes(
+            base::VectorOf(*d->cached_bytes));
+        // Aborting after FinishStreamWithCachedModuleBytes must be a no-op even
+        // while the FinishCompilation task is still pending.
+        d->cached_tester->stream()->Abort();
+        CHECK(d->cached_tester->IsPromisePending());
+
+        // Pumping nestable tasks inside the interrupt must not execute the
+        // non-nestable foreground completion tasks.
+        d->platform->ExecuteNestedTasks();
+        CHECK(d->success_tester->IsPromisePending());
+        CHECK(d->compile_error_tester->IsPromisePending());
+        CHECK(d->error_tester->IsPromisePending());
+        CHECK(d->cached_tester->IsPromisePending());
+
+        d->interrupt_ran = true;
+      },
+      &data);
+
+  reinterpret_cast<i::Isolate*>(isolate)->stack_guard()->HandleInterrupts();
+  CHECK(data.interrupt_ran);
+  CHECK(success_tester.IsPromisePending());
+  CHECK(compile_error_tester.IsPromisePending());
+  CHECK(error_tester.IsPromisePending());
+  CHECK(cached_tester.IsPromisePending());
+
+  success_tester.RunCompilerTasks();
+  CHECK(success_tester.IsPromiseFulfilled());
+  CHECK(compile_error_tester.IsPromiseRejected());
+  CHECK(error_tester.IsPromiseRejected());
+  CHECK(cached_tester.IsPromiseFulfilled());
+
+  // Also verify deferral when JavaScript execution is disallowed outside an API
+  // interrupt (e.g. Blink's ScriptForbiddenScope during BFCache freeze).
+  StreamTester no_js_success_tester(isolate);
+  no_js_success_tester.OnBytesReceived(valid_bytes.begin(), valid_bytes.size());
+  no_js_success_tester.RunCompilerTasks();
+  CHECK(no_js_success_tester.IsPromisePending());
+
+  StreamTester no_js_cached_tester(isolate);
+  no_js_cached_tester.SetHasCompiledModuleBytes();
+  no_js_cached_tester.OnBytesReceived(valid_bytes.begin(), valid_bytes.size());
+
+  {
+    v8::Isolate::DisallowJavascriptExecutionScope no_js(
+        isolate,
+        v8::Isolate::DisallowJavascriptExecutionScope::THROW_ON_FAILURE);
+    no_js_success_tester.FinishStream();
+    CHECK(no_js_success_tester.IsPromisePending());
+    no_js_cached_tester.FinishStreamWithCachedModuleBytes(
+        base::VectorOf(cached_bytes));
+    CHECK(no_js_cached_tester.IsPromisePending());
+  }
+
+  no_js_success_tester.RunCompilerTasks();
+  CHECK(no_js_success_tester.IsPromiseFulfilled());
+  CHECK(no_js_cached_tester.IsPromiseFulfilled());
+}
+
+STREAM_TEST(TestDestroyDuringDeserializationFinish) {
+  FlagScope<bool> no_cache(&v8_flags.wasm_native_module_cache, false);
+  Zone zone(reinterpret_cast<i::Isolate*>(isolate)->allocator(), ZONE_NAME);
+  ZoneBuffer wire_bytes = GetValidModuleBytes(&zone);
+  ZoneBuffer module_bytes =
+      GetValidCompiledModuleBytes(isolate, &zone, wire_bytes);
+
+  auto compilation = std::make_unique<v8::WasmModuleCompilation>();
+  compilation->SetHasCompiledModuleBytes();
+  compilation->OnBytesReceived(wire_bytes.begin(), wire_bytes.size());
+  bool resolved = false;
+  compilation->Finish(
+      isolate,
+      [&](WasmStreaming::ModuleCachingInterface& caching_interface) {
+        CHECK(caching_interface.SetCachedCompiledModuleBytes(
+            base::VectorOf(module_bytes)));
+        // Allocate and fill a buffer of sizeof(StreamingDecoder) after
+        // {FinishCompile} has dropped {AsyncCompileJob::stream_} and
+        // {resolution_callback} has destroyed {compilation}.
+        auto overwrite = std::make_unique<uint8_t[]>(sizeof(StreamingDecoder));
+        std::memset(overwrite.get(), 0xaa, sizeof(StreamingDecoder));
+      },
+      [&](std::variant<Local<v8::WasmModuleObject>, Local<v8::Value>>
+              module_or_error) {
+        CHECK(std::holds_alternative<Local<v8::WasmModuleObject>>(
+            module_or_error));
+        resolved = true;
+        compilation.reset();
+      });
+  CHECK(resolved);
 }
 
 #undef STREAM_TEST

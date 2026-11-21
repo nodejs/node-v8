@@ -196,7 +196,7 @@ int LiftoffAssembler::PrepareStackFrame() {
   return offset;
 }
 
-void LiftoffAssembler::CallFrameSetupStub(int declared_function_index) {
+void LiftoffAssembler::CallFrameSetupStub(int defined_function_index) {
 // The standard library used by gcc tryjobs does not consider `std::find` to be
 // `constexpr`, so wrap it in a `#ifdef __clang__` block.
 #ifdef __clang__
@@ -207,7 +207,7 @@ void LiftoffAssembler::CallFrameSetupStub(int declared_function_index) {
 #endif
 
   LoadConstant(LiftoffRegister(kLiftoffFrameSetupFunctionReg),
-               WasmValue(declared_function_index));
+               WasmValue(defined_function_index));
   CallBuiltin(Builtin::kWasmLiftoffFrameSetup);
 }
 
@@ -371,7 +371,7 @@ bool LiftoffAssembler::NeedsAlignment(ValueKind kind) {
   return is_reference(kind);
 }
 
-void LiftoffAssembler::CheckTierUp(int declared_func_index, int budget_used,
+void LiftoffAssembler::CheckTierUp(int defined_func_index, int budget_used,
                                    Label* ool_label,
                                    const FreezeCacheState& frozen) {
   Register instance_data = cache_state_.cached_instance_data;
@@ -385,7 +385,7 @@ void LiftoffAssembler::CheckTierUp(int declared_func_index, int budget_used,
        FieldMemOperand(instance_data,
                        WasmTrustedInstanceData::kTieringBudgetArrayOffset));
 
-  int offset = kInt32Size * declared_func_index;
+  int offset = kInt32Size * defined_func_index;
   subl(Operand{budget_array, offset}, Immediate(budget_used));
   j(negative, ool_label);
 }
@@ -414,6 +414,7 @@ void LiftoffAssembler::LoadConstant(LiftoffRegister reg, WasmValue value) {
 }
 
 void LiftoffAssembler::PrepareDebugTrap(MessageTemplate message) {
+  if constexpr (V8_X64_16BYTE_STACK_ALIGNMENT_BOOL) PushTaggedStackPadding();
   Push(Smi::FromInt(static_cast<int>(message)));
 }
 
@@ -555,8 +556,25 @@ void LiftoffAssembler::AtomicStoreTaggedPointer(
     Register dst_addr, Register offset_reg, int32_t offset_imm, Register src,
     LiftoffRegList pinned, AtomicMemoryOrder memory_order,
     uint32_t* trapping_store_pc) {
-  StoreTaggedPointer(dst_addr, offset_reg, offset_imm, src, pinned,
-                     trapping_store_pc);
+  if (memory_order != AtomicMemoryOrder::kSeqCst) {
+    StoreTaggedPointer(dst_addr, offset_reg, offset_imm, src, pinned,
+                       trapping_store_pc);
+    return;
+  }
+  DCHECK_GE(offset_imm, 0);
+  Operand dst_op = liftoff::GetMemOp(this, dst_addr, offset_reg,
+                                     static_cast<uint32_t>(offset_imm));
+  movq(kScratchRegister, src);
+  if (trapping_store_pc) *trapping_store_pc = pc_offset();
+  if constexpr (COMPRESS_POINTERS_BOOL) {
+    xchgl(kScratchRegister, dst_op);
+  } else {
+    xchgq(kScratchRegister, dst_op);
+  }
+
+  if (v8_flags.disable_write_barriers) return;
+
+  EmitWriteBarrier(dst_addr, dst_op, src, pinned);
 }
 
 void LiftoffAssembler::AtomicLoad(LiftoffRegister dst, Register src_addr,
@@ -4729,6 +4747,11 @@ bool LiftoffAssembler::emit_f16x8_neg(LiftoffRegister dst,
 
 bool LiftoffAssembler::emit_f16x8_sqrt(LiftoffRegister dst,
                                        LiftoffRegister src) {
+  if (UseAvx10_1()) {
+    CpuFeatureScope avx10_1_scope(this, AVX10_1);
+    vsqrtph(dst.fp(), src.fp());
+    return true;
+  }
   if (!CpuFeatures::IsSupported(F16C) || !CpuFeatures::IsSupported(AVX)) {
     return false;
   }
@@ -4743,6 +4766,11 @@ bool LiftoffAssembler::emit_f16x8_sqrt(LiftoffRegister dst,
 
 bool LiftoffAssembler::emit_f16x8_ceil(LiftoffRegister dst,
                                        LiftoffRegister src) {
+  if (UseAvx10_1()) {
+    CpuFeatureScope avx10_1_scope(this, AVX10_1);
+    vrndscaleph(dst.fp(), src.fp(), kRoundUp);
+    return true;
+  }
   if (!CpuFeatures::IsSupported(F16C) || !CpuFeatures::IsSupported(AVX)) {
     return false;
   }
@@ -4757,6 +4785,11 @@ bool LiftoffAssembler::emit_f16x8_ceil(LiftoffRegister dst,
 
 bool LiftoffAssembler::emit_f16x8_floor(LiftoffRegister dst,
                                         LiftoffRegister src) {
+  if (UseAvx10_1()) {
+    CpuFeatureScope avx10_1_scope(this, AVX10_1);
+    vrndscaleph(dst.fp(), src.fp(), kRoundDown);
+    return true;
+  }
   if (!CpuFeatures::IsSupported(F16C) || !CpuFeatures::IsSupported(AVX)) {
     return false;
   }
@@ -4771,6 +4804,11 @@ bool LiftoffAssembler::emit_f16x8_floor(LiftoffRegister dst,
 
 bool LiftoffAssembler::emit_f16x8_trunc(LiftoffRegister dst,
                                         LiftoffRegister src) {
+  if (UseAvx10_1()) {
+    CpuFeatureScope avx10_1_scope(this, AVX10_1);
+    vrndscaleph(dst.fp(), src.fp(), kRoundToZero);
+    return true;
+  }
   if (!CpuFeatures::IsSupported(F16C) || !CpuFeatures::IsSupported(AVX)) {
     return false;
   }
@@ -4785,6 +4823,11 @@ bool LiftoffAssembler::emit_f16x8_trunc(LiftoffRegister dst,
 
 bool LiftoffAssembler::emit_f16x8_nearest_int(LiftoffRegister dst,
                                               LiftoffRegister src) {
+  if (UseAvx10_1()) {
+    CpuFeatureScope avx10_1_scope(this, AVX10_1);
+    vrndscaleph(dst.fp(), src.fp(), kRoundToNearest);
+    return true;
+  }
   if (!CpuFeatures::IsSupported(F16C) || !CpuFeatures::IsSupported(AVX)) {
     return false;
   }
@@ -4875,17 +4918,27 @@ bool LiftoffAssembler::emit_f16x8_sub(LiftoffRegister dst, LiftoffRegister lhs,
 
 bool LiftoffAssembler::emit_f16x8_mul(LiftoffRegister dst, LiftoffRegister lhs,
                                       LiftoffRegister rhs) {
+  if (UseAvx10_1()) {
+    CpuFeatureScope avx10_1_scope(this, AVX10_1);
+    vmulph(dst.fp(), lhs.fp(), rhs.fp());
+    return true;
+  }
   return F16x8BinOpViaF32<&Assembler::vmulps>(this, dst, lhs, rhs);
 }
 
 bool LiftoffAssembler::emit_f16x8_div(LiftoffRegister dst, LiftoffRegister lhs,
                                       LiftoffRegister rhs) {
+  if (UseAvx10_1()) {
+    CpuFeatureScope avx10_1_scope(this, AVX10_1);
+    vdivph(dst.fp(), lhs.fp(), rhs.fp());
+    return true;
+  }
   return F16x8BinOpViaF32<&Assembler::vdivps>(this, dst, lhs, rhs);
 }
 
 bool LiftoffAssembler::emit_f16x8_min(LiftoffRegister dst, LiftoffRegister lhs,
                                       LiftoffRegister rhs) {
-  if (!CpuFeatures::IsSupported(F16C)) return false;
+  if (!UseAvx10_1() && !CpuFeatures::IsSupported(F16C)) return false;
   static constexpr RegClass res_rc = reg_class_for(kS128);
   LiftoffRegister tmp =
       GetUnusedRegister(res_rc, LiftoffRegList{dst, lhs, rhs});
@@ -4897,7 +4950,7 @@ bool LiftoffAssembler::emit_f16x8_min(LiftoffRegister dst, LiftoffRegister lhs,
 
 bool LiftoffAssembler::emit_f16x8_max(LiftoffRegister dst, LiftoffRegister lhs,
                                       LiftoffRegister rhs) {
-  if (!CpuFeatures::IsSupported(F16C)) return false;
+  if (!UseAvx10_1() && !CpuFeatures::IsSupported(F16C)) return false;
   static constexpr RegClass res_rc = reg_class_for(kS128);
   LiftoffRegister tmp =
       GetUnusedRegister(res_rc, LiftoffRegList{dst, lhs, rhs});
@@ -4909,12 +4962,22 @@ bool LiftoffAssembler::emit_f16x8_max(LiftoffRegister dst, LiftoffRegister lhs,
 
 bool LiftoffAssembler::emit_f16x8_pmin(LiftoffRegister dst, LiftoffRegister lhs,
                                        LiftoffRegister rhs) {
+  if (UseAvx10_1()) {
+    CpuFeatureScope avx10_1_scope(this, AVX10_1);
+    vminph(dst.fp(), rhs.fp(), lhs.fp());
+    return true;
+  }
   // Due to the way minps works, pmin(a, b) = minps(b, a).
   return F16x8BinOpViaF32<&Assembler::vminps>(this, dst, rhs, lhs);
 }
 
 bool LiftoffAssembler::emit_f16x8_pmax(LiftoffRegister dst, LiftoffRegister lhs,
                                        LiftoffRegister rhs) {
+  if (UseAvx10_1()) {
+    CpuFeatureScope avx10_1_scope(this, AVX10_1);
+    vmaxph(dst.fp(), rhs.fp(), lhs.fp());
+    return true;
+  }
   // Due to the way maxps works, pmax(a, b) = maxps(b, a).
   return F16x8BinOpViaF32<&Assembler::vmaxps>(this, dst, rhs, lhs);
 }
@@ -5160,6 +5223,8 @@ void LiftoffAssembler::RecordSpillsInSafepoint(
 }
 
 void LiftoffAssembler::DropStackSlotsAndRet(uint32_t num_stack_slots) {
+  // Like arm64's DropSlots, also drop the caller's padding slot (if any).
+  num_stack_slots = AddArgumentPaddingSlots(num_stack_slots);
   DCHECK_LT(num_stack_slots,
             (1 << 16) / kSystemPointerSize);  // 16 bit immediate
   ret(static_cast<int>(num_stack_slots * kSystemPointerSize));
@@ -5303,7 +5368,21 @@ void LiftoffAssembler::AssertOSREmpty() {
 void LiftoffStackSlots::Construct(int param_slots) {
   DCHECK_LT(0, slots_.size());
   SortInPushOrder();
-  int last_stack_slot = param_slots;
+  // With V8_X64_16BYTE_STACK_ALIGNMENT, the outgoing argument area must be an
+  // even number of slots so that rsp is still 16-byte aligned at the call.
+  // Like arm64 (which claims RoundUp(param_slots, 2)), the padding slot sits
+  // at the HIGHEST address, above the last stack parameter, so the parameters'
+  // offsets from rsp are unchanged:
+  //
+  //   | padding (uninit.) |  <- slot param_slots, only if param_slots is odd
+  //   | param slot n-1    |
+  //   | ...               |
+  //   | param slot 0      |  <- rsp at the call
+  //
+  // Wasm call descriptors already have an even slot count. For builtins with
+  // an odd count, the callee drops the padding slot on return (see
+  // CodeGenerator::AssembleReturn), like on arm64.
+  int last_stack_slot = AddArgumentPaddingSlots(param_slots);
   for (auto& slot : slots_) {
     const int stack_slot = slot.dst_slot_;
     int stack_decrement = (last_stack_slot - stack_slot) * kSystemPointerSize;

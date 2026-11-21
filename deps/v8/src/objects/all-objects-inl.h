@@ -12,7 +12,6 @@
 // all-objects.h. Add an inline header here when these consumers need it.
 
 #include "src/objects/allocation-site-inl.h"
-#include "src/objects/allocation-site-scopes-inl.h"
 #include "src/objects/api-callbacks-inl.h"
 #include "src/objects/arguments-inl.h"
 #include "src/objects/call-site-info-inl.h"
@@ -62,6 +61,7 @@
 #include "src/objects/literal-objects-inl.h"
 #include "src/objects/lookup-cache-inl.h"
 #include "src/objects/lookup-inl.h"
+#include "src/objects/lookup-table-inl.h"
 #include "src/objects/map-inl.h"
 #include "src/objects/maybe-object-inl.h"
 #include "src/objects/megadom-handler-inl.h"
@@ -82,7 +82,6 @@
 #include "src/objects/slots-atomic-inl.h"
 #include "src/objects/slots-inl.h"
 #include "src/objects/sort-state.h"
-#include "src/objects/string-forwarding-table-inl.h"
 #include "src/objects/string-inl.h"
 #include "src/objects/string-set-inl.h"
 #include "src/objects/string-table-inl.h"

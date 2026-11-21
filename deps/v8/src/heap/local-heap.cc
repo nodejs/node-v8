@@ -133,6 +133,9 @@ LocalHeap::~LocalHeap() {
   }
 
   DCHECK(gc_epilogue_callbacks_.IsEmpty());
+#ifdef VERIFY_HEAP
+  DCHECK(pending_object_verify_scopes_.empty());
+#endif  // VERIFY_HEAP
 }
 
 void LocalHeap::SetUpMainThreadForTesting() {
@@ -219,6 +222,10 @@ bool LocalHeap::ContainsPersistentHandle(Address* location) {
 
 bool LocalHeap::ContainsLocalHandle(Address* location) {
   return handles_ ? handles_->Contains(location) : false;
+}
+
+bool LocalHeap::ContainsStrongRoot(FullObjectSlot slot) {
+  return heap_->ContainsStrongRoot(this, slot);
 }
 
 bool LocalHeap::IsHandleDereferenceAllowed() {

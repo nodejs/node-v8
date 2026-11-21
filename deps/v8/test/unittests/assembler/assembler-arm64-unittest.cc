@@ -32,7 +32,9 @@
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <vector>
 
+#include "src/base/memory.h"
 #include "src/base/utils/random-number-generator.h"
 #include "src/codegen/arm64/assembler-arm64-inl.h"
 #include "src/codegen/arm64/decoder-arm64-inl.h"
@@ -282,7 +284,7 @@ class AssemblerArm64Test : public i::TestWithIsolate {
  public:
   AssemblerArm64Test() {
 #ifdef V8_ENABLE_GENERATED_CODE_VALIDATOR
-    v8_flags.validate_generated_code = false;
+    v8_flags.validate_generated_code.Set(false);
 #endif  // V8_ENABLE_GENERATED_CODE_VALIDATOR
   }
 
@@ -6875,8 +6877,8 @@ void AssemblerArm64Test::LdrLiteralRangeHelper(
 
   // Emit prepadding to influence alignment of the pool.
   bool currently_aligned = IsAligned(__ pc_offset(), kInt64Size);
-  if ((unaligned_emission == EmitAtUnaligned && currently_aligned) ||
-      (unaligned_emission == EmitAtAligned && !currently_aligned)) {
+  if ((unaligned_emission == EmitAtUnaligned && !currently_aligned) ||
+      (unaligned_emission == EmitAtAligned && currently_aligned)) {
     __ Nop();
   }
 
@@ -6890,7 +6892,7 @@ void AssemblerArm64Test::LdrLiteralRangeHelper(
   auto PoolSizeAt = [&](int pc_offset) {
     // To determine padding, consider the size of the prologue of the pool,
     // and the jump around the pool, which we always need.
-    size_t prologue_size = 2 * kInstrSize + kInstrSize;
+    size_t prologue_size = kInstrSize + kInstrSize;
     size_t pc = pc_offset + prologue_size;
     const size_t padding = IsAligned(pc, kInt64Size) ? 0 : kInt32Size;
     CHECK_EQ(padding == 0, unaligned_emission == EmitAtAligned);
@@ -6947,13 +6949,11 @@ void AssemblerArm64Test::LdrLiteralRangeHelper(
     CHECK_EQ(expected_pool_size, branch->ImmPCOffset());
     Instruction* marker =
         reinterpret_cast<Instruction*>(pool_start + kInstrSize);
-    CHECK(marker->IsLdrLiteralX());
-    size_t pool_data_start_offset = pc_offset_before_emission + kInstrSize;
+    CHECK(marker->IsUdf());
+    size_t pool_data_start_offset = pc_offset_before_emission + 2 * kInstrSize;
     size_t padding =
         IsAligned(pool_data_start_offset, kInt64Size) ? 0 : kInt32Size;
-    size_t marker_size = kInstrSize;
-    CHECK_EQ((first_pool_size_bytes + marker_size + padding) / kInt32Size,
-             marker->ImmLLiteral());
+    CHECK_EQ((first_pool_size_bytes + padding) / kInt32Size, marker->ImmUdf());
   }
 
   RUN();
@@ -11957,7 +11957,7 @@ TEST_F(AssemblerArm64Test, system_msr) {
 }
 
 TEST_F(AssemblerArm64Test, system_pauth_b) {
-  i::v8_flags.sim_abort_on_bad_auth = false;
+  i::v8_flags.sim_abort_on_bad_auth.Set(false);
   SETUP();
   START();
 
@@ -15899,6 +15899,161 @@ TEST_F(AssemblerArm64Test, internal_reference_linked) {
   CHECK_EQUAL_64(0x1, x0);
 }
 
+namespace {
+
+struct InternalReferencesWithVeneers {
+  std::vector<int> reference_offsets;
+  int target_offset;
+  int origin_count;
+};
+
+// Mixed chain split twice by veneer pools while keeping dcptr links alive:
+//   (1),(2) dcptr <far>
+//   (3) B.cond <far>, (4) CBZ <far>
+//   (5) TBZ <veneer A>, (6) TBZ <far>, (7) dcptr <far>
+//   veneer A: B <far>   -- splits chain, dropping (3)-(6) onto veneer A
+//   (8) TBZ <veneer B>, (9) TBZ <far>
+//   veneer B: B <far>   -- splits chain again across (7)
+//   far:
+// Execution visits (1)..(9) in sequence via x0; x1 stays 1 iff none miss.
+InternalReferencesWithVeneers GenerateInternalReferencesWithVeneers(
+    MacroAssembler* masm) {
+  const int max_range = Instruction::ImmBranchRange(TestBranchType);
+  const int inter_nops = (max_range / 2 + max_range / 10) / kInstrSize;
+
+  InternalReferencesWithVeneers result;
+  Label fail, done, far_target;
+  static constexpr int kOriginCount = 9;
+  Label origins[kOriginCount];
+  int origin = 0;
+
+  auto next_origin = [&]() {
+    masm->Bind(&origins[origin]);
+    masm->Mov(x0, ++origin);
+  };
+  auto jump_table = [&](int count) {
+    Assembler::BlockPoolsScope block_pools(masm);
+    Label base;
+    masm->Adr(x11, &base);
+    masm->Ldr(x11, MemOperand(x11, x12, LSL, kSystemPointerSizeLog2));
+    masm->Br(x11);
+    masm->Bind(&base);
+    for (int i = 0; i < count; i++) {
+      result.reference_offsets.push_back(masm->pc_offset());
+      masm->dcptr(&far_target);
+    }
+  };
+  auto tbz = [&]() {
+    const int offset = masm->pc_offset();
+    masm->Tbz(x10, 7, &far_target);
+    // Must emit a single TBZ, not TBNZ+B, while the previous link is in range.
+    CHECK_EQ(1 * kInstrSize, masm->pc_offset() - offset);
+  };
+
+  masm->Mov(x0, 0);
+  masm->Mov(x1, 1);
+  masm->Mov(x10, 0);
+
+  // (1), (2): two consecutive dcptr slots.
+  Label jump;
+  next_origin();
+  masm->Mov(x12, 0);
+  masm->B(&jump);
+  next_origin();
+  masm->Mov(x12, 1);
+  masm->Bind(&jump);
+  jump_table(2);
+
+  // (3) B.cond, (4) CBZ.
+  next_origin();
+  masm->Cmp(x10, 0);
+  masm->B(eq, &far_target);
+  masm->B(&fail);
+
+  next_origin();
+  masm->Cbz(x10, &far_target);
+  GenerateLandingNops(masm, inter_nops, &fail);
+
+  // (5) TBZ, (6) TBZ, (7) dcptr -> veneer A splits (6) from (4) after (7).
+  next_origin();
+  tbz();
+  GenerateLandingNops(masm, inter_nops, &fail);
+
+  next_origin();
+  tbz();
+  masm->B(&fail);
+
+  next_origin();
+  masm->Mov(x12, 0);
+  jump_table(1);
+  GenerateLandingNops(masm, inter_nops, &fail);
+
+  // (8) TBZ, (9) TBZ -> veneer B splits (9) from veneer A across (7).
+  next_origin();
+  tbz();
+  GenerateLandingNops(masm, inter_nops + (max_range / 4) / kInstrSize, &fail);
+
+  next_origin();
+  tbz();
+  GenerateLandingNops(masm, inter_nops, &fail);
+  masm->B(&fail);
+
+  CHECK_EQ(kOriginCount, origin);
+  masm->Bind(&far_target, BranchTargetIdentifier::kBtiJump);
+  for (int i = 1; i < kOriginCount; i++) {
+    masm->Cmp(x0, i);
+    masm->B(eq, &origins[i]);
+  }
+  masm->B(&done);
+  masm->Bind(&fail);
+  masm->Mov(x1, 0);
+  masm->Bind(&done);
+
+  result.target_offset = far_target.pos();
+  result.origin_count = kOriginCount;
+  return result;
+}
+
+void CheckInternalReferences(Address base,
+                             const InternalReferencesWithVeneers& generated) {
+  CHECK_EQ(3u, generated.reference_offsets.size());
+  for (int offset : generated.reference_offsets) {
+    CHECK_EQ(base + generated.target_offset,
+             base::ReadUnalignedValue<Address>(base + offset));
+  }
+}
+
+}  // namespace
+
+TEST_F(AssemblerArm64Test, internal_reference_veneer_mixed_link_chain) {
+  SETUP_SIZE(4 * Instruction::ImmBranchRange(TestBranchType));
+  START();
+  auto generated = GenerateInternalReferencesWithVeneers(&masm);
+  END();
+  CheckInternalReferences(code->instruction_start(), generated);
+  RUN();
+  CHECK_EQUAL_64(generated.origin_count, x0);
+  CHECK_EQUAL_64(0x1, x1);
+}
+
+TEST_F(AssemblerArm64Test, internal_reference_veneer_grow_buffer) {
+  // Verify GrowBuffer() relocates dcptr entries both while linked and after
+  // bind().
+  Isolate* isolate = i_isolate();
+  HandleScope scope(isolate);
+  MacroAssembler masm(isolate, CodeObjectRequired{false},
+                      NewAssemblerBuffer(AssemblerBase::kDefaultBufferSize));
+  auto generated = GenerateInternalReferencesWithVeneers(&masm);
+  CHECK_LT(AssemblerBase::kDefaultBufferSize, generated.target_offset);
+
+  const int buffer_size = __ buffer_size();
+  while (__ buffer_size() == buffer_size) {
+    __ Nop();
+  }
+  CheckInternalReferences(reinterpret_cast<Address>(__ buffer_start()),
+                          generated);
+}
+
 TEST_F(AssemblerArm64Test, scalar_movi) {
   SETUP();
   START();
@@ -16501,7 +16656,7 @@ TEST_F(AssemblerArm64Test, cssc_smax) {
 TEST_F(AssemblerArm64Test, sve_bit_permute) {
 #ifdef V8_ENABLE_GENERATED_CODE_VALIDATOR
   // TODO(523128533): Disarm doesn't support sve.
-  v8_flags.validate_generated_code = false;
+  v8_flags.validate_generated_code.Set(false);
 #endif  // V8_ENABLE_GENERATED_CODE_VALIDATOR
 
   SETUP();

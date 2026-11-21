@@ -214,7 +214,6 @@ class MachineOptimizationReducer : public Next {
         case multi(Kind::kSignExtend, Rep::Word32(), Rep::Word64()):
           return __ Word64Constant(int64_t{static_cast<int32_t>(value)});
         case multi(Kind::kZeroExtend, Rep::Word32(), Rep::Word64()):
-        case multi(Kind::kBitcast, Rep::Word32(), Rep::Word64()):
           return __ Word64Constant(uint64_t{static_cast<uint32_t>(value)});
         case multi(Kind::kBitcast, Rep::Word32(), Rep::Float32()):
           return __ Float32Constant(
@@ -343,7 +342,7 @@ class MachineOptimizationReducer : public Next {
       if (input_bitcast->from == to) return input_bitcast->input();
       if (input_bitcast->from == RegisterRepresentation::Word32()) {
         DCHECK_EQ(to, RegisterRepresentation::Word64());
-        return __ BitcastWord32ToWord64(input_bitcast->input());
+        return __ ChangeUint32ToUint64(input_bitcast->input());
       }
       DCHECK(input_bitcast->from == RegisterRepresentation::Word64() &&
              to == RegisterRepresentation::Word32());
@@ -1635,8 +1634,9 @@ class MachineOptimizationReducer : public Next {
       return Next::ReduceWord64AddSub128Binop(al, ah, bl, bh, kind);
     }
 
-#if defined(V8_TARGET_ARCH_X64) || defined(V8_TARGET_ARCH_ARM64) || \
-    defined(V8_TARGET_ARCH_LOONG64) || defined(V8_TARGET_ARCH_MIPS64)
+#if defined(V8_TARGET_ARCH_X64) || defined(V8_TARGET_ARCH_ARM64) ||      \
+    defined(V8_TARGET_ARCH_LOONG64) || defined(V8_TARGET_ARCH_MIPS64) || \
+    defined(V8_TARGET_ARCH_RISCV64)
     if (kind == Word64AddSub128BinopOp::Kind::kAdd) {
       // add128(add128(x, 0, y, 0), z, 0) -> add3(x, y, z)
       if (const Word64AddSub128BinopOp* nested = TryMatchAdd3(al, ah, bh)) {
@@ -1651,7 +1651,8 @@ class MachineOptimizationReducer : public Next {
     // TODO(ryandiaz): sub128(sub128(x, 0, y, 0), z, 0) -> sub2(x, y, z)
     // TODO(ryandiaz): sub128(x, 0, add128(y, 0, z, 0)) -> sub2(x, y, z)
 #endif  // defined(V8_TARGET_ARCH_X64) || defined(V8_TARGET_ARCH_ARM64) ||
-        // defined(V8_TARGET_ARCH_LOONG64) || defined(V8_TARGET_ARCH_MIPS64)
+        // defined(V8_TARGET_ARCH_LOONG64) || defined(V8_TARGET_ARCH_MIPS64) ||
+        // defined(V8_TARGET_ARCH_RISCV64)
     return Next::ReduceWord64AddSub128Binop(al, ah, bl, bh, kind);
   }
 
@@ -2232,20 +2233,19 @@ class MachineOptimizationReducer : public Next {
 
   V<None> REDUCE(Store)(OpIndex base_idx, OptionalOpIndex index, OpIndex value,
                         StoreOp::Kind kind, MemoryRepresentation stored_rep,
-                        WriteBarrierKind write_barrier,
-                        std::optional<AtomicMemoryOrder> memory_order,
-                        int32_t offset, uint8_t element_scale,
+                        WriteBarrierKind write_barrier, int32_t offset,
+                        uint8_t element_scale,
                         bool maybe_initializing_or_transitioning,
                         TrustedPointerTag maybe_trusted_pointer_tag) {
     LABEL_BLOCK(no_change) {
-      return Next::ReduceStore(
-          base_idx, index, value, kind, stored_rep, write_barrier, memory_order,
-          offset, element_scale, maybe_initializing_or_transitioning,
-          maybe_trusted_pointer_tag);
+      return Next::ReduceStore(base_idx, index, value, kind, stored_rep,
+                               write_barrier, offset, element_scale,
+                               maybe_initializing_or_transitioning,
+                               maybe_trusted_pointer_tag);
     }
     if (ShouldSkipOptimizationStep()) goto no_change;
 #if V8_TARGET_ARCH_32_BIT
-    if (kind.is_atomic && stored_rep.SizeInBytes() == 8) {
+    if (kind.is_atomic() && stored_rep.SizeInBytes() == 8) {
       // AtomicWord32PairOp (as used by Int64Lowering) cannot handle
       // element_scale != 0 currently.
       // TODO(jkummerow): Add support for element_scale in AtomicWord32PairOp.
@@ -2288,15 +2288,15 @@ class MachineOptimizationReducer : public Next {
       index = base.right();
       // We go through the Store stack again, which might merge {index} into
       // {offset}, or just do other optimizations on this Store.
-      __ Store(base_idx, index, value, kind, stored_rep, write_barrier,
-               memory_order, offset, element_scale,
-               maybe_initializing_or_transitioning, maybe_trusted_pointer_tag);
+      __ Store(base_idx, index, value, kind, stored_rep, write_barrier, offset,
+               element_scale, maybe_initializing_or_transitioning,
+               maybe_trusted_pointer_tag);
 
       return V<None>::Invalid();
     }
 
     return Next::ReduceStore(base_idx, index, value, kind, stored_rep,
-                             write_barrier, memory_order, offset, element_scale,
+                             write_barrier, offset, element_scale,
                              maybe_initializing_or_transitioning,
                              maybe_trusted_pointer_tag);
   }
@@ -2311,7 +2311,7 @@ class MachineOptimizationReducer : public Next {
     }
     if (ShouldSkipOptimizationStep()) goto no_change;
 #if V8_TARGET_ARCH_32_BIT
-    if (kind.is_atomic && loaded_rep.SizeInBytes() == 8) {
+    if (kind.is_atomic() && loaded_rep.SizeInBytes() == 8) {
       // AtomicWord32PairOp (as used by Int64Lowering) cannot handle
       // element_scale != 0 currently.
       // TODO(jkummerow): Add support for element_scale in AtomicWord32PairOp.
@@ -2334,16 +2334,20 @@ class MachineOptimizationReducer : public Next {
       break;
     }
 
-    if (!index.valid() && matcher_.Is<ConstantOp>(base_idx)) {
-      const ConstantOp& base = matcher_.Cast<ConstantOp>(base_idx);
-      if (base.kind == any_of(ConstantOp::Kind::kHeapObject,
-                              ConstantOp::Kind::kCompressedHeapObject)) {
-        if (offset == offsetof(HeapObject, map_)) {
+    if (kind.tagged_base && !kind.is_atomic() && !index.valid()) {
+      if (const ConstantOp* base = matcher_.TryCast<ConstantOp>(base_idx);
+          base != nullptr &&
+          base->kind == any_of(ConstantOp::Kind::kHeapObject,
+                               ConstantOp::Kind::kCompressedHeapObject)) {
+        if (offset == offsetof(HeapObject, map_) &&
+            loaded_rep == any_of(MemoryRepresentation::TaggedPointer(),
+                                 MemoryRepresentation::AnyTagged())) {
+          DCHECK_EQ(result_rep, RegisterRepresentation::Tagged());
           // Only few loads should be loading the map from a ConstantOp
           // HeapObject, so unparking the JSHeapBroker here rather than before
           // the optimization pass itself it probably more efficient.
 
-          TurboshaftPipelineKind pkind = __ data() -> pipeline_kind();
+          TurboshaftPipelineKind pkind = __ data()->pipeline_kind();
           USE(pkind);
           DCHECK_IMPLIES(pkind != TurboshaftPipelineKind::kCSA &&
                              pkind != TurboshaftPipelineKind::kTSABuiltin,
@@ -2351,15 +2355,32 @@ class MachineOptimizationReducer : public Next {
           if (broker != nullptr) {
             UnparkedScopeIfNeeded scope(broker);
             AllowHandleDereference allow_handle_dereference;
-            OptionalMapRef map = TryMakeRef(broker, base.handle()->map());
+            OptionalMapRef map = TryMakeRef(broker, base->handle()->map());
             if (MapLoadCanBeConstantFolded(map)) {
               return __ HeapConstant(map->object());
             }
           }
         }
+        if (offset == offsetof(String, length_) &&
+            loaded_rep == MemoryRepresentation::Uint32()) {
+          DCHECK_EQ(result_rep, RegisterRepresentation::Word32());
+          TurboshaftPipelineKind pkind = __ data()->pipeline_kind();
+          USE(pkind);
+          DCHECK_IMPLIES(pkind != TurboshaftPipelineKind::kCSA &&
+                             pkind != TurboshaftPipelineKind::kTSABuiltin,
+                         broker != nullptr);
+          if (broker != nullptr) {
+            UnparkedScopeIfNeeded scope(broker);
+            AllowHandleDereference allow_handle_dereference;
+            OptionalHeapObjectRef ref = TryMakeRef(broker, base->handle());
+            if (ref.has_value() && ref->IsString()) {
+              return __ Word32Constant(ref->AsString().length());
+            }
+          }
+        }
         // TODO(dmercadier): consider constant-folding other accesses, in
         // particular for constant objects (ie, if
-        // base.handle()->InReadOnlySpace() is true). We have to be a bit
+        // base->handle()->InReadOnlySpace() is true). We have to be a bit
         // careful though, because loading could be invalid (since we could
         // be in unreachable code). (all objects have a map, so loading the map
         // should always be safe, regardless of whether we are generating
@@ -2385,7 +2406,7 @@ class MachineOptimizationReducer : public Next {
   }
 
 #if V8_ENABLE_WEBASSEMBLY
-#ifdef V8_TARGET_ARCH_ARM64
+#if defined(V8_TARGET_ARCH_ARM64) || defined(V8_TARGET_ARCH_LOONG64)
   V<Simd128> REDUCE(Simd128ReplaceLane)(V<Simd128> into, V<Any> new_lane,
                                         Simd128ReplaceLaneOp::Kind kind,
                                         uint8_t lane) {
@@ -2441,7 +2462,9 @@ class MachineOptimizationReducer : public Next {
     }
     goto no_change;
   }
+#endif  // defined(V8_TARGET_ARCH_ARM64) || defined(V8_TARGET_ARCH_LOONG64)
 
+#ifdef V8_TARGET_ARCH_ARM64
   V<Any> REDUCE(Simd128ExtractLane)(V<Simd128> input,
                                     Simd128ExtractLaneOp::Kind kind,
                                     uint8_t lane) {
@@ -2652,6 +2675,39 @@ class MachineOptimizationReducer : public Next {
 #endif  // V8_ENABLE_WEBASSEMBLY
 
  private:
+  // Attempts to constant-fold equality between two HeapObject constants.
+  // Returns std::nullopt if the operands are not HeapConstants or if their
+  // runtime pointer equality is not yet fixed (e.g., non-internalized Strings
+  // that may be internalized and shortcutted by GC).
+  std::optional<bool> TryCompareEqualHeapConstants(V<Any> left, V<Any> right) {
+    Handle<HeapObject> o1, o2;
+    if (!matcher_.MatchHeapConstant(left, &o1) ||
+        !matcher_.MatchHeapConstant(right, &o2)) {
+      return std::nullopt;
+    }
+    if (o1.address() == o2.address()) return true;
+    UnparkedScopeIfNeeded unparked(broker);
+    AllowHandleDereference allow_handle_dereference;
+    DisallowGarbageCollection no_gc;
+    DCHECK_IMPLIES(broker, broker->IsCanonicalHandle(o1));
+    DCHECK_IMPLIES(broker, broker->IsCanonicalHandle(o2));
+    Tagged<HeapObject> obj1 = *o1;
+    Tagged<HeapObject> obj2 = *o2;
+    // Even with canonical handles, two distinct handle slots can refer to the
+    // same HeapObject if one started as a non-internalized String (or
+    // ConsString) and was later shortcutted by GC during a safepoint.
+    if (obj1 == obj2) return true;
+    if (IsString(obj1) && IsString(obj2)) {
+      // If both strings are already internalized, they are unique in the string
+      // table and can never become equal. Otherwise, at least one might be
+      // internalized into a ThinString and shortcutted by GC to the other.
+      if (!IsInternalizedString(obj1) || !IsInternalizedString(obj2)) {
+        return std::nullopt;
+      }
+    }
+    return false;
+  }
+
   V<Word32> ReduceCompareEqual(V<Any> left, V<Any> right,
                                RegisterRepresentation rep) {
     if (left == right && !rep.IsFloat()) {
@@ -2676,13 +2732,9 @@ class MachineOptimizationReducer : public Next {
                                      right, WordRepresentation(rep), &k2)) {
               return __ Word32Constant(k1 == k2);
             }
-            if (Handle<HeapObject> o1, o2;
-                matcher_.MatchHeapConstant(left, &o1) &&
-                matcher_.MatchHeapConstant(right, &o2)) {
-              UnparkedScopeIfNeeded unparked(broker);
-              DCHECK_IMPLIES(broker, broker->IsCanonicalHandle(o1));
-              DCHECK_IMPLIES(broker, broker->IsCanonicalHandle(o2));
-              return __ Word32Constant(o1.address() == o2.address());
+            if (std::optional<bool> result =
+                    TryCompareEqualHeapConstants(left, right)) {
+              return __ Word32Constant(*result);
             }
             break;
           }
@@ -2701,23 +2753,9 @@ class MachineOptimizationReducer : public Next {
             break;
           }
           case RegisterRepresentation::Tagged(): {
-            if (Handle<HeapObject> o1, o2;
-                matcher_.MatchHeapConstant(left, &o1) &&
-                matcher_.MatchHeapConstant(right, &o2)) {
-              UnparkedScopeIfNeeded unparked(broker);
-              DCHECK_IMPLIES(broker, broker->IsCanonicalHandle(o1));
-              DCHECK_IMPLIES(broker, broker->IsCanonicalHandle(o2));
-              if (IsString(*o1) && IsString(*o2)) {
-                // If handles refer to the same object, we can eliminate the
-                // check.
-                if (o1.address() == o2.address()) return __ Word32Constant(1);
-                // But if they are different, we cannot eliminate the
-                // comparison, because the objects might be different now, but
-                // if they contain the same content, they might be internalized
-                // to the same object eventually.
-                break;
-              }
-              return __ Word32Constant(o1.address() == o2.address());
+            if (std::optional<bool> result =
+                    TryCompareEqualHeapConstants(left, right)) {
+              return __ Word32Constant(*result);
             }
             if ((TryMatchHeapObject(left) &&
                  matcher_.Is<Opmask::kSmiConstant>(right)) ||
@@ -2886,8 +2924,7 @@ class MachineOptimizationReducer : public Next {
         // TODO(jkummerow): This doesn't trigger for wasm32 memory operations
         // on 64-bit platforms, because `index_op` is a `Change` (from uint32
         // to uint64) in that case, and that Change's input is the addition
-        // we're looking for. When we fix that, we must also teach the x64
-        // instruction selector to support xchg with index *and* offset.
+        // we're looking for.
         if (binary_op->kind == WordBinopOp::Kind::kAdd &&
             TryAdjustOffset(offset, matcher_.Get(binary_op->right()),
                             *element_scale)) {
@@ -3291,7 +3328,7 @@ class MachineOptimizationReducer : public Next {
     return base::bits::CountLeadingSignBits(c) - (64 - rep.bit_width());
   }
 
-  JSHeapBroker* broker = __ data() -> broker();
+  JSHeapBroker* broker = __ data()->broker();
   const OperationMatcher& matcher_ = __ matcher();
   // TODO(victorgomes): This also applies to JS. The bit patterns for `the_hole`
   // and `undefined` are signalling NaNs. Optimizing away an arithmetic
@@ -3302,7 +3339,7 @@ class MachineOptimizationReducer : public Next {
   static constexpr bool signalling_nan_possible = true;
 #if V8_ENABLE_WEBASSEMBLY
   // Only wasm needs NaNs to be deterministic.
-  const bool ensure_deterministic_nan = __ data() -> is_wasm();
+  const bool ensure_deterministic_nan = __ data()->is_wasm();
 #else
   static constexpr bool ensure_deterministic_nan = false;
 #endif  // V8_ENABLE_WEBASSEMBLY

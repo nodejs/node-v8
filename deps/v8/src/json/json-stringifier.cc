@@ -420,7 +420,7 @@ class JsonStringifier {
 
   // Uses the current stack_ to provide a detailed error message of
   // the objects involved in the circular structure.
-  Handle<String> ConstructCircularStructureErrorMessage(
+  DirectHandle<String> ConstructCircularStructureErrorMessage(
       DirectHandle<Object> last_key, size_t start_index);
   // The prefix and postfix count do NOT include the starting and
   // closing lines of the error message.
@@ -831,7 +831,7 @@ JsonStringifier::Result JsonStringifier::StackPush(Handle<Object> object,
     for (size_t i = 0; i < size; ++i) {
       if (*stack_[i].second == raw_obj) {
         AllowGarbageCollection allow_to_return_error;
-        Handle<String> circle_description =
+        DirectHandle<String> circle_description =
             ConstructCircularStructureErrorMessage(key, i);
         DirectHandle<Object> error = factory()->NewTypeError(
             MessageTemplate::kCircularStructure, circle_description);
@@ -881,14 +881,18 @@ class CircularStructureMessageBuilder {
     builder_.AppendCStringLiteral("...");
   }
 
-  MaybeDirectHandle<String> Finish() { return builder_.Finish(); }
+  DirectHandle<String> Finish() { return builder_.Finish().ToHandleChecked(); }
 
  private:
+  // This threshold must be sufficiently far below String::kMaxLength that
+  // the {builder_}'s result can never exceed that limit.
+  static constexpr uint32_t kMaxPrintedStringLength = 1000;
+
   void AppendConstructorName(DirectHandle<Object> object) {
     builder_.AppendCharacter('\'');
     DirectHandle<String> constructor_name = JSReceiver::GetConstructorName(
         builder_.isolate(), Cast<JSReceiver>(object));
-    builder_.AppendString(constructor_name);
+    builder_.AppendStringCapped(constructor_name, kMaxPrintedStringLength);
     builder_.AppendCharacter('\'');
   }
 
@@ -906,7 +910,7 @@ class CircularStructureMessageBuilder {
       builder_.AppendCStringLiteral("<anonymous>");
     } else {
       builder_.AppendCStringLiteral("property '");
-      builder_.AppendString(key_as_string);
+      builder_.AppendStringCapped(key_as_string, kMaxPrintedStringLength);
       builder_.AppendCharacter('\'');
     }
   }
@@ -927,7 +931,7 @@ class CircularStructureMessageBuilder {
   static constexpr const char* kLinePrefix = "\n    |     ";
 };
 
-Handle<String> JsonStringifier::ConstructCircularStructureErrorMessage(
+DirectHandle<String> JsonStringifier::ConstructCircularStructureErrorMessage(
     DirectHandle<Object> last_key, size_t start_index) {
   DCHECK(start_index < stack_.size());
   CircularStructureMessageBuilder builder(isolate_);
@@ -960,11 +964,7 @@ Handle<String> JsonStringifier::ConstructCircularStructureErrorMessage(
 
   builder.AppendClosingLine(last_key);
 
-  Handle<String> result;
-  ASSIGN_RETURN_ON_EXCEPTION_VALUE(isolate_, result,
-                                   indirect_handle(builder.Finish(), isolate_),
-                                   factory()->empty_string());
-  return result;
+  return builder.Finish();
 }
 
 bool MayHaveInterestingProperties(Isolate* isolate, Tagged<JSReceiver> object) {
@@ -2353,10 +2353,11 @@ class FastJsonStringifier {
                                   const DisallowGarbageCollection& no_gc);
 
   using FastIterableState = DescriptorArray::FastIterableState;
-  static constexpr uint32_t kGlobalInterruptBudget = 200000;
+  static constexpr int32_t kGlobalInterruptBudget = 200000;
   static constexpr uint32_t kArrayInterruptLength = 4000;
 
   Isolate* isolate_;
+  int32_t interrupt_budget_ = kGlobalInterruptBudget;
   OutBuffer<Char> buffer_;
   base::SmallVector<ContinuationRecord, 16> stack_;
 
@@ -2806,6 +2807,7 @@ FastJsonStringifierResult FastJsonStringifier<Char>::SerializeJSObject(
   }
   AppendCharacter('{');
   const uint16_t nof_descriptors = map->NumberOfOwnDescriptors();
+  interrupt_budget_ -= nof_descriptors;
   const uint8_t in_object_properties = map->GetInObjectProperties();
   const uint8_t in_object_properties_start =
       map->GetInObjectPropertiesStartInWords();
@@ -3142,7 +3144,7 @@ FastJsonStringifierResult FastJsonStringifier<Char>::SerializeFixedArrayElement(
             ContinuationRecord::ForJSArrayResume<kind, with_interrupt_checks>(
                 elements, i + 1, length));
         if constexpr (!with_interrupt_checks) {
-          if (result == JS_OBJECT) {
+          if (result == JS_OBJECT && V8_LIKELY(--interrupt_budget_ > 0)) {
             DisallowGarbageCollection no_gc;
             FastJsonStringifierResult obj_result =
                 SerializeJSObject(Cast<JSObject>(obj), no_gc);
@@ -3181,6 +3183,7 @@ FastJsonStringifierResult FastJsonStringifier<Char>::ResumeFrom(
 
   initial_jsobject_proto_ = old_stringifier.initial_jsobject_proto_;
   initial_jsarray_proto_ = old_stringifier.initial_jsarray_proto_;
+  interrupt_budget_ = old_stringifier.interrupt_budget_;
   stack_ = old_stringifier.stack_;
   ContinuationRecord cont = stack_.back();
   stack_.pop_back();
@@ -3283,15 +3286,12 @@ FastJsonStringifierResult FastJsonStringifier<Char>::SerializeObject(
   // GCMole doesn't handle kNoGC interrupts correctly.
   DisableGCMole no_gc_mole;
 
-  uint32_t interrupt_budget = kGlobalInterruptBudget;
-
   FastJsonStringifierResult result;
   while (true) {
-    --interrupt_budget;
-    if (V8_UNLIKELY(interrupt_budget == 0)) {
+    if (V8_UNLIKELY(--interrupt_budget_ <= 0)) {
       result = HandleInterruptAndCheckCycle();
       if (V8_UNLIKELY(result != SUCCESS)) return result;
-      interrupt_budget = kGlobalInterruptBudget;
+      interrupt_budget_ = kGlobalInterruptBudget;
     }
     switch (cont.type()) {
       case ContinuationRecord::kObject: {

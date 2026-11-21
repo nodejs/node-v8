@@ -35,6 +35,7 @@
 #include "src/compiler/common-operator.h"
 #include "src/compiler/globals.h"
 #include "src/compiler/js-heap-broker.h"
+#include "src/compiler/linkage.h"
 #include "src/compiler/simplified-operator.h"
 #include "src/compiler/turboshaft/access-builder.h"
 #include "src/compiler/turboshaft/builtin-call-descriptors.h"
@@ -2039,6 +2040,27 @@ class AssemblerOpInterface : public Next {
   DECL_SINGLE_REP_UNARY_V(Word32SignExtend16, WordUnary, SignExtend16, Word32)
   DECL_SINGLE_REP_UNARY_V(Word64SignExtend16, WordUnary, SignExtend16, Word64)
 
+  V<Word64> Word64SignExtendLower32(ConstOrV<Word64> input) {
+    return ChangeInt32ToInt64(TruncateWord64ToWord32(input));
+  }
+
+  V<Float32> Float32CopySign(ConstOrV<Float32> lhs, ConstOrV<Float32> rhs) {
+    V<Word32> lhs_without_sign =
+        __ Word32BitwiseAnd(__ BitcastFloat32ToWord32(lhs), 0x7fffffff);
+    V<Word32> rhs_sign =
+        __ Word32BitwiseAnd(__ BitcastFloat32ToWord32(rhs), 0x80000000);
+    return __ BitcastWord32ToFloat32(
+        __ Word32BitwiseOr(lhs_without_sign, rhs_sign));
+  }
+  V<Float64> Float64CopySign(ConstOrV<Float64> lhs, ConstOrV<Float64> rhs) {
+    V<Word64> lhs_without_sign =
+        __ Word64BitwiseAnd(__ BitcastFloat64ToWord64(lhs), 0x7fffffffffffffff);
+    V<Word64> rhs_sign =
+        __ Word64BitwiseAnd(__ BitcastFloat64ToWord64(rhs), 0x8000000000000000);
+    return __ BitcastWord64ToFloat64(
+        __ Word64BitwiseOr(lhs_without_sign, rhs_sign));
+  }
+
   V<turboshaft::Tuple<Word, Word32>> OverflowCheckedUnary(
       V<Word> input, OverflowCheckedUnaryOp::Kind kind,
       WordRepresentation rep) {
@@ -2113,12 +2135,15 @@ class AssemblerOpInterface : public Next {
                          TaggedBitcastOp::Kind::kind);      \
   }
   DECL_TAGGED_BITCAST(Smi, Word32, kSmi)
-  DECL_TAGGED_BITCAST(Word32, Smi, kSmi)
   DECL_TAGGED_BITCAST(Smi, WordPtr, kSmi)
   DECL_TAGGED_BITCAST(WordPtr, Smi, kSmi)
   DECL_TAGGED_BITCAST(WordPtr, HeapObject, kHeapObject)
   DECL_TAGGED_BITCAST(HeapObject, WordPtr, kHeapObject)
 #undef DECL_TAGGED_BITCAST
+
+  V<Smi> BitcastWord32ToSmi(V<Word32> input) {
+    return BitcastWordPtrToSmi(ChangeUint32ToUintPtr(input));
+  }
   template <typename T = Object>
   V<T> BitcastWordPtrToTagged(ConstOrV<WordPtr> input) {
     return TaggedBitcast(resolve(input), V<WordPtr>::rep, V<T>::rep,
@@ -2221,6 +2246,10 @@ class AssemblerOpInterface : public Next {
   V<Boolean> ConvertToBoolean(V<Object> input) {
     return V<Boolean>::Cast(
         Convert(input, ConvertOp::Kind::kObject, ConvertOp::Kind::kBoolean));
+  }
+  V<HeapObject> ConvertToHeapObject(V<Object> input) {
+    return V<HeapObject>::Cast(
+        Convert(input, ConvertOp::Kind::kObject, ConvertOp::Kind::kHeapObject));
   }
   V<String> ConvertNumberToString(V<Number> input) {
     return V<String>::Cast(
@@ -2577,7 +2606,6 @@ class AssemblerOpInterface : public Next {
         TryChange(input, TryChangeOp::Kind::kind, V<from>::rep, V<to>::rep)); \
   }
 
-  DECL_CHANGE_V(BitcastWord32ToWord64, kBitcast, kNoAssumption, Word32, Word64)
   DECL_CHANGE_V(BitcastFloat32ToWord32, kBitcast, kNoAssumption, Float32,
                 Word32)
   DECL_CHANGE_V(BitcastWord32ToFloat32, kBitcast, kNoAssumption, Word32,
@@ -2797,8 +2825,6 @@ class AssemblerOpInterface : public Next {
     // Do shift on 32bit values if Smis are stored in the lower word.
     if constexpr (Is64() && SmiValuesAre31Bits()) {
       V<Word32> shifted = Word32ShiftLeft(resolve(input), kSmiShiftBits);
-      // In pointer compression, we smi-corrupt. Then, the upper bits are not
-      // important.
       return BitcastWord32ToSmi(shifted);
     } else {
       return BitcastWordPtrToSmi(
@@ -2980,14 +3006,14 @@ class AssemblerOpInterface : public Next {
 
   V<WordPtr> LoadExternalPointerFromObject(V<Object> object, int offset,
                                            ExternalPointerTag tag) {
-#ifdef V8_ENABLE_SANDBOX
+#ifdef V8_COMPRESS_POINTERS
     V<Word32> handle = __ Load(object, LoadOp::Kind::TaggedBase(),
                                MemoryRepresentation::Uint32(), offset);
     return __ LoadExternalPointer(handle, tag);
 #else
     return __ Load(object, LoadOp::Kind::TaggedBase(),
                    MemoryRepresentation::UintPtr(), offset);
-#endif  // V8_ENABLE_SANDBOX
+#endif  // V8_COMPRESS_POINTERS
   }
 
   V<Object> LoadFixedArrayElement(V<FixedArray> array, int index) {
@@ -3099,25 +3125,13 @@ class AssemblerOpInterface : public Next {
   void Store(
       OpIndex base, OptionalOpIndex index, OpIndex value, StoreOp::Kind kind,
       MemoryRepresentation stored_rep, WriteBarrierKind write_barrier,
-      std::optional<AtomicMemoryOrder> memory_order, int32_t offset = 0,
-      uint8_t element_size_log2 = 0,
-      bool maybe_initializing_or_transitioning = false,
-      TrustedPointerTag maybe_trusted_pointer_tag = kTrustedPointerNullTag) {
-    DCHECK_EQ(kind.is_atomic, memory_order.has_value());
-    ReduceIfReachableStore(base, index, value, kind, stored_rep, write_barrier,
-                           memory_order, offset, element_size_log2,
-                           maybe_initializing_or_transitioning,
-                           maybe_trusted_pointer_tag);
-  }
-  void Store(
-      OpIndex base, OptionalOpIndex index, OpIndex value, StoreOp::Kind kind,
-      MemoryRepresentation stored_rep, WriteBarrierKind write_barrier,
       int32_t offset = 0, uint8_t element_size_log2 = 0,
       bool maybe_initializing_or_transitioning = false,
       TrustedPointerTag maybe_trusted_pointer_tag = kTrustedPointerNullTag) {
-    Store(base, index, value, kind, stored_rep, write_barrier, std::nullopt,
-          offset, element_size_log2, maybe_initializing_or_transitioning,
-          maybe_trusted_pointer_tag);
+    ReduceIfReachableStore(base, index, value, kind, stored_rep, write_barrier,
+                           offset, element_size_log2,
+                           maybe_initializing_or_transitioning,
+                           maybe_trusted_pointer_tag);
   }
   void Store(
       OpIndex base, OpIndex value, StoreOp::Kind kind,
@@ -3126,17 +3140,6 @@ class AssemblerOpInterface : public Next {
       TrustedPointerTag maybe_trusted_pointer_tag = kTrustedPointerNullTag) {
     Store(base, OpIndex::Invalid(), value, kind, stored_rep, write_barrier,
           offset, 0, maybe_initializing_or_transitioning,
-          maybe_trusted_pointer_tag);
-  }
-  void Store(
-      OpIndex base, OpIndex value, StoreOp::Kind kind,
-      MemoryRepresentation stored_rep, WriteBarrierKind write_barrier,
-      std::optional<AtomicMemoryOrder> memory_order, int32_t offset = 0,
-      uint8_t element_size_log2 = 0,
-      bool maybe_initializing_or_transitioning = false,
-      TrustedPointerTag maybe_trusted_pointer_tag = kTrustedPointerNullTag) {
-    Store(base, OpIndex::Invalid(), value, kind, stored_rep, write_barrier,
-          memory_order, offset, 0, maybe_initializing_or_transitioning,
           maybe_trusted_pointer_tag);
   }
 
@@ -3190,28 +3193,39 @@ class AssemblerOpInterface : public Next {
     }
     MemoryRepresentation rep =
         MemoryRepresentation::FromMachineType(machine_type);
-#ifdef V8_ENABLE_SANDBOX
-    bool is_sandboxed_external =
+#ifdef V8_COMPRESS_POINTERS
+    bool is_external_pointer_handle =
         access.type.Is(compiler::Type::ExternalPointer());
-    if (is_sandboxed_external) {
-      // Fields for sandboxed external pointer contain a 32-bit handle, not a
+#ifndef V8_ENABLE_SANDBOX
+    // When the sandbox is disabled, SandboxedPointer fields (e.g.
+    // JSTypedArray::external_pointer_ and JSDataView::data_pointer_) are
+    // represented as raw pointers with Type::ExternalPointer() and
+    // kExternalPointerNullTag rather than ExternalPointerTable handles.
+    if (access.external_pointer_tag == kExternalPointerNullTag) {
+      is_external_pointer_handle = false;
+    }
+#endif  // !V8_ENABLE_SANDBOX
+    if (is_external_pointer_handle) {
+      // Fields in the external pointer table contain a 32-bit handle, not a
       // 64-bit raw pointer.
       rep = MemoryRepresentation::Uint32();
     }
-#endif  // V8_ENABLE_SANDBOX
+#endif  // V8_COMPRESS_POINTERS
     LoadOp::Kind kind = LoadOp::Kind::Aligned(access.base_is_tagged);
     if (access.is_immutable) {
       kind = kind.Immutable();
     }
     if (access.shared_base) kind = kind.SharedBase();
     V<Rep> value = Load(object, kind, rep, access.offset);
-#ifdef V8_ENABLE_SANDBOX
-    if (is_sandboxed_external) {
+#ifdef V8_COMPRESS_POINTERS
+    if (is_external_pointer_handle) {
       value = V<Rep>::CastIfNeeded(LoadExternalPointer(
           V<Word32>::CastIfNeeded(value), access.external_pointer_tag));
     }
+#endif  // V8_COMPRESS_POINTERS
+#ifdef V8_ENABLE_SANDBOX
     if (access.is_bounded_size_access) {
-      DCHECK(!is_sandboxed_external);
+      DCHECK(!is_external_pointer_handle);
       value = V<Rep>::CastIfNeeded(
           ShiftRightLogical(V<WordPtr>::CastIfNeeded(value), kBoundedSizeShift,
                             WordRepresentation::WordPtr()));
@@ -3296,7 +3310,9 @@ class AssemblerOpInterface : public Next {
     }
     // External pointer must never be stored by optimized code.
     DCHECK(!access.type.Is(compiler::Type::ExternalPointer()) ||
-           !V8_ENABLE_SANDBOX_BOOL);
+           !COMPRESS_POINTERS_BOOL ||
+           (!V8_ENABLE_SANDBOX_BOOL &&
+            access.external_pointer_tag == kExternalPointerNullTag));
     // SandboxedPointers are not currently stored by optimized code.
     DCHECK(!access.type.Is(compiler::Type::SandboxedPointer()));
 
@@ -3472,11 +3488,11 @@ class AssemblerOpInterface : public Next {
     return __ FinishInitialization(std::move(result));
   }
 
-#if V8_ENABLE_SANDBOX
+#ifdef V8_COMPRESS_POINTERS
   V<WordPtr> LoadExternalPointer(V<Word32> handle, ExternalPointerTag tag) {
     return ReduceIfReachableLoadExternalPointer(handle, tag);
   }
-#endif
+#endif  // V8_COMPRESS_POINTERS
 
 #if V8_ENABLE_WEBASSEMBLY
   void WasmStackCheck(WasmStackCheckOp::Kind kind) {
@@ -3663,6 +3679,49 @@ class AssemblerOpInterface : public Next {
             OpEffects effects = OpEffects().CanCallAnything()) {
     return Call<R>(callee, OptionalV<LazyFrameState>::Nullopt(),
                    base::VectorOf(arguments), descriptor, effects);
+  }
+
+  // Calls a C function with a simplified C descriptor.
+  template <typename R = AnyOrNone>
+  V<R> CallC(const MachineSignature* sig, V<CallTarget> callee,
+             base::Vector<const OpIndex> arguments,
+             OpEffects effects = OpEffects().CanCallAnything()) {
+    if (V8_UNLIKELY(Asm().generating_unreachable_operations())) {
+      return V<R>::Invalid();
+    }
+    DCHECK_LE(sig->return_count(), 1);
+    DCHECK_EQ(sig->parameter_count(), arguments.size());
+    Zone* graph_zone = Asm().output_graph().graph_zone();
+    const CallDescriptor* call_descriptor =
+        Linkage::GetSimplifiedCDescriptor(graph_zone, sig);
+    const TSCallDescriptor* ts_call_descriptor = TSCallDescriptor::Create(
+        call_descriptor, CanThrow{false}, LazyDeoptOnThrow{false}, graph_zone);
+    return Call<R>(callee, OptionalV<LazyFrameState>::Nullopt(), arguments,
+                   ts_call_descriptor, effects);
+  }
+  template <typename R = AnyOrNone>
+  V<R> CallC(const MachineSignature* sig, V<CallTarget> callee,
+             std::initializer_list<OpIndex> arguments,
+             OpEffects effects = OpEffects().CanCallAnything()) {
+    return CallC<R>(sig, callee, base::VectorOf(arguments), effects);
+  }
+  template <typename R = AnyOrNone>
+  V<R> CallC(const MachineSignature* sig, ExternalReference target,
+             base::Vector<const OpIndex> arguments,
+             OpEffects effects = OpEffects().CanCallAnything()) {
+    return CallC<R>(sig, ExternalConstant(target), arguments, effects);
+  }
+  template <typename R = AnyOrNone>
+  V<R> CallC(const MachineSignature* sig, ExternalReference target,
+             std::initializer_list<OpIndex> arguments,
+             OpEffects effects = OpEffects().CanCallAnything()) {
+    return CallC<R>(sig, ExternalConstant(target), base::VectorOf(arguments),
+                    effects);
+  }
+  template <typename R = AnyOrNone>
+  V<R> CallC(const MachineSignature* sig, ExternalReference target, OpIndex arg,
+             OpEffects effects = OpEffects().CanCallAnything()) {
+    return CallC<R>(sig, target, {arg}, effects);
   }
 
   template <typename Descriptor>
@@ -4363,7 +4422,7 @@ class AssemblerOpInterface : public Next {
               int line, SourceLocation loc = SourceLocation::CurrentIfDebug()) {
     Isolate* isolate = Asm().data()->isolate();
     DCHECK_NOT_NULL(isolate);
-    DCHECK_EQ(ThreadId::Current(), isolate->thread_id());
+    DCHECK_EQ(base::ThreadId::Current(), isolate->thread_id());
     if (v8_flags.debug_code) {
       Check(condition(), message, file, line, loc);
     }
@@ -4376,7 +4435,7 @@ class AssemblerOpInterface : public Next {
     Isolate* isolate = Asm().data()->isolate();
     USE(isolate);
     DCHECK_NOT_NULL(isolate);
-    DCHECK_EQ(ThreadId::Current(), isolate->thread_id());
+    DCHECK_EQ(base::ThreadId::Current(), isolate->thread_id());
 
     if (message != nullptr) {
       CodeComment({"[ Assert: ", loc}, message);
@@ -4412,7 +4471,7 @@ class AssemblerOpInterface : public Next {
 
     Isolate* isolate = Asm().data()->isolate();
     DCHECK_NOT_NULL(isolate);
-    DCHECK_EQ(ThreadId::Current(), isolate->thread_id());
+    DCHECK_EQ(base::ThreadId::Current(), isolate->thread_id());
     const std::string str = stream.str();
     Handle<String> internalized_string =
         isolate->factory()->InternalizeString(str);
@@ -4665,7 +4724,7 @@ class AssemblerOpInterface : public Next {
         Isolate* isolate = Asm().data()->isolate();
         // If we don't have a broker, we can only allocate the string on the
         // main thread.
-        DCHECK_EQ(ThreadId::Current(), isolate->thread_id());
+        DCHECK_EQ(base::ThreadId::Current(), isolate->thread_id());
         internalized_string = isolate->factory()->InternalizeString(label);
         CanonicalizeEmbeddedBuiltinsConstantIfNeeded(internalized_string);
       }
@@ -4691,7 +4750,7 @@ class AssemblerOpInterface : public Next {
       Isolate* isolate = Asm().data()->isolate();
       // If we don't have a broker, we can only allocate the string on the main
       // thread.
-      DCHECK_EQ(ThreadId::Current(), isolate->thread_id());
+      DCHECK_EQ(base::ThreadId::Current(), isolate->thread_id());
       internalized_string = isolate->factory()->InternalizeString(str);
       CanonicalizeEmbeddedBuiltinsConstantIfNeeded(internalized_string);
     }
@@ -5110,7 +5169,7 @@ class AssemblerOpInterface : public Next {
   template <RootIndex index>
   V<root_type_t<index>> LoadRoot() {
     using RootObjectType = root_type_t<index>;
-    Isolate* isolate = __ data() -> isolate();
+    Isolate* isolate = __ data()->isolate();
     if (RootsTable::IsImmortalImmovable(index)) {
       if (isolate != nullptr) {
         Handle<Object> root = isolate->root_handle(index);
@@ -5187,15 +5246,19 @@ class AssemblerOpInterface : public Next {
     return ReduceIfReachableIsNull(input, type);
   }
 
-  V<Object> AssertNotNull(V<Object> object, wasm::ValueType type,
-                          TrapId trap_id) {
+  template <typename T>
+  V<T> AssertNotNull(V<T> object, wasm::ValueType type, TrapId trap_id)
+    requires(is_subtype_v<T, Object>)
+  {
     return ReduceIfReachableAssertNotNull(object, OptionalV<EagerFrameState>{},
                                           type, trap_id);
   }
 
-  V<Object> AssertNotNull(V<Object> object,
-                          OptionalV<EagerFrameState> frame_state,
-                          wasm::ValueType type, TrapId trap_id) {
+  template <typename T>
+  V<T> AssertNotNull(V<T> object, OptionalV<EagerFrameState> frame_state,
+                     wasm::ValueType type, TrapId trap_id)
+    requires(is_subtype_v<T, Object>)
+  {
     return ReduceIfReachableAssertNotNull(object, frame_state, type, trap_id);
   }
 
@@ -5403,6 +5466,14 @@ class AssemblerOpInterface : public Next {
   V<WasmFuncRef> WasmRefFunc(V<WasmTrustedInstanceData> wasm_instance,
                              uint32_t function_index) {
     return ReduceIfReachableWasmRefFunc(wasm_instance, function_index);
+  }
+
+  V<Smi> WasmRefI31(ConstOrV<Word32> input, SharedFlag is_shared) {
+    return ReduceIfReachableWasmRefI31(resolve(input), is_shared);
+  }
+
+  V<Word32> WasmI31Get(V<Smi> input, bool is_signed) {
+    return ReduceIfReachableWasmI31Get(input, is_signed);
   }
 
   V<String> StringAsWtf16(V<String> string) {
@@ -5655,7 +5726,7 @@ class AssemblerOpInterface : public Next {
   }
 
   void CanonicalizeEmbeddedBuiltinsConstantIfNeeded(Handle<HeapObject> object) {
-    Isolate* isolate = __ data() -> isolate();
+    Isolate* isolate = __ data()->isolate();
     if (!isolate) return;
     if (!isolate->IsGeneratingEmbeddedBuiltins()) return;
     CanonicalizeEmbeddedBuiltinsConstantIfNeededImpl(isolate, object);

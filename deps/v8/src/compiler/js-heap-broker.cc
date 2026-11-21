@@ -153,7 +153,7 @@ Address* JSHeapBroker::AllocatePersistentHandle(Tagged<Object> object) {
 
 bool JSHeapBroker::StackHasOverflowed() const {
   DCHECK_IMPLIES(local_isolate_ == nullptr,
-                 ThreadId::Current() == isolate_->thread_id());
+                 base::ThreadId::Current() == isolate_->thread_id());
   return (local_isolate_ != nullptr)
              ? StackLimitCheck::HasOverflowed(local_isolate_)
              : StackLimitCheck(isolate_).HasOverflowed();
@@ -676,9 +676,11 @@ ProcessedFeedback const& JSHeapBroker::ReadFeedbackForGlobalAccess(
     OptionalObjectRef contents = context.get(broker, context_slot_index);
     if (contents.has_value()) CHECK(!contents->IsTdzHole());
 
-    return *zone()->New<GlobalAccessFeedback>(
-        context, context_slot_index,
-        FeedbackNexus::ImmutabilityBit::decode(number), nexus.kind());
+    // Lexical script-context const slots can be mutated via the debugger.
+    bool immutable = FeedbackNexus::ImmutabilityBit::decode(number) &&
+                     !isolate()->is_context_slot_not_assigned_unreliable();
+    return *zone()->New<GlobalAccessFeedback>(context, context_slot_index,
+                                              immutable, nexus.kind());
   }
 
   CHECK(IsPropertyCell(*feedback_value));
@@ -822,7 +824,11 @@ ProcessedFeedback const& JSHeapBroker::ReadFeedbackForCall(
 
   float frequency = nexus.ComputeCallFrequency();
   SpeculationMode mode = nexus.GetSpeculationMode();
-  CallFeedbackContent content = nexus.GetCallFeedbackContent();
+  CallFeedbackContent content = CallFeedbackContent::kTarget;
+  if (target_ref.has_value() && target_ref->map(this).is_callable()) {
+    DCHECK(target_ref->IsJSFunction() || target_ref->IsJSBoundFunction());
+    content = nexus.GetCallFeedbackContent();
+  }
   return *zone()->New<CallFeedback>(target_ref, frequency, mode, content,
                                     nexus.kind());
 }

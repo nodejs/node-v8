@@ -788,11 +788,15 @@ ForInParameters const& ForInParametersOf(const Operator* op) {
 #if V8_ENABLE_WEBASSEMBLY
 JSWasmCallParameters::JSWasmCallParameters(
     wasm::NativeModule* native_module, int function_index,
-    SharedFunctionInfoRef shared_fct_info, FeedbackSource const& feedback)
+    SharedFunctionInfoRef shared_fct_info, FeedbackSource const& feedback,
+    bool has_break_on_entry,
+    IndirectHandle<WasmInternalFunction> internal_function)
     : native_module_(native_module),
       function_index_(function_index),
       shared_fct_info_(shared_fct_info),
-      feedback_(feedback) {}
+      feedback_(feedback),
+      has_break_on_entry_(has_break_on_entry),
+      internal_function_(internal_function) {}
 
 JSWasmCallParameters const& JSWasmCallParametersOf(const Operator* op) {
   DCHECK_EQ(IrOpcode::kJSWasmCall, op->opcode());
@@ -801,13 +805,15 @@ JSWasmCallParameters const& JSWasmCallParametersOf(const Operator* op) {
 
 std::ostream& operator<<(std::ostream& os, JSWasmCallParameters const& p) {
   return os << p.native_module() << ", " << p.function_index() << ", "
-            << Brief(*p.shared_fct_info().object()) << ", " << p.feedback();
+            << Brief(*p.shared_fct_info().object()) << ", " << p.feedback()
+            << ", " << p.has_break_on_entry();
 }
 
 size_t hash_value(JSWasmCallParameters const& p) {
   return base::hash_combine(p.native_module(), p.function_index(),
                             p.shared_fct_info().object().location(),
-                            FeedbackSource::Hash()(p.feedback()));
+                            FeedbackSource::Hash()(p.feedback()),
+                            p.has_break_on_entry());
 }
 
 bool operator==(JSWasmCallParameters const& lhs,
@@ -816,7 +822,8 @@ bool operator==(JSWasmCallParameters const& lhs,
          lhs.function_index() == rhs.function_index() &&
          lhs.shared_fct_info().object().location() ==
              rhs.shared_fct_info().object().location() &&
-         lhs.feedback() == rhs.feedback();
+         lhs.feedback() == rhs.feedback() &&
+         lhs.has_break_on_entry() == rhs.has_break_on_entry();
 }
 
 int JSWasmCallParameters::arity_without_implicit_args() const {
@@ -975,9 +982,9 @@ const Operator* JSOperatorBuilder::DefineKeyedOwnPropertyInLiteral(
   FeedbackParameter parameters(feedback);
   return zone()->New<Operator1<FeedbackParameter>>(  // --
       IrOpcode::kJSDefineKeyedOwnPropertyInLiteral,
-      Operator::kNoThrow,                   // opcode
+      Operator::kNoProperties,              // opcode
       "JSDefineKeyedOwnPropertyInLiteral",  // name
-      kArity, 1, 1, 0, 1, 1,                // counts
+      kArity, 1, 1, 0, 1, 2,                // counts
       parameters);                          // parameter
 }
 
@@ -1075,9 +1082,11 @@ const Operator* JSOperatorBuilder::CallRuntime(
 #if V8_ENABLE_WEBASSEMBLY
 const Operator* JSOperatorBuilder::CallWasm(
     wasm::NativeModule* native_module, int wasm_function_index,
-    SharedFunctionInfoRef shared_fct_info, FeedbackSource const& feedback) {
+    SharedFunctionInfoRef shared_fct_info, FeedbackSource const& feedback,
+    bool has_break_on_entry) {
   JSWasmCallParameters parameters(native_module, wasm_function_index,
-                                  shared_fct_info, feedback);
+                                  shared_fct_info, feedback,
+                                  has_break_on_entry);
   return zone()->New<Operator1<JSWasmCallParameters>>(
       IrOpcode::kJSWasmCall, Operator::kNoProperties,  // opcode
       "JSWasmCall",                                    // name
@@ -1369,7 +1378,7 @@ const Operator* JSOperatorBuilder::HasContextExtension(size_t depth) {
       IrOpcode::kJSHasContextExtension,         // opcode
       Operator::kNoWrite | Operator::kNoThrow,  // flags
       "JSHasContextExtension",                  // name
-      0, 1, 0, 1, 1, 0,                         // counts
+      0, 1, 1, 1, 1, 0,                         // counts
       depth);                                   // parameter
 }
 
@@ -1380,7 +1389,7 @@ const Operator* JSOperatorBuilder::LoadContextNoCell(size_t depth, size_t index,
       IrOpcode::kJSLoadContextNoCell,            // opcode
       Operator::kNoWrite | Operator::kNoThrow,   // flags
       "JSLoadContextNoCell",                     // name
-      0, 1, 0, 1, 1, 0,                          // counts
+      0, 1, 1, 1, 1, 0,                          // counts
       access);                                   // parameter
 }
 
@@ -1584,7 +1593,7 @@ const Operator* JSOperatorBuilder::GetTemplateObject(
   GetTemplateObjectParameters parameters(description, shared, feedback);
   return zone()->New<Operator1<GetTemplateObjectParameters>>(  // --
       IrOpcode::kJSGetTemplateObject,                          // opcode
-      Operator::kNoDeopt | Operator::kNoThrow,                 // properties
+      Operator::kNoThrow,                                      // properties
       "JSGetTemplateObject",                                   // name
       1, 1, 1, 1, 1, 0,                                        // counts
       parameters);                                             // parameter

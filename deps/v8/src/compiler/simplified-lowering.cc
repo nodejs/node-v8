@@ -157,6 +157,7 @@ UseInfo TruncatingUseInfoFromRepresentation(
     case MachineRepresentation::kTaggedSigned:
       return UseInfo::TaggedSigned();
     case MachineRepresentation::kTaggedPointer:
+      return UseInfo::TaggedPointer();
     case MachineRepresentation::kTagged:
     case MachineRepresentation::kTrustedPointer:
     case MachineRepresentation::kMapWord:
@@ -1650,8 +1651,11 @@ class RepresentationSelector {
     } else if (base_taggedness == kTaggedBase &&
                CanBeTaggedPointer(field_representation)) {
       Type value_type = NodeProperties::GetType(value);
-      if (value_representation == MachineRepresentation::kTaggedSigned) {
-        // Write barriers are only for stores of heap objects.
+      if (field_representation != MachineRepresentation::kTaggedPointer &&
+          value_representation == MachineRepresentation::kTaggedSigned) {
+        // Write barriers are only for stores of heap objects. Stores to
+        // kTaggedPointer fields convert kTaggedSigned inputs into HeapNumbers
+        // during ProcessInput, so they still require a write barrier.
         return kNoWriteBarrier;
       }
       if (field_type.Is(Type::BooleanOrNullOrUndefined()) ||
@@ -2160,6 +2164,7 @@ class RepresentationSelector {
                                         CFunctionInfo::Int64Representation repr,
                                         FeedbackSource const& feedback) {
     uint8_t flags = uint8_t(type.GetFlags());
+    START_ALLOW_USE_DEPRECATED()
     if (flags & uint8_t(CTypeInfo::Flags::kEnforceRangeBit) ||
         flags & uint8_t(CTypeInfo::Flags::kClampBit)) {
       DCHECK(repr != CFunctionInfo::Int64Representation::kBigInt);
@@ -2170,6 +2175,7 @@ class RepresentationSelector {
       // an `int32_t`.
       return UseInfo::CheckedNumberAsFloat64(kIdentifyZeros, feedback);
     }
+    END_ALLOW_USE_DEPRECATED()
     switch (type.GetType()) {
       case CTypeInfo::Type::kVoid:
       case CTypeInfo::Type::kUint8:

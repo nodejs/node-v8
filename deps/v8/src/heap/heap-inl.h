@@ -65,7 +65,7 @@ Tagged<T> ForwardingAddress(Tagged<T> heap_obj) {
 Isolate* Heap::isolate() const { return Isolate::FromHeap(this); }
 
 bool Heap::IsMainThread() const {
-  return isolate()->thread_id() == ThreadId::Current();
+  return isolate()->thread_id() == base::ThreadId::Current();
 }
 
 uint64_t Heap::external_memory() const {
@@ -176,7 +176,8 @@ void Heap::SetWasmCanonicalRtts(Tagged<WeakFixedArray> rtts) {
 void Heap::SetWasmSharedCanonicalRtts(Tagged<WeakFixedArray> rtts) {
   set_wasm_shared_canonical_rtts(rtts);
 }
-void Heap::SetJSToWasmWrappers(Tagged<WeakFixedArray> js_to_wasm_wrappers) {
+void Heap::SetJSToWasmWrappers(
+    Tagged<ProtectedWeakFixedArray> js_to_wasm_wrappers) {
   set_js_to_wasm_wrappers(js_to_wasm_wrappers);
 }
 #endif  // V8_ENABLE_WEBASSEMBLY
@@ -229,12 +230,6 @@ void Heap::RegisterExternalString(Tagged<String> string) {
   DCHECK(IsExternalString(string));
   DCHECK(!IsThinString(string));
   external_string_table_.AddString(string);
-}
-
-void Heap::FinalizeExternalString(Tagged<String> string) {
-  DCHECK(IsExternalString(string));
-  Tagged<ExternalString> ext_string = Cast<ExternalString>(string);
-  ext_string->DisposeResource(isolate());
 }
 
 Address Heap::NewSpaceTop() {

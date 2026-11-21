@@ -7,6 +7,7 @@
 
 #include "include/v8-fast-api-calls.h"
 #include "src/base/logging.h"
+#include "src/codegen/signature.h"
 #include "src/compiler/fast-api-calls.h"
 #include "src/compiler/globals.h"
 #include "src/compiler/turboshaft/assembler.h"
@@ -31,7 +32,7 @@ class FastApiCallLoweringReducer : public Next {
       V<Context> context, base::Vector<const OpIndex> arguments,
       const FastApiCallParameters* parameters,
       base::Vector<const RegisterRepresentation> out_reps) {
-    __ data() -> set_graph_has_lowered_fast_api_calls();
+    __ data()->set_graph_has_lowered_fast_api_calls();
 
     FastApiCallFunction c_function = parameters->c_function;
     const auto& c_signature = parameters->c_signature();
@@ -86,10 +87,8 @@ class FastApiCallLoweringReducer : public Next {
             offsetof(v8::FastApiCallbackOptions, isolate));
         // data = data_argument
         OpIndex data_argument_to_pass = __ AdaptLocalArgument(data_argument);
-        START_ALLOW_USE_DEPRECATED()
         constexpr size_t data_offset =
             offsetof(v8::FastApiCallbackOptions, data);
-        END_ALLOW_USE_DEPRECATED()
         __ StoreOffHeap(stack_slot, data_argument_to_pass,
                         MemoryRepresentation::UintPtr(), data_offset);
 
@@ -169,6 +168,7 @@ class FastApiCallLoweringReducer : public Next {
   OpIndex AdaptFastCallArgument(OpIndex argument, CTypeInfo arg_type,
                                 Label<>& handle_error) {
     uint8_t flags = static_cast<uint8_t>(arg_type.GetFlags());
+    START_ALLOW_USE_DEPRECATED()
     if (flags & static_cast<uint8_t>(CTypeInfo::Flags::kEnforceRangeBit)) {
       switch (arg_type.GetType()) {
         case CTypeInfo::Type::kInt32: {
@@ -224,6 +224,7 @@ class FastApiCallLoweringReducer : public Next {
           }
           return argument;
         }
+          END_ALLOW_USE_DEPRECATED()
         case CTypeInfo::Type::kPointer: {
           // Check that the value is a HeapObject.
           GOTO_IF(__ ObjectIsSmi(argument), handle_error);
@@ -434,30 +435,22 @@ class FastApiCallLoweringReducer : public Next {
     __ InitializeField(external, AccessBuilder::ForJSObjectElements(),
                        empty_fixed_array);
 
-#ifdef V8_ENABLE_SANDBOX
+#ifdef V8_COMPRESS_POINTERS
     OpIndex isolate_ptr =
         __ ExternalConstant(ExternalReference::isolate_address());
-    MachineSignature::Builder builder(__ graph_zone(), 1, 2);
-    builder.AddReturn(MachineType::Uint32());
-    builder.AddParam(MachineType::Pointer());
-    builder.AddParam(MachineType::Pointer());
-    OpIndex allocate_and_initialize_young_external_pointer_table_entry =
-        __ ExternalConstant(
-            ExternalReference::
-                allocate_and_initialize_young_external_pointer_table_entry());
-    auto call_descriptor =
-        Linkage::GetSimplifiedCDescriptor(__ graph_zone(), builder.Get());
-    OpIndex handle = __ Call(
-        allocate_and_initialize_young_external_pointer_table_entry,
-        {isolate_ptr, pointer},
-        TSCallDescriptor::Create(call_descriptor, CanThrow{false},
-                                 LazyDeoptOnThrow{false}, __ graph_zone()));
+    auto sig = FixedSizeSignature<MachineType>::Returns(MachineType::Uint32())
+                   .Params(MachineType::Pointer(), MachineType::Pointer());
+    V<Word32> handle = __ template CallC<Word32>(
+        &sig,
+        ExternalReference::
+            allocate_and_initialize_young_external_pointer_table_entry(),
+        {isolate_ptr, pointer});
     __ InitializeField(
         external, AccessBuilder::ForJSExternalObjectPointerHandle(), handle);
 #else
     __ InitializeField(external, AccessBuilder::ForJSExternalObjectValue(),
                        pointer);
-#endif  // V8_ENABLE_SANDBOX
+#endif  // V8_COMPRESS_POINTERS
     GOTO(done, __ FinishInitialization(std::move(external)));
 
     BIND(done, result);

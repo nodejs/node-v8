@@ -156,6 +156,10 @@ macro RefCast<To: type>(i: &intptr):
   return torque_internal::unsafe::NewReference<To>(i.object, i.offset);
 }
 
+macro LoadWasmRef(slot: &intptr): Object {
+  return LoadWasmRefFromSlot(slot.object, slot.offset);
+}
+
 macro TruncateBigIntToI64(context: Context, input: JSAny): intptr {
   // This is only safe to use on 64-bit platforms.
   dcheck(Is64());
@@ -792,7 +796,7 @@ macro JSToWasmWrapperHelper(
   const paramEnd = locationAllocator.GetStackEnd();
   locationAllocator.CheckBufferOverflow();
 
-  const callTarget = functionData.internal.raw_call_target;
+  const callTarget = functionData.internal.call_target;
 
   // We construct a state that will be passed to `JSToWasmWrapperAsm`
   // and `JSToWasmHandleReturns`. There are too many parameters to pass
@@ -833,34 +837,22 @@ macro JSToWasmWrapperHelper(
 }
 
 transitioning javascript builtin JSToWasmWrapper(
-    js-implicit context: NativeContext, receiver: JSAny, target: JSFunction,
-    dispatchHandle: DispatchHandle)(...arguments): JSAny {
-  // This is a generic builtin that can be installed on functions with different
-  // parameter counts, so we need to support that.
-  SetSupportsDynamicParameterCount(target, dispatchHandle);
-
+    js-implicit context: NativeContext, receiver: JSAny, target: JSFunction)(
+    ...arguments): JSAny {
   return JSToWasmWrapperHelper(
       context, receiver, target, arguments, Promise::kNoPromise);
 }
 
 transitioning javascript builtin WasmPromising(
-    js-implicit context: NativeContext, receiver: JSAny, target: JSFunction,
-    dispatchHandle: DispatchHandle)(...arguments): JSAny {
-  // This is a generic builtin that can be installed on functions with different
-  // parameter counts, so we need to support that.
-  SetSupportsDynamicParameterCount(target, dispatchHandle);
-
+    js-implicit context: NativeContext, receiver: JSAny, target: JSFunction)(
+    ...arguments): JSAny {
   return JSToWasmWrapperHelper(
       context, receiver, target, arguments, Promise::kPromise);
 }
 
 transitioning javascript builtin WasmStressSwitch(
-    js-implicit context: NativeContext, receiver: JSAny, target: JSFunction,
-    dispatchHandle: DispatchHandle)(...arguments): JSAny {
-  // This is a generic builtin that can be installed on functions with different
-  // parameter counts, so we need to support that.
-  SetSupportsDynamicParameterCount(target, dispatchHandle);
-
+    js-implicit context: NativeContext, receiver: JSAny, target: JSFunction)(
+    ...arguments): JSAny {
   return JSToWasmWrapperHelper(
       context, receiver, target, arguments, Promise::kStressSwitch);
 }
@@ -953,10 +945,9 @@ builtin JSToWasmHandleReturns(
       }
     } else {
       check((retType & kValueTypeIsRefBit) != 0);
-      const ptr = %RawDownCast<RawPtr<uintptr>>(
-          wrapperBuffer + kWrapperBufferGPReturnRegister1);
-      const rawRef = *GetRefAt<uintptr>(ptr, 0);
-      const value = BitcastWordToTagged(rawRef);
+      const slot =
+          GetRefAt<intptr>(wrapperBuffer, kWrapperBufferGPReturnRegister1);
+      const value = LoadWasmRef(slot);
       return WasmToJSObject(jsContext, value);
     }
   }
@@ -1006,8 +997,7 @@ builtin JSToWasmHandleReturns(
       const retType = *retTypes.UncheckedAtIndex(k);
       if ((retType & kValueTypeIsRefBit) != 0) {
         const slot = locationAllocator.GetGPSlot();
-        const rawRef = *slot;
-        const value: Object = BitcastWordToTagged(rawRef);
+        const value: Object = LoadWasmRef(slot);
         // Store the wasm object in the JSArray to make it GC safe. The
         // transformation will happen later in a second loop.
         fixedArray.objects[k] = value;

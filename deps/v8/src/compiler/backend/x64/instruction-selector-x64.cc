@@ -1481,7 +1481,12 @@ void VisitStoreCommon(InstructionSelector* selector,
 
   if (write_barrier_kind != kNoWriteBarrier &&
       !v8_flags.disable_write_barriers) {
-    DCHECK(CanBeTaggedOrCompressedOrTrustedPointer(store_rep.representation()));
+#if DEBUG
+    MachineRepresentation mach_rep = store_rep.representation();
+    DCHECK(CanBeTaggedOrCompressedOrTrustedPointer(mach_rep) ||
+           (write_barrier_kind == kSkippedWriteBarrier &&
+            mach_rep == MachineRepresentation::kTaggedSigned));
+#endif  // DEBUG
     // Uncompressed stores should not happen if we need a write barrier.
     CHECK((store.ts_stored_rep() !=
            MemoryRepresentation::AnyUncompressedTagged()) &&
@@ -1514,6 +1519,8 @@ void VisitStoreCommon(InstructionSelector* selector,
     } else if (write_barrier_kind == kSkippedWriteBarrier) {
       code = is_atomic ? kArchAtomicStoreSkippedWriteBarrier
                        : kArchStoreSkippedWriteBarrier;
+      code |= CheckSmiField::encode(store_rep.representation() ==
+                                    MachineRepresentation::kTaggedSigned);
     } else {
       code = is_atomic ? kArchAtomicStoreWithWriteBarrier
                        : kArchStoreWithWriteBarrier;
@@ -1553,22 +1560,11 @@ void VisitStoreCommon(InstructionSelector* selector,
 
     if (is_seqcst) {
       // SeqCst stores emit XCHG instead of MOV, so encode the inputs as we
-      // would for XCHG. XCHG can't encode the value as an immediate and has
-      // fewer addressing modes available.
+      // would for XCHG. XCHG can't encode the value as an immediate.
       inputs[input_count++] = g.UseUniqueRegister(value);
-      inputs[input_count++] = g.UseUniqueRegister(base);
-      DCHECK_EQ(element_size_log2, 0);
-      if (index.valid()) {
-        DCHECK_EQ(displacement, 0);
-        inputs[input_count++] =
-            g.GetEffectiveIndexOperand(index.value(), &addressing_mode);
-      } else if (displacement != 0) {
-        DCHECK(ValueFitsIntoImmediate(displacement));
-        inputs[input_count++] = g.UseImmediate(displacement);
-        addressing_mode = kMode_MRI;
-      } else {
-        addressing_mode = kMode_MR;
-      }
+      addressing_mode = g.GetEffectiveAddressMemoryOperand(
+          store, inputs, &input_count,
+          X64OperandGenerator::RegisterUseKind::kUseUniqueRegister);
       opcode = GetSeqCstStoreOpcode(store_rep);
     } else {
       if (ElementSizeLog2Of(store_rep.representation()) <
@@ -2734,12 +2730,6 @@ void InstructionSelector::VisitTryTruncateFloat64ToInt32(OpIndex node) {
   Emit(kSSEFloat64ToInt32, output_count, outputs, 1, inputs, temp_count, temps);
 }
 
-void InstructionSelector::VisitBitcastWord32ToWord64(OpIndex node) {
-  DCHECK(SmiValuesAre31Bits());
-  DCHECK(COMPRESS_POINTERS_BOOL);
-  EmitIdentity(node);
-}
-
 void InstructionSelector::VisitChangeInt32ToInt64(OpIndex node) {
   const ChangeOp& op = Cast<ChangeOp>(node);
   DCHECK_EQ(op.input_count, 1);
@@ -3248,6 +3238,17 @@ void InstructionSelector::VisitFloat64Ieee754Unop(OpIndex node,
 
 void InstructionSelector::EmitMoveParamToFPR(OpIndex node, int index) {}
 
+void InstructionSelector::EmitDecompressTaggedParam(
+    OpIndex node, InstructionOperand temp_op) {
+  X64OperandGenerator g(this);
+  InstructionOperand result_op = g.DefineAsRegister(node);
+  InstructionCode opcode =
+      Cast<ParameterOp>(node).rep == RegisterRepresentation::Compressed()
+          ? kX64Movl
+          : kX64MovqDecompressTagged;
+  Emit(opcode, 1, &result_op, 1, &temp_op);
+}
+
 void InstructionSelector::EmitMoveFPRToParam(InstructionOperand* op,
                                              LinkageLocation location) {}
 
@@ -3276,6 +3277,39 @@ void InstructionSelector::EmitPrepareArguments(
   } else {
     // Push any stack arguments.
     int effect_level = GetEffectLevel(node);
+
+    // Since the stack header and local/spill slot sections are separately
+    // aligned, the outgoing argument area must consist of an even number of
+    // slots to maintain 16-byte alignment. {arguments} has one entry per
+    // stack slot, so if it has an odd size we push one extra padding slot
+    // first. Like on arm64, the padding thus sits at the highest address,
+    // directly above the last argument:
+    //
+    //   [caller frame / return slots]
+    //   padding (Smi zero)      <- only if arguments->size() is odd
+    //   argument n-1            <- pushed first among the real arguments
+    //   ...
+    //   argument 0              <- rsp (16-byte aligned) at the call
+    //
+    // The callee knows about this slot: CallDescriptor::GetOffsetToReturns()
+    // and GetStackParameterDelta() account for it (Linkage), callees compiled
+    // by TurboFan drop it in CodeGenerator::AssembleReturn, and the wasm
+    // linkage places stack return slots above it. The padding slot is
+    // initialized with Smi zero (rather than just reserved with a stack
+    // pointer decrement) because it lies within the argument area of the
+    // callee and may thus be visited by the GC as a tagged slot.
+    //
+    // kX64Push accounts for the padding in the code generator's sp_delta
+    // bookkeeping like for any other pushed slot, and the call instruction
+    // resets sp_delta afterwards.
+    //
+    // This is a no-op when the flag is off (ShouldPadArguments is false).
+    const int stack_slot_count = static_cast<int>(arguments->size());
+    if (ShouldPadArguments(stack_slot_count)) {
+      Emit(kX64Push, g.NoOutput(), g.UseImmediate(kSystemPointerSize),
+           g.UseImmediate(0));
+    }
+
     int stack_decrement = 0;
     for (PushParameter input : base::Reversed(*arguments)) {
       stack_decrement += kSystemPointerSize;
@@ -3313,7 +3347,20 @@ void InstructionSelector::EmitPrepareResults(
     OpIndex node) {
   X64OperandGenerator g(this);
   for (PushParameter output : *results) {
+#if V8_ENABLE_WEBASSEMBLY && V8_ENABLE_SANDBOX
+    if (!output.location.IsCallerFrameSlot()) {
+      if (!output.op.IsInvalid()) {
+        DCHECK(output.node.valid());
+        InstructionOperand result_op = g.DefineAsRegister(output.node);
+        InstructionCode opcode =
+            output.needs_decompression ? kX64MovqDecompressTagged : kX64Movl;
+        Emit(opcode, 1, &result_op, 1, &output.op);
+      }
+      continue;
+    }
+#else
     if (!output.location.IsCallerFrameSlot()) continue;
+#endif  // V8_ENABLE_WEBASSEMBLY && V8_ENABLE_SANDBOX
     // Skip any alignment holes in nodes.
     if (output.node.valid()) {
       DCHECK(!call_descriptor->IsCFunctionCall());
@@ -3324,10 +3371,24 @@ void InstructionSelector::EmitPrepareResults(
       } else if (output.location.GetType() == MachineType::Simd128()) {
         MarkAsSimd128(output.node);
       }
-      InstructionOperand result = g.DefineAsRegister(output.node);
       int offset = call_descriptor->GetOffsetToReturns();
       int reverse_slot = -output.location.GetLocation() - offset;
       InstructionOperand slot = g.UseImmediate(reverse_slot);
+#if V8_ENABLE_WEBASSEMBLY && V8_ENABLE_SANDBOX
+      if (call_descriptor->IsAnyWasmFunctionCall() &&
+          output.location.GetType() == MachineType::AnyTagged() &&
+          IsReallyUsed(output.node)) {
+        InstructionOperand temp = g.TempRegister();
+        MarkAsRepresentation(MachineRepresentation::kTagged, temp);
+        Emit(kX64Peek, 1, &temp, 1, &slot);
+        InstructionOperand result = g.DefineAsRegister(output.node);
+        InstructionCode opcode =
+            output.needs_decompression ? kX64MovqDecompressTagged : kX64Movl;
+        Emit(opcode, 1, &result, 1, &temp);
+        continue;
+      }
+#endif  // V8_ENABLE_WEBASSEMBLY && V8_ENABLE_SANDBOX
+      InstructionOperand result = g.DefineAsRegister(output.node);
       Emit(kX64Peek, 1, &result, 1, &slot);
     }
   }
@@ -4769,8 +4830,6 @@ VISIT_ATOMIC_BINOP(Xor)
   V(S256Xor, SXor, LaneSize::kL8, VectorLength::kV256)
 
 #define SIMD_F16x8_BINOP_LIST(V) \
-  V(F16x8Mul, FMul)              \
-  V(F16x8Div, FDiv)              \
   V(F16x8Min, FMin)              \
   V(F16x8Max, FMax)              \
   V(F16x8Eq, FEq)                \
@@ -4816,11 +4875,9 @@ VISIT_ATOMIC_BINOP(Xor)
 
 #define SIMD_UNOP_LIST(V)   \
   V(F64x2ConvertLowI32x4S)  \
-  V(F64x4ConvertI32x4S)     \
   V(F32x4SConvertI32x4)     \
   V(F32x8SConvertI32x8)     \
   V(F32x4DemoteF64x2Zero)   \
-  V(F32x4DemoteF64x4)       \
   V(I16x8SConvertF16x8)     \
   V(I16x8UConvertF16x8)     \
   V(F16x8SConvertI16x8)     \
@@ -5282,6 +5339,44 @@ void InstructionSelector::VisitF16x8Sub(OpIndex node) {
   }
 }
 
+void InstructionSelector::VisitF16x8Mul(OpIndex node) {
+  X64OperandGenerator operands(this);
+  const Simd128BinopOp& operation = Cast<Simd128BinopOp>(node);
+  InstructionCode code = kX64FMul | LaneSizeField::encode(LaneSize::kL16) |
+                         VectorLengthField::encode(VectorLength::kV128);
+  if (UseAvx10_1()) {
+    Emit(code, operands.DefineAsRegister(node),
+         operands.UseRegister(operation.left()),
+         operands.UseRegister(operation.right()));
+  } else {
+    InstructionOperand temps[] = {operands.TempSimd256Register(),
+                                  operands.TempSimd256Register()};
+    Emit(code, operands.DefineAsRegister(node),
+         operands.UseUniqueRegister(operation.left()),
+         operands.UseUniqueRegister(operation.right()), arraysize(temps),
+         temps);
+  }
+}
+
+void InstructionSelector::VisitF16x8Div(OpIndex node) {
+  X64OperandGenerator operands(this);
+  const Simd128BinopOp& operation = Cast<Simd128BinopOp>(node);
+  InstructionCode code = kX64FDiv | LaneSizeField::encode(LaneSize::kL16) |
+                         VectorLengthField::encode(VectorLength::kV128);
+  if (UseAvx10_1()) {
+    Emit(code, operands.DefineAsRegister(node),
+         operands.UseRegister(operation.left()),
+         operands.UseRegister(operation.right()));
+  } else {
+    InstructionOperand temps[] = {operands.TempSimd256Register(),
+                                  operands.TempSimd256Register()};
+    Emit(code, operands.DefineAsRegister(node),
+         operands.UseUniqueRegister(operation.left()),
+         operands.UseUniqueRegister(operation.right()), arraysize(temps),
+         temps);
+  }
+}
+
 #define VISIT_SIMD_F16x8_BINOP(Name, Opcode)                         \
   void InstructionSelector::Visit##Name(OpIndex node) {              \
     X64OperandGenerator g(this);                                     \
@@ -5646,8 +5741,6 @@ void InstructionSelector::VisitExtractF128(OpIndex node) {
          g.UseImmediate(op.lane));
   }
 }
-
-void InstructionSelector::VisitI8x32Shuffle(OpIndex node) { UNREACHABLE(); }
 #endif  // V8_ENABLE_SIMD256
 #endif  // V8_ENABLE_SIMD128
 
@@ -5993,34 +6086,35 @@ void InstructionSelector::VisitI64x4RelaxedLaneSelect(OpIndex node) {
 }
 #endif  // V8_ENABLE_SIMD256
 
-void InstructionSelector::VisitF16x8Pmin(OpIndex node) {
-  X64OperandGenerator g(this);
-  const Simd128BinopOp& op = Cast<Simd128BinopOp>(node);
+namespace {
+void VisitF16x8PminOrPmax(InstructionSelector* selector, OpIndex node,
+                          ArchOpcode opcode) {
+  X64OperandGenerator g(selector);
+  const Simd128BinopOp& op = selector->Cast<Simd128BinopOp>(node);
   DCHECK_EQ(op.input_count, 2);
   InstructionOperand dst = g.DefineAsRegister(node);
   InstructionCode instr_code =
-      kX64Minph | VectorLengthField::encode(VectorLength::kV128);
+      opcode | VectorLengthField::encode(VectorLength::kV128);
+  if (UseAvx10_1()) {
+    selector->Emit(instr_code, dst, g.UseRegister(op.right()),
+                   g.UseRegister(op.left()));
+    return;
+  }
   InstructionOperand temps[] = {g.TempSimd256Register(),
                                 g.TempSimd256Register()};
   size_t temp_count = arraysize(temps);
 
-  Emit(instr_code, dst, g.UseUniqueRegister(op.right()),
-       g.UseUniqueRegister(op.left()), temp_count, temps);
+  selector->Emit(instr_code, dst, g.UseUniqueRegister(op.right()),
+                 g.UseUniqueRegister(op.left()), temp_count, temps);
+}
+}  // namespace
+
+void InstructionSelector::VisitF16x8Pmin(OpIndex node) {
+  VisitF16x8PminOrPmax(this, node, kX64Minph);
 }
 
 void InstructionSelector::VisitF16x8Pmax(OpIndex node) {
-  X64OperandGenerator g(this);
-  const Simd128BinopOp& op = Cast<Simd128BinopOp>(node);
-  DCHECK_EQ(op.input_count, 2);
-  InstructionOperand dst = g.DefineAsRegister(node);
-  InstructionCode instr_code =
-      kX64Maxph | VectorLengthField::encode(VectorLength::kV128);
-  InstructionOperand temps[] = {g.TempSimd256Register(),
-                                g.TempSimd256Register()};
-  size_t temp_count = arraysize(temps);
-
-  Emit(instr_code, dst, g.UseUniqueRegister(op.right()),
-       g.UseUniqueRegister(op.left()), temp_count, temps);
+  VisitF16x8PminOrPmax(this, node, kX64Maxph);
 }
 
 void InstructionSelector::VisitF16x8DemoteF64x2Zero(OpIndex node) {

@@ -28,6 +28,7 @@
 #include "src/wasm/canonical-types.h"
 #include "src/wasm/names-provider.h"
 #include "src/wasm/string-builder.h"
+#include "src/wasm/wasm-debug.h"
 #endif  // V8_ENABLE_WEBASSEMBLY
 
 namespace v8 {
@@ -241,11 +242,11 @@ Reduction JSInliner::InlineCall(Node* call, Node* new_target, Node* context,
         graph()->NewNode(common()->EffectPhi(input_count),
                          static_cast<int>(effects.size()), &effects.front());
     ReplaceWithValue(call, value_output, effect_output, control_output);
-    return Changed(value_output);
+    return Replace(value_output);
   } else {
     ReplaceWithValue(call, jsgraph()->Dead(), jsgraph()->Dead(),
                      jsgraph()->Dead());
-    return Changed(call);
+    return Replace(jsgraph()->Dead());
   }
 }
 
@@ -443,6 +444,12 @@ JSInliner::WasmInlineResult JSInliner::TryWasmInlining(
     // work, so that the wasm trap gets forwarded to the corresponding catch
     // block.
     TRACE("- not inlining: wasm inlining into try catch is not supported");
+    return {};
+  }
+  if (wasm_call_params.has_break_on_entry() ||
+      (native_module->HasDebugInfo() &&
+       native_module->GetDebugInfo()->HasBreakpoint(fct_index))) {
+    TRACE("- not inlining: wasm function has breakpoints");
     return {};
   }
 

@@ -6,6 +6,8 @@
 
 #include <inttypes.h>
 
+#include <span>
+
 #include "src/base/logging.h"
 #include "src/base/strong-alias.h"
 #include "src/codegen/assembler-inl.h"
@@ -23,6 +25,7 @@
 #include "src/logging/log.h"
 #include "src/objects/backing-store.h"
 #include "src/objects/bytecode-array-inl.h"
+#include "src/objects/cpp-heap-object-wrapper-inl.h"
 #include "src/objects/heap-object-field-inl.h"
 #include "src/objects/heap-object-set-map-inl.h"
 #include "src/objects/js-array-buffer-inl.h"
@@ -261,7 +264,7 @@ int Deserializer<IsolateT>::WriteExternalPointer(Tagged<HeapObject> host,
   DCHECK(!next_reference_is_weak_ && !next_reference_is_trusted_pointer_ &&
          !next_reference_is_protected_pointer);
 
-#ifdef V8_ENABLE_SANDBOX
+#ifdef V8_COMPRESS_POINTERS
   ExternalPointerTable::ManagedResource* managed_resource = nullptr;
   ExternalPointerTable* owning_table = nullptr;
   ExternalPointerHandle original_handle = kNullExternalPointerHandle;
@@ -282,7 +285,7 @@ int Deserializer<IsolateT>::WriteExternalPointer(Tagged<HeapObject> host,
     managed_resource->owning_table_ = nullptr;
     managed_resource->ept_entry_ = kNullExternalPointerHandle;
   }
-#endif  // V8_ENABLE_SANDBOX
+#endif  // V8_COMPRESS_POINTERS
 
   if (tag == kExternalPointerNullTag && value == kNullAddress) {
     dest.init_lazily_initialized();
@@ -290,12 +293,12 @@ int Deserializer<IsolateT>::WriteExternalPointer(Tagged<HeapObject> host,
     dest.init(main_thread_isolate(), host, value, tag);
   }
 
-#ifdef V8_ENABLE_SANDBOX
+#ifdef V8_COMPRESS_POINTERS
   if (managed_resource) {
     managed_resource->owning_table_ = owning_table;
     managed_resource->ept_entry_ = original_handle;
   }
-#endif  // V8_ENABLE_SANDBOX
+#endif  // V8_COMPRESS_POINTERS
 
   // ExternalPointers can only be written into HeapObject fields, therefore they
   // cover (kExternalPointerSlotSize / kTaggedSize) slots.
@@ -327,13 +330,13 @@ template <typename IsolateT>
 Deserializer<IsolateT>::Deserializer(
     IsolateT* isolate, base::Vector<const uint8_t> untrusted_payload,
     base::Vector<const uint8_t> trusted_payload, uint32_t magic_number,
-    bool deserializing_user_code, bool can_rehash)
+    bool deserializing_user_code, bool can_rehash,
+    SnapshotTrustLevel trust_level)
     : isolate_(isolate),
       attached_objects_(isolate),
       source_(untrusted_payload),
       magic_number_(magic_number),
       new_maps_(isolate),
-      new_allocation_sites_(isolate),
       new_instruction_stream_objects_(isolate),
       accessor_infos_(isolate),
       interceptor_infos_(isolate),
@@ -342,7 +345,7 @@ Deserializer<IsolateT>::Deserializer(
       new_exposed_trusted_objects_(isolate),
       trusted_payload_(trusted_payload),
       // Without the sandbox, trusted objects are part of the untrusted section.
-      section_(deserializing_user_code && V8_ENABLE_SANDBOX_BOOL
+      section_(V8_ENABLE_SANDBOX_BOOL && HasUntrustedSection(trust_level)
                    ? Section::kUntrusted
                    : Section::kCombined),
       deserializing_user_code_(deserializing_user_code),
@@ -433,19 +436,31 @@ void Deserializer<IsolateT>::DeserializeDeferredObjects() {
 }
 
 template <typename IsolateT>
-DirectHandle<HeapObject> Deserializer<IsolateT>::DeserializeUntrustedSection() {
+void Deserializer<IsolateT>::DeserializeFixedTrustedSection() {
   // The trusted section starts with the external references that the untrusted
   // section refers to by index.
   SnapshotByteSource table(trusted_payload_);
-  external_references_.resize(table.GetUint30());
-  if (!external_references_.empty()) {
-    table.CopyRaw(
-        external_references_.data(),
-        external_references_.size() * sizeof(EncodedExternalReference));
-  }
+  uint32_t count = table.GetUint30();
   trusted_payload_ += table.position();
+  std::span<const EncodedExternalReference> entries(
+      reinterpret_cast<const EncodedExternalReference*>(
+          trusted_payload_.begin()),
+      count);
+  trusted_payload_ += entries.size_bytes();
+  external_references_.assign(entries.begin(), entries.end());
+  trusted_dispatch_handles_.resize(count, kNullJSDispatchHandle);
+}
+
+template <typename IsolateT>
+DirectHandle<HeapObject> Deserializer<IsolateT>::DeserializeUntrustedSection() {
+  DeserializeFixedTrustedSection();
   DirectHandle<HeapObject> result = ReadObject();
   DeserializeDeferredObjects();
+  return result;
+}
+
+template <typename IsolateT>
+void Deserializer<IsolateT>::DeserializeTrustedSection() {
   while (source_.Peek() != kSynchronize) {
     ReadObject();
     DeserializeDeferredObjects();
@@ -456,11 +471,6 @@ DirectHandle<HeapObject> Deserializer<IsolateT>::DeserializeUntrustedSection() {
   DCHECK_EQ(num_unresolved_forward_refs_, 0);
   DCHECK(unresolved_forward_refs_.empty());
 #endif
-  return result;
-}
-
-template <typename IsolateT>
-void Deserializer<IsolateT>::DeserializeTrustedSection() {
   if (v8_flags.trace_deserialization) {
     PrintF("-- Trusted section\n");
   }
@@ -474,12 +484,9 @@ void Deserializer<IsolateT>::DeserializeTrustedSection() {
   }
   DCHECK_EQ(kSynchronize, source_.Get());
   for (const auto& [index, ref] : trusted_export_refs_) {
-    // TODO(573671140): With CSS off-thread direct handles can only be
-    // dereferenced on the stack.
-    DirectHandle<HeapObject> target = trusted_exports[index];
     WriteHeapPointer(
         SlotAccessorForHeapObject::ForSlotOffset(ref.object, ref.offset),
-        *target, ref.descr);
+        *trusted_exports[index], ref.descr);
   }
 }
 
@@ -700,12 +707,6 @@ void Deserializer<IsolateT>::PostProcessNewObject(DirectHandle<Map> map,
         return;
       } else if (InstanceTypeChecker::IsScript(instance_type)) {
         new_scripts_.push_back(Cast<Script>(obj));
-      } else if (InstanceTypeChecker::IsAllocationSite(instance_type)) {
-        // We should link new allocation sites, but we can't do this immediately
-        // because |AllocationSite::HasWeakNext()| internally accesses
-        // |Heap::roots_| that may not have been initialized yet. So defer this
-        // to |ObjectDeserializer::CommitPostProcessedObjects()|.
-        new_allocation_sites_.push_back(Cast<AllocationSite>(obj));
       } else {
         // We dont defer ByteArray because JSTypedArray needs the base_pointer
         // ByteArray immediately if it's on heap.
@@ -899,9 +900,11 @@ Handle<HeapObject> Deserializer<IsolateT>::ReadObject(SnapshotSpace space) {
     // marker does not break when marking EphemeronHashTable, see
     // MarkingVisitorBase::VisitEphemeronHashTable.
     Tagged<EphemeronHashTable> table = Cast<EphemeronHashTable>(raw_obj);
-    MemsetTagged(Cast<HeapObject>(table)->RawField(table->kElementsStartOffset),
+    MemsetTagged(Cast<HeapObject>(table)->RawField(
+                     EphemeronHashTable::kElementsStartOffset),
                  ReadOnlyRoots(isolate()).undefined_value(),
-                 (size_in_bytes - table->kElementsStartOffset) / kTaggedSize);
+                 (size_in_bytes - EphemeronHashTable::kElementsStartOffset) /
+                     kTaggedSize);
   }
 
 #ifdef DEBUG
@@ -912,6 +915,14 @@ Handle<HeapObject> Deserializer<IsolateT>::ReadObject(SnapshotSpace space) {
       void* pointer;
       CHECK(EmbedderDataSlot(js_obj, i).DeprecatedToAlignedPointer(
           main_thread_isolate(), &pointer));
+      CHECK_NULL(pointer);
+    }
+  } else if (IsNativeContext(raw_obj)) {
+    Tagged<NativeContext> context = Cast<NativeContext>(raw_obj);
+    for (int i = 0; i < V8_EMBEDDER_DATA_ARRAY_SIZE; ++i) {
+      void* pointer;
+      CHECK(EmbedderDataSlot(context, i)
+                .DeprecatedToAlignedPointer(main_thread_isolate(), &pointer));
       CHECK_NULL(pointer);
     }
   } else if (IsEmbedderDataArray(raw_obj)) {
@@ -1122,6 +1133,8 @@ int Deserializer<IsolateT>::ReadSingleBytecodeData(uint8_t data,
     case kSandboxedApiReference:
     case kApiReference:
       return ReadApiReference(data, slot_accessor);
+    case kExternalStringResource:
+      return ReadExternalStringResource(data, slot_accessor);
     case kClearedWeakReference:
       return ReadClearedWeakReference(data, slot_accessor);
     case kWeakPrefix:
@@ -1348,7 +1361,7 @@ template <typename SlotAccessor>
 int Deserializer<IsolateT>::ReadExternalReference(uint8_t data,
                                                   SlotAccessor slot_accessor) {
   SBXCHECK(InTrustedSection());
-  DCHECK_IMPLIES(data == kSandboxedExternalReference, V8_ENABLE_SANDBOX_BOOL);
+  DCHECK_IMPLIES(data == kSandboxedExternalReference, COMPRESS_POINTERS_BOOL);
   Address address = ReadExternalReferenceCase();
   ExternalPointerTag tag = kExternalPointerNullTag;
   if (data == kSandboxedExternalReference) {
@@ -1368,7 +1381,7 @@ template <typename SlotAccessor>
 int Deserializer<IsolateT>::ReadRawExternalReference(
     uint8_t data, SlotAccessor slot_accessor) {
   SBXCHECK(InTrustedSection());
-  DCHECK_IMPLIES(data == kSandboxedExternalReference, V8_ENABLE_SANDBOX_BOOL);
+  DCHECK_IMPLIES(data == kSandboxedExternalReference, COMPRESS_POINTERS_BOOL);
   Address address;
   source_.CopyRaw(&address, kSystemPointerSize);
   ExternalPointerTag tag = kExternalPointerNullTag;
@@ -1506,7 +1519,12 @@ int Deserializer<IsolateT>::ReadOffHeapBackingStore(
   }
   CHECK_NOT_NULL(backing_store);
   SBXCHECK_LE(source_.position() + byte_length, source_.length());
-  source_.CopyRaw(backing_store->buffer_start(), byte_length);
+  // Empty backing stores, such as those of empty typed arrays and of resizable
+  // buffers of length zero, are serialized too. Without the sandbox the buffer
+  // of an empty store is null.
+  if (byte_length > 0) {
+    source_.CopyRaw(backing_store->buffer_start(), byte_length);
+  }
   backing_stores_.push_back(std::move(backing_store));
   return 0;
 }
@@ -1516,7 +1534,7 @@ template <typename SlotAccessor>
 int Deserializer<IsolateT>::ReadApiReference(uint8_t data,
                                              SlotAccessor slot_accessor) {
   SBXCHECK(InTrustedSection());
-  DCHECK_IMPLIES(data == kSandboxedApiReference, V8_ENABLE_SANDBOX_BOOL);
+  DCHECK_IMPLIES(data == kSandboxedApiReference, COMPRESS_POINTERS_BOOL);
   Address address = GetApiReferenceAddress(source_.GetUint30());
   ExternalPointerTag tag = kExternalPointerNullTag;
   if (data == kSandboxedApiReference) {
@@ -1528,6 +1546,58 @@ int Deserializer<IsolateT>::ReadApiReference(uint8_t data,
   return WriteExternalPointer(*slot_accessor.object(),
                               slot_accessor.external_pointer_slot(tag), address,
                               tag);
+}
+
+template <typename IsolateT>
+template <typename SlotAccessor>
+int Deserializer<IsolateT>::ReadExternalStringResource(
+    uint8_t data, SlotAccessor slot_accessor) {
+  SBXCHECK(InTrustedSection());
+  uint32_t reference_id = static_cast<uint32_t>(source_.GetUint30());
+  if (v8_flags.trace_deserialization) {
+    PrintF("%*sExternalStringResource [%u]\n", depth_, "", reference_id);
+  }
+  return WriteExternalStringResource(slot_accessor, reference_id);
+}
+
+template <typename IsolateT>
+template <typename SlotAccessor>
+int Deserializer<IsolateT>::WriteExternalStringResource(
+    SlotAccessor slot_accessor, uint32_t reference_id) {
+  DCHECK(!next_reference_is_weak_ && !next_reference_is_trusted_pointer_ &&
+         !next_reference_is_protected_pointer);
+  DCHECK(IsExternalString(*slot_accessor.object()));
+  DCHECK_EQ(slot_accessor.offset(), Internals::kStringResourceOffset);
+
+  if constexpr (std::is_same_v<IsolateT, LocalIsolate>) {
+    // This is unsupported currently - the wrapper is a cppgc object, which
+    // can't be allocated from a background thread.
+    FATAL("External strings are not supported in off-thread deserialization");
+  }
+
+  const intptr_t* api_references =
+      main_thread_isolate()->api_external_references();
+  CHECK_WITH_MSG(api_references != nullptr,
+                 "No external references provided via API");
+  DCHECK_WITH_MSG(reference_id < num_api_references_,
+                  "too few external references provided through the API");
+  auto* resource = reinterpret_cast<v8::String::ExternalStringResourceBase*>(
+      api_references[reference_id]);
+
+  // Allocating the cppgc wrapper may trigger a GC. This is safe here: the map,
+  // hash and length are already deserialized, and the resource slots still
+  // hold the null handles pre-filled by ReadObject().
+  ExternalStringResourceWrapper* wrapper =
+      ExternalStringResourceWrapper::New(main_thread_isolate());
+
+  DisallowGarbageCollection no_gc;
+  wrapper->SetResource(resource);
+  // resource_data_ is set up in PostProcessExternalString().
+  CppHeapObjectWrapper(Cast<ExternalString>(*slot_accessor.object()))
+      .SetCppHeapWrappable(main_thread_isolate(), wrapper,
+                           kExternalStringResourceTag);
+  static_assert(kCppHeapPointerSlotSize % kTaggedSize == 0);
+  return kCppHeapPointerSlotSize / kTaggedSize;
 }
 
 template <typename IsolateT>
@@ -1626,6 +1696,7 @@ template <typename IsolateT>
 template <typename SlotAccessor>
 int Deserializer<IsolateT>::ReadJSDispatchEntry(uint8_t data,
                                                 SlotAccessor slot_accessor) {
+  SBXCHECK(InTrustedSection());
   DCHECK_NE(slot_accessor.object()->address(), kNullAddress);
   DirectHandle<HeapObject> host = slot_accessor.object();
   uint32_t entry_id = source_.GetUint30();
@@ -1695,18 +1766,61 @@ int Deserializer<IsolateT>::ReadTrustedExternalRef(uint8_t data,
   DCHECK(InUntrustedSection());
   uint32_t index = source_.GetUint30();
   EncodedExternalReference entry = external_references_[index];
-  Address address =
-      entry.reference.is_from_api()
-          ? GetApiReferenceAddress(entry.reference.index())
-          : main_thread_isolate()->external_reference_table()->address(
-                entry.reference.index());
-  if (v8_flags.trace_deserialization) {
-    PrintF("%*sTrustedExternalRef [%u] : %" PRIxPTR ", %i\n", depth_, "", index,
-           address, entry.tag);
+  switch (entry.tag()) {
+    case ExternalReferenceKind::kExternalPointer: {
+      const EncodedExternalPointer& pointer =
+          entry.get<ExternalReferenceKind::kExternalPointer>();
+      ExternalPointerTag tag = pointer.tag;
+      Address address =
+          pointer.is_api_reference
+              ? GetApiReferenceAddress(pointer.index)
+              : main_thread_isolate()->external_reference_table()->address(
+                    pointer.index);
+      if (v8_flags.trace_deserialization) {
+        PrintF("%*sTrustedExternalRef [%u] : %" PRIxPTR ", %i\n", depth_, "",
+               index, address, tag);
+      }
+      return WriteExternalPointer(*slot_accessor.object(),
+                                  slot_accessor.external_pointer_slot(tag),
+                                  address, tag);
+    }
+    case ExternalReferenceKind::kCppHeapPointer: {
+      const EncodedCppHeapPointer& pointer =
+          entry.get<ExternalReferenceKind::kCppHeapPointer>();
+      // External string resources are the only CppHeap pointers allowed.
+      DCHECK_EQ(pointer.tag, kExternalStringResourceTag);
+      DCHECK(pointer.is_api_reference);
+      if (v8_flags.trace_deserialization) {
+        PrintF("%*sTrustedExternalRef [%u] : ExternalStringResource [%u]\n",
+               depth_, "", index, pointer.index);
+      }
+      return WriteExternalStringResource(slot_accessor, pointer.index);
+    }
+    case ExternalReferenceKind::kJSDispatch: {
+      const EncodedJSDispatchEntry& dispatch =
+          entry.get<ExternalReferenceKind::kJSDispatch>();
+      DirectHandle<HeapObject> host = slot_accessor.object();
+      Builtin builtin = static_cast<Builtin>(dispatch.builtin);
+      uint16_t parameter_count = dispatch.parameter_count;
+      JSDispatchHandle& handle = trusted_dispatch_handles_[index];
+      if (handle == kNullJSDispatchHandle) {
+        DirectHandle<Code> code = direct_handle(
+            main_thread_isolate()->builtins()->code(builtin), isolate());
+        handle = isolate()->factory()->NewJSDispatchHandle(
+            parameter_count, code,
+            isolate()->GetJSDispatchTableSpaceFor(host->address()));
+      }
+      if (v8_flags.trace_deserialization) {
+        PrintF("%*sTrustedExternalRef [%u] : JSDispatchEntry %s, %u\n", depth_,
+               "", index, Builtins::name(builtin), parameter_count);
+      }
+      host->Relaxed_WriteField<JSDispatchHandle::underlying_type>(
+          slot_accessor.offset(), handle.value());
+      JS_DISPATCH_HANDLE_WRITE_BARRIER(*host, handle);
+      return 1;
+    }
   }
-  return WriteExternalPointer(*slot_accessor.object(),
-                              slot_accessor.external_pointer_slot(entry.tag),
-                              address, entry.tag);
+  UNREACHABLE();
 }
 
 template <typename IsolateT>
