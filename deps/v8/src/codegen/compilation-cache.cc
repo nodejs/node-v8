@@ -144,6 +144,9 @@ CompilationCacheScript::LookupResult CompilationCacheScript::Lookup(
     if (result.toplevel_sfi().ToHandle(&sfi)) {
       isolate()->counters()->compilation_cache_hits()->Increment();
       LOG(isolate(), CompilationCacheEvent("hit", "script", *sfi));
+    } else if (isolate()->disable_bytecode_flushing()) {
+      isolate()->counters()->compilation_cache_misses()->Increment();
+      return {};
     } else {
       isolate()->counters()->compilation_cache_partial_hits()->Increment();
     }
@@ -156,8 +159,8 @@ CompilationCacheScript::LookupResult CompilationCacheScript::Lookup(
 void CompilationCacheScript::Put(
     Handle<String> source, DirectHandle<SharedFunctionInfo> function_info) {
   Handle<CompilationCacheTable> table = GetTable();
-  table_ = *CompilationCacheTable::PutScript(table, source, kNullMaybeHandle,
-                                             function_info, isolate());
+  table_ = *CompilationCacheTable::PutScript(table, source, function_info,
+                                             isolate());
 }
 
 void CompilationCacheEval::UpdateEval(

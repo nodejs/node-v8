@@ -47,7 +47,6 @@ static bool IsPropertyNameFeedback(Tagged<MaybeObject> feedback) {
   Tagged<Symbol> symbol = Cast<Symbol>(heap_object);
   ReadOnlyRoots roots = GetReadOnlyRoots();
   return symbol != roots.uninitialized_symbol() &&
-         symbol != roots.mega_dom_symbol() &&
          symbol != roots.megamorphic_symbol();
 }
 
@@ -231,7 +230,7 @@ DirectHandle<ClosureFeedbackCellArray> ClosureFeedbackCellArray::New(
 
   // Pre-allocate the cells s.t. we can initialize `result` without further
   // allocation.
-  DirectHandleVector<FeedbackCell> cells(isolate);
+  DirectHandleSmallVector<FeedbackCell, 8> cells(isolate);
   cells.reserve(length);
   for (uint32_t i = 0; i < length; i++) {
     DirectHandle<FeedbackCell> cell = isolate->factory()->NewNoClosuresCell();
@@ -685,13 +684,6 @@ void FeedbackNexus::ConfigureHomomorphic(
   SetFeedback(*maps, UPDATE_WRITE_BARRIER, *handler, UPDATE_WRITE_BARRIER);
 }
 
-void FeedbackNexus::ConfigureMegaDOM(const MaybeObjectDirectHandle& handler) {
-  DisallowGarbageCollection no_gc;
-  Tagged<MaybeObject> sentinel = MegaDOMSentinel();
-
-  SetFeedback(sentinel, SKIP_WRITE_BARRIER, *handler, UPDATE_WRITE_BARRIER);
-}
-
 bool FeedbackNexus::ConfigureMegamorphic(IcCheckType property_type) {
   DisallowGarbageCollection no_gc;
   Tagged<MaybeObject> sentinel = MegamorphicSentinel();
@@ -754,10 +746,6 @@ InlineCacheState FeedbackNexus::ic_state() const {
       }
       if (feedback == MegamorphicSentinel()) {
         return InlineCacheState::MEGAMORPHIC;
-      }
-      if (feedback == MegaDOMSentinel()) {
-        DCHECK(IsLoadICKind(kind()));
-        return InlineCacheState::MEGADOM;
       }
       if (feedback.IsWeakOrCleared()) {
         // Don't check if the map is cleared.
@@ -1115,6 +1103,10 @@ void FeedbackNexus::SetSpeculationMode(SpeculationMode mode) {
 
 void FeedbackNexus::NextSpeculationMode(SpeculationMode mode) {
   SpeculationMode cur = GetSpeculationMode();
+  // Code compiled with {mode} does not deopt for this reason. A repeated deopt
+  // comes from code compiled before the first one (e.g. another function that
+  // inlined the same call site), so keep the current mode.
+  if (cur == mode) return;
   if (cur == SpeculationMode::kAllowSpeculation) {
     SetSpeculationMode(mode);
   } else {
@@ -1228,20 +1220,6 @@ int FeedbackNexus::ExtractMaps(MapHandles* maps) const {
   return found;
 }
 
-MaybeObjectHandle FeedbackNexus::ExtractMegaDOMHandler() {
-  DCHECK(ic_state() == InlineCacheState::MEGADOM);
-  DisallowGarbageCollection no_gc;
-
-  auto pair = GetFeedbackPair();
-  Tagged<MaybeObject> maybe_handler = pair.second;
-  if (!maybe_handler.IsCleared()) {
-    MaybeObjectHandle handler = config()->NewHandle(maybe_handler);
-    return handler;
-  }
-
-  return MaybeObjectHandle();
-}
-
 MaybeObjectDirectHandle FeedbackNexus::ExtractHomomorphicHandler() {
   DCHECK_EQ(ic_state(), InlineCacheState::HOMOMORPHIC);
   DisallowGarbageCollection no_gc;
@@ -1315,7 +1293,7 @@ KeyedAccessLoadMode FeedbackNexus::GetKeyedAccessLoadMode() const {
   if (GetKeyType() == IcCheckType::kProperty) {
     return KeyedAccessLoadMode::kInBounds;
   }
-  MapsAndHandlers maps_and_handlers(isolate_);
+  MapsAndHandlers maps_and_handlers(config()->isolate());
   ExtractMapsAndHandlers(&maps_and_handlers);
   KeyedAccessLoadMode mode = KeyedAccessLoadMode::kInBounds;
   for (auto [_, handler] : maps_and_handlers) {
@@ -1383,7 +1361,7 @@ KeyedAccessStoreMode FeedbackNexus::GetKeyedAccessStoreMode() const {
 
   if (GetKeyType() == IcCheckType::kProperty) return mode;
 
-  MapsAndHandlers maps_and_handlers(isolate_);
+  MapsAndHandlers maps_and_handlers(config()->isolate());
   ExtractMapsAndHandlers(&maps_and_handlers);
   for (auto [_, maybe_code_handler] : maps_and_handlers) {
     // The first handler that isn't the slow handler will have the bits we need.

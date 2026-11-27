@@ -14,6 +14,7 @@
 #include "src/logging/counters-scopes.h"
 #include "src/logging/log.h"
 #include "src/objects/code-inl.h"
+#include "src/tracing/trace-event.h"
 #include "src/wasm/baseline/liftoff-compiler.h"
 #include "src/wasm/compilation-environment-inl.h"
 #include "src/wasm/turboshaft-graph-interface.h"
@@ -26,7 +27,8 @@ namespace v8::internal::wasm {
 
 WasmCompilationResult WasmCompilationUnit::ExecuteCompilation(
     CompilationEnv* env, const WireBytesStorage* wire_bytes_storage,
-    DelayedCounterUpdates* counter_updates, WasmDetectedFeatures* detected) {
+    DelayedCounterUpdates* counter_updates, WasmDetectedFeatures* detected,
+    LiftoffCompilationContext* liftoff_context) {
   DCHECK_GE(func_index_, static_cast<int>(env->module->num_imported_functions));
   const WasmFunction* func = &env->module->functions[func_index_];
   base::Vector<const uint8_t> code = wire_bytes_storage->GetCode(func->code);
@@ -51,12 +53,12 @@ WasmCompilationResult WasmCompilationUnit::ExecuteCompilation(
     if (ValidateFunctionBody(&validation_zone, env->enabled_features,
                              env->module, detected, func_body)
             .failed()) {
-      return {};
+      return {.bailout_reason = kDecodeError};
     }
   }
 
   WasmCompilationResult result;
-  int declared_index = declared_function_index(env->module, func_index_);
+  int defined_index = defined_function_index(env->module, func_index_);
 
   switch (tier_) {
     case ExecutionTier::kNone:
@@ -78,8 +80,8 @@ WasmCompilationResult WasmCompilationUnit::ExecuteCompilation(
             v8_flags.liftoff_only ||
             for_debugging_ != ForDebugging::kNotForDebugging;
         bool tiering_requested =
-            declared_index < 32 &&
-            (v8_flags.wasm_tier_mask_for_testing & (1 << declared_index));
+            defined_index < 32 &&
+            (v8_flags.wasm_tier_mask_for_testing & (1 << defined_index));
         if (!must_use_liftoff && tiering_requested) try_liftoff = false;
       }
 
@@ -87,13 +89,14 @@ WasmCompilationResult WasmCompilationUnit::ExecuteCompilation(
         LiftoffOptions options{.func_index = func_index_,
                                .for_debugging = for_debugging_,
                                .counter_updates = counter_updates,
-                               .detected_features = detected};
+                               .detected_features = detected,
+                               .context = liftoff_context};
         // We do not use the debug side table, we only (optionally) pass it to
         // cover different code paths in Liftoff for testing.
         std::unique_ptr<DebugSideTable> unused_debug_sidetable;
-        if (V8_UNLIKELY(declared_index < 32 &&
+        if (V8_UNLIKELY(defined_index < 32 &&
                         (v8_flags.wasm_debug_mask_for_testing &
-                         (1 << declared_index)) != 0)) {
+                         (1 << defined_index)) != 0)) {
           options.debug_sidetable = &unused_debug_sidetable;
           if (!for_debugging_) options.for_debugging = kForDebugging;
         }
@@ -103,16 +106,11 @@ WasmCompilationResult WasmCompilationUnit::ExecuteCompilation(
         }
         result = ExecuteLiftoffCompilation(env, func_body, options);
         if (result.succeeded()) break;
+      } else {
+        result.bailout_reason = kOtherReason;
       }
 
-      // If --liftoff-only, do not fall back to turbofan, even if compilation
-      // failed.
-      if (v8_flags.liftoff_only) break;
-
-      // If Liftoff failed, fall back to TurboFan.
-      // TODO(wasm): We could actually stop or remove the tiering unit for this
-      // function to avoid compiling it twice with TurboFan.
-      [[fallthrough]];
+      return result;
     }
     case ExecutionTier::kTurbofan: {
 #ifdef V8_ENABLE_TURBOFAN
@@ -179,6 +177,15 @@ void WasmCompilationUnit::CompileWasmFunction(NativeModule* native_module,
   WasmCompilationResult result = unit.ExecuteCompilation(
       &env, native_module->compilation_state()->GetWireBytesStorage().get(),
       native_module->counter_updates(), detected);
+  if (!result.succeeded() && tier == ExecutionTier::kLiftoff &&
+      !v8_flags.liftoff_only) {
+    WasmCompilationUnit turbofan_unit(function->func_index,
+                                      ExecutionTier::kTurbofan,
+                                      kNotForDebugging, kAlreadyValidated);
+    result = turbofan_unit.ExecuteCompilation(
+        &env, native_module->compilation_state()->GetWireBytesStorage().get(),
+        native_module->counter_updates(), detected);
+  }
   if (result.succeeded()) {
     WasmCodeRefScope code_ref_scope;
     native_module->PublishCode(native_module->AddCompiledCode(result));

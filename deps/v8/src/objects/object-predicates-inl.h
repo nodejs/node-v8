@@ -12,6 +12,7 @@
 #include "src/heap/heap-layout-inl.h"
 #include "src/objects/casting.h"
 #include "src/objects/heap-object-inl.h"
+#include "src/objects/shared-function-info.h"
 #include "src/objects/smi.h"
 #include "src/objects/tagged-index.h"
 #include "src/roots/roots.h"
@@ -60,9 +61,6 @@ bool IsNumeric(Tagged<Object> obj) {
 }
 
 bool IsShared(Tagged<Object> obj) {
-  // This logic should be kept in sync with fast paths in
-  // CodeStubAssembler::SharedValueBarrier.
-
   // Smis are trivially shared.
   if (IsSmi(obj)) return true;
 
@@ -75,10 +73,6 @@ bool IsShared(Tagged<Object> obj) {
 
   // Check if this object is already shared.
   InstanceType instance_type = object->map()->instance_type();
-  if (InstanceTypeChecker::IsAlwaysSharedSpaceJSObject(instance_type)) {
-    DCHECK(HeapLayout::InAnySharedSpace(object));
-    return true;
-  }
   switch (instance_type) {
     case SHARED_SEQ_TWO_BYTE_STRING_TYPE:
     case SHARED_SEQ_ONE_BYTE_STRING_TYPE:

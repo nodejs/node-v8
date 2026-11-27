@@ -269,23 +269,13 @@ void FeedbackVector::set_interrupt_budget_reset_by_ic_change(bool value) {
   set_flags(flags().with_interrupt_budget_reset_by_ic_change(value));
 }
 
-bool FeedbackVector::was_once_deoptimized() const {
-  return invocation_count_before_stable(kRelaxedLoad) ==
-         kInvocationCountBeforeStableDeoptSentinel;
-}
-
-void FeedbackVector::set_was_once_deoptimized() {
-  set_invocation_count_before_stable(kInvocationCountBeforeStableDeoptSentinel,
-                                     kRelaxedStore);
-}
-
 bool FeedbackVector::tiering_in_progress() const {
   return flags().tiering_in_progress();
 }
 
 std::optional<Tagged<Code>> FeedbackVector::GetOptimizedOsrCode(
     Isolate* isolate, Handle<BytecodeArray> bytecode, FeedbackSlot slot) {
-  DCHECK_EQ(ThreadId::Current(), isolate->thread_id());
+  DCHECK_EQ(base::ThreadId::Current(), isolate->thread_id());
 
   // Since this is only called in the main thread, we don't need to take the
   // mutex for reading.
@@ -524,10 +514,6 @@ Handle<Symbol> FeedbackVector::MegamorphicSentinel(Isolate* isolate) {
   return isolate->factory()->megamorphic_symbol();
 }
 
-DirectHandle<Symbol> FeedbackVector::MegaDOMSentinel(Isolate* isolate) {
-  return isolate->factory()->mega_dom_symbol();
-}
-
 Tagged<Symbol> FeedbackVector::RawUninitializedSentinel(Isolate* isolate) {
   return ReadOnlyRoots(isolate).uninitialized_symbol();
 }
@@ -575,10 +561,6 @@ Tagged<MaybeObject> FeedbackNexus::UninitializedSentinel() const {
 
 Tagged<MaybeObject> FeedbackNexus::MegamorphicSentinel() const {
   return *FeedbackVector::MegamorphicSentinel(config()->isolate());
-}
-
-Tagged<MaybeObject> FeedbackNexus::MegaDOMSentinel() const {
-  return *FeedbackVector::MegaDOMSentinel(config()->isolate());
 }
 
 Tagged<MaybeObject> FeedbackNexus::FromHandle(

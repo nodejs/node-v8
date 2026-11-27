@@ -447,8 +447,8 @@ void ObjectLiteral::CalculateEmitStore(Zone* zone) {
   }
 }
 
-int ObjectLiteralBoilerplateBuilder::ComputeFlags(bool disable_mementos) const {
-  int flags = LiteralBoilerplateBuilder::ComputeFlags(disable_mementos);
+int ObjectLiteralBoilerplateBuilder::ComputeFlags() const {
+  int flags = LiteralBoilerplateBuilder::ComputeFlags();
   if (fast_elements()) flags |= ObjectLiteral::kFastElements;
   if (has_null_prototype()) flags |= ObjectLiteral::kHasNullPrototype;
   return flags;
@@ -742,6 +742,43 @@ void ArrayLiteralBoilerplateBuilder::InitDepthAndFlags() {
   set_needs_initial_allocation_site(true);
 }
 
+namespace {
+
+// Returns true and sets {value} if {expression} is a literal whose value is a
+// Smi or a read-only root, which needs neither a handle nor a write barrier.
+template <typename IsolateT>
+bool TryGetImmortalBoilerplateValue(Expression* expression, IsolateT* isolate,
+                                    Tagged<Object>* value) {
+  Literal* literal = expression->AsLiteral();
+  if (literal == nullptr) return false;
+  ReadOnlyRoots roots(isolate);
+  switch (literal->type()) {
+    case Literal::kSmi:
+      *value = literal->AsSmiLiteral();
+      return true;
+    case Literal::kNull:
+      *value = roots.null_value();
+      return true;
+    case Literal::kUndefined:
+      *value = roots.undefined_value();
+      return true;
+    case Literal::kBoolean:
+      *value = roots.boolean_value(literal->ToBooleanIsTrue());
+      return true;
+    case Literal::kTheHole:
+      *value = roots.the_hole_value();
+      return true;
+    case Literal::kHeapNumber:
+    case Literal::kString:
+    case Literal::kConsString:
+    case Literal::kBigInt:
+      return false;
+  }
+  UNREACHABLE();
+}
+
+}  // namespace
+
 template <typename IsolateT>
 void ArrayLiteralBoilerplateBuilder::BuildBoilerplateDescription(
     IsolateT* isolate) {
@@ -762,10 +799,11 @@ void ArrayLiteralBoilerplateBuilder::BuildBoilerplateDescription(
   }
 
   // Fill in the literals.
-  int array_index = 0;
-  for (; array_index < constants_length; array_index++) {
+  bool has_non_hole_element = false;
+  for (int array_index = 0; array_index < constants_length; array_index++) {
     Expression* element = values_->at(array_index);
     DCHECK(!element->IsSpread());
+    if (!element->IsTheHoleLiteral()) has_non_hole_element = true;
     if (use_doubles) {
       Literal* literal = element->AsLiteral();
 
@@ -783,6 +821,18 @@ void ArrayLiteralBoilerplateBuilder::BuildBoilerplateDescription(
       }
 
     } else {
+      Tagged<Object> value;
+      if (TryGetImmortalBoilerplateValue(element, isolate, &value)) {
+        if (IsTheHole(value)) {
+          DCHECK(IsHoleyElementsKind(kind));
+          continue;
+        }
+        DCHECK_EQ(kind, GetMoreGeneralElementsKind(
+                            kind, Object::OptimalElementsKind(value)));
+        Cast<FixedArray>(*elements)->set(array_index, value,
+                                         SKIP_WRITE_BARRIER);
+        continue;
+      }
       MaterializedLiteral* m_literal = element->AsMaterializedLiteral();
       if (m_literal != nullptr) {
         BuildConstants(isolate, m_literal);
@@ -813,9 +863,19 @@ void ArrayLiteralBoilerplateBuilder::BuildBoilerplateDescription(
   }  // namespace internal
 
   // Simple and shallow arrays can be lazily copied, we transform the
-  // elements array to a copy-on-write array.
-  if (is_simple() && depth() == kShallow && array_index > 0 &&
-      IsSmiOrObjectElementsKind(kind)) {
+  // elements array to a copy-on-write array. Short arrays that contain only
+  // holes (for example `[,,]`) are an exception: they have no constants to
+  // share, and the first store to them would copy the elements. For these
+  // arrays, optimized code allocates the elements together with the array,
+  // like for `new Array(n)`. Longer hole-only arrays stay copy-on-write,
+  // because the cost for arrays that are never written grows with the
+  // length.
+  static constexpr int kMaxLengthOfHoleOnlyArrayWithoutCow = 8;
+  const bool is_short_hole_only_array =
+      !has_non_hole_element &&
+      constants_length <= kMaxLengthOfHoleOnlyArrayWithoutCow;
+  if (is_simple() && depth() == kShallow && constants_length > 0 &&
+      !is_short_hole_only_array && IsSmiOrObjectElementsKind(kind)) {
     elements->set_map_safe_transition(
         isolate, ReadOnlyRoots(isolate).fixed_cow_array_map(), kReleaseStore);
   }

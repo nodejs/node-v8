@@ -131,6 +131,14 @@ V8_OBJECT class ScopeInfo : public HeapObject {
     BIT_FIELD_GROUP_ACCESSORS(is_hoisted_in_context, IsHoistedInContextBit)
   };
 
+  // Properties of variables.
+  using VariableModeBits = base::BitField<VariableMode, 0, 4, uint32_t>;
+  using InitFlagBit = VariableModeBits::Next<InitializationFlag, 1>;
+  using MaybeAssignedFlagBit = InitFlagBit::Next<MaybeAssignedFlag, 1>;
+  using IsParameterBit = MaybeAssignedFlagBit::Next<bool, 1>;
+  using ParameterNumberOrPositionBits = IsParameterBit::Next<uint32_t, 16>;
+  using IsStaticFlagBit = ParameterNumberOrPositionBits::Next<IsStaticFlag, 1>;
+
   DECL_PRINTER(ScopeInfo)
   DECL_VERIFIER(ScopeInfo)
   class BodyDescriptor;
@@ -268,6 +276,12 @@ V8_OBJECT class ScopeInfo : public HeapObject {
 
   // Return the initialization flag of the given context local.
   MaybeAssignedFlag ContextLocalMaybeAssignedFlag(int var) const;
+
+  // Returns true if compiled code accesses the given context slot through
+  // context cell aware loads and stores, which means the slot may hold a
+  // ContextCell. All other slots must never hold one. Note that this takes a
+  // context slot index, not the index of a context local.
+  bool ContextSlotMayHaveContextCell(int slot_index) const;
 
   // Return true if this local was introduced by the compiler, and should not be
   // exposed to the user in a debugger.
@@ -576,14 +590,6 @@ V8_OBJECT class ScopeInfo : public HeapObject {
       sizeof(FunctionVariableInfo) / kTaggedSize;
   static const int kModuleVariableEntryLength =
       sizeof(ModuleVariableInfo) / kTaggedSize;
-
-  // Properties of variables.
-  using VariableModeBits = base::BitField<VariableMode, 0, 4, uint32_t>;
-  using InitFlagBit = VariableModeBits::Next<InitializationFlag, 1>;
-  using MaybeAssignedFlagBit = InitFlagBit::Next<MaybeAssignedFlag, 1>;
-  using IsParameterBit = MaybeAssignedFlagBit::Next<bool, 1>;
-  using ParameterNumberOrPositionBits = IsParameterBit::Next<uint32_t, 16>;
-  using IsStaticFlagBit = ParameterNumberOrPositionBits::Next<IsStaticFlag, 1>;
 
   friend class ScopeIterator;
   friend class CodeStubAssembler;

@@ -334,8 +334,7 @@ void Builtins::Generate_JSConstructStubGeneric(MacroAssembler* masm) {
   // on-stack receiver as the result.
   __ Bind(&use_receiver);
   __ Peek(x0, 0 * kSystemPointerSize);
-  __ CompareRoot(x0, RootIndex::kTdzHoleValue);
-  __ B(eq, &do_throw);
+  __ JumpIfRoot(x0, RootIndex::kTdzHoleValue, &do_throw);
 
   __ Bind(&leave_and_return);
   // Restore arguments count from the frame.
@@ -402,7 +401,10 @@ static void GetSharedFunctionInfoBytecodeOrBaseline(
     Label* is_baseline, Label* is_unavailable) {
   ASM_CODE_COMMENT(masm);
   DCHECK(!AreAliased(bytecode, scratch1));
-  Label is_interpreter_data, is_bytecode_array, is_code;
+  Label is_interpreter_data, is_bytecode_array;
+#if !V8_JITLESS_BOOL
+  Label is_code;
+#endif
 
   Register data = bytecode;
   __ LoadTrustedUnknownPointerField(
@@ -1233,10 +1235,48 @@ void Builtins::Generate_BaselineOutOfLinePrologue(MacroAssembler* masm) {
     __ B(lo, &call_stack_guard);
   }
 
+  // Reduce interrupt budget.
+  Label budget_interrupt;
+  {
+    ASM_CODE_COMMENT_STRING(masm, "Update Interrupt Budget");
+    UseScratchRegisterScope temps(masm);
+    Register interrupt_budget = temps.AcquireW();
+    Register bytecode_length = temps.AcquireX();
+    Register bytecode_array = descriptor.GetRegisterParameter(
+        BaselineOutOfLinePrologueDescriptor::kInterpreterBytecodeArray);
+    __ Ldr(interrupt_budget,
+           FieldMemOperand(feedback_cell,
+                           offsetof(FeedbackCell, interrupt_budget_)));
+    __ SmiUntagField(
+        bytecode_length,
+        FieldMemOperand(bytecode_array, offsetof(BytecodeArray, length_)));
+    __ Subs(interrupt_budget, interrupt_budget, bytecode_length.W());
+    __ Str(interrupt_budget,
+           FieldMemOperand(feedback_cell,
+                           offsetof(FeedbackCell, interrupt_budget_)));
+    __ B(lt, &budget_interrupt);
+  }
+
   // Do "fast" return to the caller pc in lr.
   __ LoadRoot(kInterpreterAccumulatorRegister, RootIndex::kUndefinedValue);
   __ Ret();
 
+  __ Bind(&budget_interrupt);
+  {
+    ASM_CODE_COMMENT_STRING(masm, "Budget interrupt call");
+    Register new_target = descriptor.GetRegisterParameter(
+        BaselineOutOfLinePrologueDescriptor::kJavaScriptCallNewTarget);
+
+    FrameScope frame_scope(masm, StackFrame::INTERNAL);
+    __ PushDispatchHandle(kJavaScriptCallDispatchHandleRegister, new_target,
+                          feedback_cell, feedback_vector);
+    __ PushArgument(closure);
+    __ CallRuntime(Runtime::kBytecodeBudgetInterrupt_Sparkplug, 1);
+    __ PopDispatchHandle(kJavaScriptCallDispatchHandleRegister, new_target,
+                         feedback_cell, feedback_vector);
+  }
+  __ LoadRoot(kInterpreterAccumulatorRegister, RootIndex::kUndefinedValue);
+  __ Ret();
 
   __ bind(&call_stack_guard);
   {
@@ -1905,8 +1945,7 @@ void Builtins::Generate_InterpreterPushArgsThenFastConstructFunction(
   __ Bind(&use_receiver);
   __ Ldr(x0,
          MemOperand(fp, FastConstructFrameConstants::kImplicitReceiverOffset));
-  __ CompareRoot(x0, RootIndex::kTdzHoleValue);
-  __ B(eq, &do_throw);
+  __ JumpIfRoot(x0, RootIndex::kTdzHoleValue, &do_throw);
 
   __ Bind(&leave_and_return);
   // Leave construct frame.
@@ -2227,7 +2266,7 @@ enum class OsrSourceTier {
 
 void OnStackReplacement(MacroAssembler* masm, OsrSourceTier source,
                         Register maybe_target_code,
-                        Register expected_param_count) {
+                        Register expected_osr_offset) {
   Label jump_to_optimized_code;
   {
     // If maybe_target_code is not null, no need to call into runtime. A
@@ -2241,10 +2280,10 @@ void OnStackReplacement(MacroAssembler* masm, OsrSourceTier source,
   ASM_CODE_COMMENT(masm);
   {
     FrameScope scope(masm, StackFrame::INTERNAL);
-    __ Push(expected_param_count, padreg);
+    __ Push(expected_osr_offset, padreg);
     __ CallRuntime(Runtime::kCompileOptimizedOSR);
     DCHECK_EQ(maybe_target_code, x0);
-    __ Pop(padreg, expected_param_count);
+    __ Pop(padreg, expected_osr_offset);
   }
 
   // If the code object is null, just return to the caller.
@@ -2255,7 +2294,7 @@ void OnStackReplacement(MacroAssembler* masm, OsrSourceTier source,
   __ Bind(&jump_to_optimized_code);
 
   const Register scratch(x2);
-  CHECK(!AreAliased(maybe_target_code, expected_param_count, scratch));
+  CHECK(!AreAliased(maybe_target_code, expected_osr_offset, scratch));
 
   // OSR entry tracing.
   {
@@ -2268,9 +2307,9 @@ void OnStackReplacement(MacroAssembler* masm, OsrSourceTier source,
     {
       FrameScope scope(masm, StackFrame::INTERNAL);
       // Preserve arguments.
-      __ Push(maybe_target_code, expected_param_count);
+      __ Push(maybe_target_code, expected_osr_offset);
       __ CallRuntime(Runtime::kLogOrTraceOptimizedOSREntry, 0);
-      __ Pop(expected_param_count, maybe_target_code);
+      __ Pop(expected_osr_offset, maybe_target_code);
     }
 
     __ Bind(&next);
@@ -2282,20 +2321,15 @@ void OnStackReplacement(MacroAssembler* masm, OsrSourceTier source,
     __ LeaveFrame(StackFrame::STUB);
   }
 
-  // Check we are actually jumping to an OSR code object. This among other
-  // things ensures that the object contains deoptimization data below.
+  // Check we are jumping to an OSR code object compiled for this exact
+  // JumpLoop bytecode offset. Since expected_osr_offset >= 0, this also
+  // guarantees osr_offset != BytecodeOffset::None() (-1), ensuring
+  // deoptimization data is present below.
   __ Ldr(scratch.W(),
          FieldMemOperand(maybe_target_code, Code::kOsrOffsetOffset));
-  __ Cmp(scratch.W(), BytecodeOffset::None().ToInt());
-  __ SbxCheck(Condition::kNotEqual, AbortReason::kExpectedOsrCode);
-
-  // Check the target has a matching parameter count. This ensures that the OSR
-  // code will correctly tear down our frame when leaving.
-  __ Ldrh(scratch.W(),
-          FieldMemOperand(maybe_target_code, Code::kParameterCountOffset));
-  __ SmiUntag(expected_param_count);
-  __ Cmp(scratch.W(), expected_param_count.W());
-  __ SbxCheck(Condition::kEqual, AbortReason::kOsrUnexpectedStackSize);
+  __ SmiUntag(expected_osr_offset);
+  __ Cmp(scratch.W(), expected_osr_offset.W());
+  __ SbxCheck(Condition::kEqual, AbortReason::kExpectedOsrCode);
 
   // Load deoptimization data from the code object.
   // <deopt_data> = <code>[#deoptimization_data_offset]
@@ -2303,6 +2337,24 @@ void OnStackReplacement(MacroAssembler* masm, OsrSourceTier source,
       scratch,
       FieldMemOperand(maybe_target_code,
                       Code::kDeoptimizationDataOrInterpreterDataOffset));
+
+  // Check the target OSR code object was compiled for the same BytecodeArray
+  // currently executing on the unoptimized frame. This also guarantees matching
+  // parameter count and frame layout.
+  {
+    UseScratchRegisterScope temps(masm);
+    Register frame_bytecode = temps.AcquireX();
+    const Register osr_bytecode = expected_osr_offset;
+    __ LoadProtectedPointerField(
+        osr_bytecode,
+        FieldMemOperand(scratch,
+                        TrustedFixedArray::OffsetOfElementAt(
+                            DeoptimizationData::kOsrBytecodeArrayIndex)));
+    __ Ldr(frame_bytecode,
+           MemOperand(fp, UnoptimizedFrameConstants::kBytecodeArrayFromFp));
+    __ Cmp(osr_bytecode, frame_bytecode);
+    __ SbxCheck(Condition::kEqual, AbortReason::kOsrUnexpectedBytecodeArray);
+  }
 
   // Load the OSR entrypoint offset from the deoptimization data.
   // <osr_offset> = <deopt_data>[#header_size + #osr_pc_offset]
@@ -2326,7 +2378,7 @@ void Builtins::Generate_InterpreterOnStackReplacement(MacroAssembler* masm) {
   static_assert(D::kParameterCount == 2);
   OnStackReplacement(masm, OsrSourceTier::kInterpreter,
                      D::MaybeTargetCodeRegister(),
-                     D::ExpectedParameterCountRegister());
+                     D::ExpectedOsrOffsetRegister());
 }
 
 void Builtins::Generate_BaselineOnStackReplacement(MacroAssembler* masm) {
@@ -2337,7 +2389,7 @@ void Builtins::Generate_BaselineOnStackReplacement(MacroAssembler* masm) {
          MemOperand(fp, BaselineFrameConstants::kContextOffset));
   OnStackReplacement(masm, OsrSourceTier::kBaseline,
                      D::MaybeTargetCodeRegister(),
-                     D::ExpectedParameterCountRegister());
+                     D::ExpectedOsrOffsetRegister());
 }
 
 #ifdef V8_ENABLE_MAGLEV
@@ -2950,17 +3002,25 @@ void Builtins::Generate_CallFunction(MacroAssembler* masm,
   // -----------------------------------
   __ AssertCallableFunction(x1);
 
-  __ LoadTaggedField(
-      x2, FieldMemOperand(x1, offsetof(JSFunction, shared_function_info_)));
-
   // Enter the context of the function; ToObject has to run in the function
   // context, and we also need to take the global proxy from the function
   // context in case of conversion.
   __ LoadTaggedField(cp, FieldMemOperand(x1, offsetof(JSFunction, context_)));
-  // We need to convert the receiver for non-native sloppy mode functions.
   Label done_convert;
-  __ Ldr(w3, FieldMemOperand(x2, offsetof(SharedFunctionInfo, flags_)));
-  __ TestAndBranchIfAnySet(w3,
+  if (mode != ConvertReceiverMode::kNullOrUndefined) {
+    // JSReceivers never need conversion, so only look at the callee's
+    // language mode for primitive receivers.
+    Label receiver_is_primitive;
+    __ Peek(x3, __ ReceiverOperand());
+    __ JumpIfSmi(x3, &receiver_is_primitive);
+    __ JumpIfJSAnyIsNotPrimitive(x3, x4, &done_convert);
+    __ Bind(&receiver_is_primitive);
+  }
+  // We need to convert the receiver for non-native sloppy mode functions.
+  __ LoadTaggedField(
+      x2, FieldMemOperand(x1, offsetof(JSFunction, shared_function_info_)));
+  __ Ldr(w4, FieldMemOperand(x2, offsetof(SharedFunctionInfo, flags_)));
+  __ TestAndBranchIfAnySet(w4,
                            SharedFunctionInfo::Flags::IsNativeBit::kMask |
                                SharedFunctionInfo::Flags::IsStrictBit::kMask,
                            &done_convert);
@@ -2968,7 +3028,7 @@ void Builtins::Generate_CallFunction(MacroAssembler* masm,
     // ----------- S t a t e -------------
     //  -- x0 : the number of arguments
     //  -- x1 : the function to call (checked to be a JSFunction)
-    //  -- x2 : the shared function info.
+    //  -- x3 : the receiver (a primitive, unless mode is kNullOrUndefined).
     //  -- cp : the function context.
     // -----------------------------------
 
@@ -2977,9 +3037,6 @@ void Builtins::Generate_CallFunction(MacroAssembler* masm,
       __ LoadGlobalProxy(x3);
     } else {
       Label convert_to_object, convert_receiver;
-      __ Peek(x3, __ ReceiverOperand());
-      __ JumpIfSmi(x3, &convert_to_object);
-      __ JumpIfJSAnyIsNotPrimitive(x3, x4, &done_convert);
       if (mode != ConvertReceiverMode::kNotNullOrUndefined) {
         Label convert_global_proxy;
         __ JumpIfRoot(x3, RootIndex::kUndefinedValue, &convert_global_proxy);
@@ -3005,8 +3062,6 @@ void Builtins::Generate_CallFunction(MacroAssembler* masm,
         __ Pop(cp, x1, x0, padreg);
         __ SmiUntag(x0);
       }
-      __ LoadTaggedField(
-          x2, FieldMemOperand(x1, offsetof(JSFunction, shared_function_info_)));
       __ Bind(&convert_receiver);
     }
     __ Poke(x3, __ ReceiverOperand());
@@ -3016,7 +3071,6 @@ void Builtins::Generate_CallFunction(MacroAssembler* masm,
   // ----------- S t a t e -------------
   //  -- x0 : the number of arguments
   //  -- x1 : the function to call (checked to be a JSFunction)
-  //  -- x2 : the shared function info.
   //  -- cp : the function context.
   // -----------------------------------
 
@@ -3370,8 +3424,8 @@ void Builtins::Generate_WasmLiftoffFrameSetup(MacroAssembler* masm) {
   __ JumpIfSmi(vector, &allocate_vector);
   __ bind(&done);
   // Increment the total invocation count of the function.
-  __ LoadTaggedField(scratch,
-                     FieldMemOperand(vector, OFFSET_OF_DATA_START(FixedArray)));
+  __ LoadTaggedSignedField(
+      scratch, FieldMemOperand(vector, OFFSET_OF_DATA_START(FixedArray)));
   if (SmiValuesAre31Bits()) {
     __ Add(scratch.W(), scratch.W(), Immediate(Smi::FromInt(1)));
   } else {
@@ -5734,6 +5788,8 @@ void Builtins::Generate_DeoptimizationEntry_LazyAfterFastCall(
   __ PopAll(kCalleeSaveRegisters);
   __ PopAll(kCalleeSaveFPRegisters);
   __ LeaveFrame(StackFrame::INTERNAL);
+  __ TailCallBuiltin(Builtin::kDeoptimizationEntry_Lazy);
+
   __ bind(&no_exception);
   // Deoptimization expects that the return value of the API call is in the
   // return register. As we only allow deoptimization if the return type is

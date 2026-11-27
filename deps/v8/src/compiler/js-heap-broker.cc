@@ -22,7 +22,6 @@
 #include "src/objects/js-array-inl.h"
 #include "src/objects/literal-objects-inl.h"
 #include "src/objects/map-updater.h"
-#include "src/objects/megadom-handler-inl.h"
 #include "src/objects/object-conversions-inl.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/property-cell.h"
@@ -54,6 +53,8 @@ JSHeapBroker::JSHeapBroker(Isolate* isolate, Zone* broker_zone,
       root_index_map_(isolate),
       tracing_enabled_(tracing_enabled),
       code_kind_(code_kind),
+      is_context_slot_not_assigned_unreliable_(
+          isolate->is_context_slot_not_assigned_unreliable()),
       feedback_(zone()),
       property_access_infos_(zone()) {
   TRACE(this, "Constructing heap broker");
@@ -153,7 +154,7 @@ Address* JSHeapBroker::AllocatePersistentHandle(Tagged<Object> object) {
 
 bool JSHeapBroker::StackHasOverflowed() const {
   DCHECK_IMPLIES(local_isolate_ == nullptr,
-                 ThreadId::Current() == isolate_->thread_id());
+                 base::ThreadId::Current() == isolate_->thread_id());
   return (local_isolate_ != nullptr)
              ? StackLimitCheck::HasOverflowed(local_isolate_)
              : StackLimitCheck(isolate_).HasOverflowed();
@@ -402,7 +403,9 @@ ElementAccessFeedback::ElementAccessFeedback(Zone* zone,
 }
 
 bool ElementAccessFeedback::HasOnlyStringMaps(JSHeapBroker* broker) const {
+  if (transition_groups().empty()) return false;
   for (auto const& group : transition_groups()) {
+    DCHECK(!group.empty());
     for (MapRef map : group) {
       if (!map.IsStringMap()) return false;
     }
@@ -417,12 +420,6 @@ HomomorphicPropertyAccessFeedback::HomomorphicPropertyAccessFeedback(
       name_(name),
       homomorphic_array_(homomorphic_array),
       handler_(handler) {
-  DCHECK(IsLoadICKind(slot_kind));
-}
-
-MegaDOMPropertyAccessFeedback::MegaDOMPropertyAccessFeedback(
-    FunctionTemplateInfoRef info_ref, FeedbackSlotKind slot_kind)
-    : ProcessedFeedback(kMegaDOMPropertyAccess, slot_kind), info_(info_ref) {
   DCHECK(IsLoadICKind(slot_kind));
 }
 
@@ -541,23 +538,6 @@ ProcessedFeedback const& JSHeapBroker::ReadFeedbackForPropertyAccess(
 
   OptionalNameRef name =
       static_name.has_value() ? static_name : GetNameFeedback(nexus);
-
-  if (nexus.ic_state() == InlineCacheState::MEGADOM) {
-    DCHECK(maps.empty());
-    MaybeObjectHandle maybe_handler = nexus.ExtractMegaDOMHandler();
-    if (maybe_handler.is_null()) return NewInsufficientFeedback(kind);
-
-    DirectHandle<MegaDomHandler> handler =
-        Cast<MegaDomHandler>(maybe_handler.object());
-    if (handler->accessor(kAcquireLoad).IsCleared()) {
-      return NewInsufficientFeedback(kind);
-    }
-
-    FunctionTemplateInfoRef info = MakeRefAssumeMemoryFence(
-        this, Cast<FunctionTemplateInfo>(
-                  handler->accessor(kAcquireLoad).GetHeapObject()));
-    return *zone()->New<MegaDOMPropertyAccessFeedback>(info, kind);
-  }
 
   if (allow_homomorphic && nexus.ic_state() == InlineCacheState::HOMOMORPHIC) {
     DCHECK(maps.empty());
@@ -678,7 +658,7 @@ ProcessedFeedback const& JSHeapBroker::ReadFeedbackForGlobalAccess(
 
     // Lexical script-context const slots can be mutated via the debugger.
     bool immutable = FeedbackNexus::ImmutabilityBit::decode(number) &&
-                     !isolate()->is_context_slot_not_assigned_unreliable();
+                     !is_context_slot_not_assigned_unreliable();
     return *zone()->New<GlobalAccessFeedback>(context, context_slot_index,
                                               immutable, nexus.kind());
   }
@@ -824,7 +804,11 @@ ProcessedFeedback const& JSHeapBroker::ReadFeedbackForCall(
 
   float frequency = nexus.ComputeCallFrequency();
   SpeculationMode mode = nexus.GetSpeculationMode();
-  CallFeedbackContent content = nexus.GetCallFeedbackContent();
+  CallFeedbackContent content = CallFeedbackContent::kTarget;
+  if (target_ref.has_value() && target_ref->map(this).is_callable()) {
+    DCHECK(target_ref->IsJSFunction() || target_ref->IsJSBoundFunction());
+    content = nexus.GetCallFeedbackContent();
+  }
   return *zone()->New<CallFeedback>(target_ref, frequency, mode, content,
                                     nexus.kind());
 }
@@ -1152,12 +1136,6 @@ HomomorphicPropertyAccessFeedback const&
 ProcessedFeedback::AsHomomorphicPropertyAccess() const {
   CHECK_EQ(kHomomorphicPropertyAccess, kind());
   return *static_cast<HomomorphicPropertyAccessFeedback const*>(this);
-}
-
-MegaDOMPropertyAccessFeedback const&
-ProcessedFeedback::AsMegaDOMPropertyAccess() const {
-  CHECK_EQ(kMegaDOMPropertyAccess, kind());
-  return *static_cast<MegaDOMPropertyAccessFeedback const*>(this);
 }
 
 LiteralFeedback const& ProcessedFeedback::AsLiteral() const {

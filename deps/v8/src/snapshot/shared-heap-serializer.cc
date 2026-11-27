@@ -41,7 +41,8 @@ SharedHeapSerializer::SharedHeapSerializer(Isolate* isolate,
       ,
       serialized_objects_(isolate->heap())
 #endif
-{
+      ,
+      trusted_serializer_(isolate, this) {
   if (ShouldReconstructSharedHeapObjectCacheForTesting()) {
     ReconstructSharedHeapObjectCacheForTesting();
   }
@@ -56,15 +57,16 @@ void SharedHeapSerializer::FinalizeSerialization() {
   // which entries are added to the shared heap object cache. Terminate the
   // cache with an undefined.
   Tagged<Object> undefined = ReadOnlyRoots(isolate()).undefined_value();
-  VisitRootPointer(Root::kSharedHeapObjectCache, nullptr,
-                   FullObjectSlot(&undefined));
+  trusted_serializer_.VisitRootPointer(Root::kSharedHeapObjectCache, nullptr,
+                                       FullObjectSlot(&undefined));
 
   // When v8_flags.shared_string_table is true, all internalized and
   // internalizable-in-place strings are in the shared heap.
   SerializeStringTable(isolate()->string_table());
-  SerializeDeferredObjects();
-  OptimizeBackReferences();
-  Pad();
+  DCHECK(deferred_objects_empty());
+  trusted_serializer_.SerializeExports();
+  trusted_serializer_.FinishSection();
+  FinishUntrustedSection();
 
 #ifdef DEBUG
   // Check that all serialized object are in shared heap and not RO. RO objects
@@ -108,6 +110,12 @@ bool SharedHeapSerializer::SerializeUsingSharedHeapObjectCache(
   return true;
 }
 
+void SharedHeapSerializer::SerializeObjectInObjectCache(
+    Handle<HeapObject> obj) {
+  trusted_serializer_.VisitRootPointer(Root::kSharedHeapObjectCache, nullptr,
+                                       FullObjectSlot(obj.location()));
+}
+
 void SharedHeapSerializer::SerializeStringTable(StringTable* string_table) {
   // A StringTable is serialized as:
   //
@@ -120,12 +128,12 @@ void SharedHeapSerializer::SerializeStringTable(StringTable* string_table) {
   // Notably, the hashmap structure, including empty and deleted elements, is
   // not serialized.
 
-  sink_.PutUint30(string_table->NumberOfElements(),
-                  "String table number of elements");
+  trusted_serializer_.sink()->PutUint30(string_table->NumberOfElements(),
+                                        "String table number of elements");
 
   // Custom RootVisitor which walks the string table, but only serializes the
   // string entries. This is an inline class to be able to access the non-public
-  // SerializeObject method.
+  // trusted_serializer_ member.
   class SharedHeapSerializerStringTableVisitor : public RootVisitor {
    public:
     explicit SharedHeapSerializerStringTableVisitor(
@@ -146,8 +154,9 @@ void SharedHeapSerializer::SerializeStringTable(StringTable* string_table) {
         Tagged<Object> obj = current.load(isolate);
         if (IsHeapObject(obj)) {
           DCHECK(IsInternalizedString(obj));
-          serializer_->SerializeObject(handle(Cast<HeapObject>(obj), isolate),
-                                       SlotType::kAnySlot);
+          Handle<HeapObject> heap_obj = handle(Cast<HeapObject>(obj), isolate);
+          serializer_->trusted_serializer_.VisitRootPointer(
+              Root::kStringTable, nullptr, FullObjectSlot(heap_obj.location()));
         }
       }
     }

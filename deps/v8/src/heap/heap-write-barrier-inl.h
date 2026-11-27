@@ -13,9 +13,9 @@
 // Clients of this interface shouldn't depend on lots of heap internals.
 // Do not include anything from src/heap here!
 
+#include "src/execution/isolate-data.h"
 #include "src/heap/base-page-inl.h"
 #include "src/heap/heap-layout-inl.h"
-#include "src/heap/marking-barrier.h"
 #include "src/heap/memory-chunk.h"
 #include "src/objects/compressed-slots-inl.h"
 #include "src/objects/cpp-heap-object-wrapper.h"
@@ -23,6 +23,73 @@
 #include "src/objects/maybe-object-inl.h"
 
 namespace v8::internal {
+
+// static
+template <typename IsolateT>
+bool WriteBarrier::IsLocalMarking(IsolateT* isolate) {
+  DCHECK_NOT_NULL(isolate);
+  return (isolate->isolate_data()->is_marking_flag() &
+          (IsolateMarkingFlag::kLocalMajorMarking |
+           IsolateMarkingFlag::kLocalMinorMarking)) !=
+         IsolateMarkingFlag::kNoMarking;
+}
+
+// static
+template <typename IsolateT>
+bool WriteBarrier::IsMajorMarking(IsolateT* isolate) {
+  DCHECK_NOT_NULL(isolate);
+  return isolate->isolate_data()->is_marking_flag().contains(
+      IsolateMarkingFlag::kLocalMajorMarking);
+}
+
+// static
+template <typename IsolateT>
+bool WriteBarrier::IsMinorMarking(IsolateT* isolate) {
+  DCHECK_NOT_NULL(isolate);
+  return isolate->isolate_data()->is_marking_flag().contains(
+      IsolateMarkingFlag::kLocalMinorMarking);
+}
+
+// static
+template <typename IsolateT>
+bool WriteBarrier::IsSharedMarking(IsolateT* isolate) {
+  DCHECK_NOT_NULL(isolate);
+  return isolate->isolate_data()->is_marking_flag().contains(
+      IsolateMarkingFlag::kSharedMarking);
+}
+
+// static
+template <typename IsolateT>
+bool WriteBarrier::IsMajorOrSharedMarking(IsolateT* isolate) {
+  DCHECK_NOT_NULL(isolate);
+  return (isolate->isolate_data()->is_marking_flag() &
+          (IsolateMarkingFlag::kLocalMajorMarking |
+           IsolateMarkingFlag::kSharedMarking)) !=
+         IsolateMarkingFlag::kNoMarking;
+}
+
+// static
+template <typename IsolateT>
+bool WriteBarrier::IsAnyMarking(IsolateT* isolate) {
+  DCHECK_NOT_NULL(isolate);
+  return isolate->isolate_data()->is_marking_flag() !=
+         IsolateMarkingFlag::kNoMarking;
+}
+
+// static
+template <typename IsolateT>
+bool WriteBarrier::IsMarking(IsolateT* isolate, Tagged<HeapObject> object) {
+  DCHECK_NOT_NULL(isolate);
+  const IsolateMarkingFlags flags = isolate->isolate_data()->is_marking_flag();
+  if (flags == IsolateMarkingFlag::kNoMarking) [[likely]] {
+    return false;
+  }
+  return TrustedHeapLayout::InWritableSharedSpace(isolate, object)
+             ? flags.contains(IsolateMarkingFlag::kSharedMarking)
+             : (flags & (IsolateMarkingFlag::kLocalMajorMarking |
+                         IsolateMarkingFlag::kLocalMinorMarking)) !=
+                   IsolateMarkingFlag::kNoMarking;
+}
 
 // static
 void WriteBarrier::CombinedWriteBarrierInternalForStickyMarkbits(
@@ -33,8 +100,6 @@ void WriteBarrier::CombinedWriteBarrierInternalForStickyMarkbits(
   MemoryChunk* host_chunk = MemoryChunk::FromHeapObject(host);
   MemoryChunk* value_chunk = MemoryChunk::FromHeapObject(value);
 
-  const bool is_marking = host_chunk->IsMarking();
-
   // TODO(333906585): Support shared barrier.
   if (!HeapLayout::InYoungGeneration(host_chunk, host) &&
       HeapLayout::InYoungGeneration(value_chunk, value)) {
@@ -43,7 +108,7 @@ void WriteBarrier::CombinedWriteBarrierInternalForStickyMarkbits(
     CombinedGenerationalAndSharedBarrierSlow(host, slot.address(), value);
   }
   // Marking barrier: mark value & record slots when marking is on.
-  if (V8_UNLIKELY(is_marking)) {
+  if (IsMarking(Isolate::Current(), host)) [[unlikely]] {
     MarkingSlow(host, HeapObjectSlot(slot), value);
   }
 }
@@ -82,12 +147,19 @@ void WriteBarrier::CombinedWriteBarrierInternal(Tagged<HeapObject> host,
 // static
 inline WriteBarrierMode WriteBarrier::ComputeWriteBarrierModeForObject(
     Tagged<HeapObject> object, const DisallowGarbageCollection& promise) {
-  if (v8_flags.disable_write_barriers) {
+  if (v8_flags.disable_write_barriers) [[unlikely]] {
     return SKIP_WRITE_BARRIER;
   }
   DCHECK(PageFlagsAreConsistent(object));
   MemoryChunk* chunk = MemoryChunk::FromHeapObject(object);
-  if (chunk->IsMarking()) {
+  if constexpr (v8_flags.sticky_mark_bits.value()) {
+    if (!IsLocalMarking(Isolate::Current()) &&
+        HeapLayout::InYoungGeneration(chunk, object)) {
+      return SKIP_WRITE_BARRIER_SCOPE;
+    }
+    return UPDATE_WRITE_BARRIER;
+  }
+  if (chunk->PointersFromHereAreInteresting()) {
     return UPDATE_WRITE_BARRIER;
   }
   if (HeapLayout::InYoungGeneration(chunk, object)) {
@@ -104,7 +176,9 @@ inline WriteBarrierModeScope WriteBarrier::GetWriteBarrierModeForObject(
 }
 
 // static
-void WriteBarrier::ForRelocInfo(Tagged<InstructionStream> host,
+template <typename IsolateT>
+void WriteBarrier::ForRelocInfo(IsolateT* isolate,
+                                Tagged<InstructionStream> host,
                                 RelocInfo* rinfo, Tagged<HeapObject> value,
                                 WriteBarrierMode mode) {
   if (IsSkipWriteBarrierMode(mode)) {
@@ -117,7 +191,7 @@ void WriteBarrier::ForRelocInfo(Tagged<InstructionStream> host,
   DCHECK_EQ(mode, UPDATE_WRITE_BARRIER);
   GenerationalForRelocInfo(host, rinfo, value);
   SharedForRelocInfo(host, rinfo, value);
-  MarkingForRelocInfo(host, rinfo, value);
+  MarkingForRelocInfo(isolate, host, rinfo, value);
 }
 
 // static
@@ -197,8 +271,10 @@ void WriteBarrier::VerifySkipWriteBarrier(Tagged<HeapObject> host,
 }
 #endif  // V8_VERIFY_WRITE_BARRIERS
 
-//   static
-void WriteBarrier::ForEphemeronHashTable(Tagged<EphemeronHashTable> host,
+// static
+template <typename IsolateT>
+void WriteBarrier::ForEphemeronHashTable(IsolateT* isolate,
+                                         Tagged<EphemeronHashTable> host,
                                          ObjectSlot slot, Tagged<Object> value,
                                          WriteBarrierMode mode) {
   if (IsSkipWriteBarrierMode(mode)) {
@@ -217,9 +293,10 @@ void WriteBarrier::ForEphemeronHashTable(Tagged<EphemeronHashTable> host,
   MemoryChunk* value_chunk = MemoryChunk::FromHeapObject(heap_object_value);
   DCHECK(!value_chunk->Metadata()->is_writable_shared());
 
+  DCHECK(!TrustedHeapLayout::InWritableSharedSpace(host));
   const bool pointers_from_here_are_interesting =
       !host_chunk->IsYoungOrSharedChunk();
-  const bool is_marking = host_chunk->IsMarking();
+  const bool is_marking = IsLocalMarking(isolate);
 
   if (is_marking) {
     // Marking barrier: mark value & record slots when marking is on.
@@ -230,21 +307,26 @@ void WriteBarrier::ForEphemeronHashTable(Tagged<EphemeronHashTable> host,
     // keep the remembered set empty after incremental marking started.
   } else if (pointers_from_here_are_interesting &&
              value_chunk->IsYoungOrSharedChunk()) {
-    CombinedGenerationalAndSharedEphemeronBarrierSlow(host, slot.address(),
-                                                      heap_object_value);
+    CombinedGenerationalAndSharedEphemeronBarrierSlow(
+        isolate, host, slot.address(), heap_object_value);
   }
 }
 
 // static
-void WriteBarrier::ForExternalPointer(Tagged<HeapObject> host,
+template <typename IsolateT>
+void WriteBarrier::ForExternalPointer(IsolateT isolate, Tagged<HeapObject> host,
                                       ExternalPointerSlot slot,
                                       ExternalPointerHandle handle,
                                       WriteBarrierMode mode) {
+#ifdef V8_COMPRESS_POINTERS
   if (mode == SKIP_WRITE_BARRIER) {
     SLOW_DCHECK(HeapLayout::InYoungGeneration(host));
     return;
   }
-  Marking(host, slot, handle);
+  Marking(isolate, host, slot, handle);
+#else
+  UNREACHABLE();
+#endif  // V8_COMPRESS_POINTERS
 }
 
 // static
@@ -362,11 +444,6 @@ void WriteBarrier::GenerationalForRelocInfo(Tagged<InstructionStream> host,
   GenerationalBarrierForCodeSlow(host, rinfo, object);
 }
 
-// static
-bool WriteBarrier::IsMarking(Tagged<HeapObject> object) {
-  return MemoryChunk::FromHeapObject(object)->IsMarking();
-}
-
 void WriteBarrier::MarkingForTesting(Tagged<HeapObject> host, ObjectSlot slot,
                                      Tagged<Object> value) {
   DCHECK(!HasWeakHeapObjectTag(value));
@@ -374,35 +451,15 @@ void WriteBarrier::MarkingForTesting(Tagged<HeapObject> host, ObjectSlot slot,
     return;
   }
   Tagged<HeapObject> value_heap_object = Cast<HeapObject>(value);
-  Marking(host, HeapObjectSlot(slot), value_heap_object);
+  MarkingSlow(host, HeapObjectSlot(slot), value_heap_object);
 }
 
-void WriteBarrier::Marking(Tagged<HeapObject> host, MaybeObjectSlot slot,
-                           Tagged<MaybeObject> value) {
-  Tagged<HeapObject> value_heap_object;
-  if (!value.GetHeapObject(&value_heap_object)) {
-    return;
-  }
-  // This barrier is called from generated code and from C++ code.
-  // There must be no stores of InstructionStream values from generated code and
-  // all stores of InstructionStream values in C++ must be handled by
-  // CombinedWriteBarrierInternal().
-  DCHECK(!TrustedHeapLayout::InCodeSpace(value_heap_object));
-  Marking(host, HeapObjectSlot(slot), value_heap_object);
-}
-
-void WriteBarrier::Marking(Tagged<HeapObject> host, HeapObjectSlot slot,
-                           Tagged<HeapObject> value) {
-  if (!IsMarking(host)) [[likely]] {
-    return;
-  }
-  MarkingSlow(host, slot, value);
-}
-
-void WriteBarrier::MarkingForRelocInfo(Tagged<InstructionStream> host,
+template <typename IsolateT>
+void WriteBarrier::MarkingForRelocInfo(IsolateT* isolate,
+                                       Tagged<InstructionStream> host,
                                        RelocInfo* reloc_info,
                                        Tagged<HeapObject> value) {
-  if (!IsMarking(host)) [[likely]] {
+  if (!IsLocalMarking(isolate)) [[likely]] {
     return;
   }
   MarkingSlow(host, reloc_info, value);
@@ -418,51 +475,67 @@ void WriteBarrier::SharedForRelocInfo(Tagged<InstructionStream> host,
   SharedSlow(host, reloc_info, value);
 }
 
-void WriteBarrier::ForArrayBufferExtension(Tagged<JSArrayBuffer> host,
+// static
+void WriteBarrier::ForArrayBufferExtension(Isolate* isolate,
+                                           Tagged<JSArrayBuffer> host,
                                            ArrayBufferExtension* extension) {
-  if (!extension || V8_LIKELY(!IsMarking(host))) {
+  if (!extension) {
     return;
   }
-  MarkingSlow(host, extension);
+  if (!IsLocalMarking(isolate)) [[likely]] {
+    return;
+  }
+  MarkingSlow(isolate, host, extension);
 }
 
-void WriteBarrier::Marking(Tagged<HeapObject> host, ExternalPointerSlot slot,
+template <typename IsolateT>
+void WriteBarrier::Marking(IsolateT isolate, Tagged<HeapObject> host,
+                           ExternalPointerSlot slot,
                            ExternalPointerHandle handle) {
-  if (!IsMarking(host)) [[likely]] {
+#ifdef V8_COMPRESS_POINTERS
+  Isolate* i_isolate = IsolateForSandbox(isolate).GetIsolate();
+  if (!IsAnyMarking(i_isolate)) [[likely]] {
     return;
   }
-  MarkingSlow(host, slot, handle);
+  MarkingSlow(i_isolate, host, slot, handle);
+#else
+  UNREACHABLE();
+#endif  // V8_COMPRESS_POINTERS
 }
 
 void WriteBarrier::Marking(Tagged<HeapObject> host, TrustedPointerSlot slot) {
-  if (!IsMarking(host)) [[likely]] {
+  Isolate* isolate = Isolate::Current();
+  if (!IsMajorOrSharedMarking(isolate)) [[likely]] {
     return;
   }
-  MarkingSlow(host, slot);
+  MarkingSlow(isolate, host, slot);
 }
 
 void WriteBarrier::Marking(Tagged<TrustedObject> host,
                            ProtectedPointerSlot slot,
                            Tagged<TrustedObject> value) {
-  if (!IsMarking(host)) [[likely]] {
+  Isolate* isolate = Isolate::Current();
+  if (!IsMajorOrSharedMarking(isolate)) [[likely]] {
     return;
   }
-  MarkingSlow(host, slot, value);
+  MarkingSlow(isolate, host, slot, value);
 }
 
 void WriteBarrier::Marking(Tagged<HeapObject> host, JSDispatchHandle handle) {
-  if (!IsMarking(host)) [[likely]] {
+  Isolate* isolate = Isolate::Current();
+  if (!IsMajorMarking(isolate)) [[likely]] {
     return;
   }
-  MarkingSlow(host, handle);
+  MarkingSlow(isolate, host, handle);
 }
 
 // static
-void WriteBarrier::MarkingFromTracedHandle(Tagged<Object> value) {
+void WriteBarrier::MarkingFromTracedHandle(Isolate* isolate,
+                                           Tagged<Object> value) {
   if (!value.IsHeapObject()) {
     return;
   }
-  MarkingSlowFromTracedHandle(Cast<HeapObject>(value));
+  MarkingSlowFromTracedHandle(isolate, Cast<HeapObject>(value));
 }
 
 // static
@@ -478,35 +551,33 @@ void WriteBarrier::ForCppHeapPointer(Tagged<CppHeapPointerWrapperObjectT> host,
     return;
   }
 
-  MarkingBarrier* marking_barrier = CurrentMarkingBarrier(host);
+  Isolate* isolate = Isolate::Current();
 
   // The global check is probabilistic and we need an exact check here.
-  if (marking_barrier->is_not_major()) [[likely]] {
+  if (!IsMajorMarking(isolate)) [[likely]] {
 #if defined(CPPGC_YOUNG_GENERATION)
     // There is no young-gen CppHeapPointerTable space so we should not mark
     // the table entry in this case.
-    GenerationalBarrierForCppHeapPointer(marking_barrier->heap(), host, value);
+    GenerationalBarrierForCppHeapPointer(isolate, host, value);
 #endif
     return;
   }
   // Marking for a full GC is enabled.
-  MarkingSlowFromCppHeapWrappable(marking_barrier->heap(), host, slot, value);
+  MarkingSlowFromCppHeapWrappable(isolate->heap(), host, slot, value);
 }
 
 // static
 void WriteBarrier::GenerationalBarrierForCppHeapPointer(
-    Heap* heap, Tagged<CppHeapPointerWrapperObjectT> host, void* value) {
+    Isolate* isolate, Tagged<CppHeapPointerWrapperObjectT> host, void* value) {
   if (!value) {
     return;
   }
-  auto* page = BasePage::FromHeapObject(host);
+  auto* page = BasePage::FromHeapObject(isolate, host);
   const AllocationSpace space_id = page->owner_identity();
   if (V8_LIKELY(space_id == NEW_SPACE || space_id == NEW_LO_SPACE)) {
     return;
   }
-  auto* cpp_heap = heap->cpp_heap();
-  v8::internal::CppHeap::From(cpp_heap)->RememberCrossHeapReferenceIfNeeded(
-      host, value);
+  GenerationalBarrierForCppHeapPointerSlow(isolate->heap(), host, value);
 }
 
 #ifdef V8_VERIFY_WRITE_BARRIERS

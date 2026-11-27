@@ -7,9 +7,11 @@
 #include <atomic>
 #include <memory>
 #include <optional>
+#include <utility>
 
 #include "src/base/logging.h"
 #include "src/base/platform/mutex.h"
+#include "src/base/synchronization-point-support.h"
 #include "src/common/globals.h"
 #include "src/execution/isolate.h"
 #include "src/handles/local-handles.h"
@@ -17,7 +19,6 @@
 #include "src/heap/gc-tracer-inl.h"
 #include "src/heap/gc-tracer.h"
 #include "src/heap/heap-inl.h"
-#include "src/heap/heap-write-barrier.h"
 #include "src/heap/heap.h"
 #include "src/heap/local-heap-inl.h"
 #include "src/heap/main-allocator.h"
@@ -72,8 +73,6 @@ LocalHeap::LocalHeap(Heap* heap, ThreadKind kind,
 
   heap_->safepoint()->AddLocalHeap(this, [this] {
     if (!is_main_thread()) {
-      saved_marking_barrier_ =
-          WriteBarrier::SetForThread(marking_barrier_.get());
       if (heap_->incremental_marking()->IsMarking()) {
         marking_barrier_->Activate(
             heap_->incremental_marking()->IsCompacting(),
@@ -118,10 +117,6 @@ LocalHeap::~LocalHeap() {
     if (!is_main_thread()) {
       marking_barrier_->PublishIfNeeded();
       marking_barrier_->PublishSharedIfNeeded();
-      MarkingBarrier* overwritten =
-          WriteBarrier::SetForThread(saved_marking_barrier_);
-      DCHECK_EQ(overwritten, marking_barrier_.get());
-      USE(overwritten);
     }
   });
 
@@ -133,6 +128,9 @@ LocalHeap::~LocalHeap() {
   }
 
   DCHECK(gc_epilogue_callbacks_.IsEmpty());
+#ifdef VERIFY_HEAP
+  DCHECK(pending_object_verify_scopes_.empty());
+#endif  // VERIFY_HEAP
 }
 
 void LocalHeap::SetUpMainThreadForTesting() {
@@ -189,6 +187,11 @@ void LocalHeap::SetUpSharedMarking() {
             ->incremental_marking()
             ->IsMajorMarking()) {
       marking_barrier_->ActivateShared();
+      // For the main thread, Isolate::Init() sets the isolate-level shared
+      // marking flag right after SetUpSpaces(). For background threads, it must
+      // already be set.
+      DCHECK_EQ(isolate->isolate_data()->is_shared_marking(),
+                !is_main_thread());
     }
   }
 }
@@ -219,6 +222,10 @@ bool LocalHeap::ContainsPersistentHandle(Address* location) {
 
 bool LocalHeap::ContainsLocalHandle(Address* location) {
   return handles_ ? handles_->Contains(location) : false;
+}
+
+bool LocalHeap::ContainsStrongRoot(FullObjectSlot slot) {
+  return heap_->ContainsStrongRoot(this, slot);
 }
 
 bool LocalHeap::IsHandleDereferenceAllowed() {
@@ -379,6 +386,27 @@ void LocalHeap::SafepointSlowPath() {
     SleepInSafepoint();
   }
 }
+
+#ifdef V8_ENABLE_TEST_ONLY_SYNC_POINTS
+void LocalHeap::DeferSynchronizationPointToNextSafepoint(
+    std::string_view synchronization_point) {
+  // Blocking the main thread inside a safepoint is not supported.
+  DCHECK(!is_main_thread());
+  DCHECK(pending_synchronization_point_.empty() ||
+         pending_synchronization_point_ == synchronization_point);
+  pending_synchronization_point_ = synchronization_point;
+}
+
+void LocalHeap::BlockAtPendingSynchronizationPoint() {
+  DCHECK_EQ(this, LocalHeap::TryGetCurrent());
+  std::string_view synchronization_point =
+      std::exchange(pending_synchronization_point_, {});
+  // SYNCHRONIZATION_POINT_WITH_SAFEPOINT invokes the wait wrapper, which parks
+  // this LocalHeap only if it is currently running (Safepoint() can also be
+  // called while already parked).
+  SYNCHRONIZATION_POINT_WITH_SAFEPOINT(synchronization_point);
+}
+#endif  // V8_ENABLE_TEST_ONLY_SYNC_POINTS
 
 void LocalHeap::SleepInSafepoint() {
   GCTracer::Scope::ScopeId scope_id;

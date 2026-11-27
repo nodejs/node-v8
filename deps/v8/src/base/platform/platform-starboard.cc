@@ -246,7 +246,8 @@ class StarboardMemoryMappedFile final : public OS::MemoryMappedFile {
 
 // static
 OS::MemoryMappedFile* OS::MemoryMappedFile::open(const char* name,
-                                                 FileMode mode) {
+                                                 FileMode mode,
+                                                 std::optional<void*> hint) {
   SB_NOTIMPLEMENTED();
   return nullptr;
 }
@@ -405,7 +406,10 @@ bool Thread::Start() {
   return SbThreadIsValid(data_->thread_);
 }
 
-void Thread::Join() { SbThreadJoin(data_->thread_, nullptr); }
+void Thread::Join() {
+  DCHECK(SbThreadIsValid(data_->thread_));
+  SbThreadJoin(data_->thread_, nullptr);
+}
 
 Thread::LocalStorageKey Thread::CreateThreadLocalKey() {
   return SbThreadCreateLocalKey(nullptr);

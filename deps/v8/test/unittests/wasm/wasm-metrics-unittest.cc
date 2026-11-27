@@ -335,7 +335,6 @@ class MetricsRecorder : public v8::metrics::Recorder {
 };
 
 COMPILE_TEST(TestEventMetrics) {
-  if (v8_flags.memory_balancer) return;
   FlagScope<bool> no_wasm_dynamic_tiering(&v8_flags.wasm_dynamic_tiering,
                                           false);
   std::shared_ptr<MetricsRecorder> recorder =
@@ -345,12 +344,11 @@ COMPILE_TEST(TestEventMetrics) {
     v8::base::ThreadTicks::WaitUntilInitialized();
   }
 
-  TestSignatures sigs;
   v8::internal::AccountingAllocator allocator;
   Zone zone(&allocator, ZONE_NAME);
 
   WasmModuleBuilder* builder = zone.New<WasmModuleBuilder>(&zone);
-  WasmFunctionBuilder* f = builder->AddFunction(sigs.i_v());
+  WasmFunctionBuilder* f = builder->AddFunction(TestSignatures::i_v());
   f->builder()->AddExport("main", f);
   f->EmitCode({WASM_I32V_2(0), WASM_END});
   ZoneBuffer buffer(&zone);

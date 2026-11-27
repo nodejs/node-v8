@@ -31,6 +31,7 @@
 #include "src/heap/combined-heap.h"
 #include "src/heap/heap-inl.h"
 #include "src/heap/heap-layout-inl.h"
+#include "src/heap/safepoint.h"
 #include "src/init/bootstrapper.h"
 #include "src/interpreter/interpreter.h"
 #include "src/libsampler/sampler.h"
@@ -1250,7 +1251,7 @@ template <StateTag tag>
 class VMStateIfMainThread {
  public:
   explicit VMStateIfMainThread(Isolate* isolate) {
-    if (ThreadId::Current() == isolate->thread_id()) {
+    if (base::ThreadId::Current() == isolate->thread_id()) {
       vm_state_.emplace(isolate);
     }
   }
@@ -2184,29 +2185,23 @@ EnumerateCompiledFunctions(Heap* heap) {
     }
   };
 
-  // Iterate the heap to find JSFunctions and record their optimized code.
+  // Iterate the heap to find API functions, optimized JSFunctions, and exported
+  // Wasm functions. The heap walk can see SFIs whose trusted data cannot be
+  // read yet: not yet written (off-thread deserialization in progress) or
+  // unpublished (failed Wasm instantiation, crbug.com/385341243). So, for SFIs
+  // found directly by the walk, only untrusted fields (IsApiFunction) may be
+  // read. Script-backed functions are found via Script::Iterator below:
+  // off-thread Scripts only enter script_list() on finalization, once their
+  // SFIs are fully deserialized.
   for (Tagged<HeapObject> obj = iterator.Next(); !obj.is_null();
        obj = iterator.Next()) {
     if (IsSharedFunctionInfo(obj)) {
       Tagged<SharedFunctionInfo> sfi = Cast<SharedFunctionInfo>(obj);
-      // We have to skip over a special case here: Wasm functions created by
-      // instantiation attempts that failed to complete have inaccessible
-      // WasmFunctionData. They are also unreachable, but since we're walking
-      // the entire heap here, we may still find them if no GC has cleaned them
-      // up yet. See crbug.com/385341243 and the associated fix for context.
-      if (sfi->HasUnpublishedTrustedData(isolate)) continue;
-#if V8_ENABLE_WEBASSEMBLY
-      // Wasm functions don't store wrapper code on the SFI; exported Wasm
-      // functions are recorded via their JSFunction below.
-      if (sfi->HasWasmFunctionData(isolate)) continue;
-#endif  // V8_ENABLE_WEBASSEMBLY
-
-      if (sfi->is_compiled() && !sfi->HasBytecodeArray()) {
-        record(sfi, Cast<AbstractCode>(sfi->abstract_code(isolate)));
+      if (sfi->IsApiFunction()) {
+        record(sfi, Cast<AbstractCode>(isolate->builtins()->code(
+                        Builtin::kHandleApiCallOrConstruct)));
       }
     } else if (IsJSFunction(obj)) {
-      // Given that we no longer iterate over all optimized JSFunctions, we need
-      // to take care of this here.
       Tagged<JSFunction> function = Cast<JSFunction>(obj);
       Tagged<SharedFunctionInfo> sfi = function->shared();
       // TODO(jarin) This leaves out deoptimized code that might still be on the
@@ -2243,15 +2238,21 @@ EnumerateCompiledFunctions(Heap* heap) {
 #if defined(V8_ENABLE_ETW_STACK_WALKING)
 static std::vector<Handle<SharedFunctionInfo>> EnumerateInterpretedFunctions(
     Heap* heap) {
-  HeapObjectIterator iterator(heap);
-  DisallowGarbageCollection no_gc;
   std::vector<Handle<SharedFunctionInfo>> interpreted_funcs;
   Isolate* isolate = heap->isolate();
 
-  for (Tagged<HeapObject> obj = iterator.Next(); !obj.is_null();
-       obj = iterator.Next()) {
-    if (IsSharedFunctionInfo(obj)) {
-      Tagged<SharedFunctionInfo> sfi = Cast<SharedFunctionInfo>(obj);
+  // Walk script_list() rather than the heap, so that SFIs of Scripts that are
+  // still being deserialized off-thread are skipped. Like the heap walk, hold
+  // a safepoint so that no background thread changes SFIs under us.
+  SafepointScope safepoint(isolate, kGlobalSafepointForSharedSpaceIsolate);
+  Script::Iterator script_iterator(isolate);
+  for (Tagged<Script> script = script_iterator.Next(); !script.is_null();
+       script = script_iterator.Next()) {
+    if (!script->HasValidSource()) continue;
+
+    SharedFunctionInfo::ScriptIterator sfi_iterator(isolate, script);
+    for (Tagged<SharedFunctionInfo> sfi = sfi_iterator.Next(); !sfi.is_null();
+         sfi = sfi_iterator.Next()) {
       if (sfi->HasBytecodeArray()) {
         interpreted_funcs.push_back(handle(sfi, isolate));
       }
@@ -2614,7 +2615,7 @@ void ExistingCodeLogger::LogCodeObject(Tagged<AbstractCode> object) {
       tag = CodeTag::kRegExp;
       break;
     case CodeKind::BYTECODE_HANDLER:
-      description = isolate_->builtins()->name(abstract_code->builtin_id());
+      description = Builtins::name(abstract_code->builtin_id());
       tag = CodeTag::kBytecodeHandler;
       break;
     case CodeKind::BUILTIN:
@@ -2691,14 +2692,10 @@ void ExistingCodeLogger::LogCompiledFunctions(
   // GetScriptLineNumber call.
   for (auto& pair : compiled_funcs) {
     DirectHandle<SharedFunctionInfo> shared = pair.first;
-
-    // If the script is a Smi, then the SharedFunctionInfo is in
-    // the process of being deserialized.
-    Tagged<Object> script = shared->raw_script(kAcquireLoad);
-    if (IsSmi(script)) {
-      DCHECK_EQ(script, Smi::uninitialized_deserialization_value());
-      continue;
-    }
+    // EnumerateCompiledFunctions only returns API functions and SFIs reachable
+    // from a JSFunction or script_list(), none of which can still be mid
+    // off-thread deserialization (Smi script).
+    DCHECK(!IsSmi(shared->raw_script(kAcquireLoad)));
 
     if (ensure_source_positions_available) {
       SharedFunctionInfo::EnsureSourcePositionsAvailable(isolate_, shared);

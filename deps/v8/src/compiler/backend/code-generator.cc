@@ -54,6 +54,23 @@ class CodeGenerator::JumpTable final : public ZoneObject {
   base::Vector<Label*> const targets_;
 };
 
+namespace {
+
+SafepointTableBuilder::LazyDeoptSupport GetLazyDeoptSupport(
+    InstructionSequence* instructions) {
+  for (int i = 0, count = instructions->GetDeoptimizationEntryCount();
+       i < count; ++i) {
+    DeoptimizeKind kind = instructions->GetDeoptimizationEntry(i).kind();
+    if (kind == DeoptimizeKind::kLazy ||
+        kind == DeoptimizeKind::kLazyAfterFastCall) {
+      return SafepointTableBuilder::LazyDeoptSupport::kYes;
+    }
+  }
+  return SafepointTableBuilder::LazyDeoptSupport::kNo;
+}
+
+}  // namespace
+
 CodeGenerator::CodeGenerator(Zone* codegen_zone, Frame* frame, Linkage* linkage,
                              InstructionSequence* instructions,
                              OptimizedCompilationInfo* info, Isolate* isolate,
@@ -79,7 +96,7 @@ CodeGenerator::CodeGenerator(Zone* codegen_zone, Frame* frame, Linkage* linkage,
       masm_(isolate, codegen_zone, options, CodeObjectRequired{false},
             std::unique_ptr<AssemblerBuffer>{}),
       resolver_(this),
-      safepoints_(codegen_zone),
+      safepoints_(codegen_zone, GetLazyDeoptSupport(instructions)),
       handlers_(codegen_zone),
       deoptimization_exits_(codegen_zone),
       protected_deoptimization_literals_(codegen_zone),
@@ -614,6 +631,12 @@ bool CodeGenerator::IsNextInAssemblyOrder(RpoNumber block) const {
 }
 
 void CodeGenerator::RecordSafepoint(ReferenceMap* references, int pc_offset) {
+  if (frame()->tagged_slots().IsEmpty() &&
+      references->reference_operands().empty()) {
+    safepoints()->DefineEmptySafepoint(masm(), pc_offset);
+    return;
+  }
+
   auto safepoint = safepoints()->DefineSafepoint(masm(), pc_offset);
 
   safepoint.DefineTaggedStackSlots(frame()->tagged_slots());
@@ -635,7 +658,7 @@ void CodeGenerator::RecordSafepoint(ReferenceMap* references, int pc_offset) {
 }
 
 void CodeGenerator::RecordSafepointWithoutTaggedSlots() {
-  safepoints()->DefineSafepoint(masm());
+  safepoints()->DefineEmptySafepoint(masm());
 }
 
 bool CodeGenerator::IsMaterializableFromRoot(Handle<HeapObject> object,
@@ -810,6 +833,65 @@ RpoNumber CodeGenerator::ComputeBranchInfo(BranchInfo* branch,
   branch->hinted = static_cast<bool>(BranchHintField::decode(instr->opcode()));
   branch->fallthru = IsNextInAssemblyOrder(false_rpo);
   return RpoNumber::Invalid();
+}
+
+namespace {
+
+// Returns the number of inputs of a compare {instr} that are operands of the
+// compare itself rather than of its flags continuation.
+size_t CompareOperandCount(Instruction* instr) {
+  switch (instr->flags_mode()) {
+    case kFlags_branch:
+      return instr->InputCount() - kBranchEndOffsetOfTrueBlock;
+    case kFlags_deoptimize:
+      return DeoptFrameStateOffsetField::decode(instr->opcode());
+    case kFlags_select:
+      // The inputs end with the two values to select from.
+      return instr->InputCount() - 2;
+    case kFlags_trap:
+      // The inputs end with the trap id.
+      return instr->InputCount() - 1;
+    default:
+      return 0;
+  }
+}
+
+}  // namespace
+
+bool CodeGenerator::FlagsAlreadySet(Instruction* instr) {
+  // A branch leaves the flags alone, so a compare that starts a block whose
+  // only predecessor ends with the same compare would recompute the flags it
+  // already has. This requires that nothing, such as a gap move that reloads
+  // an operand, has been emitted in the block yet.
+  const InstructionBlock* block =
+      instructions()->InstructionBlockAt(current_block_);
+  size_t count = CompareOperandCount(instr);
+  if (count == 0 || block->PredecessorCount() != 1 ||
+      GetLabel(current_block_)->pos() != masm()->pc_offset()) {
+    return false;
+  }
+  DCHECK_EQ(instr->OutputCount(), instr->flags_mode() == kFlags_select ? 1 : 0);
+  const InstructionBlock* pred =
+      instructions()->InstructionBlockAt(block->predecessors()[0]);
+  Instruction* prev =
+      instructions()->InstructionAt(pred->last_instruction_index());
+  if (prev->arch_opcode() != instr->arch_opcode() ||
+      prev->addressing_mode() != instr->addressing_mode() ||
+      prev->flags_mode() != kFlags_branch ||
+      CompareOperandCount(prev) != count) {
+    return false;
+  }
+  for (size_t k = 0; k < count; ++k) {
+    InstructionOperand* a = prev->InputAt(k);
+    InstructionOperand* b = instr->InputAt(k);
+    if (a->EqualsCanonicalized(*b)) continue;
+    if (!a->IsImmediate() || !b->IsImmediate() ||
+        instructions()->GetImmediate(ImmediateOperand::cast(a)) !=
+            instructions()->GetImmediate(ImmediateOperand::cast(b))) {
+      return false;
+    }
+  }
+  return true;
 }
 
 CodeGenerator::CodeGenResult CodeGenerator::AssembleInstruction(
@@ -1105,11 +1187,11 @@ Handle<DeoptimizationData> CodeGenerator::GenerateDeoptimizationData(
 
   if (info->is_osr()) {
     DCHECK_LE(0, osr_pc_offset_);
-    data->SetOsrBytecodeOffset(Smi::FromInt(info_->osr_offset().ToInt()));
+    DCHECK(info->has_bytecode_array());
+    data->SetOsrBytecodeArray(*info->bytecode_array());
     data->SetOsrPcOffset(Smi::FromInt(osr_pc_offset_));
   } else {
-    BytecodeOffset osr_offset = BytecodeOffset::None();
-    data->SetOsrBytecodeOffset(Smi::FromInt(osr_offset.ToInt()));
+    data->SetOsrBytecodeArray(Smi::zero());
     data->SetOsrPcOffset(Smi::FromInt(-1));
   }
 
@@ -1510,11 +1592,9 @@ void CodeGenerator::AddTranslationForOperand(Instruction* instr,
   if (op->IsStackSlot()) {
     if (type.representation() == MachineRepresentation::kBit) {
       translations_.StoreBoolStackSlot(LocationOperand::cast(op)->index());
-    } else if (type == MachineType::Int8() || type == MachineType::Int16() ||
-               type == MachineType::Int32()) {
+    } else if (type == MachineType::Int32()) {
       translations_.StoreInt32StackSlot(LocationOperand::cast(op)->index());
-    } else if (type == MachineType::Uint8() || type == MachineType::Uint16() ||
-               type == MachineType::Uint32()) {
+    } else if (type == MachineType::Uint32()) {
       translations_.StoreUint32StackSlot(LocationOperand::cast(op)->index());
     } else if (type == MachineType::Int64()) {
       translations_.StoreInt64StackSlot(LocationOperand::cast(op)->index());
@@ -1557,11 +1637,9 @@ void CodeGenerator::AddTranslationForOperand(Instruction* instr,
     InstructionOperandConverter converter(this, instr);
     if (type.representation() == MachineRepresentation::kBit) {
       translations_.StoreBoolRegister(converter.ToRegister(op));
-    } else if (type == MachineType::Int8() || type == MachineType::Int16() ||
-               type == MachineType::Int32()) {
+    } else if (type == MachineType::Int32()) {
       translations_.StoreInt32Register(converter.ToRegister(op));
-    } else if (type == MachineType::Uint8() || type == MachineType::Uint16() ||
-               type == MachineType::Uint32()) {
+    } else if (type == MachineType::Uint32()) {
       translations_.StoreUint32Register(converter.ToRegister(op));
     } else if (type == MachineType::Int64()) {
       translations_.StoreInt64Register(converter.ToRegister(op));
@@ -1602,6 +1680,11 @@ void CodeGenerator::AddTranslationForOperand(Instruction* instr,
     CHECK(op->IsImmediate());
     InstructionOperandConverter converter(this, instr);
     Constant constant = converter.ToConstant(op);
+    if (type.representation() == MachineRepresentation::kNone) {
+      DCHECK_EQ(FrameStateDescriptor::kImpossibleValue, constant.ToInt32());
+      translations_.StoreOptimizedOut();
+      return;
+    }
     DeoptimizationLiteral literal;
 
 #if V8_ENABLE_WEBASSEMBLY
@@ -1654,12 +1737,7 @@ void CodeGenerator::AddTranslationForOperand(Instruction* instr,
             literal = DeoptimizationLiteral(isolate()->factory()->true_value());
           }
         } else {
-          DCHECK(type == MachineType::Int32() ||
-                 type == MachineType::Uint32() ||
-                 type.representation() == MachineRepresentation::kWord32 ||
-                 type.representation() == MachineRepresentation::kNone);
-          DCHECK(type.representation() != MachineRepresentation::kNone ||
-                 constant.ToInt32() == FrameStateDescriptor::kImpossibleValue);
+          CHECK_EQ(type.representation(), MachineRepresentation::kWord32);
           if (type == MachineType::Uint32()) {
             literal = DeoptimizationLiteral(
                 static_cast<double>(static_cast<uint32_t>(constant.ToInt32())));

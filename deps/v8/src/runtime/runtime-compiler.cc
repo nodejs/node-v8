@@ -283,6 +283,19 @@ RUNTIME_FUNCTION(Runtime_InstallSFICode) {
     DisallowGarbageCollection no_gc;
     Tagged<SharedFunctionInfo> sfi = function->shared();
     DCHECK(sfi->is_compiled());
+    if (function->has_feedback_vector()) {
+      Tagged<FeedbackVector> feedback_vector = function->feedback_vector();
+      CHECK_EQ(feedback_vector->length().value(),
+               sfi->feedback_metadata()->slot_count());
+      CHECK_EQ(
+          feedback_vector->closure_feedback_cell_array()->ulength().value(),
+          static_cast<uint32_t>(
+              sfi->feedback_metadata()->create_closure_slot_count()));
+    } else if (function->has_closure_feedback_cell_array()) {
+      CHECK_EQ(function->closure_feedback_cell_array()->ulength().value(),
+               static_cast<uint32_t>(
+                   sfi->feedback_metadata()->create_closure_slot_count()));
+    }
     Tagged<Code> sfi_code = sfi->GetCode(isolate);
     if (V8_LIKELY(sfi_code->kind() != CodeKind::BASELINE ||
                   function->has_feedback_vector())) {
@@ -516,7 +529,13 @@ void GetOsrOffsetAndFunctionForOSR(Isolate* isolate, BytecodeOffset* osr_offset,
   *function = handle(frame->function(), isolate);
 
   DCHECK(!osr_offset->IsNone());
-  DCHECK((*function)->shared()->HasBytecodeArray());
+  Tagged<SharedFunctionInfo> shared = (*function)->shared();
+  bool has_bytecode_array = shared->HasBytecodeArray();
+  SBXCHECK(has_bytecode_array);
+  Tagged<BytecodeArray> active_bytecode =
+      shared->GetActiveBytecodeArray(isolate);
+  Tagged<BytecodeArray> frame_bytecode = frame->GetBytecodeArray();
+  SBXCHECK_EQ(active_bytecode, frame_bytecode);
 }
 
 Tagged<Object> CompileOptimizedOSR(Isolate* isolate,
@@ -554,7 +573,7 @@ Tagged<Object> CompileOptimizedOSR(Isolate* isolate,
 
 #ifdef DEBUG
   Tagged<DeoptimizationData> data = result->deoptimization_data();
-  DCHECK_EQ(BytecodeOffset(data->OsrBytecodeOffset().value()), osr_offset);
+  DCHECK_EQ(result->osr_offset(), osr_offset);
   DCHECK_GE(data->OsrPcOffset().value(), 0);
 #endif  // DEBUG
 
@@ -628,7 +647,8 @@ RUNTIME_FUNCTION(Runtime_NotifyDeoptimized) {
 
   // Some deopts don't invalidate InstructionStream (e.g. lazy deopts, or when
   // preparing for OSR from Maglev to Turbofan).
-  if (code_validity == Deoptimizer::CodeValidity::kUnaffected) {
+  if (code_validity == Deoptimizer::CodeValidity::kUnaffected ||
+      code_validity == Deoptimizer::CodeValidity::kUnaffectedOsr) {
     // If there's a turbolevved inner OSR loop and a maglevved outer OSR loop,
     // force the outer loop to be turbolevved.
     //
@@ -653,6 +673,23 @@ RUNTIME_FUNCTION(Runtime_NotifyDeoptimized) {
     if (deopt_reason == DeoptimizeReason::kPrepareForOnStackReplacement &&
         function->ActiveTierIsMaglev(isolate)) {
       isolate->tiering_manager()->MarkForTurboFanOptimization(*function);
+    }
+
+    // OSR code that deopts outside of its loop stays cached, so each later
+    // call enters it and may deopt again. Tier up the function itself.
+    if (code_validity == Deoptimizer::CodeValidity::kUnaffectedOsr &&
+        !function->IsTieringRequestedOrInProgress(isolate)) {
+      if (optimized_code->kind() == CodeKind::TURBOFAN_JS) {
+        if (!function->ActiveTierIsTurbofan(isolate)) {
+          isolate->tiering_manager()->MarkForTurboFanOptimization(*function);
+        }
+      } else {
+        DCHECK_EQ(optimized_code->kind(), CodeKind::MAGLEV);
+        if (function->ActiveTierIsIgnition(isolate) ||
+            function->ActiveTierIsBaseline(isolate)) {
+          isolate->tiering_manager()->MarkForMaglevOptimization(*function);
+        }
+      }
     }
 
     return ReadOnlyRoots(isolate).undefined_value();

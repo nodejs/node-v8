@@ -143,6 +143,14 @@ MaglevPhiRepresentationSelector::ProcessPhi(Phi* node) {
     return ProcessPhiResult::kNone;
   }
 
+  if (node->input_count() == 1) {
+    // Later passes unwrap single-input Phis to their input, so uses/deopt
+    // frames may already bypass this Phi while earlier uses still point to it.
+    // Keep it tagged so its representation cannot diverge from its input's.
+    EnsurePhiInputsTagged(node);
+    return ProcessPhiResult::kNone;
+  }
+
   TRACE_UNTAGGING("Considering for untagging: " << PrintNodeLabel(node));
 
   // {input_mask} represents the ValueRepresentation that {node} could have,
@@ -152,7 +160,6 @@ MaglevPhiRepresentationSelector::ProcessPhi(Phi* node) {
   untagging_kinds.resize(node->input_count(), UntaggingKind::kNone);
 
   bool has_tagged_phi_input = false;
-  bool has_float64_constant_input = false;
   for (int i = 0; i < node->input_count(); i++) {
     ValueNode* input = node->input(i).node();
     if (input->Is<SmiConstant>()) {
@@ -161,25 +168,11 @@ MaglevPhiRepresentationSelector::ProcessPhi(Phi* node) {
       // never downgrade Float64 to Int32, as it could cause deopt loops).
       input_reprs.Add(ValueRepresentation::kInt32);
       untagging_kinds[i] = UntaggingKind::kSmiConstant;
-    } else if (input->Is<Float64Constant>()) {
-      // TODO(victorgomes): maybe we should check if the float64 constant is
-      // actually an integer and treat it as such.
-      has_float64_constant_input = true;
-      input_reprs.Add(ValueRepresentation::kFloat64);
-      untagging_kinds[i] = UntaggingKind::kKnownNumber;
     } else if (HeapConstant* constant = input->TryCast<HeapConstant>()) {
+      DCHECK(!constant->object().IsUndefined());
       if (constant->object().IsHeapNumber()) {
-        has_float64_constant_input = true;
         input_reprs.Add(ValueRepresentation::kFloat64);
         untagging_kinds[i] = UntaggingKind::kHeapNumberConstant;
-#ifdef V8_ENABLE_UNDEFINED_DOUBLE
-      } else if (constant->object().IsUndefined()) {
-        // 'undefined' can flow into a HoleyFloat64 phi as the undefined NaN
-        // pattern, which retagging and deopt materialization convert back to
-        // 'undefined'.
-        input_reprs.Add(ValueRepresentation::kHoleyFloat64);
-        untagging_kinds[i] = UntaggingKind::kUndefinedConstant;
-#endif  // V8_ENABLE_UNDEFINED_DOUBLE
       } else {
         // Not a HeapConstant that we can untag.
         input_reprs.RemoveAll();
@@ -189,19 +182,20 @@ MaglevPhiRepresentationSelector::ProcessPhi(Phi* node) {
     } else if (input->Is<RootConstant>() &&
                input->Cast<RootConstant>()->index() ==
                    RootIndex::kUndefinedValue) {
-      // Same as HeapConstant 'undefined' above.
+      // 'undefined' can flow into a HoleyFloat64 phi as the undefined NaN
+      // pattern, which retagging and deopt materialization convert back to
+      // 'undefined'.
       input_reprs.Add(ValueRepresentation::kHoleyFloat64);
       untagging_kinds[i] = UntaggingKind::kUndefinedConstant;
 #endif  // V8_ENABLE_UNDEFINED_DOUBLE
-    } else if (input->is_conversion() || input->Is<ReturnedValue>()) {
+    } else if (input->is_conversion()) {
       DCHECK_EQ(input->input_count(), 1);
       // The graph builder tags all Phi inputs, so this conversion should
       // produce a tagged value.
       DCHECK(input->is_tagged());
       // If we want to untag {node}, then we'll drop the conversion and use its
       // input instead.
-      ValueNode* unwrapped_conv_input =
-          input->input(0).node()->UnwrapIdentities();
+      ValueNode* unwrapped_conv_input = input->input(0).node()->UnwrapAliases();
       input_reprs.Add(
           unwrapped_conv_input->properties().value_representation());
       untagging_kinds[i] = UntaggingKind::kConversion;
@@ -449,11 +443,7 @@ MaglevPhiRepresentationSelector::ProcessPhi(Phi* node) {
     ConvertTaggedPhiTo(node, ValueRepresentation::kInt32, untagging_kinds);
     return ProcessPhiResult::kChanged;
   } else if (enable_truncated_int32_phis_ && !has_ignored_tagged_use &&
-             !has_float64_constant_input &&
              use_reprs.contains_only(UseRepresentation::kTruncatedInt32)) {
-    // If the input is Float64/HoleyFloat64 we emit a check truncating
-    // conversion, but if we know it is a float64 constant, we know we cannot
-    // truncate it.
     TRACE_UNTAGGING("  => Untagging to TruncatedInt32");
     ConvertTaggedPhiTo(node, ValueRepresentation::kInt32, untagging_kinds,
                        /*truncating=*/true);
@@ -494,8 +484,38 @@ void MaglevPhiRepresentationSelector::EnsurePhiInputsTagged(Phi* phi) {
       // Inputs of Phis that aren't Phi should always be tagged (except for the
       // phis untagged by this class, but {phi} isn't one of them).
       DCHECK(input->is_tagged());
+      TrySinkInputTaggingToEdgeSplitBlock(phi, i);
     }
   }
+}
+
+void MaglevPhiRepresentationSelector::TrySinkInputTaggingToEdgeSplitBlock(
+    Phi* phi, int input_index) {
+  BasicBlock* edge_split = phi->predecessor_at(input_index);
+  if (!edge_split->is_edge_split_block()) return;
+  DCHECK_NE(edge_split, reducer_.current_block());
+
+  ValueNode* tagging = phi->input_node(input_index);
+  // Sink non-deopting tagging conversions and ReturnedValue from non-eager
+  // inlining, leaving deopting conversions like CheckedSmiTag* in place so
+  // sinking cannot skip or reorder an eager deopt check.
+  if (!tagging->is_conversion() || tagging->properties().can_deopt()) {
+    return;
+  }
+  // If the tagging has other uses, it has to stay where it is, since sinking
+  // it makes it not dominate its uses anymore.
+  if (tagging->use_count() != 1) return;
+
+  // Only sink a tagging found near the end of the branching block, so it still
+  // dominates {phi} and never runs more often than before.
+  BasicBlock* branch_block = edge_split->predecessor();
+  if (!branch_block->TryRemoveFromEnd(tagging)) return;
+
+  TRACE_UNTAGGING("  Sinking tagging " << PrintNodeLabel(tagging)
+                                       << " of input " << input_index
+                                       << " to its edge-split block");
+  edge_split->nodes().push_back(tagging);
+  tagging->set_owner(edge_split);
 }
 
 namespace {
@@ -770,11 +790,11 @@ void MaglevPhiRepresentationSelector::UntagConstantInput(
 void MaglevPhiRepresentationSelector::UntagConversionInput(
     Phi* phi, ValueRepresentation repr, bool truncating, int input_index,
     ValueNode* input) {
-  DCHECK(input->is_conversion() || input->Is<ReturnedValue>());
+  DCHECK(input->is_conversion());
   // Unwrapping the conversion.
   DCHECK_EQ(input->value_representation(), ValueRepresentation::kTagged);
   // Needs to insert a new conversion.
-  ValueNode* bypassed_input = input->input(0).node()->UnwrapIdentities();
+  ValueNode* bypassed_input = input->input(0).node()->UnwrapAliases();
   ValueRepresentation from_repr = bypassed_input->value_representation();
   ValueNode* new_input;
   if (from_repr == repr) {
@@ -1028,7 +1048,7 @@ void MaglevPhiRepresentationSelector::ConvertTaggedPhiTo(
         UNREACHABLE();
 #endif  // V8_ENABLE_UNDEFINED_DOUBLE
       case UntaggingKind::kConversion:
-        DCHECK(input->is_conversion() || input->Is<ReturnedValue>());
+        DCHECK(input->is_conversion());
         UntagConversionInput(phi, repr, truncating, input_index, input);
         break;
       case UntaggingKind::kUntaggedPhi:
@@ -1231,6 +1251,15 @@ ProcessResult MaglevPhiRepresentationSelector::UpdateUntaggingOfPhi(
       // {phi} is a HoleyFloat64 (and thus, it could be a hole), but the
       // original untagging did not allow holes.
       needed_conversion = Opcode::kCheckedHoleyFloat64ToFloat64;
+    }
+  }
+
+  if (old_untagging->Is<CheckedObjectToIndex>()) {
+    // Keep accepting -0, unlike the generic Float64 to Int32 conversions.
+    if (needed_conversion == Opcode::kCheckedFloat64ToInt32) {
+      needed_conversion = Opcode::kCheckedFloat64ToIndex;
+    } else if (needed_conversion == Opcode::kCheckedHoleyFloat64ToInt32) {
+      needed_conversion = Opcode::kCheckedHoleyFloat64ToIndex;
     }
   }
 
@@ -1504,8 +1533,7 @@ ProcessResult MaglevPhiRepresentationSelector::UpdateNodePhiInputForToBoolean(
 // for {node}.
 ProcessResult MaglevPhiRepresentationSelector::UpdateNodePhiInput(
     NodeBase* node, Phi* phi, int input_index, const ProcessingState* state) {
-  if (node->is_conversion() || IsTruncatingToInt32(node->opcode()) ||
-      node->Is<ReturnedValue>()) {
+  if (node->is_conversion() || IsTruncatingToInt32(node->opcode())) {
     // {node} can't be an Untagging if we reached this point (because
     // UpdateNodePhiInput is not called on untagging nodes).
     DCHECK(!IsUntagging(node->opcode()));

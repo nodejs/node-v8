@@ -146,8 +146,6 @@ class LiftoffAssembler : public MacroAssembler {
                                   /*out*/ LiftoffRegList* spills,
                                   SpillLocation spill_location);
 
-    void DefineSafepoint(SafepointTableBuilder::Safepoint& safepoint);
-
     void DefineSafepointWithCalleeSavedRegisters(
         SafepointTableBuilder::Safepoint& safepoint);
 
@@ -365,12 +363,6 @@ class LiftoffAssembler : public MacroAssembler {
 
     bool is_free(LiftoffRegister reg) const { return !is_used(reg); }
 
-    void reset_used_registers() {
-      DCHECK(!frozen);
-      used_registers = {};
-      memset(register_use_count, 0, sizeof(register_use_count));
-    }
-
     LiftoffRegister GetNextSpillReg(LiftoffRegList candidates) {
       DCHECK(!frozen);
       DCHECK(!candidates.is_empty());
@@ -519,10 +511,6 @@ class LiftoffAssembler : public MacroAssembler {
   inline void PushStack(ValueKind kind);
 
   V8_NOINLINE V8_PRESERVE_MOST void SpillRegister(LiftoffRegister);
-
-  uint32_t GetNumUses(LiftoffRegister reg) const {
-    return cache_state_.get_use_count(reg);
-  }
 
   // Get an unused register for class {rc}, reusing one of {try_first} if
   // possible. May return a register from {pinned}.
@@ -696,7 +684,7 @@ class LiftoffAssembler : public MacroAssembler {
   // which can later be patched (via {PatchPrepareStackFrame)} when the size of
   // the frame is known.
   inline int PrepareStackFrame();
-  inline void CallFrameSetupStub(int declared_function_index);
+  inline void CallFrameSetupStub(int defined_function_index);
   inline void PrepareTailCall(int num_callee_stack_params,
                               int stack_param_delta);
   inline void AlignFrameSize();
@@ -710,7 +698,7 @@ class LiftoffAssembler : public MacroAssembler {
   inline static int SlotSizeForType(ValueKind kind);
   inline static bool NeedsAlignment(ValueKind kind);
 
-  inline void CheckTierUp(int declared_func_index, int budget_used,
+  inline void CheckTierUp(int defined_func_index, int budget_used,
                           Label* ool_label, const FreezeCacheState& frozen);
   inline void LoadConstant(LiftoffRegister, WasmValue);
 
@@ -982,7 +970,7 @@ class LiftoffAssembler : public MacroAssembler {
                             int32_t amount);
 
 #if V8_TARGET_ARCH_X64 || V8_TARGET_ARCH_ARM64 || V8_TARGET_ARCH_LOONG64 || \
-    V8_TARGET_ARCH_MIPS64
+    V8_TARGET_ARCH_MIPS64 || V8_TARGET_ARCH_S390X
   inline void emit_i64_rol(LiftoffRegister dst, LiftoffRegister src,
                            Register amount);
   inline void emit_i64_roli(LiftoffRegister dst, LiftoffRegister src,
@@ -1008,7 +996,6 @@ class LiftoffAssembler : public MacroAssembler {
 
   inline void emit_ptrsize_add(Register dst, Register lhs, Register rhs);
   inline void emit_ptrsize_sub(Register dst, Register lhs, Register rhs);
-  inline void emit_ptrsize_and(Register dst, Register lhs, Register rhs);
   inline void emit_ptrsize_shri(Register dst, Register src, int amount);
   inline void emit_ptrsize_addi(Register dst, Register lhs, intptr_t imm);
   inline void emit_ptrsize_muli(Register dst, Register lhs, int32_t imm);
@@ -1686,6 +1673,19 @@ class LiftoffAssembler : public MacroAssembler {
 
   uint32_t num_locals() const { return num_locals_; }
   void set_num_locals(uint32_t num_locals);
+  void RecordTaggedLocalSlots();
+  void DropLocals();
+  bool has_ref_values() const {
+#ifdef ENABLE_SLOW_DCHECKS
+    if (!has_ref_values_) {
+      for (const VarState& slot : cache_state_.stack_state) {
+        DCHECK(!is_reference(slot.kind()));
+      }
+    }
+#endif
+    return has_ref_values_;
+  }
+  void DefineSafepoint(SafepointTableBuilder::Safepoint& safepoint);
 
   int GetTotalFrameSlotCountForGC() const;
   V8_EXPORT_PRIVATE int OolSpillCount() const;
@@ -1733,6 +1733,17 @@ class LiftoffAssembler : public MacroAssembler {
   static_assert(sizeof(ValueKind) == 1,
                 "Reconsider this inlining if ValueKind gets bigger");
   CacheState cache_state_;
+  // Precomputed safepoint bitvector for reference-typed locals (indices
+  // [0, num_locals_)). All registers are spilled before {DefineSafepoint}, so
+  // these stack slots are always tagged during the function body.
+  GrowableBitVector tagged_locals_slots_;
+  // Monotonically set to true if any reference-typed local or operand has ever
+  // been pushed onto {cache_state_.stack_state} in this function. When false,
+  // all safepoints are guaranteed to have zero tagged stack slots. Every push
+  // introducing a new {ValueKind} must go through {PushRegister}, {PushStack},
+  // or {PushException}; copies of existing slots ({LocalGet}, merges) are
+  // exempt because their kind was already recorded on the source slot.
+  bool has_ref_values_ = false;
   // The maximum spill offset for slots in the value stack.
   int max_used_spill_offset_ = StaticStackFrameSize();
   // The amount of memory needed for register spills in OOL code.

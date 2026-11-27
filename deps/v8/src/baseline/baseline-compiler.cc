@@ -225,7 +225,7 @@ struct ArgumentSettingHelper<Descriptor, ArgIndex, true,
     for (int i = 0; ArgIndex + i < Descriptor::GetRegisterParameterCount();
          ++i) {
       Register target = Descriptor::GetRegisterParameter(ArgIndex + i);
-      masm->Move(target, masm->RegisterFrameOperand(list[i]));
+      masm->Move(target, BaselineAssembler::RegisterFrameOperand(list[i]));
     }
   }
 };
@@ -2706,11 +2706,11 @@ void BaselineCompiler::VisitJumpLoop() {
     UpdateInterruptBudgetAndJumpToLabel(-weight, nullptr, &do_osr,
                                         kDisableStackCheck);
     __ Bind(&do_osr);
-    Register expected_param_count = D::ExpectedParameterCountRegister();
-    __ Move(expected_param_count, Smi::FromInt(bytecode_->parameter_count()));
+    Register expected_osr_offset = D::ExpectedOsrOffsetRegister();
+    __ Move(expected_osr_offset, Smi::FromInt(iterator().current_offset()));
     __ Pop(maybe_target_code);
     CallBuiltin<Builtin::kBaselineOnStackReplacement>(maybe_target_code,
-                                                      expected_param_count);
+                                                      expected_osr_offset);
     __ AddToInterruptBudgetAndJumpIfNotExceeded(weight, nullptr);
     __ Jump(&osr_not_armed, Label::kNear);
 
@@ -2904,12 +2904,9 @@ void BaselineCompiler::VisitReThrow() {
 
 void BaselineCompiler::VisitReturn() {
   ASM_CODE_COMMENT_STRING(&masm_, "Return");
-  int profiling_weight = iterator().current_offset() +
-                         iterator().current_bytecode_size_without_prefix();
   int parameter_count = bytecode_->parameter_count();
 
-  TailCallBuiltin<Builtin::kBaselineLeaveFrame>(parameter_count,
-                                                -profiling_weight);
+  TailCallBuiltin<Builtin::kBaselineLeaveFrame>(parameter_count);
 }
 
 void BaselineCompiler::VisitThrowReferenceErrorIfTdzHole() {
@@ -3018,7 +3015,7 @@ void BaselineCompiler::VisitSuspendGenerator() {
   }
   int parameter_count = bytecode_->parameter_count();
 
-  TailCallBuiltin<Builtin::kBaselineLeaveFrame>(parameter_count, 0);
+  TailCallBuiltin<Builtin::kBaselineLeaveFrame>(parameter_count);
 }
 
 void BaselineCompiler::VisitResumeGenerator() {

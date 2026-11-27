@@ -377,7 +377,7 @@ V8_OBJECT class FeedbackVector : public HeapObject {
   inline Tagged<FeedbackCell> parent_feedback_cell() const;
 
   // In case a function deoptimizes we set invocation_count_before_stable to
-  // this sentinel.
+  // this sentinel so PGO inlining heuristics know its feedback was unstable.
   static constexpr uint8_t kInvocationCountBeforeStableDeoptSentinel = 0xff;
 
   // The [osr_urgency] controls when OSR is attempted, and is incremented as
@@ -426,13 +426,6 @@ V8_OBJECT class FeedbackVector : public HeapObject {
 
   inline bool interrupt_budget_reset_by_ic_change() const;
   inline void set_interrupt_budget_reset_by_ic_change(bool value);
-
-  // Check if this function was ever deoptimized. This flag can be used as a
-  // blanked bailout for optimizations which are not guaranteed to be deopt-loop
-  // free (such as hoisting checks out of loops).
-  // TODO(olivf): Have a more granular (e.g., per loop) mechanism.
-  inline bool was_once_deoptimized() const;
-  inline void set_was_once_deoptimized();
 
   // Conversion from a slot to an integer index to the underlying array.
   static int GetIndex(FeedbackSlot slot) { return slot.ToInt(); }
@@ -524,9 +517,6 @@ V8_OBJECT class FeedbackVector : public HeapObject {
 
   // The object that indicates a megamorphic state.
   static inline Handle<Symbol> MegamorphicSentinel(Isolate* isolate);
-
-  // The object that indicates a MegaDOM state.
-  static inline DirectHandle<Symbol> MegaDOMSentinel(Isolate* isolate);
 
   // A raw version of the uninitialized sentinel that's safe to read during
   // garbage collection (e.g., for patching the cache).
@@ -1082,9 +1072,6 @@ class V8_EXPORT_PRIVATE FeedbackNexus final {
                             const MaybeObjectDirectHandle& handler);
   MaybeObjectDirectHandle ExtractHomomorphicHandler();
 
-  void ConfigureMegaDOM(const MaybeObjectDirectHandle& handler);
-  MaybeObjectHandle ExtractMegaDOMHandler();
-
   BinaryOperationHint GetBinaryOperationFeedback() const;
   CompareOperationHint GetCompareOperationFeedback() const;
   TypeOfFeedback::Result GetTypeOfFeedback() const;
@@ -1166,7 +1153,6 @@ class V8_EXPORT_PRIVATE FeedbackNexus final {
 
   inline Tagged<MaybeObject> UninitializedSentinel() const;
   inline Tagged<MaybeObject> MegamorphicSentinel() const;
-  inline Tagged<MaybeObject> MegaDOMSentinel() const;
 
   // Create an array. The caller must install it in a feedback vector slot.
   DirectHandle<WeakFixedArray> CreateArrayOfSize(uint32_t length);
@@ -1188,7 +1174,6 @@ class V8_EXPORT_PRIVATE FeedbackNexus final {
   mutable std::optional<std::pair<MaybeObjectHandle, MaybeObjectHandle>>
       feedback_cache_;
   NexusConfig config_;
-  Isolate* isolate_;
 };
 
 class V8_EXPORT_PRIVATE FeedbackIterator final {

@@ -225,9 +225,9 @@ struct runtime : CallDescriptorBuilder {
     using Arguments = NoArguments;
     using returns_t = V<Object>;
 
-    // Even though termination doesn't resume in JS, we need a frame state
-    // here so the stack walker can summarize the frame.
-    static constexpr bool kCanTriggerLazyDeopt = true;
+    // Termination never resumes in JS, and Isolate::Throw does not walk frames
+    // to construct a message for termination exceptions.
+    static constexpr bool kCanTriggerLazyDeopt = false;
     static constexpr Operator::Properties kProperties = Operator::kNoDeopt;
   };
 
@@ -457,9 +457,14 @@ struct runtime : CallDescriptorBuilder {
     using returns_t = V<JSObject>;
 
     static constexpr bool kCanTriggerLazyDeopt = false;
-    static constexpr Operator::Properties kProperties = Operator::kEliminatable;
-    static constexpr OpEffects kEffects =
-        OpEffects().CanAllocate().CanReadHeapMemory().CanWriteHeapMemory();
+    static constexpr Operator::Properties kProperties =
+        Operator::kNoDeopt | Operator::kNoThrow;
+    // Lazily allocates and caches a JS wrapper on WasmCustomMap (or
+    // WasmInternalFunction); the write is unobservable if the result is unused.
+    static constexpr OpEffects kEffects = OpEffects()
+                                              .CanAllocateWithoutIdentity()
+                                              .CanReadHeapMemory()
+                                              .CanWriteHeapMemoryIfUsed();
   };
 #endif  // V8_ENABLE_WEBASSEMBLY
 };

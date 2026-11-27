@@ -283,7 +283,7 @@ void RegExpMacroAssemblerLOONG64::CheckNotBackReferenceIgnoreCase(
     __ Branch(&fail, eq, a3, Operand(247 - 224));
 
     __ bind(&loop_check);
-    __ Branch(&loop, lt, a0, Operand(a1));
+    __ Branch(&loop, Uless, a0, Operand(a1));
     __ jmp(&success);
 
     __ bind(&fail);
@@ -399,7 +399,7 @@ void RegExpMacroAssemblerLOONG64::CheckNotBackReference(int start_reg,
     __ addi_d(a2, a2, char_size());
   }
   BranchOrBacktrack(on_no_match, ne, a3, Operand(a4));
-  __ Branch(&loop, lt, a0, Operand(a1));
+  __ Branch(&loop, Uless, a0, Operand(a1));
 
   // Move current character position to position after match.
   __ Sub_d(current_input_offset(), a2, end_of_input_address());
@@ -1109,12 +1109,7 @@ void RegExpMacroAssemblerLOONG64::PushBacktrack(Label* label) {
     __ nop();
     masm_->label_at_put(label, offset);
     __ bind(&after_constant);
-    if (is_int12(cp_offset)) {
-      __ Ld_wu(a0, MemOperand(code_pointer(), cp_offset));
-    } else {
-      __ Add_d(a0, code_pointer(), cp_offset);
-      __ Ld_wu(a0, MemOperand(a0, 0));
-    }
+    __ Ld_wu(a0, MemOperand(code_pointer(), cp_offset));
   }
   Push(a0);
   CheckStackLimit();

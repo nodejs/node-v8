@@ -133,6 +133,18 @@ int ZEXPORT inflateReset(z_streamp strm) {
 
     if (inflateStateCheck(strm)) return Z_STREAM_ERROR;
     state = (struct inflate_state FAR *)strm->state;
+    if (state->wbits != state->reqbits) {
+        if (state->window != Z_NULL) {
+            ZFREE(strm, state->window);
+            state->window = Z_NULL;
+        }
+        state->wbits = state->reqbits;
+    } else if (state->window != Z_NULL) {
+        /* Clear the window before reusing it, to avoid "chunked copies"
+         * copying bytes from a previous session. */
+        zmemzero(state->window, (1U << state->wbits) + CHUNKCOPY_CHUNK_SIZE);
+    }
+    state->wrap = state->reqwrap;
     state->wsize = 0;
     state->whave = 0;
     state->wnext = 0;
@@ -171,8 +183,8 @@ int ZEXPORT inflateReset2(z_streamp strm, int windowBits) {
     }
 
     /* update state and reset the rest of it */
-    state->wrap = wrap;
-    state->wbits = (unsigned)windowBits;
+    state->reqwrap = state->wrap = wrap;
+    state->reqbits = state->wbits = (unsigned)windowBits;
     return inflateReset(strm);
 }
 
@@ -380,15 +392,10 @@ local int updatewindow(z_streamp strm, const Bytef *end, unsigned copy) {
                         ZALLOC(strm, wsize + CHUNKCOPY_CHUNK_SIZE,
                                sizeof(unsigned char));
         if (state->window == Z_NULL) return 1;
-#ifdef INFLATE_CLEAR_UNUSED_UNDEFINED
-        /* Copies from the overflow portion of this buffer are undefined and
-           may cause analysis tools to raise a warning if we don't initialize
-           it.  However, this undefined data overwrites other undefined data
-           and is subsequently either overwritten or left deliberately
-           undefined at the end of decode; so there's really no point.
-         */
-        zmemzero(state->window + wsize, CHUNKCOPY_CHUNK_SIZE);
-#endif
+
+        /* Clear the window to avoid "chunked copies" writing uninitialized
+         * bytes from the window to the output buffer (crbug.com/575038806). */
+        zmemzero(state->window, wsize + CHUNKCOPY_CHUNK_SIZE);
     }
 
     /* if window not in use yet, initialize */
@@ -665,13 +672,13 @@ int ZEXPORT inflate(z_streamp strm, int flush) {
             }
             DROPBITS(4);
             len = BITS(4) + 8;
-            if (state->wbits == 0)
-                state->wbits = len;
-            if (len > 15 || len > state->wbits) {
-                strm->msg = (char *)"invalid window size";
+            if (len > 15 || (state->wbits != 0 && len > state->wbits)) {
+                strm->msg = (z_const char *)"invalid window size";
                 state->mode = BAD;
                 break;
             }
+            if (state->wbits == 0)
+                state->wbits = len;
             state->dmax = 1U << len;
             state->flags = 0;               /* indicate zlib header */
             Tracev((stderr, "inflate:   zlib header ok\n"));
@@ -828,6 +835,7 @@ int ZEXPORT inflate(z_streamp strm, int flush) {
         case DICT:
             if (state->havedict == 0) {
                 RESTORE();
+                strm->total_in += in - strm->avail_in;
                 return Z_NEED_DICT;
             }
             strm->adler = state->check = adler32(0L, Z_NULL, 0);
@@ -1037,7 +1045,8 @@ int ZEXPORT inflate(z_streamp strm, int flush) {
                 /* fallthrough */
         case LEN:
             if (have >= INFLATE_FAST_MIN_INPUT &&
-                left >= INFLATE_FAST_MIN_OUTPUT) {
+                left >= INFLATE_FAST_MIN_OUTPUT &&
+                bits < 8) {
                 RESTORE();
                 inflate_fast_chunk_(strm, out);
                 LOAD();
@@ -1252,29 +1261,6 @@ int ZEXPORT inflate(z_streamp strm, int flush) {
        Note: a memory error from inflate() is non-recoverable.
      */
   inf_leave:
-#if defined(ZLIB_DEBUG)
-   /* XXX(cavalcantii): I put this in place back in 2017 to help debug faulty
-    * client code relying on undefined behavior when chunk_copy first landed.
-    *
-    * It is save to say after all these years that Chromium code is well
-    * behaved and works fine with the optimization, therefore we can enable
-    * this only for DEBUG builds.
-    *
-    * We write a defined value in the unused space to help mark
-    * where the stream has ended. We don't use zeros as that can
-    * mislead clients relying on undefined behavior (i.e. assuming
-    * that the data is over when the buffer has a zero/null value).
-    *
-    * The basic idea is that if client code is not relying on the zlib context
-    * to inform the amount of decompressed data, but instead reads the output
-    * buffer until a zero/null is found, it will fail faster and harder
-    * when the remaining of the buffer is marked with a symbol (e.g. 0x55).
-    */
-   if (left >= CHUNKCOPY_CHUNK_SIZE)
-      memset(put, 0x55, CHUNKCOPY_CHUNK_SIZE);
-   else
-      memset(put, 0x55, left);
-#endif
     RESTORE();
     if (state->wsize || (out != strm->avail_out && state->mode < BAD &&
             (state->mode < CHECK || flush != Z_FINISH)))
@@ -1337,7 +1323,8 @@ int ZEXPORT inflateSetDictionary(z_streamp strm, const Bytef *dictionary,
     int ret;
 
     /* check state */
-    if (inflateStateCheck(strm)) return Z_STREAM_ERROR;
+    if (inflateStateCheck(strm) || dictionary == Z_NULL)
+        return Z_STREAM_ERROR;
     state = (struct inflate_state FAR *)strm->state;
     if (state->wrap != 0 && state->mode != DICT)
         return Z_STREAM_ERROR;
@@ -1442,15 +1429,23 @@ int ZEXPORT inflateSync(z_streamp strm) {
 
     /* return no joy or set up to restart inflate() on a new block */
     if (state->have != 4) return Z_DATA_ERROR;
-    if (state->flags == -1)
-        state->wrap = 0;    /* if no header yet, treat as raw */
-    else
-        state->wrap &= ~4;  /* no point in computing a check value now */
     flags = state->flags;
     in = strm->total_in;  out = strm->total_out;
     inflateReset(strm);
     strm->total_in = in;  strm->total_out = out;
     state->flags = flags;
+    if (flags == -1)
+        state->wrap = 0;    /* if no header yet, treat as raw */
+    else
+        state->wrap &= ~4;  /* no point in computing a check value now */
+    if (state->wbits == 0) {
+        /* we never got to see a header for the window size -- set to max */
+        if (state->window != Z_NULL) {
+            ZFREE(strm, state->window);
+            state->window = Z_NULL;
+        }
+        state->wbits = 15;
+    }
     state->mode = TYPE;
     return Z_OK;
 }
@@ -1478,14 +1473,22 @@ int ZEXPORT inflateCopy(z_streamp dest, z_streamp source) {
     unsigned wsize;
 
     /* check input */
-    if (inflateStateCheck(source) || dest == Z_NULL)
+    if (dest == Z_NULL)
         return Z_STREAM_ERROR;
+    if (inflateStateCheck(source)) {
+        dest->state = Z_NULL;
+        return Z_STREAM_ERROR;
+    }
     state = (struct inflate_state FAR *)source->state;
 
     /* allocate space */
     copy = (struct inflate_state FAR *)
            ZALLOC(source, 1, sizeof(struct inflate_state));
-    if (copy == Z_NULL) return Z_MEM_ERROR;
+    if (copy == Z_NULL) {
+        dest->state = Z_NULL;
+        return Z_MEM_ERROR;
+    }
+    zmemzero(copy, sizeof(struct inflate_state));
     window = Z_NULL;
     if (state->window != Z_NULL) {
         window = (unsigned char FAR *)ZALLOC(
@@ -1493,6 +1496,7 @@ int ZEXPORT inflateCopy(z_streamp dest, z_streamp source) {
             sizeof(unsigned char));
         if (window == Z_NULL) {
             ZFREE(source, copy);
+            dest->state = Z_NULL;
             return Z_MEM_ERROR;
         }
     }
@@ -1509,7 +1513,7 @@ int ZEXPORT inflateCopy(z_streamp dest, z_streamp source) {
     copy->next = copy->codes + (state->next - state->codes);
     if (window != Z_NULL) {
         wsize = 1U << state->wbits;
-        zmemcpy(window, state->window, wsize);
+        zmemcpy(window, state->window, wsize + CHUNKCOPY_CHUNK_SIZE);
     }
     copy->window = window;
     dest->state = (struct internal_state FAR *)copy;
@@ -1540,6 +1544,10 @@ int ZEXPORT inflateValidate(z_streamp strm, int check) {
         state->wrap |= 4;
     else
         state->wrap &= ~4;
+    if (check && state->reqwrap)
+        state->reqwrap |= 4;
+    else
+        state->reqwrap &= ~4;
     return Z_OK;
 }
 

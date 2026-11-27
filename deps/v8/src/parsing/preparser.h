@@ -11,6 +11,7 @@
 #include "src/parsing/parse-info.h"
 #include "src/parsing/parser-base.h"
 #include "src/parsing/pending-compilation-error-handler.h"
+#include "src/parsing/preparse-data.h"
 #include "src/parsing/preparser-logger.h"
 
 namespace v8 {
@@ -23,8 +24,6 @@ namespace internal {
 // responsible for creating these dummy objects. It provides a similar kind of
 // interface as AstNodeFactory, so ParserBase doesn't need to care which one is
 // used.
-
-class PreparseDataBuilder;
 
 class PreParserIdentifier {
  public:
@@ -345,7 +344,7 @@ class PreParserStatementList {
 
 class PreParserScopedStatementList {
  public:
-  explicit PreParserScopedStatementList(std::vector<void*>* buffer) {}
+  explicit PreParserScopedStatementList(ScopedListBuffer<void*>* buffer) {}
   void Rewind() {}
   void MergeInto(const PreParserScopedStatementList* other) {}
   void Add(const PreParserStatement& element) {}
@@ -357,7 +356,8 @@ class PreParserScopedStatementList {
 // build lists of variables though.
 class PreParserExpressionList {
  public:
-  explicit PreParserExpressionList(std::vector<void*>* buffer) : length_(0) {}
+  explicit PreParserExpressionList(ScopedListBuffer<void*>* buffer)
+      : length_(0) {}
 
   int length() const { return length_; }
 
@@ -893,9 +893,7 @@ class PreParser : public ParserBase<PreParser> {
             /*compile_hints_per_function_magic_enabled=*/false),
         use_counts_(nullptr),
         preparse_data_builder_(nullptr),
-        preparse_data_builder_buffer_() {
-    preparse_data_builder_buffer_.reserve(16);
-  }
+        preparse_data_builder_buffer_() {}
 
   static bool IsPreParser() { return true; }
 
@@ -929,7 +927,7 @@ class PreParser : public ParserBase<PreParser> {
     preparse_data_builder_ = preparse_data_builder;
   }
 
-  std::vector<void*>* preparse_data_builder_buffer() {
+  ScopedListBuffer<void*>* preparse_data_builder_buffer() {
     return &preparse_data_builder_buffer_;
   }
 
@@ -953,6 +951,47 @@ class PreParser : public ParserBase<PreParser> {
   // just stay where we are.
   bool AllowsLazyParsingWithoutUnresolvedVariables() const { return false; }
   bool parse_lazily() const { return false; }
+
+  // No-op in PreParser (parse_lazily() is always false).
+  class V8_NODISCARD LazyParsingScope {
+   public:
+    explicit LazyParsingScope(PreParser*) {}
+  };
+
+  // Records simple-parameter block-body arrow functions as skippable in
+  // PreparseData when preparsing an enclosing function.
+  class V8_NODISCARD SkippableArrowFunctionScope {
+   public:
+    SkippableArrowFunctionScope(PreParser* preparser,
+                                DeclarationScope* function_scope,
+                                bool is_skippable)
+        : preparser_(preparser),
+          function_scope_(function_scope),
+          data_gathering_scope_(preparser),
+          is_skippable_(is_skippable &&
+                        preparser->preparse_data_builder_ != nullptr) {
+      if (is_skippable_) {
+        data_gathering_scope_.Start(function_scope);
+      }
+    }
+
+    void Finish(int function_literal_id) {
+      if (is_skippable_) {
+        // PreParser does not call RecordParameter for arrow heads, and Parser
+        // ignores num_parameters/function_length when skipping arrow bodies.
+        DCHECK_EQ(0, function_scope_->num_parameters());
+        data_gathering_scope_.SetSkippableFunction(
+            function_scope_, /*function_length=*/0,
+            preparser_->GetLastInfoId() - function_literal_id);
+      }
+    }
+
+   private:
+    PreParser* preparser_;
+    DeclarationScope* function_scope_;
+    PreparseDataBuilder::DataGatheringScope data_gathering_scope_;
+    bool is_skippable_;
+  };
 
   PendingCompilationErrorHandler* pending_error_handler() {
     return pending_error_handler_;
@@ -1492,6 +1531,9 @@ class PreParser : public ParserBase<PreParser> {
   }
 
   V8_INLINE PreParserExpression NewTargetExpression(int pos) {
+    scope()->NewUnresolved(factory()->ast_node_factory(),
+                           ast_value_factory()->dot_new_target_string(), pos,
+                           NORMAL_VARIABLE);
     return PreParserExpression::Default();
   }
 
@@ -1639,7 +1681,7 @@ class PreParser : public ParserBase<PreParser> {
   PreParserLogger log_;
 
   PreparseDataBuilder* preparse_data_builder_;
-  std::vector<void*> preparse_data_builder_buffer_;
+  ScopedListBuffer<void*> preparse_data_builder_buffer_;
 };
 
 }  // namespace internal

@@ -8,6 +8,8 @@
 #include <atomic>
 #include <memory>
 #include <optional>
+#include <string_view>
+#include <vector>
 
 #if V8_OS_DARWIN
 #include "pthread.h"
@@ -30,9 +32,11 @@ namespace v8 {
 namespace internal {
 
 class Heap;
+class HeapVerification;
 class LocalHandles;
 class MarkingBarrier;
 class MutablePage;
+class PendingObjectVerifyScope;
 class Safepoint;
 
 // Do not use this variable directly, use LocalHeap::Current() instead.
@@ -77,7 +81,21 @@ class V8_EXPORT_PRIVATE LocalHeap {
     if (V8_UNLIKELY(current.IsRunningWithSlowPathFlag())) {
       SafepointSlowPath();
     }
+
+#ifdef V8_ENABLE_TEST_ONLY_SYNC_POINTS
+    if (V8_UNLIKELY(!pending_synchronization_point_.empty())) {
+      BlockAtPendingSynchronizationPoint();
+    }
+#endif  // V8_ENABLE_TEST_ONLY_SYNC_POINTS
   }
+
+#ifdef V8_ENABLE_TEST_ONLY_SYNC_POINTS
+  // Defers `synchronization_point` so this thread blocks there, parked, on its
+  // next call to Safepoint(). `synchronization_point` must remain valid until
+  // that Safepoint() call.
+  void DeferSynchronizationPointToNextSafepoint(
+      std::string_view synchronization_point);
+#endif  // V8_ENABLE_TEST_ONLY_SYNC_POINTS
 
   LocalHandles* handles() { return handles_.get(); }
 
@@ -121,6 +139,7 @@ class V8_EXPORT_PRIVATE LocalHeap {
   bool HasPersistentHandles() { return !!persistent_handles_; }
   bool ContainsPersistentHandle(Address* location);
   bool ContainsLocalHandle(Address* location);
+  bool ContainsStrongRoot(FullObjectSlot slot);
   bool IsHandleDereferenceAllowed();
 #endif
 
@@ -413,6 +432,13 @@ class V8_EXPORT_PRIVATE LocalHeap {
   bool allocation_failed_;
   int nested_parked_scopes_;
 
+#ifdef V8_ENABLE_TEST_ONLY_SYNC_POINTS
+  void BlockAtPendingSynchronizationPoint();
+
+  // Set by DeferSynchronizationPointToNextSafepoint, empty if there is none.
+  std::string_view pending_synchronization_point_;
+#endif  // V8_ENABLE_TEST_ONLY_SYNC_POINTS
+
   LocalHeap* saved_current_local_heap_ = nullptr;
   Isolate* saved_current_isolate_ = nullptr;
 
@@ -429,8 +455,6 @@ class V8_EXPORT_PRIVATE LocalHeap {
 
   HeapAllocator heap_allocator_;
 
-  MarkingBarrier* saved_marking_barrier_ = nullptr;
-
   // Stack information for the thread using this local heap.
   ::heap::base::Stack stack_;
   CPPGC_STACK_ALLOCATED_IGNORE(
@@ -441,13 +465,21 @@ class V8_EXPORT_PRIVATE LocalHeap {
   Address write_barrier_mode_for_object_ = kNullAddress;
 #endif  // V8_VERIFY_WRITE_BARRIERS
 
+#ifdef VERIFY_HEAP
+  CPPGC_STACK_ALLOCATED_IGNORE(
+      "Registry of active scopes, pushed/popped by their ctor/dtor")
+  std::vector<PendingObjectVerifyScope*> pending_object_verify_scopes_;
+#endif  // VERIFY_HEAP
+
   friend class CollectionBarrier;
   friend class GlobalSafepoint;
   friend class Heap;
+  friend class HeapVerification;
   friend class Isolate;
   friend class IsolateSafepoint;
   friend class IsolateSafepointScope;
   friend class ParkedScope;
+  friend class PendingObjectVerifyScope;
   friend class UnparkedScope;
   friend class GCRootsProviderScope;
   friend class WriteBarrierModeScope;

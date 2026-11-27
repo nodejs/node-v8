@@ -19,10 +19,6 @@
     IsConcatSpreadableProtector)                                              \
   V(MapIteratorProtector, map_iterator_protector, MapIteratorProtector)       \
   V(NoElementsProtector, no_elements_protector, NoElementsProtector)          \
-  V(MegaDOMProtector, mega_dom_protector, MegaDOMProtector)                   \
-  V(NumberStringNotRegexpLikeProtector,                                       \
-    number_string_not_regexp_like_protector,                                  \
-    NumberStringNotRegexpLikeProtector)                                       \
   V(PromiseResolveProtector, promise_resolve_protector,                       \
     PromiseResolveProtector)                                                  \
   V(PromiseSpeciesProtector, promise_species_protector,                       \
@@ -43,9 +39,6 @@
   V(rootIndexName, rootAccessorName, class_name##Map)
 
 #define HEAP_IMMUTABLE_IMMOVABLE_OBJECT_LIST(V)                              \
-  V(AllocationSiteWithoutWeakNextMap, allocation_site_without_weaknext_map,  \
-    AllocationSiteWithoutWeakNextMap)                                        \
-  V(AllocationSiteWithWeakNextMap, allocation_site_map, AllocationSiteMap)   \
   V(arguments_to_string, arguments_to_string, ArgumentsToString)             \
   V(ArrayListMap, array_list_map, ArrayListMap)                              \
   V(Array_string, Array_string, ArrayString)                                 \
@@ -96,7 +89,6 @@
   V(ManyClosuresCellMap, many_closures_cell_map, ManyClosuresCellMap)        \
   V(match_symbol, match_symbol, MatchSymbol)                                 \
   V(megamorphic_symbol, megamorphic_symbol, MegamorphicSymbol)               \
-  V(mega_dom_symbol, mega_dom_symbol, MegaDOMSymbol)                         \
   V(message_string, message_string, MessageString)                           \
   V(minus_Infinity_string, minus_Infinity_string, MinusInfinityString)       \
   V(MinusZeroValue, minus_zero_value, MinusZero)                             \

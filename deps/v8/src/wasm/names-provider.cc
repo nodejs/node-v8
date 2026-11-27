@@ -456,7 +456,7 @@ size_t NamesProvider::EstimateCurrentMemoryConsumption() const {
 
 size_t CanonicalTypeNamesProvider::EstimateCurrentMemoryConsumption() const {
   base::MutexGuard lock(&mutex_);
-  size_t result = sizeof(this) + payload_size_estimate_;
+  size_t result = sizeof(CanonicalTypeNamesProvider) + payload_size_estimate_;
   result += type_names_.capacity() * sizeof(StringT);
   result += ContentSize(field_names_);
   for (const auto& entry : field_names_) {
@@ -516,24 +516,13 @@ void CanonicalTypeNamesProvider::PrintTypeName(
 
 void CanonicalTypeNamesProvider::PrintValueType(StringBuilder& out,
                                                 CanonicalValueType type) {
-  switch (type.kind()) {
-    case kRef:
-    case kRefNull:
-      if (type.encoding_needs_heap_type()) {
-        out << (type.kind() == kRef ? "(ref " : "(ref null ");
-        if (type.is_exact()) out << "exact ";
-        if (type.has_index()) {
-          PrintTypeName(out, type.ref_index());
-        } else {
-          out << type.name();
-        }
-        out << ')';
-      } else {
-        out << type.name();
-      }
-      break;
-    default:
-      out << wasm::name(type.kind());
+  if (type.has_index()) {
+    out << (type.is_nullable() ? "(ref null " : "(ref ");
+    if (type.is_exact()) out << "exact ";
+    PrintTypeName(out, type.ref_index());
+    out << ')';
+  } else {
+    out << type.name();
   }
 }
 

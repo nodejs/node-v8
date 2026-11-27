@@ -13,6 +13,7 @@
 #include "src/heap/heap-write-barrier.h"
 #include "src/heap/heap.h"
 #include "src/heap/incremental-marking.h"
+#include "src/heap/local-heap.h"
 #include "src/heap/mark-compact-inl.h"
 #include "src/heap/mark-compact.h"
 #include "src/heap/marking-barrier-inl.h"
@@ -23,7 +24,7 @@
 #include "src/heap/safepoint.h"
 #include "src/objects/descriptor-array.h"
 #include "src/objects/heap-object.h"
-#include "src/objects/js-array-buffer.h"
+#include "src/objects/js-array-buffer-inl.h"
 #include "src/objects/objects-inl.h"
 
 namespace v8 {
@@ -31,21 +32,19 @@ namespace internal {
 
 MarkingBarrier::MarkingBarrier(LocalHeap* local_heap)
     : heap_(local_heap->heap()),
-      major_collector_(heap_->mark_compact_collector()),
-      minor_collector_(heap_->minor_mark_sweep_collector()),
-      incremental_marking_(heap_->incremental_marking()),
-      marking_state_(isolate()),
       is_main_thread_barrier_(local_heap->is_main_thread()),
       uses_shared_heap_(isolate()->has_shared_space()),
       is_shared_space_isolate_(isolate()->is_shared_space_isolate()) {}
 
 MarkingBarrier::~MarkingBarrier() { DCHECK(typed_slots_map_.empty()); }
 
-void MarkingBarrier::Write(Tagged<HeapObject> host, TrustedPointerSlot slot) {
+void MarkingBarrier::Write(Isolate* isolate, Tagged<HeapObject> host,
+                           TrustedPointerSlot slot) {
 #ifdef V8_ENABLE_SANDBOX
-  DCHECK(IsCurrentMarkingBarrier(host));
-  DCHECK(is_activated_ || shared_heap_worklists_.has_value());
-  DCHECK(MemoryChunk::FromHeapObject(host)->IsMarking());
+  DCHECK_EQ(isolate, this->isolate());
+  DCHECK(IsCurrentMarkingBarrier());
+  DCHECK(is_activated() || is_shared());
+  DCHECK_IMPLIES(is_not_major(), is_shared());
 
   // An indirect pointer slot can only contain a Smi if it is uninitialized (in
   // which case the vaue will be Smi::zero()). However, at this point the slot
@@ -53,31 +52,38 @@ void MarkingBarrier::Write(Tagged<HeapObject> host, TrustedPointerSlot slot) {
   // During deserialization, the referenced object may not yet have been
   // published. We can still mark it here.
   Tagged<HeapObject> value =
-      Cast<HeapObject>(slot.Relaxed_Load_AllowUnpublished(isolate()));
+      Cast<HeapObject>(slot.Relaxed_Load_AllowUnpublished(isolate));
 
   // If the host is in shared space, the target must be in the shared trusted
   // space. No other edges indirect pointers are currently possible in shared
   // space.
-  DCHECK_IMPLIES(
-      HeapLayout::InWritableSharedSpace(host),
-      MemoryChunk::FromHeapObject(value)->Metadata()->owner()->identity() ==
-          SHARED_TRUSTED_SPACE);
+  DCHECK_IMPLIES(TrustedHeapLayout::InWritableSharedSpace(isolate, host),
+                 MemoryChunk::FromHeapObject(value)
+                         ->Metadata(isolate)
+                         ->owner()
+                         ->identity() == SHARED_TRUSTED_SPACE);
 
   if (HeapLayout::InReadOnlySpace(value)) return;
 
   DCHECK(!HeapLayout::InYoungGeneration(value));
 
   if (V8_UNLIKELY(uses_shared_heap_) && !is_shared_space_isolate_) {
-    if (HeapLayout::InWritableSharedSpace(value)) {
+    if (TrustedHeapLayout::InWritableSharedSpace(isolate, value)) {
+      if (!is_shared()) return;
       // References to the shared trusted space may only originate from the
       // shared space.
-      CHECK(HeapLayout::InWritableSharedSpace(host));
-      DCHECK(MemoryChunk::FromHeapObject(value)->Metadata()->is_trusted());
-      MarkValueShared(value);
+      CHECK(TrustedHeapLayout::InWritableSharedSpace(isolate, host));
+      DCHECK(
+          MemoryChunk::FromHeapObject(value)->Metadata(isolate)->is_trusted());
+      if (!TrustedHeapLayout::InBlackAllocatedPage(value)) {
+        MarkValueShared(value);
+      }
     } else {
+      if (is_not_major()) return;
       MarkValueLocal(value);
     }
   } else {
+    if (is_not_major()) return;
     MarkValueLocal(value);
   }
 
@@ -92,7 +98,7 @@ void MarkingBarrier::Write(Tagged<HeapObject> host, TrustedPointerSlot slot) {
 
 void MarkingBarrier::WriteWithoutHost(Tagged<HeapObject> value) {
   DCHECK(is_main_thread_barrier_);
-  DCHECK(is_activated_);
+  DCHECK(is_activated());
 
   // Without a shared heap and on the shared space isolate (= main isolate) all
   // objects are considered local.
@@ -108,10 +114,10 @@ void MarkingBarrier::WriteWithoutHost(Tagged<HeapObject> value) {
 
 void MarkingBarrier::Write(Tagged<InstructionStream> host,
                            RelocInfo* reloc_info, Tagged<HeapObject> value) {
-  DCHECK(IsCurrentMarkingBarrier(host));
+  DCHECK(IsCurrentMarkingBarrier());
   DCHECK(!HeapLayout::InWritableSharedSpace(host));
-  DCHECK(is_activated_ || shared_heap_worklists_.has_value());
-  DCHECK(MemoryChunk::FromHeapObject(host)->IsMarking());
+  DCHECK(is_activated());
+  DCHECK(WriteBarrier::IsMarking(isolate(), host));
 
   MarkValue(host, value);
 
@@ -120,7 +126,7 @@ void MarkingBarrier::Write(Tagged<InstructionStream> host,
     if (is_main_thread_barrier_) {
       // An optimization to avoid allocating additional typed slots for the
       // main thread.
-      major_collector_->RecordRelocSlot(host, reloc_info, value);
+      MarkCompactCollector::RecordRelocSlot(host, reloc_info, value);
     } else {
       RecordRelocSlot(host, reloc_info, value);
     }
@@ -129,12 +135,13 @@ void MarkingBarrier::Write(Tagged<InstructionStream> host,
 
 void MarkingBarrier::Write(Tagged<JSArrayBuffer> host,
                            ArrayBufferExtension* extension) {
-  DCHECK(IsCurrentMarkingBarrier(host));
+  DCHECK(IsCurrentMarkingBarrier());
   DCHECK(!HeapLayout::InWritableSharedSpace(host));
-  DCHECK(MemoryChunk::FromHeapObject(host)->IsMarking());
+  DCHECK(is_activated());
 
   if (is_minor()) {
-    if (HeapLayout::InYoungGeneration(host)) {
+    if (extension->age() == ArrayBufferExtension::Age::kYoung) {
+      DCHECK(HeapLayout::InYoungGeneration(host));
       extension->YoungMark();
     }
   } else {
@@ -145,7 +152,7 @@ void MarkingBarrier::Write(Tagged<JSArrayBuffer> host,
 void MarkingBarrier::RecordRelocSlot(Tagged<InstructionStream> host,
                                      RelocInfo* rinfo,
                                      Tagged<HeapObject> target) {
-  DCHECK(IsCurrentMarkingBarrier(host));
+  DCHECK(IsCurrentMarkingBarrier());
   if (!MarkCompactCollector::ShouldRecordRelocSlot(host, rinfo, target)) return;
 
   MarkCompactCollector::RecordRelocSlotInfo info =
@@ -278,11 +285,12 @@ void MarkingBarrier::ActivateAll(Heap* heap, bool is_compacting) {
   });
 
   if (heap->isolate()->is_shared_space_isolate()) {
+    heap->SetIsSharedMarkingFlag(true);
     heap->isolate()->global_safepoint()->IterateClientIsolates(
         [](Isolate* client) {
           // Force the RecordWrite builtin into the incremental marking code
           // path.
-          client->heap()->SetIsMarkingFlag(true);
+          client->heap()->SetIsSharedMarkingFlag(true);
           client->heap()->safepoint()->IterateLocalHeaps(
               [](LocalHeap* local_heap) {
                 local_heap->marking_barrier()->ActivateShared();
@@ -301,17 +309,17 @@ void MarkingBarrier::ActivateYoung(Heap* heap) {
 }
 
 void MarkingBarrier::Activate(bool is_compacting, MarkingMode marking_mode) {
-  DCHECK(!is_activated_);
+  DCHECK(!is_activated());
+  DCHECK_NE(marking_mode, MarkingMode::kNoMarking);
   is_compacting_ = is_compacting;
   marking_mode_ = marking_mode;
   current_worklists_ = std::make_unique<MarkingWorklists::Local>(
-      is_minor() ? minor_collector_->marking_worklists()
-                 : major_collector_->marking_worklists());
-  is_activated_ = true;
+      is_minor() ? heap_->minor_mark_sweep_collector()->marking_worklists()
+                 : heap_->mark_compact_collector()->marking_worklists());
 }
 
 void MarkingBarrier::ActivateShared() {
-  DCHECK(!shared_heap_worklists_.has_value());
+  DCHECK(!is_shared());
   Isolate* shared_isolate = isolate()->shared_space_isolate();
   shared_heap_worklists_.emplace(
       shared_isolate->heap()->mark_compact_collector()->marking_worklists());
@@ -326,14 +334,10 @@ void MarkingBarrier::DeactivateAll(Heap* heap) {
   });
 
   if (heap->isolate()->is_shared_space_isolate()) {
+    heap->SetIsSharedMarkingFlag(false);
     heap->isolate()->global_safepoint()->IterateClientIsolates(
         [](Isolate* client) {
-          // We can't just simply disable the marking barrier for all clients. A
-          // client may still need it to be set for incremental marking in the
-          // local heap.
-          const bool is_marking =
-              client->heap()->incremental_marking()->IsMarking();
-          client->heap()->SetIsMarkingFlag(is_marking);
+          client->heap()->SetIsSharedMarkingFlag(false);
           client->heap()->safepoint()->IterateLocalHeaps(
               [](LocalHeap* local_heap) {
                 local_heap->marking_barrier()->DeactivateShared();
@@ -352,8 +356,7 @@ void MarkingBarrier::DeactivateYoung(Heap* heap) {
 }
 
 void MarkingBarrier::Deactivate() {
-  DCHECK(is_activated_);
-  is_activated_ = false;
+  DCHECK(is_activated());
   is_compacting_ = false;
   marking_mode_ = MarkingMode::kNoMarking;
   DCHECK(typed_slots_map_.empty());
@@ -391,7 +394,7 @@ void MarkingBarrier::PublishYoung(Heap* heap) {
 }
 
 void MarkingBarrier::PublishIfNeeded() {
-  if (is_activated_) {
+  if (is_activated()) {
     current_worklists_->Publish();
     for (auto& it : typed_slots_map_) {
       MutablePage* memory_chunk = it.first;
@@ -412,24 +415,25 @@ void MarkingBarrier::PublishSharedIfNeeded() {
   }
 }
 
-bool MarkingBarrier::IsCurrentMarkingBarrier(
-    Tagged<HeapObject> verification_candidate) {
-  return WriteBarrier::CurrentMarkingBarrier(verification_candidate) == this;
+bool MarkingBarrier::IsCurrentMarkingBarrier() {
+  return LocalHeap::Current()->marking_barrier() == this;
 }
 
 Isolate* MarkingBarrier::isolate() const { return heap_->isolate(); }
 
 #if DEBUG
-void MarkingBarrier::AssertMarkingIsActivated() const { DCHECK(is_activated_); }
+void MarkingBarrier::AssertMarkingIsActivated() const {
+  DCHECK(is_activated());
+}
 
 void MarkingBarrier::AssertSharedMarkingIsActivated() const {
-  DCHECK(shared_heap_worklists_.has_value());
+  DCHECK(is_shared());
 }
 #endif  // DEBUG
 
 #if V8_VERIFY_WRITE_BARRIERS
 bool MarkingBarrier::IsMarked(const Tagged<HeapObject> value) const {
-  return marking_state_.IsMarked(value);
+  return MarkingState(heap_->isolate()).IsMarked(value);
 }
 #endif  // V8_VERIFY_WRITE_BARRIERS
 

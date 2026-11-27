@@ -129,6 +129,35 @@ class Utf16CharacterStream {
     }
   }
 
+  // Calls {scan}(begin, end) with the buffered code units starting at the one
+  // most recently returned by Advance(), which must not be kEndOfInput. {scan}
+  // returns the code unit to resume at, in [begin, end), which becomes the
+  // current one.
+  template <typename FunctionType>
+  V8_INLINE base::uc32 ScanBuffered(FunctionType scan) {
+    DCHECK_LT(buffer_start_, buffer_cursor_);
+    DCHECK_LE(buffer_cursor_, buffer_end_);
+    const uint16_t* begin = buffer_cursor_ - 1;
+    const uint16_t* resume = scan(begin, buffer_end_);
+    DCHECK_LE(begin, resume);
+    DCHECK_LT(resume, buffer_end_);
+    buffer_cursor_ = resume + 1;
+    return *resume;
+  }
+
+  // Advances past code units up to the first terminator and appends them to
+  // {literal}, which must be one-byte. Returns the terminator, or kEndOfInput.
+  //
+  // {is_terminator}(d, chars) receives a Highway vector of code units narrowed
+  // with saturation to uint8_t and returns the terminator mask. Non-ASCII lanes
+  // (> 0x7F) must terminate: saturation maps >= 0x100 to 0xFF, and the slow
+  // path pads partial tails with 0xFFFF.
+  //
+  // Defined in scanner.cc; callers force inlining with V8_INLINE_STATEMENT.
+  template <typename FunctionType>
+  base::uc32 AdvanceUntilNarrowing(LiteralBuffer* literal,
+                                   FunctionType is_terminator);
+
   // Go back one by one character in the input stream.
   // This undoes the most recent Advance().
   inline void Back() {
@@ -241,6 +270,11 @@ class Utf16CharacterStream {
   size_t buffer_pos_;
   RuntimeCallStats* runtime_call_stats_ = nullptr;
   bool has_parser_error_ = false;
+
+ private:
+  template <typename FunctionType>
+  V8_NOINLINE base::uc32 AdvanceUntilNarrowingSlow(LiteralBuffer* literal,
+                                                   FunctionType is_terminator);
 };
 
 // ----------------------------------------------------------------------------
@@ -307,6 +341,14 @@ class V8_EXPORT_PRIVATE Scanner {
     int end_pos;
   };
 
+  // An integer or null element of an array literal, see
+  // ScanArrayLiteralElements().
+  struct ArrayLiteralElement {
+    bool is_null;
+    double number;
+    Location location;
+  };
+
   // -1 is outside of the range of any real source code.
   static constexpr base::uc32 kEndOfInput = Utf16CharacterStream::kEndOfInput;
   static constexpr base::uc32 kInvalidSequence = static_cast<base::uc32>(-1);
@@ -320,6 +362,22 @@ class V8_EXPORT_PRIVATE Scanner {
 
   // Returns the next token and advances input.
   Token::Value Next();
+
+  // With a comma in peek(), consume a run of immediate integer/null elements
+  // and their commas within the current input buffer, leaving the last
+  // consumed comma in peek(). current() is not updated. The returned elements
+  // are valid until the next call.
+  V8_INLINE base::Vector<const ArrayLiteralElement> ScanArrayLiteralElements() {
+    // The check on c0_ also rules out kEndOfInput, for which ScanBuffered() has
+    // no buffered code unit to start at.
+    if (next().token != Token::kComma ||
+        next_next().token != Token::kUninitialized ||
+        (!base::IsInRange(c0_, '0', '9') && c0_ != 'n')) {
+      return {};
+    }
+    return ScanArrayLiteralElementRun();
+  }
+
   // Returns the token following peek()
   Token::Value PeekAhead();
   // Checks the character after peek(); declines if lookahead is buffered.
@@ -793,6 +851,9 @@ class V8_EXPORT_PRIVATE Scanner {
   void SanityCheckTokenDesc(const TokenDesc&) const;
 #endif
 
+  // The out-of-line part of ScanArrayLiteralElements().
+  base::Vector<const ArrayLiteralElement> ScanArrayLiteralElementRun();
+
   TokenDesc& next() { return *next_; }
 
   const TokenDesc& current() const { return *current_; }
@@ -815,6 +876,11 @@ class V8_EXPORT_PRIVATE Scanner {
   base::uc32 c0_;
 
   TokenDesc token_storage_[4];
+
+  // Storage for ScanArrayLiteralElements(). Kept here rather than on the
+  // parser's stack since array literals nest.
+  static constexpr int kArrayLiteralElementBatchSize = 64;
+  ArrayLiteralElement array_literal_elements_[kArrayLiteralElementBatchSize];
 
   // Whether this scanner encountered an HTML comment.
   bool found_html_comment_;

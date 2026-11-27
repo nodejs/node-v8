@@ -22,7 +22,6 @@ class HomomorphicPropertyAccessFeedback;
 class InstanceOfFeedback;
 class JumpLoopFeedback;
 class LiteralFeedback;
-class MegaDOMPropertyAccessFeedback;
 class NamedAccessFeedback;
 class ProxyFeedback;
 class RegExpLiteralFeedback;
@@ -43,7 +42,6 @@ class ProcessedFeedback : public ZoneObject {
     kTypeOf,
     kLiteral,
     kHomomorphicPropertyAccess,
-    kMegaDOMPropertyAccess,
     kNamedAccess,
     kProxy,
     kRegExpLiteral,
@@ -66,7 +64,6 @@ class ProcessedFeedback : public ZoneObject {
   NamedAccessFeedback const& AsNamedAccess() const;
   ProxyFeedback const& AsProxy() const;
   HomomorphicPropertyAccessFeedback const& AsHomomorphicPropertyAccess() const;
-  MegaDOMPropertyAccessFeedback const& AsMegaDOMPropertyAccess() const;
   LiteralFeedback const& AsLiteral() const;
   RegExpLiteralFeedback const& AsRegExpLiteral() const;
   TemplateObjectFeedback const& AsTemplateObject() const;
@@ -225,17 +222,6 @@ class HomomorphicPropertyAccessFeedback : public ProcessedFeedback {
   Tagged<Smi> const handler_;
 };
 
-class MegaDOMPropertyAccessFeedback : public ProcessedFeedback {
- public:
-  MegaDOMPropertyAccessFeedback(FunctionTemplateInfoRef info_ref,
-                                FeedbackSlotKind slot_kind);
-
-  FunctionTemplateInfoRef info() const { return info_; }
-
- private:
-  FunctionTemplateInfoRef const info_;
-};
-
 class CallFeedback : public ProcessedFeedback {
  public:
   CallFeedback(OptionalHeapObjectRef target, float frequency,
@@ -245,7 +231,11 @@ class CallFeedback : public ProcessedFeedback {
         target_(target),
         frequency_(frequency),
         mode_(mode),
-        content_(call_feedback_content) {}
+        content_(call_feedback_content) {
+    DCHECK_IMPLIES(content_ == CallFeedbackContent::kReceiver,
+                   target_.has_value() && (target_->IsJSFunction() ||
+                                           target_->IsJSBoundFunction()));
+  }
 
   OptionalHeapObjectRef target() const { return target_; }
   float frequency() const { return frequency_; }

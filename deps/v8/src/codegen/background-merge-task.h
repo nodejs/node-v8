@@ -5,7 +5,6 @@
 #ifndef V8_CODEGEN_BACKGROUND_MERGE_TASK_H_
 #define V8_CODEGEN_BACKGROUND_MERGE_TASK_H_
 
-#include <unordered_set>
 #include <vector>
 
 #include "src/handles/maybe-handles.h"
@@ -15,7 +14,6 @@ namespace internal {
 
 class FeedbackMetadata;
 class PersistentHandles;
-class ScopeInfo;
 class Script;
 class SharedFunctionInfo;
 class String;
@@ -58,8 +56,6 @@ class V8_EXPORT_PRIVATE BackgroundMergeTask {
     return state_ == kPendingForegroundWork;
   }
 
-  static void ForceGCDuringNextMergeForTesting();
-
  private:
   std::unique_ptr<PersistentHandles> persistent_handles_;
 
@@ -79,7 +75,6 @@ class V8_EXPORT_PRIVATE BackgroundMergeTask {
   //    for any of these, and if so, redo the merge.
   // 2. Update the cached script's infos list to refer to these.
   std::vector<Handle<SharedFunctionInfo>> used_new_sfis_;
-  std::vector<Handle<ScopeInfo>> used_new_scope_infos_;
 
   // SharedFunctionInfos from the cached script which were not compiled, with
   // the corresponding new SharedFunctionInfo. If the SharedFunctionInfo from
@@ -91,7 +86,6 @@ class V8_EXPORT_PRIVATE BackgroundMergeTask {
     Handle<SharedFunctionInfo> new_sfi;
   };
   std::vector<NewCompiledDataForCachedSfi> new_compiled_data_for_cached_sfis_;
-  std::unordered_set<int> sfis_without_scope_info_;
 
   enum State {
     kNotStarted,

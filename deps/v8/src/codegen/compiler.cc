@@ -13,6 +13,7 @@
 #include "src/base/logging.h"
 #include "src/base/platform/time.h"
 #include "src/base/strong-alias.h"
+#include "src/base/synchronization-point-support.h"
 #include "src/baseline/baseline.h"
 #include "src/codegen/assembler-inl.h"
 #include "src/codegen/compilation-cache.h"
@@ -393,7 +394,7 @@ CompilationJob::Status UnoptimizedCompilationJob::ExecuteJob() {
 
 CompilationJob::Status UnoptimizedCompilationJob::FinalizeJob(
     DirectHandle<SharedFunctionInfo> shared_info, Isolate* isolate) {
-  DCHECK_EQ(ThreadId::Current(), isolate->thread_id());
+  DCHECK_EQ(base::ThreadId::Current(), isolate->thread_id());
   DisallowCodeDependencyChange no_dependency_change;
   DisallowJavascriptExecution no_js(isolate);
 
@@ -438,7 +439,7 @@ void LogUnoptimizedCompilation(Isolate* isolate,
 // Implementation of OptimizedCompilationJob
 
 CompilationJob::Status OptimizedCompilationJob::PrepareJob(Isolate* isolate) {
-  DCHECK_EQ(ThreadId::Current(), isolate->thread_id());
+  DCHECK_EQ(base::ThreadId::Current(), isolate->thread_id());
   DisallowJavascriptExecution no_js(isolate);
 
   // Delegate to the underlying implementation.
@@ -459,7 +460,7 @@ CompilationJob::Status OptimizedCompilationJob::ExecuteJob(
 }
 
 CompilationJob::Status OptimizedCompilationJob::FinalizeJob(Isolate* isolate) {
-  DCHECK_EQ(ThreadId::Current(), isolate->thread_id());
+  DCHECK_EQ(base::ThreadId::Current(), isolate->thread_id());
   DisallowJavascriptExecution no_js(isolate);
 
   // Delegate to the underlying implementation.
@@ -482,7 +483,7 @@ OptimizedCompilationJob::CollectRetainedMaps(
   for (RelocIterator it(*code, mode_mask); !it.done(); it.next()) {
     DCHECK(RelocInfo::IsEmbeddedObjectMode(it.rinfo()->rmode()));
     Tagged<HeapObject> target_object = it.rinfo()->target_object();
-    if (code->IsWeakObjectInOptimizedCode(target_object)) {
+    if (Code::IsWeakObjectInOptimizedCode(target_object)) {
       if (Tagged<Map> map; TryCast<Map>(target_object, &map)) {
         // Every weak map embedded in optimized code was canonicalized into
         // `canonical_handles` during compilation. Reuse its existing canonical
@@ -852,6 +853,7 @@ bool IterativelyExecuteAndFinalizeUnoptimizedCompilationJobs(
     }
 
     UpdateSharedFunctionFlagsAfterCompilation(literal);
+    SYNCHRONIZATION_POINT_TEST_ONLY("AfterUpdateSharedFunctionFlags");
 
     auto finalization_status = FinalizeSingleUnoptimizedCompilationJob(
         job.get(), shared_info, isolate,
@@ -925,6 +927,15 @@ bool FinalizeDeferredUnoptimizedCompilationJobs(
   }
 
   return true;
+}
+
+bool HasInstrumentedBytecodeArray(Isolate* isolate,
+                                  Tagged<SharedFunctionInfo> shared) {
+  if (std::optional<Tagged<DebugInfo>> debug_info =
+          shared->TryGetDebugInfo(isolate)) {
+    return debug_info.value()->HasInstrumentedBytecodeArray();
+  }
+  return false;
 }
 
 // A wrapper to access the optimized code cache slots on the feedback vector.
@@ -1033,14 +1044,20 @@ bool CompileTurbofan_NotConcurrent(Isolate* isolate,
   // Success!
   job->RecordCompilationStats(ConcurrencyMode::kSynchronous, isolate);
   DCHECK(!isolate->has_exception());
-  if (job->compilation_info()->is_osr()) {
-    OptimizedOSRCodeCache::Insert(
-        isolate, *compilation_info->closure(), compilation_info->osr_offset(),
-        *compilation_info->code(),
-        compilation_info->function_context_specializing());
-  } else if (!compilation_info->function_context_specializing()) {
-    compilation_info->shared_info()->set_function_context_independent_compiled(
-        true);
+  if (V8_LIKELY(!compilation_info->discard_result_for_testing())) {
+    if (job->compilation_info()->is_osr()) {
+      OptimizedOSRCodeCache::Insert(
+          isolate, *compilation_info->closure(), compilation_info->osr_offset(),
+          *compilation_info->code(),
+          compilation_info->function_context_specializing());
+    } else {
+      if (!compilation_info->function_context_specializing()) {
+        compilation_info->shared_info()
+            ->set_function_context_independent_compiled(true);
+      }
+      compilation_info->closure()->UpdateOptimizedCode(
+          isolate, *compilation_info->code());
+    }
   }
   job->RecordFunctionCompilation(LogEventListener::CodeTag::kFunction, isolate);
   return true;
@@ -1350,6 +1367,14 @@ MaybeHandle<Code> GetOrCompileOptimized(
   // Do not optimize if we need to be able to set break points.
   if (shared->HasBreakInfo(isolate)) return {};
 
+  // Do not OSR-compile while the function runs instrumented debug bytecode
+  // (e.g., kRequiresRuntimeChecks kept after a side-effect-free debug
+  // evaluate), because OSR compiles the original BytecodeArray while active
+  // frames hold the debug copy.
+  if (IsOSR(osr_offset) && HasInstrumentedBytecodeArray(isolate, *shared)) {
+    return {};
+  }
+
   // Do not optimize if optimization is disabled or function doesn't pass
   // turbo_filter.
   if (!ShouldOptimize(code_kind, shared)) return {};
@@ -1461,6 +1486,20 @@ void FinalizeUnoptimizedCompilation(
   for (const auto& finalize_data : finalize_unoptimized_compilation_data_list) {
     DirectHandle<SharedFunctionInfo> shared_info =
         finalize_data.function_handle();
+    // If the compilation was merged into a cached script, skip any newly
+    // compiled SFI that was discarded in favor of an already-compiled cached
+    // SFI, and otherwise resolve the surviving SFI from the script's SFI list.
+    if (shared_info->script() != *script) continue;
+    if (flags.is_toplevel()) {
+      Tagged<HeapObject> heap_object;
+      if (!script->infos()
+               ->get(shared_info->function_literal_id(kRelaxedLoad))
+               .GetHeapObjectIfWeak(&heap_object)) {
+        continue;
+      }
+      shared_info =
+          direct_handle(Cast<SharedFunctionInfo>(heap_object), isolate);
+    }
     // It's unlikely, but possible, that the bytecode was flushed between being
     // allocated and now, so guard against that case, and against it being
     // flushed in the middle of this loop.
@@ -1575,7 +1614,7 @@ MaybeHandle<SharedFunctionInfo> CompileToplevel(
     IsCompiledScope* is_compiled_scope) {
   TimerEventScope<TimerEventCompileCode> top_level_timer(isolate);
   TRACE_EVENT(TRACE_DISABLED_BY_DEFAULT("v8.compile"), "V8.CompileCode");
-  DCHECK_EQ(ThreadId::Current(), isolate->thread_id());
+  DCHECK_EQ(base::ThreadId::Current(), isolate->thread_id());
 
   PostponeInterruptsScope postpone(isolate);
   DCHECK(!isolate->native_context().is_null());
@@ -1746,12 +1785,14 @@ BackgroundCompileTask::~BackgroundCompileTask() = default;
 void SetScriptFieldsFromDetails(Isolate* isolate, Tagged<Script> script,
                                 const ScriptDetails& script_details,
                                 DisallowGarbageCollection* no_gc) {
+  // LINT.IfChange(SetScriptFieldsFromDetails)
   Handle<Object> script_name;
   if (script_details.name_obj.ToHandle(&script_name)) {
     script->set_name(*script_name);
     script->set_line_offset(script_details.line_offset);
     script->set_column_offset(script_details.column_offset);
   }
+  // LINT.ThenChange(/src/objects/compilation-cache-table.cc:ScriptCacheKeyMatchesOrigin)
   // The API can provide a source map URL, but a source map URL could also have
   // been inferred by the parser from a magic comment. The API source map URL
   // takes precedence (as long as it is a non-empty string).
@@ -1937,7 +1978,7 @@ bool BackgroundCompileTask::is_streaming_compilation() const {
 }
 
 void BackgroundCompileTask::Run() {
-  DCHECK_NE(ThreadId::Current(), isolate_for_local_isolate_->thread_id());
+  DCHECK_NE(base::ThreadId::Current(), isolate_for_local_isolate_->thread_id());
   LocalIsolate isolate(isolate_for_local_isolate_, ThreadKind::kBackground);
   UnparkedScope unparked_scope(&isolate);
   LocalHandleScope handle_scope(&isolate);
@@ -2089,6 +2130,11 @@ void BackgroundCompileTask::Run(
 // SharedFunctionInfos and updates any pointers which need updating.
 class ConstantPoolPointerForwarder {
  public:
+  enum class RecordResult {
+    kRecordedOwnScopeInfo,
+    kMissingOwnScopeInfo,
+  };
+
   explicit ConstantPoolPointerForwarder(LocalHeap* local_heap,
                                         DirectHandle<Script> old_script)
       : local_heap_(local_heap), old_script_(old_script) {}
@@ -2098,20 +2144,30 @@ class ConstantPoolPointerForwarder {
     bytecode_arrays_to_update_.emplace_back(bytecode_array, local_heap_);
   }
 
-  void RecordScopeInfos(Tagged<MaybeObject> maybe_old_info) {
-    RecordScopeInfos(maybe_old_info.GetHeapObjectAssumeWeak());
+  RecordResult RecordScopeInfos(Tagged<MaybeObject> maybe_old_info) {
+    return RecordScopeInfos(maybe_old_info.GetHeapObjectAssumeWeak());
   }
 
   // Record all scope infos relevant for a shared function info or scope info
-  // (recorded for eval).
-  void RecordScopeInfos(Tagged<HeapObject> info) {
+  // (recorded for eval). Returns kRecordedOwnScopeInfo if the entry's own
+  // ScopeInfo was recorded, or kMissingOwnScopeInfo if `info` is an uncompiled
+  // SharedFunctionInfo whose own ScopeInfo was not yet present when sampled.
+  RecordResult RecordScopeInfos(Tagged<HeapObject> info) {
     Tagged<ScopeInfo> scope_info;
+    RecordResult result = RecordResult::kRecordedOwnScopeInfo;
     if (Is<SharedFunctionInfo>(info)) {
-      // We can get an empty scope info here for a function that is racily
-      // getting compiled, which is ok because we will revisit it during
+      // We can get an empty scope info (or only the outer scope info) here for
+      // a function that is racily getting compiled, which is ok because
+      // returning kMissingOwnScopeInfo ensures we will revisit it during
       // foreground merging.
       scope_info = Cast<SharedFunctionInfo>(info)->TryGetScopeInfoForMerge();
-      if (scope_info->IsEmpty()) return;
+      if (scope_info->IsEmpty()) {
+        return RecordResult::kMissingOwnScopeInfo;
+      }
+      if (scope_info->UniqueIdInScript() !=
+          Cast<SharedFunctionInfo>(info)->UniqueIdInScript()) {
+        result = RecordResult::kMissingOwnScopeInfo;
+      }
     } else {
       scope_info = Cast<ScopeInfo>(info);
     }
@@ -2127,13 +2183,14 @@ class ConstantPoolPointerForwarder {
           Print(scope_info);
           UNREACHABLE();
         }
-        return;
+        return result;
       }
       scope_infos_to_update_[scope_info->UniqueIdInScript()] =
           handle(scope_info, local_heap_);
       if (!scope_info->HasOuterScopeInfo()) break;
       scope_info = scope_info->OuterScopeInfo();
     }
+    return result;
   }
 
   // Runs the update after the setup functions above specified the work to do.
@@ -2164,7 +2221,9 @@ class ConstantPoolPointerForwarder {
   bool InstallOwnScopeInfo(Tagged<SharedFunctionInfo> sfi) {
     auto it = scope_infos_to_update_.find(sfi->UniqueIdInScript());
     if (it == scope_infos_to_update_.end()) return false;
-    sfi->SetScopeInfo(*it->second);
+    if (sfi->scope_info() != *it->second) {
+      sfi->SetScopeInfo(*it->second);
+    }
     return true;
   }
 
@@ -2199,28 +2258,38 @@ class ConstantPoolPointerForwarder {
     }
   }
 
-  bool HasScopeInfoToUpdate(Tagged<ScopeInfo> scope_info) const {
-    return scope_infos_to_update_.find(scope_info->UniqueIdInScript()) !=
-           scope_infos_to_update_.end();
-  }
+  // Canonicalizes `scope_info` and its outer ScopeInfo chain against
+  // `scope_infos_to_update_`. Returns the canonical replacement if `scope_info`
+  // itself was recorded; otherwise reattaches the first recorded ancestor in
+  // place and returns `scope_info`.
+  V8_WARN_UNUSED_RESULT Tagged<ScopeInfo> UpdateStandaloneScopeInfo(
+      Tagged<ScopeInfo> scope_info) {
+    if (scope_infos_to_update_.empty()) return scope_info;
 
-  void UpdateStandaloneScopeInfo(Tagged<ScopeInfo> scope_info) {
-    if (!scope_info->HasOuterScopeInfo()) return;
+    auto it = scope_infos_to_update_.find(scope_info->UniqueIdInScript());
+    if (it != scope_infos_to_update_.end()) {
+      if (scope_info != *it->second) {
+        VerifyScopeInfo(scope_info, *it->second);
+      }
+      return *it->second;
+    }
+    if (!scope_info->HasOuterScopeInfo()) return scope_info;
 
     Tagged<ScopeInfo> parent = scope_info;
     Tagged<ScopeInfo> outer_info = scope_info->OuterScopeInfo();
 
-    auto it = scope_infos_to_update_.find(outer_info->UniqueIdInScript());
+    it = scope_infos_to_update_.find(outer_info->UniqueIdInScript());
     while (it == scope_infos_to_update_.end()) {
-      if (!outer_info->HasOuterScopeInfo()) return;
+      if (!outer_info->HasOuterScopeInfo()) return scope_info;
       parent = outer_info;
       outer_info = outer_info->OuterScopeInfo();
       it = scope_infos_to_update_.find(outer_info->UniqueIdInScript());
     }
-    if (outer_info == *it->second) return;
+    if (outer_info == *it->second) return scope_info;
 
     VerifyScopeInfo(outer_info, *it->second);
     parent->set_outer_scope_info(*it->second);
+    return scope_info;
   }
 
  private:
@@ -2255,7 +2324,8 @@ class ConstantPoolPointerForwarder {
                               Cast<SharedFunctionInfo>(heap_obj));
     } else if (!scope_infos_to_update_.empty() && IsScopeInfo(heap_obj)) {
       VisitScopeInfo(constant_pool, i, Cast<ScopeInfo>(heap_obj));
-    } else if (IsObjectBoilerplateDescription(heap_obj)) {
+    } else if (has_shared_function_info_to_forward_ &&
+               IsObjectBoilerplateDescription(heap_obj)) {
       VisitObjectBoilerplateDescription(
           Cast<ObjectBoilerplateDescription>(heap_obj));
     }
@@ -2272,11 +2342,13 @@ class ConstantPoolPointerForwarder {
           TryCast<SharedFunctionInfo>(maybe_sfi, &new_sfi)) {
         // The same SFI on the old script by function_literal_id
         Tagged<MaybeObject> maybe_old_sfi = old_script_->infos()->get(
-            new_sfi->function_literal_id(kRelaxedLoad));
+            new_sfi->function_literal_id(kRelaxedLoad), kAcquireLoad);
         if (maybe_old_sfi.IsWeak()) {
-          boilerplate->set_value(idx,
-                                 Cast<SharedFunctionInfo>(
-                                     maybe_old_sfi.GetHeapObjectAssumeWeak()));
+          Tagged<SharedFunctionInfo> old_sfi =
+              Cast<SharedFunctionInfo>(maybe_old_sfi.GetHeapObjectAssumeWeak());
+          if (old_sfi != new_sfi) {
+            boilerplate->set_value(idx, old_sfi);
+          }
         }
       }
     }
@@ -2285,11 +2357,14 @@ class ConstantPoolPointerForwarder {
   template <typename TArray>
   void VisitSharedFunctionInfo(Tagged<TArray> constant_pool, uint32_t i,
                                Tagged<SharedFunctionInfo> sfi) {
-    Tagged<MaybeObject> maybe_old_sfi =
-        old_script_->infos()->get(sfi->function_literal_id(kRelaxedLoad));
+    Tagged<MaybeObject> maybe_old_sfi = old_script_->infos()->get(
+        sfi->function_literal_id(kRelaxedLoad), kAcquireLoad);
     if (maybe_old_sfi.IsWeak()) {
-      constant_pool->set(
-          i, Cast<SharedFunctionInfo>(maybe_old_sfi.GetHeapObjectAssumeWeak()));
+      Tagged<SharedFunctionInfo> old_sfi =
+          Cast<SharedFunctionInfo>(maybe_old_sfi.GetHeapObjectAssumeWeak());
+      if (old_sfi != sfi) {
+        constant_pool->set(i, old_sfi);
+      }
     }
   }
 
@@ -2372,6 +2447,35 @@ void BackgroundMergeTask::SetUpOnMainThread(Isolate* isolate,
 }
 
 namespace {
+template <typename VerifyScopeInfoFn>
+void VerifyConstantPoolEntry(Tagged<Object> entry, DirectHandle<Script> script,
+                             const VerifyScopeInfoFn& verify_scope_info) {
+  if (Is<SharedFunctionInfo>(entry)) {
+    Tagged<SharedFunctionInfo> inner_sfi = Cast<SharedFunctionInfo>(entry);
+    int id = inner_sfi->function_literal_id(kRelaxedLoad);
+    CHECK_EQ(MakeWeak(inner_sfi), script->infos()->get(id));
+    CHECK_EQ(inner_sfi->script(), *script);
+  } else if (Is<ScopeInfo>(entry)) {
+    verify_scope_info(Cast<ScopeInfo>(entry));
+  } else if (Is<ObjectBoilerplateDescription>(entry)) {
+    Tagged<ObjectBoilerplateDescription> boilerplate =
+        Cast<ObjectBoilerplateDescription>(entry);
+    for (int idx = 0; idx < boilerplate->boilerplate_properties_count();
+         ++idx) {
+      Tagged<Object> val = boilerplate->value(idx);
+      if (Is<SharedFunctionInfo>(val)) {
+        VerifyConstantPoolEntry(val, script, verify_scope_info);
+      }
+    }
+  } else if (Is<FixedArray>(entry)) {
+    Tagged<FixedArray> nested = Cast<FixedArray>(entry);
+    uint32_t nested_len = nested->ulength().value();
+    for (uint32_t idx = 0; idx < nested_len; ++idx) {
+      VerifyConstantPoolEntry(nested->get(idx), script, verify_scope_info);
+    }
+  }
+}
+
 void VerifyCodeMerge(Isolate* isolate, DirectHandle<Script> script) {
   // Check that:
   //   * There aren't any duplicate scope info. Every scope/context should
@@ -2414,16 +2518,8 @@ void VerifyCodeMerge(Isolate* isolate, DirectHandle<Script> script) {
         uint32_t constant_pool_len = constant_pool->ulength().value();
         for (uint32_t constant_idx = 0; constant_idx < constant_pool_len;
              ++constant_idx) {
-          Tagged<Object> entry = constant_pool->get(constant_idx);
-          if (Is<SharedFunctionInfo>(entry)) {
-            Tagged<SharedFunctionInfo> inner_sfi =
-                Cast<SharedFunctionInfo>(entry);
-            int id = inner_sfi->function_literal_id(kRelaxedLoad);
-            CHECK_EQ(MakeWeak(inner_sfi), script->infos()->get(id));
-            CHECK_EQ(inner_sfi->script(), *script);
-          } else if (Is<ScopeInfo>(entry)) {
-            verify_scope_info(Cast<ScopeInfo>(entry));
-          }
+          VerifyConstantPoolEntry(constant_pool->get(constant_idx), script,
+                                  verify_scope_info);
         }
       }
 
@@ -2444,6 +2540,7 @@ void VerifyCodeMerge(Isolate* isolate, DirectHandle<Script> script) {
 
 void BackgroundMergeTask::SetUpOnMainThread(
     Isolate* isolate, DirectHandle<Script> cached_script) {
+  CHECK(!isolate->disable_bytecode_flushing());
   // Any data sent to the background thread will need to be a persistent handle.
 #ifdef DEBUG
   VerifyCodeMerge(isolate, cached_script);
@@ -2458,11 +2555,33 @@ void BackgroundMergeTask::SetUpOnMainThread(
   cached_script_ = persistent_handles_->NewHandle(*cached_script);
 }
 
-static bool force_gc_during_next_merge_for_testing_ = false;
-
-void BackgroundMergeTask::ForceGCDuringNextMergeForTesting() {
-  force_gc_during_next_merge_for_testing_ = true;
-}
+// Verification step markers for BackgroundMergeTask.
+// Synchronized with
+// experimental/merge_concurrency_model_checker/merge_concurrency_model_checker.py.
+#if defined(DEBUG)
+#define MERGE_MODEL_STEP(step_name)                                 \
+  do {                                                              \
+    SYNCHRONIZATION_POINT_TEST_ONLY("BackgroundMerge_" #step_name); \
+    if (v8_flags.verify_code_merge) {                               \
+      PrintF("[MergeModelStep] " #step_name "\n");                  \
+    }                                                               \
+  } while (false)
+#define MERGE_MODEL_STEP_WITH_SAFEPOINT(step_name)  \
+  do {                                              \
+    SYNCHRONIZATION_POINT_WITH_SAFEPOINT_TEST_ONLY( \
+        "BackgroundMerge_" #step_name);             \
+    if (v8_flags.verify_code_merge) {               \
+      PrintF("[MergeModelStep] " #step_name "\n");  \
+    }                                               \
+  } while (false)
+#else
+#define MERGE_MODEL_STEP(step_name) \
+  SYNCHRONIZATION_POINT_TEST_ONLY("BackgroundMerge_" #step_name)
+#define MERGE_MODEL_STEP_WITH_SAFEPOINT(step_name) \
+  SYNCHRONIZATION_POINT_WITH_SAFEPOINT_TEST_ONLY(  \
+      "BackgroundMerge"                            \
+      "_" #step_name)
+#endif
 
 void BackgroundMergeTask::BeginMergeInBackground(
     LocalIsolate* isolate, DirectHandle<Script> new_script) {
@@ -2473,11 +2592,13 @@ void BackgroundMergeTask::BeginMergeInBackground(
   LocalHandleScope handle_scope(local_heap);
   DirectHandle<Script> old_script = cached_script_.ToHandleChecked();
   ConstantPoolPointerForwarder forwarder(local_heap, old_script);
+  std::vector<std::pair<uint32_t, IndirectHandle<ScopeInfo>>> new_scope_infos;
 
+  MERGE_MODEL_STEP_WITH_SAFEPOINT(BG_INIT_TOPLEVEL);
   {
     DisallowGarbageCollection no_gc;
     Tagged<MaybeObject> maybe_old_toplevel_sfi =
-        old_script->infos()->get(kFunctionLiteralIdTopLevel);
+        old_script->infos()->get(kFunctionLiteralIdTopLevel, kAcquireLoad);
     if (maybe_old_toplevel_sfi.IsWeak()) {
       Tagged<SharedFunctionInfo> old_toplevel_sfi = Cast<SharedFunctionInfo>(
           maybe_old_toplevel_sfi.GetHeapObjectAssumeWeak());
@@ -2492,6 +2613,7 @@ void BackgroundMergeTask::BeginMergeInBackground(
   uint32_t new_script_infos_len = new_script->infos()->ulength().value();
   CHECK_EQ(old_script_infos_len, new_script_infos_len);
   for (uint32_t i = 0; i < old_script_infos_len; ++i) {
+    MERGE_MODEL_STEP_WITH_SAFEPOINT(BG_INSPECT_SLOT);
     DisallowGarbageCollection no_gc;
     Tagged<MaybeObject> maybe_new_sfi = new_script->infos()->get(i);
     // Acquire-load: pairs with the release-store in
@@ -2501,11 +2623,13 @@ void BackgroundMergeTask::BeginMergeInBackground(
         old_script->infos()->get(i, kAcquireLoad);
     // We might have scope infos in the table if it's deserialized from a code
     // cache.
+    bool pinned_old_sfi = false;
     if (maybe_new_sfi.IsWeak() &&
         Is<SharedFunctionInfo>(maybe_new_sfi.GetHeapObjectAssumeWeak())) {
       Tagged<SharedFunctionInfo> new_sfi =
           Cast<SharedFunctionInfo>(maybe_new_sfi.GetHeapObjectAssumeWeak());
       if (maybe_old_info.IsWeak()) {
+        MERGE_MODEL_STEP(BG_PAIR_SFI);
         forwarder.set_has_shared_function_info_to_forward();
         // The old script and the new script both have SharedFunctionInfos for
         // this function literal.
@@ -2517,6 +2641,7 @@ void BackgroundMergeTask::BeginMergeInBackground(
         // the new sfi are redirected to the old sfi.
         Handle<SharedFunctionInfo> old_sfi_handle =
             local_heap->NewPersistentHandle(old_sfi);
+        pinned_old_sfi = true;
         if (old_sfi->HasBytecodeArray()) {
           // Reset the old SFI's bytecode age so that it won't likely get
           // flushed right away. This operation might be racing against
@@ -2524,6 +2649,7 @@ void BackgroundMergeTask::BeginMergeInBackground(
           // catastrophic.
           old_sfi->set_age(0);
         } else if (new_sfi->HasBytecodeArray()) {
+          MERGE_MODEL_STEP(BG_RECORD_COMPILED_DATA);
           // Also push the old_sfi to make sure it stays alive / isn't replaced.
           new_compiled_data_for_cached_sfis_.push_back(
               {old_sfi_handle, local_heap->NewPersistentHandle(new_sfi)});
@@ -2538,6 +2664,7 @@ void BackgroundMergeTask::BeginMergeInBackground(
           forwarder.AddBytecodeArray(new_sfi->GetBytecodeArray(isolate));
         }
       } else {
+        MERGE_MODEL_STEP(BG_USE_NEW_SFI);
         // The old script didn't have a SharedFunctionInfo for this function
         // literal, so it can use the new SharedFunctionInfo.
         new_sfi->set_script(*old_script, kReleaseStore);
@@ -2548,45 +2675,57 @@ void BackgroundMergeTask::BeginMergeInBackground(
       }
     } else if (maybe_new_sfi.IsWeak() &&
                Is<ScopeInfo>(maybe_new_sfi.GetHeapObjectAssumeWeak())) {
+      MERGE_MODEL_STEP(BG_STANDALONE_SCOPE);
       if (!maybe_old_info.IsWeak()) {
-        used_new_scope_infos_.push_back(local_heap->NewPersistentHandle(
-            Cast<ScopeInfo>(maybe_new_sfi.GetHeapObjectAssumeWeak())));
+        new_scope_infos.emplace_back(
+            i, handle(Cast<ScopeInfo>(maybe_new_sfi.GetHeapObjectAssumeWeak()),
+                      local_heap));
       }
     }
 
     if (maybe_old_info.IsWeak()) {
-      Tagged<SharedFunctionInfo> sfi;
-      if (TryCast<SharedFunctionInfo>(maybe_old_info.GetHeapObjectAssumeWeak(),
-                                      &sfi)) {
-        if (!sfi->HasScopeInfo()) {
-          sfis_without_scope_info_.insert(i);
+      MERGE_MODEL_STEP(BG_RECORD_OLD_SCOPE_INFO);
+      ConstantPoolPointerForwarder::RecordResult record_result =
+          forwarder.RecordScopeInfos(maybe_old_info);
+      SYNCHRONIZATION_POINT_TEST_ONLY("BackgroundMerge_AfterRecordScopeInfos");
+      if (record_result ==
+          ConstantPoolPointerForwarder::RecordResult::kMissingOwnScopeInfo) {
+        // Keep the cached SFI alive until CompleteMergeInForeground so
+        // Smi::zero() in new_script->infos() unambiguously refers to the same
+        // SFI.
+        if (!pinned_old_sfi) {
+          local_heap->NewPersistentHandle(
+              maybe_old_info.GetHeapObjectAssumeWeak());
         }
+        // Store Smi::zero() in new_script->infos() to mark that this cached SFI
+        // had no ScopeInfo during the background pass without allocating a set.
+        new_script->infos()->set(i, Smi::zero());
+      } else {
+        // If the old script has a SFI or ScopeInfo with ScopeInfo attached,
+        // point to it from the new script to indicate we've already seen it.
+        new_script->infos()->set(i, maybe_old_info);
       }
-      forwarder.RecordScopeInfos(maybe_old_info);
-      // If the old script has a SFI, point to it from the new script to
-      // indicate we've already seen it and we'll reuse it if necessary (if
-      // newly compiled bytecode points to it).
-      new_script->infos()->set(i, maybe_old_info);
     }
-  }
-
-  // Since we are walking the script infos weak list both when figuring out
-  // which SFIs to merge above, and actually merging them below, make sure that
-  // a GC here which clears any dead weak refs or flushes any bytecode doesn't
-  // break anything.
-  if (V8_UNLIKELY(force_gc_during_next_merge_for_testing_)) {
-    // This GC is only synchronous on the main thread at the moment.
-    DCHECK(isolate->is_main_thread());
-    local_heap->AsHeap()->CollectAllAvailableGarbage(
-        GarbageCollectionReason::kTesting);
   }
 
   if (forwarder.HasAnythingToForward()) {
+    MERGE_MODEL_STEP_WITH_SAFEPOINT(BG_FORWARD_POINTERS);
     for (DirectHandle<SharedFunctionInfo> new_sfi : used_new_sfis_) {
+      DisallowGarbageCollection no_gc;
       forwarder.UpdateScopeInfo(*new_sfi);
     }
-    for (DirectHandle<ScopeInfo> new_scope : used_new_scope_infos_) {
-      forwarder.UpdateStandaloneScopeInfo(*new_scope);
+    for (const auto& [index, scope_handle] : new_scope_infos) {
+      DisallowGarbageCollection no_gc;
+      Tagged<ScopeInfo> scope_info = *scope_handle;
+      Tagged<ScopeInfo> updated =
+          forwarder.UpdateStandaloneScopeInfo(scope_info);
+      if (updated != scope_info) {
+        // Redirect new_script->infos()[index] to the canonical ScopeInfo
+        // immediately: once UpdateScopeInfo / IterateAndForwardPointers drop
+        // references to the duplicate scope_info, a GC before
+        // CompleteMergeInForeground would otherwise clear this weak slot.
+        new_script->infos()->set(index, MakeWeak(updated));
+      }
     }
     for (const auto& new_compiled_data : new_compiled_data_for_cached_sfis_) {
       // It's possible that new_compiled_data.cached_sfi had
@@ -2595,7 +2734,8 @@ void BackgroundMergeTask::BeginMergeInBackground(
       // new_compiled_data.new_sfi does not have a reused scope info yet, and
       // we'll have found it when we visited the inner function. Try to pick it
       // up here.
-      forwarder.InstallOwnScopeInfo(*new_compiled_data.new_sfi);
+      DisallowGarbageCollection no_gc;
+      forwarder.UpdateScopeInfo(*new_compiled_data.new_sfi);
     }
     forwarder.IterateAndForwardPointers();
   }
@@ -2606,6 +2746,7 @@ void BackgroundMergeTask::BeginMergeInBackground(
 Handle<SharedFunctionInfo> BackgroundMergeTask::CompleteMergeInForeground(
     Isolate* isolate, DirectHandle<Script> new_script) {
   DCHECK_EQ(state_, kPendingForegroundWork);
+  CHECK(!isolate->disable_bytecode_flushing());
 
   HandleScope handle_scope(isolate);
   DirectHandle<Script> old_script = cached_script_.ToHandleChecked();
@@ -2618,13 +2759,23 @@ Handle<SharedFunctionInfo> BackgroundMergeTask::CompleteMergeInForeground(
   // script's SFI's outer scope infos need to be used by the new script's outer
   // SFIs.
   uint32_t old_script_infos_len = old_script->infos()->ulength().value();
+  MERGE_MODEL_STEP_WITH_SAFEPOINT(FG_RESCAN_START);
   for (uint32_t i = 0; i < old_script_infos_len; ++i) {
     DisallowGarbageCollection no_gc;
     Tagged<MaybeObject> maybe_old_info = old_script->infos()->get(i);
     Tagged<MaybeObject> maybe_new_info = new_script->infos()->get(i);
+    if (maybe_new_info == maybe_old_info) continue;
+    if (maybe_new_info.IsSmi()) {
+      DCHECK(maybe_old_info.IsWeak());
+      new_script->infos()->set(i, maybe_old_info);
+      if (!Cast<SharedFunctionInfo>(maybe_old_info.GetHeapObjectAssumeWeak())
+               ->HasScopeInfo()) {
+        continue;
+      }
+    }
     if (maybe_old_info.IsWeak()) {
-      if (maybe_new_info != maybe_old_info &&
-          Is<SharedFunctionInfo>(maybe_old_info.GetHeapObjectAssumeWeak())) {
+      if (Is<SharedFunctionInfo>(maybe_old_info.GetHeapObjectAssumeWeak())) {
+        MERGE_MODEL_STEP(FG_DETECT_CONCURRENT_SFI);
         forwarder.set_has_shared_function_info_to_forward();
       }
       forwarder.RecordScopeInfos(maybe_old_info);
@@ -2634,14 +2785,12 @@ Handle<SharedFunctionInfo> BackgroundMergeTask::CompleteMergeInForeground(
   // If we found anything in the pass before, update the new data that we'll
   // merge in before actually merging it in.
   if (forwarder.HasAnythingToForward()) {
+    MERGE_MODEL_STEP_WITH_SAFEPOINT(FG_FORWARD_POINTERS);
     for (DirectHandle<SharedFunctionInfo> new_sfi : used_new_sfis_) {
       forwarder.UpdateScopeInfo(*new_sfi);
       if (new_sfi->HasBytecodeArray()) {
         forwarder.AddBytecodeArray(new_sfi->GetBytecodeArray(isolate));
       }
-    }
-    for (DirectHandle<ScopeInfo> new_scope : used_new_scope_infos_) {
-      forwarder.UpdateStandaloneScopeInfo(*new_scope);
     }
     for (const auto& new_compiled_data : new_compiled_data_for_cached_sfis_) {
       // Unconditionally track the new_compiled_data for updating, even if we
@@ -2667,6 +2816,7 @@ Handle<SharedFunctionInfo> BackgroundMergeTask::CompleteMergeInForeground(
   // This is important because other background merge tasks as well as
   // concurrently running optimizing compile jobs might be looking at what we
   // release here.
+  MERGE_MODEL_STEP_WITH_SAFEPOINT(FG_RELEASE_BACKWARDS_START);
   for (uint32_t index = 0; index < old_script_infos_len; ++index) {
     uint32_t i = old_script_infos_len - 1 - index;
     Tagged<MaybeObject> maybe_old_info = old_script->infos()->get(i);
@@ -2679,29 +2829,32 @@ Handle<SharedFunctionInfo> BackgroundMergeTask::CompleteMergeInForeground(
         CHECK_EQ(
             compiled_data_it->cached_sfi->function_literal_id(kRelaxedLoad), i);
         Tagged<SharedFunctionInfo> sfi = *compiled_data_it->cached_sfi;
-        if (!sfi->is_compiled() && compiled_data_it->new_sfi->is_compiled()) {
-          // Updating existing DebugInfos is not supported, but we don't expect
-          // uncompiled SharedFunctionInfos to contain DebugInfos.
-          DCHECK(!compiled_data_it->cached_sfi->HasDebugInfo(isolate));
+        if (!sfi->is_compiled() && !sfi->HasDebugInfo(isolate) &&
+            compiled_data_it->new_sfi->is_compiled()) {
+          // Updating existing DebugInfos is not supported; skip merging
+          // compiled data when an uncompiled SFI already has DebugInfo.
+          //
           // The goal here is to copy every field except script from
           // new_sfi to cached_sfi. The safest way to do so (including a DCHECK
           // that no fields were skipped) is to first copy the script from
           // cached_sfi to new_sfi, and then copy every field using CopyFrom.
           compiled_data_it->new_sfi->set_script(sfi->script(kAcquireLoad),
                                                 kReleaseStore);
+          MERGE_MODEL_STEP(FG_COPY_FROM);
           sfi->CopyFrom(*compiled_data_it->new_sfi, isolate);
         }
         compiled_data_it++;
       }
     } else if (!maybe_old_info.IsWeak()) {
-      // Standalone eval ScopeInfos are only recorded for scopes within their
-      // owning closure, so if the slot in old_script was cleared, the ScopeInfo
-      // itself cannot still be alive in old_script.
-      DCHECK_IMPLIES(
-          maybe_new_info.IsWeak() &&
-              Is<ScopeInfo>(maybe_new_info.GetHeapObjectAssumeWeak()),
-          !forwarder.HasScopeInfoToUpdate(
-              Cast<ScopeInfo>(maybe_new_info.GetHeapObjectAssumeWeak())));
+      if (maybe_new_info.IsWeak() &&
+          Is<ScopeInfo>(maybe_new_info.GetHeapObjectAssumeWeak())) {
+        // Canonicalize standalone ScopeInfos in case old_script concurrently
+        // allocated a matching ScopeInfo (e.g. via partial eager compile) while
+        // old_script->infos()[i] remained empty.
+        maybe_new_info = MakeWeak(forwarder.UpdateStandaloneScopeInfo(
+            Cast<ScopeInfo>(maybe_new_info.GetHeapObjectAssumeWeak())));
+      }
+      MERGE_MODEL_STEP(FG_PUBLISH_NEW_SFI);
       old_script->infos()->set(i, maybe_new_info, kReleaseStore);
     }
   }
@@ -2716,7 +2869,7 @@ Handle<SharedFunctionInfo> BackgroundMergeTask::CompleteMergeInForeground(
   state_ = kDone;
 
   if (isolate->NeedsSourcePositions()) {
-    Script::InitLineEnds(isolate, new_script);
+    Script::InitLineEnds(isolate, old_script);
     SharedFunctionInfo::EnsureSourcePositionsAvailable(isolate, result);
   }
 
@@ -2730,6 +2883,9 @@ Handle<SharedFunctionInfo> BackgroundMergeTask::CompleteMergeInForeground(
 
   return handle_scope.CloseAndEscape(result);
 }
+
+#undef MERGE_MODEL_STEP
+#undef MERGE_MODEL_STEP_WITH_SAFEPOINT
 
 MaybeHandle<SharedFunctionInfo> BackgroundCompileTask::FinalizeScript(
     Isolate* isolate, DirectHandle<String> source,
@@ -2793,6 +2949,7 @@ MaybeHandle<SharedFunctionInfo> BackgroundCompileTask::FinalizeScript(
         merge.CompleteMergeInForeground(isolate, script);
     maybe_result = result;
     script = handle(Cast<Script>(result->script()), isolate);
+    DCHECK_EQ(*script, *cached_script);
     DCHECK(Object::StrictEquals(script->source(), *source));
     DCHECK(isolate->factory()->script_list()->Contains(MakeWeak(*script)));
   } else {
@@ -2995,7 +3152,7 @@ bool Compiler::CollectSourcePositions(
   }
 
   DCHECK(AllowCompilation::IsAllowed(isolate));
-  DCHECK_EQ(ThreadId::Current(), isolate->thread_id());
+  DCHECK_EQ(base::ThreadId::Current(), isolate->thread_id());
 
   DCHECK(!isolate->has_exception());
   VMState<BYTECODE_COMPILER> state(isolate);
@@ -3023,7 +3180,10 @@ bool Compiler::CollectSourcePositions(
   // statistics since we've already parsed the code before.
   if (!parsing::ParseAny(&parse_info, shared_info, isolate,
                          parsing::ReportStatisticsMode{false})) {
-    // Parsing failed probably as a result of stack exhaustion.
+    // Parsing failed only as a result of stack exhaustion (aside from
+    // sandbox testing/fuzzing).
+    DCHECK_IMPLIES(!v8_flags.sandbox_testing && !v8_flags.sandbox_fuzzing,
+                   parse_info.pending_error_handler()->stack_overflow());
     bytecode->SetSourcePositionsFailedToCollect();
     return FailAndClearException(isolate);
   }
@@ -3057,8 +3217,9 @@ bool Compiler::CollectSourcePositions(
     if (debug_info.value()->HasInstrumentedBytecodeArray()) {
       Tagged<TrustedByteArray> source_position_table =
           job->compilation_info()->bytecode_array()->SourcePositionTable();
-      shared_info->GetActiveBytecodeArray(isolate)->set_source_position_table(
-          source_position_table, kReleaseStore);
+      debug_info.value()
+          ->DebugBytecodeArray(isolate)
+          ->set_source_position_table(source_position_table, kReleaseStore);
     }
   }
 
@@ -3076,7 +3237,7 @@ bool Compiler::Compile(Isolate* isolate, Handle<SharedFunctionInfo> shared_info,
   DCHECK(!shared_info->is_compiled());
   DCHECK(!is_compiled_scope->is_compiled());
   DCHECK(AllowCompilation::IsAllowed(isolate));
-  DCHECK_EQ(ThreadId::Current(), isolate->thread_id());
+  DCHECK_EQ(base::ThreadId::Current(), isolate->thread_id());
   DCHECK(!isolate->has_exception());
   DCHECK(!shared_info->HasBytecodeArray());
 
@@ -3276,6 +3437,9 @@ bool Compiler::CompileBaseline(Isolate* isolate,
     return false;
   }
 
+  IsBaselineCompiledScope is_baseline_compiled_scope(*shared, isolate);
+  DCHECK(is_baseline_compiled_scope.is_compiled());
+
   // Baseline code needs a feedback vector.
   JSFunction::EnsureFeedbackVector(isolate, function, is_compiled_scope);
 
@@ -3339,7 +3503,6 @@ void Compiler::CompileOptimized(Isolate* isolate,
   DirectHandle<Code> code;
   if (GetOrCompileOptimized(isolate, function, mode, code_kind)
           .ToHandle(&code)) {
-    function->UpdateOptimizedCode(isolate, *code);
     DCHECK_IMPLIES(v8_flags.log_function_events,
                    function->IsLoggingRequested(isolate));
   } else {
@@ -3455,6 +3618,9 @@ MaybeDirectHandle<JSFunction> Compiler::GetFunctionFromEval(
         v8_flags.lazy_eval);
     flags.set_is_eval(true);
     flags.set_parsing_while_debugging(parsing_while_debugging);
+    if (parsing_while_debugging == ParsingWhileDebugging::kYes) {
+      flags.set_collect_source_positions(true);
+    }
     flags.set_private_name_lookup_skips_outer_class(
         private_name_lookup_skips_outer_class);
     DCHECK(!flags.is_module());
@@ -4099,7 +4265,8 @@ MaybeDirectHandle<SharedFunctionInfo> GetSharedFunctionInfoForScriptImpl(
   IsCompiledScope is_compiled_scope;
   if (use_compilation_cache) {
     bool can_consume_code_cache =
-        compile_options & ScriptCompiler::kConsumeCodeCache;
+        (compile_options & ScriptCompiler::kConsumeCodeCache) &&
+        !isolate->requires_bytecode_for_code_coverage();
     if (can_consume_code_cache) {
       compile_timer.set_consuming_code_cache();
     }
@@ -4297,7 +4464,9 @@ Compiler::GetSharedFunctionInfoForScriptWithCompileHints(
 
 // static
 MaybeDirectHandle<JSFunction> Compiler::GetWrappedFunction(
-    Isolate* isolate, Handle<String> source, DirectHandle<Context> context,
+    Isolate* isolate, Handle<String> source,
+    DirectHandle<NativeContext> native_context,
+    base::Vector<const DirectHandle<JSReceiver>> context_extensions,
     const ScriptDetails& script_details, AlignedCachedData* cached_data,
     v8::ScriptCompiler::CompileOptions compile_options,
     v8::ScriptCompiler::NoCacheReason no_cache_reason) {
@@ -4314,12 +4483,14 @@ MaybeDirectHandle<JSFunction> Compiler::GetWrappedFunction(
 
   LanguageMode language_mode = construct_language_mode(v8_flags.use_strict);
   DCHECK(!script_details.wrapped_arguments.is_null());
+  DCHECK_EQ(script_details.context_extension_count, context_extensions.size());
   MaybeDirectHandle<SharedFunctionInfo> maybe_result;
   DirectHandle<SharedFunctionInfo> result;
   Handle<Script> script;
   IsCompiledScope is_compiled_scope;
   bool can_consume_code_cache =
-      compile_options & ScriptCompiler::kConsumeCodeCache;
+      (compile_options & ScriptCompiler::kConsumeCodeCache) &&
+      !isolate->requires_bytecode_for_code_coverage();
   CompilationCache* compilation_cache = isolate->compilation_cache();
   // First check per-isolate compilation cache.
   CompilationCacheScript::LookupResult lookup_result =
@@ -4379,8 +4550,9 @@ MaybeDirectHandle<JSFunction> Compiler::GetWrappedFunction(
     ParseInfo parse_info(isolate, flags, &compile_state, &reusable_state);
 
     MaybeDirectHandle<ScopeInfo> maybe_outer_scope_info;
-    if (!IsNativeContext(*context)) {
-      maybe_outer_scope_info = direct_handle(context->scope_info(), isolate);
+    for (size_t i = 0; i < context_extensions.size(); ++i) {
+      maybe_outer_scope_info =
+          ScopeInfo::CreateForWithScope(isolate, maybe_outer_scope_info);
     }
     script = NewScript(isolate, &parse_info, source, script_details,
                        NOT_NATIVES_CODE);
@@ -4404,13 +4576,34 @@ MaybeDirectHandle<JSFunction> Compiler::GetWrappedFunction(
 
     is_compiled_scope = result->is_compiled_scope(isolate);
     script = Handle<Script>(Cast<Script>(result->script()), isolate);
-    // Add the result to the isolate cache if there's no context extension.
-    if (maybe_outer_scope_info.is_null()) {
-      compilation_cache->PutScript(source, language_mode, result);
-    }
+    compilation_cache->PutScript(source, language_mode, result);
   }
 
   DCHECK(is_compiled_scope.is_compiled());
+
+  DirectHandle<Context> context = native_context;
+  if (!context_extensions.empty()) {
+    // Wrap the native context in a chain of WithContexts for the provided
+    // context extensions, using the compiled or cached SharedFunctionInfo's
+    // outer ScopeInfo chain (which links from innermost to outermost).
+    DirectHandleVector<ScopeInfo> scope_infos(isolate,
+                                              context_extensions.size());
+    Tagged<HeapObject> current_scope_info = result->GetOuterScopeInfo();
+    for (size_t i = context_extensions.size(); i > 0; --i) {
+      Tagged<ScopeInfo> scope_info = Cast<ScopeInfo>(current_scope_info);
+      DCHECK_EQ(scope_info->scope_type(), WITH_SCOPE);
+      scope_infos[i - 1] = direct_handle(scope_info, isolate);
+      if (i > 1) {
+        current_scope_info = scope_info->OuterScopeInfo();
+      } else {
+        DCHECK(!scope_info->HasOuterScopeInfo());
+      }
+    }
+    for (size_t i = 0; i < context_extensions.size(); ++i) {
+      context = isolate->factory()->NewWithContext(context, scope_infos[i],
+                                                   context_extensions[i]);
+    }
+  }
 
   return Factory::JSFunctionBuilder{isolate, result, context}
       .set_allocation_type(AllocationType::kYoung)
@@ -4619,7 +4812,8 @@ void Compiler::FinalizeTurbofanCompilationJob(TurbofanCompilationJob* job,
   const bool use_result = !compilation_info->discard_result_for_testing();
   const BytecodeOffset osr_offset = compilation_info->osr_offset();
 
-  if (shared->HasBreakInfo(isolate)) {
+  if (shared->HasBreakInfo(isolate) ||
+      (IsOSR(osr_offset) && HasInstrumentedBytecodeArray(isolate, *shared))) {
     DisposeTurbofanCompilationJob(isolate, job);
     return;
   }
@@ -4706,12 +4900,19 @@ void Compiler::FinalizeMaglevCompilationJob(maglev::MaglevCompilationJob* job,
                               BailoutReason::kDetachedNativeContext);
     return;
   }
+  // Only %ForceFlush can flush the feedback vector while the job is in flight.
+  if (!function->has_feedback_vector()) {
+    AbortMaglevCompilationJob(isolate, function, osr_offset,
+                              BailoutReason::kCancelled);
+    return;
+  }
 
   const CompilationJob::Status status = job->FinalizeJob(isolate);
 
   if (status == CompilationJob::SUCCEEDED) {
     DirectHandle<SharedFunctionInfo> shared(function->shared(), isolate);
-    if (shared->HasBreakInfo(isolate)) {
+    if (shared->HasBreakInfo(isolate) ||
+        (IsOSR(osr_offset) && HasInstrumentedBytecodeArray(isolate, *shared))) {
       DisposeMaglevCompilationJob(job, isolate);
       return;
     }

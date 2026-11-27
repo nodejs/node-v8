@@ -1036,10 +1036,45 @@ void Builtins::Generate_BaselineOutOfLinePrologue(MacroAssembler* masm) {
     __ b(&call_stack_guard, lo);
   }
 
+  // Reduce interrupt budget.
+  Label budget_interrupt;
+  {
+    ASM_CODE_COMMENT_STRING(masm, "Update Interrupt Budget");
+    UseScratchRegisterScope temps(masm);
+    Register interrupt_budget = temps.Acquire();
+    Register bytecode_length = temps.Acquire();
+    Register bytecodeArray = descriptor.GetRegisterParameter(
+        BaselineOutOfLinePrologueDescriptor::kInterpreterBytecodeArray);
+    __ ldr(interrupt_budget,
+           FieldMemOperand(feedback_cell,
+                           offsetof(FeedbackCell, interrupt_budget_)));
+    __ SmiUntagField(
+        bytecode_length,
+        FieldMemOperand(bytecodeArray, offsetof(BytecodeArray, length_)));
+    __ sub(interrupt_budget, interrupt_budget, bytecode_length, SetCC);
+    __ str(interrupt_budget,
+           FieldMemOperand(feedback_cell,
+                           offsetof(FeedbackCell, interrupt_budget_)));
+    __ b(lt, &budget_interrupt);
+  }
+
   // Do "fast" return to the caller pc in lr.
   __ LoadRoot(kInterpreterAccumulatorRegister, RootIndex::kUndefinedValue);
   __ Ret();
 
+  __ bind(&budget_interrupt);
+  {
+    ASM_CODE_COMMENT_STRING(masm, "Budget interrupt call");
+    FrameScope frame_scope(masm, StackFrame::INTERNAL);
+    // Save incoming new target or generator
+    __ Push(kJavaScriptCallNewTargetRegister);
+    __ Push(closure);
+    __ CallRuntime(Runtime::kBytecodeBudgetInterrupt_Sparkplug, 1);
+    __ Pop(kJavaScriptCallNewTargetRegister);
+  }
+
+  __ LoadRoot(kInterpreterAccumulatorRegister, RootIndex::kUndefinedValue);
+  __ Ret();
 
   __ bind(&call_stack_guard);
   {
@@ -1904,7 +1939,7 @@ enum class OsrSourceTier {
 
 void OnStackReplacement(MacroAssembler* masm, OsrSourceTier source,
                         Register maybe_target_code,
-                        Register expected_param_count) {
+                        Register expected_osr_offset) {
   Label jump_to_optimized_code;
   {
     // If maybe_target_code is not null, no need to call into runtime. A
@@ -1953,7 +1988,7 @@ void OnStackReplacement(MacroAssembler* masm, OsrSourceTier source,
     __ LeaveFrame(StackFrame::STUB);
   }
 
-  // The sandbox would rely on testing expected_parameter_count here.
+  // The sandbox would rely on testing expected_osr_offset here.
   static_assert(!V8_ENABLE_SANDBOX_BOOL);
 
   // Load deoptimization data from the code object.
@@ -1981,7 +2016,7 @@ void Builtins::Generate_InterpreterOnStackReplacement(MacroAssembler* masm) {
   static_assert(D::kParameterCount == 2);
   OnStackReplacement(masm, OsrSourceTier::kInterpreter,
                      D::MaybeTargetCodeRegister(),
-                     D::ExpectedParameterCountRegister());
+                     D::ExpectedOsrOffsetRegister());
 }
 
 void Builtins::Generate_BaselineOnStackReplacement(MacroAssembler* masm) {
@@ -1992,7 +2027,7 @@ void Builtins::Generate_BaselineOnStackReplacement(MacroAssembler* masm) {
          MemOperand(fp, BaselineFrameConstants::kContextOffset));
   OnStackReplacement(masm, OsrSourceTier::kBaseline,
                      D::MaybeTargetCodeRegister(),
-                     D::ExpectedParameterCountRegister());
+                     D::ExpectedOsrOffsetRegister());
 }
 
 #ifdef V8_ENABLE_MAGLEV
@@ -5043,6 +5078,8 @@ void Builtins::Generate_DeoptimizationEntry_LazyAfterFastCall(
   __ PopAll(kCalleeSaveRegisters);
   __ PopAll(kCalleeSaveFPRegisters);
   __ LeaveFrame(StackFrame::BUILTIN);
+  __ TailCallBuiltin(Builtin::kDeoptimizationEntry_Lazy);
+
   __ bind(&no_exception);
   // Deoptimization expects that the return value of the API call is in the
   // return register. As we only allow deoptimization if the return type is

@@ -263,8 +263,17 @@ class V8_BASE_EXPORT OS {
     virtual void* memory() const = 0;
     virtual size_t size() const = 0;
 
+    // |hint| selects the requested mapping address:
+    //   std::nullopt  - use a randomized address (legacy behaviour),
+    //   nullptr       - let the kernel choose the address,
+    //   anything else - use |hint| as the requested address.
+    // Pass nullptr for mappings that must not end up inside the address range
+    // that V8 reserves for the sandbox.
+    // On platforms whose implementation cannot control the mapping address,
+    // the hint is ignored.
     static MemoryMappedFile* open(const char* name,
-                                  FileMode mode = FileMode::kReadWrite);
+                                  FileMode mode = FileMode::kReadWrite,
+                                  std::optional<void*> hint = std::nullopt);
     static MemoryMappedFile* create(const char* name, size_t size,
                                     void* initial);
   };
@@ -520,6 +529,10 @@ class V8_BASE_EXPORT AddressSpaceReservation {
   V8_WARN_UNUSED_RESULT static bool FreeSubReservation(
       AddressSpaceReservation reservation);
 
+#if V8_OS_FUCHSIA
+  zx_handle_t vmar() const { return vmar_; }
+#endif  // V8_OS_FUCHSIA
+
 #if V8_OS_WIN
   // On Windows, the placeholder mappings backing address space reservations
   // need to be split and merged as page allocations can only replace an entire
@@ -573,6 +586,24 @@ class V8_BASE_EXPORT Thread {
   // unchanged.
   enum class Priority { kBestEffort, kUserVisible, kUserBlocking, kDefault };
 
+#if V8_OS_LINUX || V8_OS_ZOS
+  // Maps a Thread::Priority to its target Linux/z/OS nice value, or
+  // std::nullopt for kDefault (keep the priority unchanged).
+  static constexpr std::optional<int> PriorityToNiceValue(Priority priority) {
+    switch (priority) {
+      case Priority::kBestEffort:
+        return 10;
+      case Priority::kUserVisible:
+        return 1;
+      case Priority::kUserBlocking:
+        return 0;
+      case Priority::kDefault:
+        return std::nullopt;
+    }
+    CONSTEXPR_UNREACHABLE();
+  }
+#endif
+
   class Options {
    public:
     Options() : Options("v8:<unknown>") {}
@@ -597,13 +628,19 @@ class V8_BASE_EXPORT Thread {
   Thread& operator=(const Thread&) = delete;
   virtual ~Thread();
 
-  // Start new thread by calling the Run() method on the new thread.
+  // Start new thread by calling the Run() method on the new thread. Returns
+  // false if the OS thread could not be created; in that case Run() is never
+  // called and Join() must not be called.
   V8_WARN_UNUSED_RESULT bool Start();
 
   // Start new thread and wait until Run() method is called on the new thread.
   bool StartSynchronously() {
     start_semaphore_ = new Semaphore(0);
-    if (!Start()) return false;
+    if (!Start()) {
+      delete start_semaphore_;
+      start_semaphore_ = nullptr;
+      return false;
+    }
     start_semaphore_->Wait();
     delete start_semaphore_;
     start_semaphore_ = nullptr;
@@ -701,6 +738,13 @@ class V8_BASE_EXPORT Stack {
     uintptr_t value;
   };
 
+  struct StackBounds {
+    // Highest address of the stack, or nullptr if unavailable.
+    StackSlot start;
+    // Lowest address that the stack can grow to, or nullptr if unavailable.
+    StackSlot reserved_limit;
+  };
+
   // Gets the start of the stack of the current thread.
   static StackSlot GetStackStart();
   // Gets the custom start of the stack of the current thread if set, otherwise
@@ -708,6 +752,8 @@ class V8_BASE_EXPORT Stack {
   static StackSlot GetEffectiveStackStart();
   // Gets the lowest address that the stack can grow to.
   static StackSlot GetReservedStackLimit();
+  // Gets both the stack start and reserved stack limit of the current thread.
+  static StackBounds GetStackBounds();
 
   // On Windows, the TEB's StackLimit changes during execution as the stack
   // grows. Expose a function to get it.
@@ -771,10 +817,8 @@ class V8_BASE_EXPORT Stack {
   }
 
  private:
-  // Return the current thread stack start pointer.
-  static StackSlot ObtainCurrentThreadStackStart();
-  // Lowest address that the stack can grow to.
-  static StackSlot ObtainCurrentThreadStackReservedLimit();
+  static void EnsureThreadStackDataInitialized();
+  static StackBounds ObtainCurrentThreadStackBounds();
 
   friend class heap::base::Stack;
 };

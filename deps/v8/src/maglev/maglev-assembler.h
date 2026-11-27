@@ -5,6 +5,8 @@
 #ifndef V8_MAGLEV_MAGLEV_ASSEMBLER_H_
 #define V8_MAGLEV_MAGLEV_ASSEMBLER_H_
 
+#include <optional>
+
 #include "src/base/logging.h"
 #include "src/base/strong-alias.h"
 #include "src/codegen/atomic-memory-order.h"
@@ -123,7 +125,8 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
   // Whether the architecture has a register that always reads as zero, which
   // can be stored instead of materializing a zero constant.
   static constexpr bool HasZeroRegister() {
-#if defined(V8_TARGET_ARCH_ARM64) || defined(V8_TARGET_ARCH_LOONG64)
+#if defined(V8_TARGET_ARCH_ARM64) || defined(V8_TARGET_ARCH_LOONG64) || \
+    defined(V8_TARGET_ARCH_RISCV64)
     return true;
 #else
     return false;
@@ -133,7 +136,7 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
   static Register ZeroRegister() {
 #if defined(V8_TARGET_ARCH_ARM64)
     return xzr;
-#elif defined(V8_TARGET_ARCH_LOONG64)
+#elif defined(V8_TARGET_ARCH_LOONG64) || defined(V8_TARGET_ARCH_RISCV64)
     return zero_reg;
 #else
     UNREACHABLE();
@@ -185,8 +188,27 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
                                   Register elements, Register object,
                                   Register scratch);
 
+  // Binding a label makes the code after it reachable again.
+  void bind(Label* label) {
+    MacroAssembler::bind(label);
+    set_reachable(true);
+  }
+#ifdef V8_TARGET_ARCH_ARM64
+  inline void Bind(Label* label,
+                   BranchTargetIdentifier id = BranchTargetIdentifier::kNone);
+#endif  // V8_TARGET_ARCH_ARM64
   inline void BindJumpTarget(Label* label);
   inline void BindBlock(BasicBlock* block);
+
+  // A trap or an abort ends the reachable code.
+  void Trap() {
+    MacroAssembler::Trap();
+    set_reachable(false);
+  }
+  void Abort(AbortReason reason) {
+    MacroAssembler::Abort(reason);
+    set_reachable(false);
+  }
 
   inline Condition IsRootConstant(Input input, RootIndex root_index);
 
@@ -343,11 +365,20 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
   inline void LoadUnsignedDataViewElement(Register result,
                                           Register data_pointer, Register index,
                                           int element_size);
+  inline void LoadFloatDataViewElement(DoubleRegister result,
+                                       Register data_pointer, Register index,
+                                       ExternalArrayType type,
+                                       bool reverse_byte_order);
+  inline void StoreFloatDataViewElement(DoubleRegister value,
+                                        Register data_pointer, Register index,
+                                        ExternalArrayType type,
+                                        bool reverse_byte_order);
 
   enum class CharCodeMaskMode { kValueIsInRange, kMustApplyMask };
 
   // Warning: Input registers {string} and {index} will be scratched.
-  // {result} is allowed to alias with one the other 3 input registers.
+  // {result} is allowed to alias with either {string} or {index}, but not with
+  // the scratch registers.
   // {result} is an int32.
   void StringCharCodeOrCodePointAt(
       BuiltinStringPrototypeCharCodeOrCodePointAt::Mode mode,
@@ -536,6 +567,9 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
   inline void Move(DoubleRegister dst, double n);
   inline void Move(DoubleRegister dst, Float64 n);
   inline void Move(Register dst, Handle<HeapObject> obj);
+  // Loads {obj} with LoadRoot if it is an immortal immovable root, and returns
+  // whether it did.
+  bool TryLoadRoot(Register dst, Handle<HeapObject> obj);
 
   void Move(ExternalReference dst, int32_t imm);
 
@@ -548,11 +582,25 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
   inline void LoadInt32(Register dst, MemOperand src);
   inline void StoreInt32(MemOperand dst, Register src);
 
+  inline void LoadFloat16(DoubleRegister dst, MemOperand src);
+  static inline uint8_t StoreFloat16GeneralTemporaryCount();
+  static inline uint8_t StoreFloat16DoubleTemporaryCount();
+  inline void StoreFloat16(MemOperand dst, DoubleRegister src);
   inline void LoadFloat32(DoubleRegister dst, MemOperand src);
   inline void StoreFloat32(MemOperand dst, DoubleRegister src);
   inline void LoadFloat64(DoubleRegister dst, MemOperand src);
   inline void StoreFloat64(MemOperand dst, DoubleRegister src);
 
+  inline void LoadUnalignedFloat16(DoubleRegister dst, Register base,
+                                   Register index);
+  inline void LoadUnalignedFloat16AndReverseByteOrder(DoubleRegister dst,
+                                                      Register base,
+                                                      Register index);
+  inline void StoreUnalignedFloat16(Register base, Register index,
+                                    DoubleRegister src);
+  inline void ReverseByteOrderAndStoreUnalignedFloat16(Register base,
+                                                       Register index,
+                                                       DoubleRegister src);
   inline void LoadUnalignedFloat32(DoubleRegister dst, Register base,
                                    Register index);
   inline void LoadUnalignedFloat32AndReverseByteOrder(DoubleRegister dst,
@@ -575,6 +623,7 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
                                                        DoubleRegister src);
 
   inline void SignExtend32To64Bits(Register dst, Register src);
+  inline void ZeroExtend32To64Bits(Register dst, Register src);
   inline void NegateInt32(Register val);
 
   void CountLeadingZerosInt32(Register dst, Register src);
@@ -721,6 +770,35 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
   inline void CallRuntime(Runtime::FunctionId fid);
   inline void CallRuntime(Runtime::FunctionId fid, int num_args);
 
+  // Unconditional jumps go through Jump or JumpToDeopt, which track whether
+  // the code after them is reachable.
+#if defined(V8_TARGET_ARCH_X64)
+  using MacroAssembler::jmp;
+  void jmp(Label*, Label::Distance = Label::kFar) = delete;
+#elif defined(V8_TARGET_ARCH_ARM64)
+  using MacroAssembler::B;
+  using MacroAssembler::b;
+  void B(Label*) = delete;
+  void b(Label*) = delete;
+  void jmp(Label*) = delete;
+#elif defined(V8_TARGET_ARCH_ARM)
+  using MacroAssembler::b;
+  void b(Label*, Condition = al) = delete;
+  void jmp(Label*) = delete;
+#elif defined(V8_TARGET_ARCH_PPC64)
+  using MacroAssembler::b;
+  void b(Label*, LKBit = LeaveLK) = delete;
+  void jmp(Label*) = delete;
+#elif defined(V8_TARGET_ARCH_S390X)
+  using MacroAssembler::b;
+  using MacroAssembler::jmp;
+  void b(Label*, Label::Distance = Label::kFar) = delete;
+  void jmp(Label*, Label::Distance = Label::kFar) = delete;
+#elif defined(V8_TARGET_ARCH_RISCV64)
+  void jmp(Label*, Label::Distance = Label::kFar) = delete;
+#elif defined(V8_TARGET_ARCH_LOONG64)
+  void jmp(Label*) = delete;
+#endif
   inline void Jump(Label* target, Label::Distance distance = Label::kFar);
   inline void JumpToDeopt(Label* target);
   inline void JumpIf(Condition cond, Label* target,
@@ -800,6 +878,18 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
                                     bool fallthrough_when_true, Label* if_false,
                                     Label::Distance false_distance,
                                     bool fallthrough_when_false);
+  // The int32 compares above on the inputs of a node. An Int32Constant or
+  // Uint32Constant input is read as an immediate, with the operands swapped
+  // and the condition commuted when it is the left one; any other input is
+  // read from its register. TryGetInt32Immediate is that constant's value,
+  // for the node's location constraints, which need not give it a register.
+  inline void CompareInt32AndJumpIf(Input left, Input right, Condition cond,
+                                    Label* target,
+                                    Label::Distance distance = Label::kFar);
+  inline void CompareInt32AndBranch(Input left, Input right, Condition cond,
+                                    BasicBlock* if_true, BasicBlock* if_false,
+                                    BasicBlock* next_block);
+  static inline std::optional<int32_t> TryGetInt32Immediate(Input input);
   inline void CompareIntPtrAndBranch(Register r1, int32_t value, Condition cond,
                                      BasicBlock* if_true, BasicBlock* if_false,
                                      BasicBlock* next_block);
@@ -949,7 +1039,17 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
 
   bool allow_deferred_call() const { return allow_deferred_call_; }
   void set_allow_deferred_call(bool value) { allow_deferred_call_ = value; }
+
+  // Whether execution can fall through to the code emitted next: a jump, a
+  // deopt, a trap or an abort ends the reachable code, and binding a label
+  // starts it again.
+  bool is_reachable() const { return reachable_; }
 #endif  // DEBUG
+  void set_reachable(bool value) {
+#ifdef DEBUG
+    reachable_ = value;
+#endif  // DEBUG
+  }
 
  private:
   template <typename Derived>
@@ -966,12 +1066,24 @@ class V8_EXPORT_PRIVATE MaglevAssembler : public MacroAssembler {
   // this when SmiValuesAre31Bits(); otherwise use SmiTag(dst, src).
   inline Condition TrySmiTagInt32(Register dst, Register src);
 
+  // The register, immediate and condition of a compare of {left} with
+  // {right} under {cond} once its constant input is read as an immediate, or
+  // nullopt when neither input is one.
+  struct ImmediateCompare {
+    Register reg;
+    int32_t value;
+    Condition cond;
+  };
+  static inline std::optional<ImmediateCompare> TryGetImmediateCompare(
+      Input left, Input right, Condition cond);
+
   MaglevCodeGenState* const code_gen_state_;
   TemporaryRegisterScope* scratch_register_scope_ = nullptr;
 #ifdef DEBUG
   bool allow_allocate_ = false;
   bool allow_call_ = false;
   bool allow_deferred_call_ = false;
+  bool reachable_ = true;
 #endif  // DEBUG
 };
 
@@ -1076,12 +1188,12 @@ class SaveRegisterStateForCall {
       }
       pushed_reg_index++;
     }
-#ifdef V8_TARGET_ARCH_ARM64
+#if defined(V8_TARGET_ARCH_ARM64) || V8_X64_16BYTE_STACK_ALIGNMENT_BOOL
     pushed_reg_index = RoundUp<2>(pushed_reg_index);
 #endif
     int num_double_slots = snapshot_.live_double_registers.Count() *
                            (kDoubleSize / kSystemPointerSize);
-#ifdef V8_TARGET_ARCH_ARM64
+#if defined(V8_TARGET_ARCH_ARM64) || V8_X64_16BYTE_STACK_ALIGNMENT_BOOL
     num_double_slots = RoundUp<2>(num_double_slots);
 #endif
     safepoint.SetNumExtraSpillSlots(pushed_reg_index + num_double_slots);
@@ -1268,6 +1380,40 @@ constexpr Condition UnsignedConditionFor(Operation operation) {
       return kUnsignedGreaterThan;
     case Operation::kGreaterThanOrEqual:
       return kUnsignedGreaterThanEqual;
+    default:
+      UNREACHABLE();
+  }
+}
+
+// Whether {cond} orders its operands as signed integers. kEqual and kNotEqual
+// hold for either signedness.
+constexpr bool IsSignedCondition(Condition cond) {
+  return cond == kLessThan || cond == kLessThanEqual || cond == kGreaterThan ||
+         cond == kGreaterThanEqual;
+}
+
+// The condition under which the operands of {cond}, swapped, compare the same.
+constexpr Condition CommuteCondition(Condition cond) {
+  switch (cond) {
+    case kEqual:
+    case kNotEqual:
+      return cond;
+    case kLessThan:
+      return kGreaterThan;
+    case kLessThanEqual:
+      return kGreaterThanEqual;
+    case kGreaterThan:
+      return kLessThan;
+    case kGreaterThanEqual:
+      return kLessThanEqual;
+    case kUnsignedLessThan:
+      return kUnsignedGreaterThan;
+    case kUnsignedLessThanEqual:
+      return kUnsignedGreaterThanEqual;
+    case kUnsignedGreaterThan:
+      return kUnsignedLessThan;
+    case kUnsignedGreaterThanEqual:
+      return kUnsignedLessThanEqual;
     default:
       UNREACHABLE();
   }

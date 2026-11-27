@@ -166,6 +166,8 @@ void Builtins::Generate_DeoptimizationEntry_LazyAfterFastCall(
   __ MultiPop(kCalleeSaveRegisters);
   __ MultiPopDoubles(kCalleeSaveFPRegisters);
   __ LeaveFrame(StackFrame::BUILTIN);
+  __ TailCallBuiltin(Builtin::kDeoptimizationEntry_Lazy);
+
   __ bind(&no_exception);
   // Deoptimization expects that the return value of the API call is in the
   // return register. As we only allow deoptimization if the return type is
@@ -397,7 +399,7 @@ enum class OsrSourceTier {
 
 void OnStackReplacement(MacroAssembler* masm, OsrSourceTier source,
                         Register maybe_target_code,
-                        Register expected_param_count) {
+                        Register expected_osr_offset) {
   Label jump_to_optimized_code;
   {
     // If maybe_target_code is not null, no need to call into runtime. A
@@ -448,7 +450,7 @@ void OnStackReplacement(MacroAssembler* masm, OsrSourceTier source,
     __ LeaveFrame(StackFrame::STUB);
   }
 
-  // The sandbox would rely on testing expected_parameter_count here.
+  // The sandbox would rely on testing expected_osr_offset here.
   static_assert(!V8_ENABLE_SANDBOX_BOOL);
 
   // Load deoptimization data from the code object.
@@ -1306,10 +1308,45 @@ void Builtins::Generate_BaselineOutOfLinePrologue(MacroAssembler* masm) {
     __ blt(&call_stack_guard);
   }
 
+  // Reduce interrupt budget.
+  Label budget_interrupt;
+  {
+    ASM_CODE_COMMENT_STRING(masm, "Update Interrupt Budget");
+    UseScratchRegisterScope temps(masm);
+    Register interrupt_budget = temps.Acquire();
+    Register bytecode_length = temps.Acquire();
+    Register bytecodeArray = descriptor.GetRegisterParameter(
+        BaselineOutOfLinePrologueDescriptor::kInterpreterBytecodeArray);
+    __ LoadS32(interrupt_budget,
+               FieldMemOperand(feedback_cell,
+                               offsetof(FeedbackCell, interrupt_budget_)));
+    __ SmiUntagField(
+        bytecode_length,
+        FieldMemOperand(bytecodeArray, offsetof(BytecodeArray, length_)));
+    __ sub(interrupt_budget, interrupt_budget, bytecode_length, LeaveOE, SetRC);
+    __ StoreU32(interrupt_budget,
+                FieldMemOperand(feedback_cell,
+                                offsetof(FeedbackCell, interrupt_budget_)));
+    __ blt(&budget_interrupt);
+  }
+
   // Do "fast" return to the caller pc in lr.
   __ LoadRoot(kInterpreterAccumulatorRegister, RootIndex::kUndefinedValue);
   __ Ret();
 
+  __ bind(&budget_interrupt);
+  {
+    ASM_CODE_COMMENT_STRING(masm, "Budget interrupt call");
+    FrameScope frame_scope(masm, StackFrame::INTERNAL);
+    // Save incoming new target or generator
+    __ Push(kJavaScriptCallNewTargetRegister);
+    __ Push(closure);
+    __ CallRuntime(Runtime::kBytecodeBudgetInterrupt_Sparkplug, 1);
+    __ Pop(kJavaScriptCallNewTargetRegister);
+  }
+
+  __ LoadRoot(kInterpreterAccumulatorRegister, RootIndex::kUndefinedValue);
+  __ Ret();
 
   __ bind(&call_stack_guard);
   {
@@ -2193,7 +2230,7 @@ void Builtins::Generate_InterpreterOnStackReplacement(MacroAssembler* masm) {
   static_assert(D::kParameterCount == 2);
   OnStackReplacement(masm, OsrSourceTier::kInterpreter,
                      D::MaybeTargetCodeRegister(),
-                     D::ExpectedParameterCountRegister());
+                     D::ExpectedOsrOffsetRegister());
 }
 
 void Builtins::Generate_BaselineOnStackReplacement(MacroAssembler* masm) {
@@ -2204,7 +2241,7 @@ void Builtins::Generate_BaselineOnStackReplacement(MacroAssembler* masm) {
              MemOperand(fp, BaselineFrameConstants::kContextOffset));
   OnStackReplacement(masm, OsrSourceTier::kBaseline,
                      D::MaybeTargetCodeRegister(),
-                     D::ExpectedParameterCountRegister());
+                     D::ExpectedOsrOffsetRegister());
 }
 
 static void GenerateCall(MacroAssembler* masm, Register argc, Register target,
@@ -3081,7 +3118,7 @@ void Builtins::Generate_WasmLiftoffFrameSetup(MacroAssembler* masm) {
     __ JumpIfSmi(vector, &allocate_vector);
     __ bind(&done);
     // Increment the total invocation count of the function.
-    __ LoadTaggedField(
+    __ LoadTaggedSignedField(
         scratch, FieldMemOperand(vector, OFFSET_OF_DATA_START(FixedArray)));
     Register smi_val = inner_temps.Acquire();
     __ Move(smi_val, Smi::FromInt(1));
@@ -4930,9 +4967,10 @@ void Builtins::Generate_CallApiCallbackImpl(MacroAssembler* masm,
   if (mode == CallApiCallbackMode::kGeneric) {
     api_function_address = ReassignRegister(topmost_script_having_context);
 
-    __ LoadU64(
+    __ LoadExternalPointerField(
         api_function_address,
-        FieldMemOperand(func_templ, offsetof(FunctionTemplateInfo, callback_)));
+        FieldMemOperand(func_templ, offsetof(FunctionTemplateInfo, callback_)),
+        kFunctionTemplateInfoCallbackTag);
   }
   __ EnterExitFrame(FC::getExtraSlotsCountFrom<ExitFrameConstants>(),
                     StackFrame::API_CALLBACK_EXIT);
@@ -5091,18 +5129,24 @@ void Builtins::Generate_CallApiAccessorImpl(MacroAssembler* masm,
   if (for_interceptor) {
     if (for_setter) {
       thunk_ref = ER::invoke_named_interceptor_setter_callback();
-      __ LoadU64(api_function_address,
-                 FieldMemOperand(callback, offsetof(InterceptorInfo, setter_)));
+      __ LoadExternalPointerField(
+          api_function_address,
+          FieldMemOperand(callback, offsetof(InterceptorInfo, setter_)),
+          kApiNamedPropertySetterCallbackTag);
     } else {
       thunk_ref = ER::invoke_named_interceptor_getter_callback();
-      __ LoadU64(api_function_address,
-                 FieldMemOperand(callback, offsetof(InterceptorInfo, getter_)));
+      __ LoadExternalPointerField(
+          api_function_address,
+          FieldMemOperand(callback, offsetof(InterceptorInfo, getter_)),
+          kApiNamedPropertyGetterCallbackTag);
     }
   } else {
     DCHECK(!for_setter);
     thunk_ref = ER::invoke_accessor_getter_callback();
-    __ LoadU64(api_function_address,
-               FieldMemOperand(callback, offsetof(AccessorInfo, getter_)));
+    __ LoadExternalPointerField(
+        api_function_address,
+        FieldMemOperand(callback, offsetof(AccessorInfo, getter_)),
+        kAccessorInfoGetterTag);
   }
   callback = no_reg;
 

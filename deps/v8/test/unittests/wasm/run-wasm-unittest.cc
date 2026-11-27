@@ -100,10 +100,9 @@ WASM_EXEC_TEST(Int32Add_P_fallthru) {
 
 static void RunInt32AddTest(TestExecutionTier execution_tier,
                             const uint8_t* code, size_t size) {
-  TestSignatures sigs;
   WasmRunner<int32_t, int32_t, int32_t> r(execution_tier);
-  r.builder().AddSignature(sigs.ii_v());
-  r.builder().AddSignature(sigs.iii_v());
+  r.builder().AddSignature(TestSignatures::ii_v());
+  r.builder().AddSignature(TestSignatures::iii_v());
   r.Build(base::VectorOf(code, size));
   FOR_INT32_INPUTS(i) {
     FOR_INT32_INPUTS(j) {
@@ -144,8 +143,8 @@ WASM_EXEC_TEST(Int32Add_multi_if) {
 
 namespace {
 std::optional<Float32> propagate_f32_binop_nan(Float32 lhs, Float32 rhs) {
-#if defined(V8_TARGET_ARCH_ARM64) || defined(V8_TARGET_ARCH_S390X) || \
-    defined(V8_TARGET_ARCH_LOONG64)
+#if defined(V8_TARGET_ARCH_ARM) || defined(V8_TARGET_ARCH_ARM64) || \
+    defined(V8_TARGET_ARCH_S390X) || defined(V8_TARGET_ARCH_LOONG64)
   // On these platforms any signalling NaN "wins" (but is made quiet).
   if (lhs.is_nan() && !lhs.is_quiet_nan()) return lhs.to_quiet_nan();
   if (rhs.is_nan() && !rhs.is_quiet_nan()) return rhs.to_quiet_nan();
@@ -166,9 +165,10 @@ std::optional<Float32> propagate_f32_binop_nan(Float32 lhs, Float32 rhs) {
 Float32 f32_add_result(Float32 lhs, Float32 rhs) {
   if (auto maybe_nan = propagate_f32_binop_nan(lhs, rhs)) return *maybe_nan;
 
-#if defined(V8_TARGET_ARCH_ARM64) || defined(V8_TARGET_ARCH_PPC64) ||   \
-    defined(V8_TARGET_ARCH_S390X) || defined(V8_TARGET_ARCH_LOONG64) || \
-    defined(V8_TARGET_ARCH_RISCV64) || defined(V8_TARGET_ARCH_RISCV32)
+#if defined(V8_TARGET_ARCH_ARM) || defined(V8_TARGET_ARCH_ARM64) ||       \
+    defined(V8_TARGET_ARCH_PPC64) || defined(V8_TARGET_ARCH_S390X) ||     \
+    defined(V8_TARGET_ARCH_LOONG64) || defined(V8_TARGET_ARCH_RISCV64) || \
+    defined(V8_TARGET_ARCH_RISCV32)
   if (lhs.is_inf() && rhs.is_inf()) {
     // Same sign -> +-inf. Otherwise NaN.
     return lhs.is_negative() == rhs.is_negative() ? lhs : Float32::quiet_nan();
@@ -181,9 +181,10 @@ Float32 f32_add_result(Float32 lhs, Float32 rhs) {
 Float32 f32_sub_result(Float32 lhs, Float32 rhs) {
   if (auto maybe_nan = propagate_f32_binop_nan(lhs, rhs)) return *maybe_nan;
 
-#if defined(V8_TARGET_ARCH_ARM64) || defined(V8_TARGET_ARCH_PPC64) ||   \
-    defined(V8_TARGET_ARCH_S390X) || defined(V8_TARGET_ARCH_RISCV64) || \
-    defined(V8_TARGET_ARCH_RISCV32) || defined(V8_TARGET_ARCH_LOONG64)
+#if defined(V8_TARGET_ARCH_ARM) || defined(V8_TARGET_ARCH_ARM64) ||       \
+    defined(V8_TARGET_ARCH_PPC64) || defined(V8_TARGET_ARCH_S390X) ||     \
+    defined(V8_TARGET_ARCH_RISCV64) || defined(V8_TARGET_ARCH_RISCV32) || \
+    defined(V8_TARGET_ARCH_LOONG64)
   // inf - inf -> NaN
   // -inf - -inf -> NaN
   if (lhs.is_inf() && rhs.is_inf() && lhs.is_negative() == rhs.is_negative()) {
@@ -197,9 +198,10 @@ Float32 f32_sub_result(Float32 lhs, Float32 rhs) {
 Float32 f32_mul_result(Float32 lhs, Float32 rhs) {
   if (auto maybe_nan = propagate_f32_binop_nan(lhs, rhs)) return *maybe_nan;
 
-#if defined(V8_TARGET_ARCH_ARM64) || defined(V8_TARGET_ARCH_RISCV64) ||   \
-    defined(V8_TARGET_ARCH_RISCV32) || defined(V8_TARGET_ARCH_LOONG64) || \
-    defined(V8_TARGET_ARCH_PPC64) || defined(V8_TARGET_ARCH_S390X)
+#if defined(V8_TARGET_ARCH_ARM) || defined(V8_TARGET_ARCH_ARM64) ||       \
+    defined(V8_TARGET_ARCH_RISCV64) || defined(V8_TARGET_ARCH_RISCV32) || \
+    defined(V8_TARGET_ARCH_LOONG64) || defined(V8_TARGET_ARCH_PPC64) ||   \
+    defined(V8_TARGET_ARCH_S390X)
   // 0 * Inf == NaN
   if (lhs.get_scalar() == 0 && rhs.is_inf()) return Float32::quiet_nan();
   // Inf * 0 == NaN
@@ -210,8 +212,7 @@ Float32 f32_mul_result(Float32 lhs, Float32 rhs) {
 }
 
 Float32 f32_div_result(Float32 lhs, Float32 rhs) {
-#if defined(V8_TARGET_ARCH_ARM) || defined(V8_TARGET_ARCH_RISCV64) || \
-    defined(V8_TARGET_ARCH_RISCV32)
+#if defined(V8_TARGET_ARCH_RISCV64) || defined(V8_TARGET_ARCH_RISCV32)
   if (rhs.get_scalar() == 0) {
     // +-0 / +-0 == NaN
     // +-NaN / +-0 == NaN
@@ -225,9 +226,10 @@ Float32 f32_div_result(Float32 lhs, Float32 rhs) {
 
   if (auto maybe_nan = propagate_f32_binop_nan(lhs, rhs)) return *maybe_nan;
 
-#if defined(V8_TARGET_ARCH_ARM64) || defined(V8_TARGET_ARCH_RISCV64) ||   \
-    defined(V8_TARGET_ARCH_RISCV32) || defined(V8_TARGET_ARCH_LOONG64) || \
-    defined(V8_TARGET_ARCH_PPC64) || defined(V8_TARGET_ARCH_S390X)
+#if defined(V8_TARGET_ARCH_ARM) || defined(V8_TARGET_ARCH_ARM64) ||       \
+    defined(V8_TARGET_ARCH_RISCV64) || defined(V8_TARGET_ARCH_RISCV32) || \
+    defined(V8_TARGET_ARCH_LOONG64) || defined(V8_TARGET_ARCH_PPC64) ||   \
+    defined(V8_TARGET_ARCH_S390X)
   // +-inf / +-inf == NaN
   if (lhs.is_inf() && rhs.is_inf()) return Float32::quiet_nan();
   if (rhs.get_scalar() == 0) {
@@ -2609,11 +2611,10 @@ WASM_EXEC_TEST(CallVoid) {
   const int32_t kElemNum = kMemOffset / sizeof(int32_t);
   const int32_t kExpected = 414444;
   // Build the target function.
-  TestSignatures sigs;
   int32_t* memory =
       r.builder().AddMemoryElems<int32_t>(kWasmPageSize / sizeof(int32_t));
   r.builder().RandomizeMemory();
-  WasmFunctionCompiler& t = r.NewFunction(sigs.v_v());
+  WasmFunctionCompiler& t = r.NewFunction(TestSignatures::v_v());
   t.Build({WASM_STORE_MEM(MachineType::Int32(), WASM_I32V_1(kMemOffset),
                           WASM_I32V_3(kExpected))});
 
@@ -2821,10 +2822,9 @@ UNINITIALIZED_WASM_EXEC_TEST(ReturnCall_IndirectFactorial) {
 
   WasmRunner<uint32_t, uint32_t> r(isolate_scope.isolate(), execution_tier);
 
-  TestSignatures sigs;
-
-  WasmFunctionCompiler& f_ind_fn = r.NewFunction(sigs.i_iii(), "f_ind");
-  ModuleTypeIndex sig_index = r.builder().AddSignature(sigs.i_iii());
+  WasmFunctionCompiler& f_ind_fn =
+      r.NewFunction(TestSignatures::i_iii(), "f_ind");
+  ModuleTypeIndex sig_index = r.builder().AddSignature(TestSignatures::i_iii());
   f_ind_fn.SetSigIndex(sig_index);
 
   // Function table.
@@ -2864,9 +2864,9 @@ UNINITIALIZED_WASM_EXEC_TEST(ReturnCall_Sum) {
   IsolateWithContextWrapper isolate_scope;
 
   WasmRunner<int32_t, int32_t> r(isolate_scope.isolate(), execution_tier);
-  TestSignatures sigs;
 
-  WasmFunctionCompiler& sum_aux_fn = r.NewFunction(sigs.i_ii(), "sum_aux");
+  WasmFunctionCompiler& sum_aux_fn =
+      r.NewFunction(TestSignatures::i_ii(), "sum_aux");
   r.Build({WASM_RETURN_CALL_FUNCTION(sum_aux_fn.function_index(),
                                      WASM_LOCAL_GET(0), WASM_I32V(0))});
 
@@ -2901,10 +2901,9 @@ UNINITIALIZED_WASM_EXEC_TEST(ReturnCall_Bounce_Sum) {
   IsolateWithContextWrapper isolate_scope;
 
   WasmRunner<int32_t, int32_t> r(isolate_scope.isolate(), execution_tier);
-  TestSignatures sigs;
 
-  WasmFunctionCompiler& b1_fn = r.NewFunction(sigs.i_ii(), "b1");
-  WasmFunctionCompiler& b2_fn = r.NewFunction(sigs.i_iii(), "b2");
+  WasmFunctionCompiler& b1_fn = r.NewFunction(TestSignatures::i_ii(), "b1");
+  WasmFunctionCompiler& b2_fn = r.NewFunction(TestSignatures::i_iii(), "b2");
   WasmFunctionCompiler& b3_fn =
       r.NewFunction<int32_t, int32_t, int32_t, int32_t, int32_t>("b3");
 
@@ -3233,21 +3232,20 @@ WASM_EXEC_TEST(ExprBlock_nested_ifs) {
 }
 
 WASM_EXEC_TEST(SimpleCallIndirect) {
-  TestSignatures sigs;
   WasmRunner<int32_t, int32_t> r(execution_tier);
 
-  WasmFunctionCompiler& t1 = r.NewFunction(sigs.i_ii());
+  WasmFunctionCompiler& t1 = r.NewFunction(TestSignatures::i_ii());
   t1.Build({WASM_I32_ADD(WASM_LOCAL_GET(0), WASM_LOCAL_GET(1))});
   t1.SetSigIndex(ModuleTypeIndex{1});
 
-  WasmFunctionCompiler& t2 = r.NewFunction(sigs.i_ii());
+  WasmFunctionCompiler& t2 = r.NewFunction(TestSignatures::i_ii());
   t2.Build({WASM_I32_SUB(WASM_LOCAL_GET(0), WASM_LOCAL_GET(1))});
   t2.SetSigIndex(ModuleTypeIndex{1});
 
   // Signature table.
-  r.builder().AddSignature(sigs.f_ff());
-  r.builder().AddSignature(sigs.i_ii());
-  r.builder().AddSignature(sigs.d_dd());
+  r.builder().AddSignature(TestSignatures::f_ff());
+  r.builder().AddSignature(TestSignatures::i_ii());
+  r.builder().AddSignature(TestSignatures::d_dd());
 
   // Function table.
   uint16_t indirect_function_table[] = {
@@ -3266,21 +3264,20 @@ WASM_EXEC_TEST(SimpleCallIndirect) {
 }
 
 WASM_EXEC_TEST(MultipleCallIndirect) {
-  TestSignatures sigs;
   WasmRunner<int32_t, int32_t, int32_t, int32_t> r(execution_tier);
 
-  WasmFunctionCompiler& t1 = r.NewFunction(sigs.i_ii());
+  WasmFunctionCompiler& t1 = r.NewFunction(TestSignatures::i_ii());
   t1.Build({WASM_I32_ADD(WASM_LOCAL_GET(0), WASM_LOCAL_GET(1))});
   t1.SetSigIndex(ModuleTypeIndex{1});
 
-  WasmFunctionCompiler& t2 = r.NewFunction(sigs.i_ii());
+  WasmFunctionCompiler& t2 = r.NewFunction(TestSignatures::i_ii());
   t2.Build({WASM_I32_SUB(WASM_LOCAL_GET(0), WASM_LOCAL_GET(1))});
   t2.SetSigIndex(ModuleTypeIndex{1});
 
   // Signature table.
-  r.builder().AddSignature(sigs.f_ff());
-  r.builder().AddSignature(sigs.i_ii());
-  r.builder().AddSignature(sigs.d_dd());
+  r.builder().AddSignature(TestSignatures::f_ff());
+  r.builder().AddSignature(TestSignatures::i_ii());
+  r.builder().AddSignature(TestSignatures::d_dd());
 
   // Function table.
   uint16_t indirect_function_table[] = {
@@ -3308,17 +3305,16 @@ WASM_EXEC_TEST(MultipleCallIndirect) {
 }
 
 WASM_EXEC_TEST(CallIndirect_EmptyTable) {
-  TestSignatures sigs;
   WasmRunner<int32_t, int32_t> r(execution_tier);
 
   // One function.
-  WasmFunctionCompiler& t1 = r.NewFunction(sigs.i_ii());
+  WasmFunctionCompiler& t1 = r.NewFunction(TestSignatures::i_ii());
   t1.Build({WASM_I32_ADD(WASM_LOCAL_GET(0), WASM_LOCAL_GET(1))});
   t1.SetSigIndex(ModuleTypeIndex{1});
 
   // Signature table.
-  r.builder().AddSignature(sigs.f_ff());
-  r.builder().AddSignature(sigs.i_ii());
+  r.builder().AddSignature(TestSignatures::f_ff());
+  r.builder().AddSignature(TestSignatures::i_ii());
   r.builder().AddIndirectFunctionTable(nullptr, 0);
 
   // Build the caller function.
@@ -3331,16 +3327,15 @@ WASM_EXEC_TEST(CallIndirect_EmptyTable) {
 }
 
 WASM_EXEC_TEST(CallIndirect_canonical) {
-  TestSignatures sigs;
   WasmRunner<int32_t, int32_t> r(execution_tier);
 
-  WasmFunctionCompiler& t1 = r.NewFunction(sigs.i_ii());
+  WasmFunctionCompiler& t1 = r.NewFunction(TestSignatures::i_ii());
   t1.Build({WASM_I32_ADD(WASM_LOCAL_GET(0), WASM_LOCAL_GET(1))});
 
-  WasmFunctionCompiler& t2 = r.NewFunction(sigs.i_ii());
+  WasmFunctionCompiler& t2 = r.NewFunction(TestSignatures::i_ii());
   t2.Build({WASM_I32_SUB(WASM_LOCAL_GET(0), WASM_LOCAL_GET(1))});
 
-  WasmFunctionCompiler& t3 = r.NewFunction(sigs.f_ff());
+  WasmFunctionCompiler& t3 = r.NewFunction(TestSignatures::f_ff());
   t3.Build({WASM_F32_SUB(WASM_LOCAL_GET(0), WASM_LOCAL_GET(1))});
 
   // Function table.
@@ -3683,10 +3678,10 @@ WASM_EXEC_TEST(F32CopySign) {
 static void CompileCallIndirectMany(TestExecutionTier tier, ValueType param) {
   // Make sure we don't run out of registers when compiling indirect calls
   // with many many parameters.
-  TestSignatures sigs;
   for (uint8_t num_params = 0; num_params < 40; ++num_params) {
     WasmRunner<void> r(tier);
-    FunctionSig* sig = sigs.many(r.zone(), kWasmVoid, param, num_params);
+    FunctionSig* sig =
+        TestSignatures::many(r.zone(), kWasmVoid, param, num_params);
 
     r.builder().AddSignature(sig);
     r.builder().AddSignature(sig);

@@ -485,7 +485,7 @@ constexpr auto BaselineLeaveFrameDescriptor::registers() {
     V8_TARGET_ARCH_ARM || V8_TARGET_ARCH_PPC64 || V8_TARGET_ARCH_S390X || \
     V8_TARGET_ARCH_RISCV64 || V8_TARGET_ARCH_MIPS64 ||                    \
     V8_TARGET_ARCH_LOONG64 || V8_TARGET_ARCH_RISCV32
-  return RegisterArray(ParamsSizeRegister(), WeightRegister());
+  return RegisterArray(ParamsSizeRegister());
 #else
   return DefaultRegisterArray();
 #endif
@@ -522,8 +522,7 @@ constexpr Register OnStackReplacementDescriptor::MaybeTargetCodeRegister() {
 }
 
 // static
-constexpr Register
-OnStackReplacementDescriptor::ExpectedParameterCountRegister() {
+constexpr Register OnStackReplacementDescriptor::ExpectedOsrOffsetRegister() {
   return registers()[1];
 }
 
@@ -631,6 +630,12 @@ constexpr auto GetIteratorStackParameterDescriptor::registers() {
 // static
 constexpr auto
 ProxyGetPropertyTrapResultLazyDeoptContinuationDescriptor::registers() {
+  return RegisterArray();
+}
+
+// static
+constexpr auto
+ProxySetPropertyTrapResultLazyDeoptContinuationDescriptor::registers() {
   return RegisterArray();
 }
 
@@ -744,32 +749,32 @@ constexpr auto CallApiCallbackGenericDescriptor::registers() {
 
 // static
 constexpr auto CallApiGetterDescriptor::registers() {
-#if V8_TARGET_ARCH_ARM64
+#if V8_TARGET_ARCH_ARM64 || V8_X64_16BYTE_STACK_ALIGNMENT_BOOL
   return RegisterArray(NameRegister());
 #else
   return RegisterArray(NameRegister(), CallbackRegister());
-#endif  // V8_TARGET_ARCH_ARM64
+#endif  // V8_TARGET_ARCH_ARM64 || V8_X64_16BYTE_STACK_ALIGNMENT_BOOL
 }
 
 // static
 constexpr auto CallApiSetterDescriptor::registers() {
-#if V8_TARGET_ARCH_ARM64
+#if V8_TARGET_ARCH_ARM64 || V8_X64_16BYTE_STACK_ALIGNMENT_BOOL
   return RegisterArray(NameRegister());
 #else
   return RegisterArray(NameRegister(), CallbackRegister());
-#endif  // V8_TARGET_ARCH_ARM64
+#endif  // V8_TARGET_ARCH_ARM64 || V8_X64_16BYTE_STACK_ALIGNMENT_BOOL
 }
 
 // static
 constexpr Register CallApiSetterDescriptor::NameRegister() {
   return CallApiGetterDescriptor::NameRegister();
 }
-#if !V8_TARGET_ARCH_ARM64
+#if !V8_TARGET_ARCH_ARM64 && !V8_X64_16BYTE_STACK_ALIGNMENT_BOOL
 // static
 constexpr Register CallApiSetterDescriptor::CallbackRegister() {
   return CallApiGetterDescriptor::CallbackRegister();
 }
-#endif  // !V8_TARGET_ARCH_ARM64
+#endif  // !V8_TARGET_ARCH_ARM64 && !V8_X64_16BYTE_STACK_ALIGNMENT_BOOL
 
 // static
 constexpr auto ContextOnlyDescriptor::registers() { return RegisterArray(); }

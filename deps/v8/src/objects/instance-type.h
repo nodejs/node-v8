@@ -303,7 +303,7 @@ V8_EXPORT_PRIVATE std::string ToString(InstanceType instance_type);
 #define UNIQUE_LEAF_INSTANCE_TYPE_MAP_LIST_GENERATOR(V, _)                     \
   V(_, AccessorInfoMap, accessor_info_map, AccessorInfo)                       \
   V(_, AccessorPairMap, accessor_pair_map, AccessorPair)                       \
-  V(_, AllocationMementoMap, allocation_memento_map, AllocationMemento)        \
+  V(_, AllocationSiteMap, allocation_site_map, AllocationSite)                 \
   V(_, ArrayBoilerplateDescriptionMap, array_boilerplate_description_map,      \
     ArrayBoilerplateDescription)                                               \
   V(_, BreakPointMap, break_point_map, BreakPoint)                             \
@@ -323,7 +323,6 @@ V8_EXPORT_PRIVATE std::string ToString(InstanceType instance_type);
   V(_, FunctionTemplateInfoMap, function_template_info_map,                    \
     FunctionTemplateInfo)                                                      \
   V(_, InterpreterDataMap, interpreter_data_map, InterpreterData)              \
-  V(_, MegaDomHandlerMap, mega_dom_handler_map, MegaDomHandler)                \
   V(_, ObjectTemplateInfoMap, object_template_info_map, ObjectTemplateInfo)    \
   V(_, PreparseDataMap, preparse_data_map, PreparseData)                       \
   V(_, PropertyArrayMap, property_array_map, PropertyArray)                    \

@@ -280,6 +280,35 @@ class SimMemory {
     std::atomic_ref<T>(*reinterpret_cast<T*>(address))
         .store(value, std::memory_order_release);
   }
+
+  // Atomically replaces the value at `address` with `update(old)` and returns
+  // `old`.
+  template <typename T, typename F>
+    requires(sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 ||
+             sizeof(T) == 8)
+  static T RelaxedAtomicUpdate(uintptr_t address, F update) {
+    address = AddressUntag(address);
+    DCHECK(IsAligned(address, sizeof(T)));
+    std::atomic_ref<T> location(*reinterpret_cast<T*>(address));
+    T old = location.load(std::memory_order_relaxed);
+    while (!location.compare_exchange_weak(old, update(old),
+                                           std::memory_order_relaxed)) {
+    }
+    return old;
+  }
+
+  // Atomically stores `desired` at `address` if it holds `expected`, and
+  // returns the value it held.
+  template <typename T>
+    requires(sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 ||
+             sizeof(T) == 8)
+  static T RelaxedCompareAndSwap(uintptr_t address, T expected, T desired) {
+    address = AddressUntag(address);
+    DCHECK(IsAligned(address, sizeof(T)));
+    std::atomic_ref<T>(*reinterpret_cast<T*>(address))
+        .compare_exchange_strong(expected, desired, std::memory_order_relaxed);
+    return expected;
+  }
 };
 
 // The proper way to initialize a simulated system register (such as NZCV) is as
@@ -917,9 +946,10 @@ class Simulator : public DecoderVisitor, public SimulatorBase {
   }
 
   void CheckBType() {
+    DCHECK(btype() != DefaultBType);
     // On guarded pages, if BType is not zero, take an exception on any
     // instruction other than BTI, PACI[AB]SP, HLT or BRK.
-    if (PcIsInGuardedPage() && (btype() != DefaultBType)) {
+    if (PcIsInGuardedPage()) {
       if (pc_->IsPAuth()) {
         CheckBTypeForPAuth();
       } else if (pc_->IsBti()) {
@@ -992,14 +1022,17 @@ class Simulator : public DecoderVisitor, public SimulatorBase {
       }
     }
 #endif  // V8_USE_ADDRESS_SANITIZER
-    CheckBType();
-    ResetBType();
-    CheckBreakNext();
+    // Only an indirect branch leaves BTYPE set.
+    if (V8_UNLIKELY(btype() != DefaultBType)) {
+      CheckBType();
+      ResetBType();
+    }
+    if (V8_UNLIKELY(break_on_next_)) CheckBreakNext();
     Decode(pc_);
     last_instr_ = pc_;
     increment_pc();
     LogAllWrittenRegisters();
-    CheckBreakpoints();
+    if (V8_UNLIKELY(!breakpoints_.empty())) CheckBreakpoints();
   }
 
 // Declare all Visitor functions.
@@ -1265,7 +1298,7 @@ class Simulator : public DecoderVisitor, public SimulatorBase {
   // instruction it meets.
   bool break_on_next_;
   // Check if the Simulator should insert a break after the current instruction
-  // for the 'next' command.
+  // for the 'next' command. Only called when break_on_next_ is set.
   void CheckBreakNext();
 
   // Disassemble instruction at the given address.

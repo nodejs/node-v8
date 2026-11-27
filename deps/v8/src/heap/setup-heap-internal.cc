@@ -31,12 +31,10 @@
 #include "src/objects/heap-object-set-map-inl.h"
 #include "src/objects/instance-type-inl.h"
 #include "src/objects/js-generator.h"
-#include "src/objects/js-shared-array.h"
 #include "src/objects/js-weak-refs.h"
 #include "src/objects/literal-objects-inl.h"
 #include "src/objects/lookup-cache.h"
 #include "src/objects/map.h"
-#include "src/objects/megadom-handler.h"
 #include "src/objects/microtask.h"
 #include "src/objects/object-conversions-inl.h"
 #include "src/objects/objects-inl.h"
@@ -83,8 +81,6 @@ bool IsMutableMap(InstanceType instance_type, ElementsKind elements_kind) {
   bool is_maybe_read_only_js_object =
       InstanceTypeChecker::IsMaybeReadOnlyJSObject(instance_type);
   bool is_js_object = InstanceTypeChecker::IsJSObject(instance_type);
-  bool is_always_shared_space_js_object =
-      InstanceTypeChecker::IsAlwaysSharedSpaceJSObject(instance_type);
   bool is_wasm_object = false;
 #if V8_ENABLE_WEBASSEMBLY
   is_wasm_object = instance_type == WASM_STRUCT_TYPE ||
@@ -95,14 +91,10 @@ bool IsMutableMap(InstanceType instance_type, ElementsKind elements_kind) {
                      !Map::CanHaveFastTransitionableElementsKind(instance_type),
                  IsDictionaryElementsKind(elements_kind) ||
                      IsTerminalElementsKind(elements_kind) ||
-                     is_maybe_read_only_js_object ||
-                     (is_always_shared_space_js_object &&
-                      elements_kind == SHARED_ARRAY_ELEMENTS));
+                     is_maybe_read_only_js_object);
   // JSObjects have maps with a mutable prototype_validity_cell, so they cannot
   // go in RO_SPACE. Maps for managed Wasm objects have mutable subtype lists.
-  return (is_js_object && !is_maybe_read_only_js_object &&
-          !is_always_shared_space_js_object) ||
-         is_wasm_object;
+  return (is_js_object && !is_maybe_read_only_js_object) || is_wasm_object;
 }
 #endif
 
@@ -160,19 +152,16 @@ constexpr int StructSize() {
   return sizeof(StructType);
 }
 
-using AllocationSiteWithoutWeakNext = AllocationSite;
 constexpr std::initializer_list<StructInit> kStructTable{
 #define STRUCT_TABLE_ELEMENT(TYPE, Name, name) \
   {TYPE, StructSize<Name>(), RootIndex::k##Name##Map},
     STRUCT_LIST(STRUCT_TABLE_ELEMENT)
 #undef STRUCT_TABLE_ELEMENT
-#define ALLOCATION_SITE_ELEMENT(_, TYPE, Name, Size, name) \
-  {TYPE, sizeof(Name##Size), RootIndex::k##Name##Size##Map},
-        ALLOCATION_SITE_LIST(ALLOCATION_SITE_ELEMENT, /* not used */)
-#undef ALLOCATION_SITE_ELEMENT
+        {ALLOCATION_SITE_TYPE, sizeof(AllocationSite),
+         RootIndex::kAllocationSiteMap},
 #define DATA_HANDLER_ELEMENT(_, TYPE, Name, Size, name) \
   {TYPE, Name::SizeFor(Size), RootIndex::k##Name##Size##Map},
-            DATA_HANDLER_LIST(DATA_HANDLER_ELEMENT, /* not used */)
+    DATA_HANDLER_LIST(DATA_HANDLER_ELEMENT, /* not used */)
 #undef DATA_HANDLER_ELEMENT
 };
 
@@ -245,7 +234,6 @@ bool Heap::CreateMutableHeapObjects() {
   CHECK_EQ(kInitialGCEpoch, gc_count_);
 
   set_native_contexts_list(roots.undefined_value());
-  set_allocation_sites_list(roots.undefined_value());
   set_dirty_js_finalization_registries_list(roots.undefined_value());
   set_dirty_js_finalization_registries_list_tail(roots.undefined_value());
 
@@ -659,8 +647,6 @@ bool Heap::CreateEarlyReadOnlyMapsAndObjects() {
     ALLOCATE_MAP(TRUSTED_FOREIGN_TYPE, sizeof(TrustedForeign), trusted_foreign)
     ALLOCATE_MAP(HASH_SEED_WRAPPER_TYPE, sizeof(HashSeedWrapper),
                  hash_seed_wrapper)
-    ALLOCATE_MAP(MEGA_DOM_HANDLER_TYPE, sizeof(MegaDomHandler),
-                 mega_dom_handler)
 
     ALLOCATE_VARSIZE_MAP(FIXED_DOUBLE_ARRAY_TYPE, fixed_double_array)
     roots.fixed_double_array_map()->set_elements_kind(HOLEY_DOUBLE_ELEMENTS);
@@ -688,6 +674,9 @@ bool Heap::CreateEarlyReadOnlyMapsAndObjects() {
     }
 
     ALLOCATE_MAP(PROPERTY_CELL_TYPE, sizeof(PropertyCell), global_property_cell)
+    // Allocated early so that its address fits an arm64 compare immediate;
+    // optimized code compares context slots against it.
+    ALLOCATE_MAP(CONTEXT_CELL_TYPE, sizeof(ContextCell), context_cell)
 
     // The "no closures" and "one closure" FeedbackCell maps need
     // to be marked unstable because their objects can change maps.
@@ -788,7 +777,6 @@ bool Heap::CreateLateReadOnlyNonJSReceiverMaps() {
                          name_to_index_hash_table)
     ALLOCATE_VARSIZE_MAP(DOUBLE_STRING_CACHE_TYPE, double_string_cache)
 
-    ALLOCATE_VARSIZE_MAP(EMBEDDER_DATA_ARRAY_TYPE, embedder_data_array)
     ALLOCATE_VARSIZE_MAP(EPHEMERON_HASH_TABLE_TYPE, ephemeron_hash_table)
 
     ALLOCATE_VARSIZE_MAP(SCRIPT_CONTEXT_TABLE_TYPE, script_context_table)
@@ -811,8 +799,6 @@ bool Heap::CreateLateReadOnlyNonJSReceiverMaps() {
                  source_text_module)
     ALLOCATE_MAP(SYNTHETIC_MODULE_TYPE, sizeof(SyntheticModule),
                  synthetic_module)
-
-    ALLOCATE_MAP(CONTEXT_CELL_TYPE, sizeof(ContextCell), context_cell)
 
     IF_WASM(ALLOCATE_MAP, WASM_IMPORT_DATA_TYPE, WasmImportData::kSize,
             wasm_import_data)
@@ -875,7 +861,6 @@ bool Heap::CreateLateReadOnlyNonJSReceiverMaps() {
 
 bool Heap::CreateLateReadOnlyJSReceiverMaps() {
   HandleScope late_jsreceiver_maps_handle_scope(isolate());
-  Factory* factory = isolate()->factory();
   ReadOnlyRoots roots(this);
 
   {
@@ -896,30 +881,6 @@ bool Heap::CreateLateReadOnlyJSReceiverMaps() {
                  CppHeapExternalObject::kHeaderSize, cpp_heap_external)
     ALLOCATE_MAP(CPP_GCMANAGED_BASE_TYPE, CppGCManagedBase::kHeaderSize,
                  cpp_gc_managed_base)
-  }
-
-  // Shared space object maps are immutable and can be in RO space.
-  {
-    Tagged<Map> shared_array_map;
-    if (!AllocateMap(AllocationType::kReadOnly, JS_SHARED_ARRAY_TYPE,
-                     JSSharedArray::kSize, SHARED_ARRAY_ELEMENTS,
-                     JSSharedArray::kInObjectFieldCount)
-             .To(&shared_array_map)) {
-      return false;
-    }
-    AlwaysSharedSpaceJSObject::PrepareMapNoEnumerableProperties(
-        shared_array_map);
-    DirectHandle<DescriptorArray> descriptors =
-        factory->NewDescriptorArray(1, 0, AllocationType::kReadOnly);
-    Descriptor length_descriptor = Descriptor::DataField(
-        factory->length_string(),
-        shared_array_map->GetInObjectPropertyOffset(
-            JSSharedArray::kLengthFieldIndex),
-        ALL_ATTRIBUTES_MASK, PropertyConstness::kConst, Representation::Smi(),
-        MaybeObjectDirectHandle(FieldType::Any(isolate())), true);
-    descriptors->Set(InternalIndex(0), &length_descriptor);
-    shared_array_map->InitializeDescriptors(*descriptors);
-    set_js_shared_array_map(shared_array_map);
   }
 
 #undef ALLOCATE_PRIMITIVE_MAP
@@ -1044,6 +1005,10 @@ bool Heap::CreateImportantReadOnlyObjects() {
     set_empty_property_array(Cast<PropertyArray>(obj));
   }
 
+  // Compared against by optimized code, like the context cell map.
+  set_undefined_context_cell(*factory->NewContextCell(
+      factory->undefined_value(), AllocationType::kReadOnly));
+
   // Heap Numbers
   // The -0 value must be set before NewNumber works.
   set_minus_zero_value(
@@ -1066,14 +1031,6 @@ bool Heap::CreateImportantReadOnlyObjects() {
       *factory->NewHeapNumber<AllocationType::kReadOnly>(V8_INFINITY));
   set_minus_infinity_value(
       *factory->NewHeapNumber<AllocationType::kReadOnly>(-V8_INFINITY));
-  set_max_safe_integer(
-      *factory->NewHeapNumber<AllocationType::kReadOnly>(kMaxSafeInteger));
-  set_max_uint_32(
-      *factory->NewHeapNumber<AllocationType::kReadOnly>(kMaxUInt32));
-  set_smi_min_value(
-      *factory->NewHeapNumber<AllocationType::kReadOnly>(kSmiMinValue));
-  set_smi_max_value_plus_one(
-      *factory->NewHeapNumber<AllocationType::kReadOnly>(0.0 - kSmiMinValue));
 
   return true;
 }
@@ -1083,6 +1040,17 @@ bool Heap::CreateReadOnlyObjects() {
   Factory* factory = isolate()->factory();
   ReadOnlyRoots roots(this);
   Tagged<HeapObject> obj;
+
+  // Heap Numbers that generated code never compares against, so their
+  // addresses need not fit an arm64 immediate.
+  set_max_safe_integer(
+      *factory->NewHeapNumber<AllocationType::kReadOnly>(kMaxSafeInteger));
+  set_max_uint_32(
+      *factory->NewHeapNumber<AllocationType::kReadOnly>(kMaxUInt32));
+  set_smi_min_value(
+      *factory->NewHeapNumber<AllocationType::kReadOnly>(kSmiMinValue));
+  set_smi_max_value_plus_one(
+      *factory->NewHeapNumber<AllocationType::kReadOnly>(0.0 - kSmiMinValue));
 
   {
     AllocationResult alloc =
@@ -1258,9 +1226,6 @@ bool Heap::CreateReadOnlyObjects() {
                                  USE_CUSTOM_MINIMUM_CAPACITY);
   DCHECK(!empty_symbol_table->HasSufficientCapacityToAdd(1));
   set_empty_symbol_table(*empty_symbol_table);
-
-  set_undefined_context_cell(*factory->NewContextCell(
-      factory->undefined_value(), AllocationType::kReadOnly));
 
   // Allocate the empty OrderedHashMap.
   DirectHandle<OrderedHashMap> empty_ordered_hash_map =
@@ -1475,7 +1440,6 @@ void Heap::CreateInitialMutableObjects() {
   set_shared_wasm_memories(roots.empty_weak_array_list());
   set_locals_block_list_cache(roots.undefined_value());
 #ifdef V8_ENABLE_WEBASSEMBLY
-  set_js_to_wasm_wrappers(roots.empty_weak_fixed_array());
   set_wasm_canonical_rtts(roots.empty_weak_fixed_array());
   set_wasm_shared_canonical_rtts(roots.empty_weak_fixed_array());
 #endif  // V8_ENABLE_WEBASSEMBLY
@@ -1508,7 +1472,6 @@ void Heap::CreateInitialMutableObjects() {
   set_is_concat_spreadable_protector(*factory->NewProtector());
   set_map_iterator_protector(*factory->NewProtector());
   set_no_elements_protector(*factory->NewProtector());
-  set_mega_dom_protector(*factory->NewProtector());
   set_no_profiling_protector(*factory->NewProtector());
   set_no_undetectable_objects_protector(*factory->NewProtector());
   set_promise_hook_protector(*factory->NewProtector());
@@ -1520,7 +1483,6 @@ void Heap::CreateInitialMutableObjects() {
   set_string_iterator_protector(*factory->NewProtector());
   set_string_length_protector(*factory->NewProtector());
   set_string_wrapper_to_primitive_protector(*factory->NewProtector());
-  set_number_string_not_regexp_like_protector(*factory->NewProtector());
   set_typed_array_species_protector(*factory->NewProtector());
 
   set_serialized_objects(roots.empty_fixed_array());
@@ -1752,6 +1714,10 @@ void Heap::CreateInitialMutableObjects() {
         *isolate_->factory()->NewWasmDispatchTable(0, wasm::kWasmFuncRef));
 #endif
   }
+
+#ifdef V8_ENABLE_WEBASSEMBLY
+  set_js_to_wasm_wrappers(empty_protected_weak_fixed_array());
+#endif
 }
 
 void Heap::CreateInternalAccessorInfoObjects() {
